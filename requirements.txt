@@ -1,0 +1,13 @@
+# AC-Prof Universal Profiler - Host-side dependencies
+# (Docker containers have their own requirements per task family)
+
+# Core
+requests>=2.31
+huggingface_hub>=0.23.0
+
+# Plotting (optional)
+pandas>=2.0
+matplotlib>=3.7
+
+# CV workload generation (optional, for host-side image creation)
+Pillow>=10.0
