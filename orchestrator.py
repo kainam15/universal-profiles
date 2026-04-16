@@ -14,10 +14,13 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import urlparse
 
 from config import (
     DEFAULT_REPEAT_IN_WINDOW,
     DOCKER_IMAGE_PREFIX,
+    HF_MIRROR_ENDPOINT,
+    PYPI_MIRROR_INDEX,
     SCALING_DIMENSIONS,
     SERVER_PORT,
     READY_POLL_INTERVAL_S,
@@ -45,8 +48,16 @@ def _run(cmd: List[str], check: bool = True, capture: bool = True, **kwargs) -> 
         capture_output=capture,
         text=True,
         check=check,
+        encoding="utf-8",
+        errors="replace",
         **kwargs,
     )
+
+
+def _url_host(url: str) -> str:
+    """Extract host from a URL for pip trusted-host."""
+    parsed = urlparse(url)
+    return parsed.netloc or parsed.path
 
 
 # ─────────────────────────────────────────────
@@ -72,6 +83,10 @@ def build_image(task_info: TaskInfo, project_dir: str) -> ImageInfo:
     result = _run([
         "docker", "build",
         "-f", base_dockerfile,
+        "--build-arg", f"HF_ENDPOINT={HF_MIRROR_ENDPOINT}",
+        "--build-arg", "HF_FALLBACK_ENDPOINTS=https://huggingface.co",
+        "--build-arg", f"PYPI_INDEX_URL={PYPI_MIRROR_INDEX}",
+        "--build-arg", f"PYPI_TRUSTED_HOST={_url_host(PYPI_MIRROR_INDEX)}",
         "-t", base_tag,
         project_dir,
     ], check=False)
@@ -169,10 +184,10 @@ def run_single_case(
         "-e", "HF_HOME=/models/hf",
         "-e", "HF_HUB_CACHE=/models/hf",
         "-e", "TRANSFORMERS_CACHE=/models/hf",
-        "-e", "HF_HUB_OFFLINE=1",
-        "-e", "TRANSFORMERS_OFFLINE=1",
-        # Model weights are baked into the image during build.
-        # No volume mount needed - ensures reproducibility.
+        # Note: removed HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE.
+        # Newer huggingface_hub (v1.x) has a bug where OFFLINE=1 prevents
+        # resolving cached files. Since model weights are baked into the image,
+        # no network access is needed at runtime.
         "-p", f"{host_port}:{SERVER_PORT}",
         image_info.tag,
     ]
@@ -193,8 +208,17 @@ def run_single_case(
             import requests
             r = requests.get(f"{base_url}/ready", timeout=2, headers={"Connection": "close"})
             if r.status_code == 200:
-                ready_ok = True
-                break
+                try:
+                    body = r.json()
+                    if body.get("status") == "ok":
+                        print(f"[case] Model: {body.get('model_id')}, device: {body.get('device')}, load: {body.get('load_time_s')}s")
+                        ready_ok = True
+                        break
+                except Exception:
+                    # Legacy: accept plain "ok" text
+                    if r.text.strip() == "ok":
+                        ready_ok = True
+                        break
         except Exception:
             pass
         time.sleep(READY_POLL_INTERVAL_S)

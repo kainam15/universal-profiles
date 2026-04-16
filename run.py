@@ -110,7 +110,10 @@ Examples:
     scaling_cfg = SCALING_DIMENSIONS.get(task_info.task_family)
 
     total_cases = len(cpu_list) * len(mem_list) * len(gpu_list)
-    n_scales = len(scaling_cfg.values) if scaling_cfg else 1
+    if args.input_scales:
+        n_scales = len(_parse_str_list(args.input_scales))
+    else:
+        n_scales = len(scaling_cfg.values) if scaling_cfg else 1
     total_iters = total_cases * n_scales * (args.warmup + args.repeat)
 
     print(f"\n  Resource matrix: {len(cpu_list)} CPUs x {len(mem_list)} MEMs x {len(gpu_list)} GPUs = {total_cases} cases")

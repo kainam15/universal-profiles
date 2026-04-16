@@ -107,7 +107,14 @@ if scaling_cfg:
 task_param = TASK_PARAM_STR
 if not task_param:
     defaults = DEFAULT_TASK_PARAMS.get(TASK_FAMILY, {})
+    # Filter out params not applicable to this task type
+    _GENERATIVE_TAGS = {"text-generation", "text2text-generation", "summarization",
+                        "translation", "conversational"}
+    if PIPELINE_TAG not in _GENERATIVE_TAGS:
+        defaults = {k: v for k, v in defaults.items() if k != "max_new_tokens"}
     task_param = json.dumps(defaults) if defaults else ""
+
+print(f"[client] PIPELINE_TAG={PIPELINE_TAG}, task_param={task_param!r}", flush=True)
 
 
 # ─────────────────────────────────────────────
@@ -129,7 +136,12 @@ def _one_request(scale_value: float, req_id: str) -> Dict[str, Any]:
     t0 = time.perf_counter()
     r = requests.post(BASE_URL + ENDPOINT, json=payload, headers=headers, timeout=300)
     t1 = time.perf_counter()
-    r.raise_for_status()
+    if r.status_code >= 400:
+        try:
+            detail = r.json().get("error", "")
+        except Exception:
+            detail = r.text[:500]
+        raise RuntimeError(f"HTTP {r.status_code}: {detail or r.reason}")
     return {"latency_app_s": (t1 - t0), "resp": r.json()}
 
 
@@ -141,8 +153,11 @@ energy_mod = None
 if USE_ENERGY:
     try:
         import energy_nvml as energy_mod
-    except Exception:
+    except Exception as _e:
         energy_mod = None
+        print(f"[WARN] GPU energy monitoring unavailable: {_e.__class__.__name__}: {_e}",
+              file=__import__('sys').stderr)
+        print("[WARN] Install pynvml: pip install pynvml", file=__import__('sys').stderr)
 
 
 def _append_row(writer: csv.DictWriter, row: Dict[str, Any], f) -> None:

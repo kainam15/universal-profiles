@@ -11,3 +11,6 @@ matplotlib>=3.7
 
 # CV workload generation (optional, for host-side image creation)
 Pillow>=10.0
+
+# GPU energy monitoring via NVML (optional, graceful fallback if unavailable)
+pynvml>=11.5.0

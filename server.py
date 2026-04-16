@@ -45,7 +45,12 @@ print(f"[server] Model loaded in {load_time_s:.2f}s")
 
 @app.route("/ready")
 def ready():
-    return "ok"
+    return jsonify({
+        "status": "ok",
+        "model_id": MODEL_ID,
+        "device": device,
+        "load_time_s": round(load_time_s, 3),
+    })
 
 
 @app.route("/predict", methods=["POST"])

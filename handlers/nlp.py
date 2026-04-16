@@ -40,6 +40,37 @@ class NLPHandler(BaseHandler):
         text = raw_input.get("text", "")
         params = raw_input.get("params", {})
 
+        # Truncate to model max length to avoid exceeding context window
+        pipe = model_ctx["pipeline"]
+        if hasattr(pipe, 'tokenizer') and pipe.tokenizer:
+            max_len = getattr(pipe.tokenizer, 'model_max_length', None)
+            if max_len and max_len < 1_000_000:
+                token_ids = pipe.tokenizer.encode(text, add_special_tokens=False)
+                available = max_len - 2  # reserve for [CLS]/[SEP]
+                if len(token_ids) > available:
+                    if task_type == "fill-mask":
+                        # Preserve mask token in truncated range via token ID
+                        mask_token = pipe.tokenizer.mask_token or "[MASK]"
+                        mask_token_id = pipe.tokenizer.convert_tokens_to_ids(mask_token)
+                        # Locate mask in original token sequence
+                        try:
+                            mask_pos = token_ids.index(mask_token_id)
+                        except ValueError:
+                            mask_pos = len(token_ids) // 2
+                        if mask_pos < available:
+                            # Mask is within truncated range
+                            token_ids = token_ids[:available]
+                        else:
+                            # Mask is beyond limit; place it at end of truncated range
+                            token_ids = token_ids[:available - 1] + [mask_token_id]
+                        text = pipe.tokenizer.decode(token_ids, skip_special_tokens=False)
+                        # Safety: ensure mask token survives decode
+                        if mask_token not in text:
+                            text = text + " " + mask_token
+                    else:
+                        token_ids = token_ids[:available]
+                        text = pipe.tokenizer.decode(token_ids, skip_special_tokens=True)
+
         if task_type == "question-answering":
             return {
                 "question": raw_input.get("question", text),
@@ -47,6 +78,10 @@ class NLPHandler(BaseHandler):
                 "params": params,
             }
         return {"text": text, "params": params}
+
+    # Pipelines whose _sanitize_parameters does not accept truncation directly.
+    # For these, pass truncation via tokenizer_kwargs instead.
+    _TRUNCATION_VIA_KWARGS_TASKS = {"fill-mask"}
 
     def predict(self, model_ctx: Dict[str, Any], processed_input: Any) -> Any:
         pipe = model_ctx["pipeline"]
@@ -57,6 +92,7 @@ class NLPHandler(BaseHandler):
             return pipe(
                 question=processed_input["question"],
                 context=processed_input["context"],
+                truncation=True,
             )
         elif task_type in _GENERATIVE_TASKS:
             max_new_tokens = params.get("max_new_tokens", 64)
@@ -64,9 +100,12 @@ class NLPHandler(BaseHandler):
                 processed_input["text"],
                 max_new_tokens=max_new_tokens,
                 do_sample=False,
+                truncation=True,
             )
+        elif task_type in self._TRUNCATION_VIA_KWARGS_TASKS:
+            return pipe(processed_input["text"], tokenizer_kwargs={"truncation": True})
         else:
-            return pipe(processed_input["text"])
+            return pipe(processed_input["text"], truncation=True)
 
     def postprocess(self, model_ctx: Dict[str, Any], raw_output: Any) -> Dict[str, Any]:
         task_type = model_ctx["task_type"]

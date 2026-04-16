@@ -43,7 +43,16 @@ class NLPWorkloadGenerator(WorkloadGenerator):
 
         payload: Dict[str, Any] = {"text": text, "params": {}}
 
-        if self.task_type in ("text-generation", "text2text-generation",
+        if self.task_type == "fill-mask":
+            # fill-mask requires a [MASK] token in the input
+            words = text.split()
+            if len(words) > 1:
+                mask_pos = len(words) // 2
+                words[mask_pos] = "[MASK]"
+            else:
+                words.append("[MASK]")
+            payload["text"] = " ".join(words)
+        elif self.task_type in ("text-generation", "text2text-generation",
                               "summarization", "translation", "conversational"):
             payload["params"]["max_new_tokens"] = 64
         elif self.task_type == "question-answering":
