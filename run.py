@@ -24,6 +24,51 @@ def _parse_str_list(s: str) -> list:
     return [x.strip() for x in s.split(",") if x.strip()]
 
 
+def _cleanup_intermediate_results(csv_paths: list[str], output_dir: str, final_csv: str) -> None:
+    """Delete per-run intermediate artifacts after the merged CSV is safely written."""
+    if not csv_paths:
+        return
+
+    if not os.path.exists(final_csv):
+        print(f"[cleanup][WARN] Skip cleanup because merged CSV is missing: {final_csv}")
+        return
+
+    if os.path.getsize(final_csv) <= 0:
+        print(f"[cleanup][WARN] Skip cleanup because merged CSV is empty: {final_csv}")
+        return
+
+    targets = set()
+    for csv_path in csv_paths:
+        targets.add(csv_path)
+
+        base_name = os.path.basename(csv_path)
+        if not (base_name.startswith("result_case_") and base_name.endswith(".csv")):
+            print(f"[cleanup][WARN] Skip derived cleanup for unexpected CSV name: {csv_path}")
+            continue
+
+        case_name = base_name[len("result_"):-len(".csv")]
+        targets.add(os.path.join(output_dir, f"lat_{case_name}.json"))
+        targets.add(os.path.join(output_dir, f"sniff_{case_name}.pcap"))
+
+    removed = 0
+    missing = 0
+    failed = 0
+
+    for path in sorted(targets):
+        if not os.path.exists(path):
+            missing += 1
+            continue
+        try:
+            os.remove(path)
+            removed += 1
+            print(f"[cleanup] Removed: {path}")
+        except OSError as exc:
+            failed += 1
+            print(f"[cleanup][WARN] Failed to remove {path}: {exc}")
+
+    print(f"[cleanup] Done. removed={removed}, missing={missing}, failed={failed}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="AC-Prof: Universal HuggingFace Model Profiler",
@@ -146,10 +191,11 @@ Examples:
     if csv_paths:
         final_csv = os.path.join(output_dir, "result_all.csv")
         merge_all_csvs(csv_paths, final_csv)
+        _cleanup_intermediate_results(csv_paths, output_dir, final_csv)
         print(f"\n{'='*60}")
         print(f"Profiling complete!")
-        print(f"  Per-case results: {output_dir}/result_case_*.csv")
         print(f"  Merged results:   {final_csv}")
+        print(f"  Intermediate files from this run were cleaned up.")
         print(f"{'='*60}")
     else:
         print("\n[WARN] No results produced.")
