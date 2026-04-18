@@ -331,7 +331,7 @@ Python 替代 shell 脚本，核心函数：
 
 ```python
 def build_image(task_info: TaskInfo) -> ImageInfo:
-    """构建 Docker 镜像，返回 image_tag 及相关元数据"""
+    """构建 Docker 镜像，返回 image_tag"""
 
 def run_single_case(task_info, cpu, mem, gpu, image_info, output_dir, ...) -> str:
     """

@@ -138,7 +138,7 @@ Examples:
         from orchestrator import ImageInfo
         model_tag = task_info.model_id.replace("/", "--").replace(".", "_").lower()
         tag = f"acprof-{task_info.task_family}-{model_tag}:latest"
-        image_info = ImageInfo(tag=tag, digest="skipped")
+        image_info = ImageInfo(tag=tag)
         print(f"\n[build] Skipping build, using: {tag}")
     else:
         image_info = build_image(task_info, PROJECT_DIR)

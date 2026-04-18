@@ -32,7 +32,6 @@ from detect import TaskInfo
 @dataclass
 class ImageInfo:
     tag: str
-    digest: str
 
 
 def _sanitize_model_id(model_id: str) -> str:
@@ -114,12 +113,8 @@ def build_image(task_info: TaskInfo, project_dir: str) -> ImageInfo:
         print(f"[build] Family image build failed:\n{result.stderr}", file=sys.stderr)
         sys.exit(1)
 
-    # Get image digest
-    result = _run(["docker", "inspect", "--format={{.Id}}", family_tag])
-    digest = result.stdout.strip()
-
-    print(f"[build] Image ready: {family_tag} ({digest[:20]}...)")
-    return ImageInfo(tag=family_tag, digest=digest)
+    print(f"[build] Image ready: {family_tag}")
+    return ImageInfo(tag=family_tag)
 
 
 # ─────────────────────────────────────────────
