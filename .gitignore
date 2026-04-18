@@ -1,5 +1,7 @@
 workloads\__pycache__
 __pycache__
 .claude
+.env
+.env.local
 results
 test

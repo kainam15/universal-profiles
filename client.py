@@ -8,9 +8,8 @@ import csv
 import json
 import math
 import os
-import random
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import requests
 
@@ -86,6 +85,34 @@ def _fmt_float(x: float) -> str:
     return f"{x:.6f}"
 
 
+def _parse_effective_input_scale(resp: Dict[str, Any]) -> Optional[float]:
+    if not isinstance(resp, dict):
+        return None
+    value = resp.get("effective_input_scale")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _merge_effective_input_scale(
+    current: Optional[float],
+    candidate: Optional[float],
+    requested_scale: float,
+) -> float:
+    resolved = float(requested_scale) if candidate is None else float(candidate)
+    if current is None:
+        return resolved
+    if not math.isclose(current, resolved, rel_tol=0.0, abs_tol=1e-9):
+        raise RuntimeError(
+            f"inconsistent effective_input_scale for requested_scale={requested_scale}: "
+            f"{current} vs {resolved}"
+        )
+    return current
+
+
 # ─────────────────────────────────────────────
 # Determine input scales
 # ─────────────────────────────────────────────
@@ -137,7 +164,12 @@ def _one_request(scale_value: float, req_id: str) -> Dict[str, Any]:
         except Exception:
             detail = r.text[:500]
         raise RuntimeError(f"HTTP {r.status_code}: {detail or r.reason}")
-    return {"latency_app_s": (t1 - t0), "resp": r.json()}
+    resp = r.json()
+    return {
+        "latency_app_s": (t1 - t0),
+        "resp": resp,
+        "effective_input_scale": _parse_effective_input_scale(resp),
+    }
 
 
 # ─────────────────────────────────────────────
@@ -214,10 +246,14 @@ def main() -> None:
                 avg_power_eff_w = float("nan")
                 peak_power_eff_w = float("nan")
                 energy_eff_j = float("nan")
+                effective_input_scale: Optional[float] = None
 
                 try:
                     if USE_ENERGY and (energy_mod is not None):
-                        holder: Dict[str, Any] = {"lat_app_sum": 0.0}
+                        holder: Dict[str, Any] = {
+                            "lat_app_sum": 0.0,
+                            "effective_input_scale": None,
+                        }
 
                         def fn():
                             lat_sum = 0.0
@@ -225,6 +261,11 @@ def main() -> None:
                                 req_id = f"{sniff_group_id}:{k}"
                                 out = _one_request(scale_val, req_id=req_id)
                                 lat_sum += float(out["latency_app_s"])
+                                holder["effective_input_scale"] = _merge_effective_input_scale(
+                                    holder.get("effective_input_scale"),
+                                    out.get("effective_input_scale"),
+                                    scale_val,
+                                )
                             holder["lat_app_sum"] = lat_sum
 
                         time.sleep(COOLDOWN_SECONDS)
@@ -237,6 +278,7 @@ def main() -> None:
                         )
 
                         latency_total_app_s = _to_float_or_nan(holder.get("lat_app_sum"))
+                        effective_input_scale = holder.get("effective_input_scale")
                         if latency_total_app_s == latency_total_app_s and latency_total_app_s > 0:
                             latency_app_s = latency_total_app_s / float(REPEAT_IN_WINDOW)
 
@@ -281,6 +323,11 @@ def main() -> None:
                             req_id = f"{sniff_group_id}:{k}"
                             out = _one_request(scale_val, req_id=req_id)
                             lat_sum += float(out["latency_app_s"])
+                            effective_input_scale = _merge_effective_input_scale(
+                                effective_input_scale,
+                                out.get("effective_input_scale"),
+                                scale_val,
+                            )
                         latency_app_s = lat_sum / float(REPEAT_IN_WINDOW)
 
                     if latency_app_s == latency_app_s and latency_app_s > 0:
@@ -297,7 +344,9 @@ def main() -> None:
                     "cpu_cores": CPU_CORES,
                     "mem_cap_gb": MEM_CAP_GB,
                     "gpu_mode": GPU_MODE,
-                    "input_scale": str(scale_val),
+                    "input_scale": str(
+                        effective_input_scale if effective_input_scale is not None else scale_val
+                    ),
                     "task_param": task_param,
                     "repeat_idx": str(repeat_idx),
                     "warmup": str(warmup_flag),

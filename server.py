@@ -61,6 +61,10 @@ def predict():
         with torch.inference_mode():
             output = handler.predict(model_ctx, processed)
         result = handler.postprocess(model_ctx, output)
+        if isinstance(processed, dict):
+            effective_input_scale = processed.get("_effective_input_scale")
+            if effective_input_scale is not None:
+                result["effective_input_scale"] = effective_input_scale
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500

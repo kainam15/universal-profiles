@@ -55,7 +55,7 @@ We perform a comprehensive sweep across multiple resource dimensions to construc
 ### Output Files
 Each model run writes two top-level CSV artifacts under `results/<model>/`:
 
-* **result_all.csv**: Dynamic profiling measurements across the full resource matrix. It contains per-run fields only, such as resource settings, `input_scale`, timing, power, energy, and status columns.
+* **result_all.csv**: Dynamic profiling measurements across the full resource matrix. It contains per-run fields only, such as resource settings, `input_scale`, timing, power, energy, and status columns. For NLP models, `input_scale` records the effective token length after any model-side truncation so the CSV stays aligned with the actual inference input.
 * **static_meta.csv**: One-row static metadata summary. `model_name` stores the HuggingFace model ID, and the file also carries `model_revision`, `task_family`, `pipeline_tag`, `runtime_backend`, `image_tag`, `batch_size`, `input_scale_type`, `model_download_url`, `gpu`, `model_weight_bytes`, and `docker_image_bytes`.
 
 Static metadata is collected on the host after the model image is ready and before the profiling matrix starts. The byte fields use these exact measurement rules:

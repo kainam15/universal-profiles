@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from config import SCALING_DIMENSIONS
+from env_utils import bootstrap_project_env
 
 PROJECT_DIR = str(Path(__file__).resolve().parent)
 
@@ -72,6 +73,8 @@ def _cleanup_intermediate_results(csv_paths: list[str], output_dir: str, final_c
 
 
 def main():
+    bootstrap_project_env(PROJECT_DIR)
+
     parser = argparse.ArgumentParser(
         description="AC-Prof: Universal HuggingFace Model Profiler",
         formatter_class=argparse.RawDescriptionHelpFormatter,

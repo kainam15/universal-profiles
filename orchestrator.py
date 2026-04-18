@@ -263,6 +263,7 @@ def build_image(task_info: TaskInfo, project_dir: str) -> ImageInfo:
         "-f", family_dockerfile,
         "--build-arg", f"BASE_IMAGE={base_tag}",
         "--build-arg", f"MODEL_ID={task_info.model_id}",
+        "--build-arg", "HF_TOKEN",
         "-t", family_tag,
         project_dir,
     ], check=False)
@@ -332,6 +333,8 @@ def run_single_case(
         "-e", f"TASK_TYPE={task_info.pipeline_tag}",
         "-e", f"RUNTIME_BACKEND={task_info.runtime_backend}",
         "-e", f"USE_GPU={use_gpu}",
+        "-e", "HF_TOKEN",
+        "-e", "HUGGING_FACE_HUB_TOKEN",
         "-e", "HF_HUB_DISABLE_TELEMETRY=1",
         "-e", "HF_HOME=/models/hf",
         "-e", "HF_HUB_CACHE=/models/hf",
