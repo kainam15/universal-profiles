@@ -13,6 +13,8 @@ import os
 import sys
 from pathlib import Path
 
+from config import SCALING_DIMENSIONS
+
 PROJECT_DIR = str(Path(__file__).resolve().parent)
 
 
@@ -158,14 +160,18 @@ Examples:
     os.makedirs(output_dir, exist_ok=True)
 
     static_meta_csv = os.path.join(output_dir, "static_meta.csv")
-    static_meta = collect_static_meta(task_info=task_info, image_info=image_info)
+    scaling_cfg = SCALING_DIMENSIONS.get(task_info.task_family)
+    input_scale_type = scaling_cfg.param_name if scaling_cfg else ""
+
+    static_meta = collect_static_meta(
+        task_info=task_info,
+        image_info=image_info,
+        batch_size=args.batch_size,
+        input_scale_type=input_scale_type,
+    )
     write_static_meta_csv(static_meta, static_meta_csv)
 
     # ── Step 4: Run profiling matrix ──
-
-    from config import SCALING_DIMENSIONS
-    scaling_cfg = SCALING_DIMENSIONS.get(task_info.task_family)
-
     total_cases = len(cpu_list) * len(mem_list) * len(gpu_list)
     if args.input_scales:
         n_scales = len(_parse_str_list(args.input_scales))

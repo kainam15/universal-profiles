@@ -59,7 +59,7 @@ run.py          CLI entry          server.py      Flask API
 2. `orchestrator.py` builds Docker image (base + task-family layer with model weights baked in), then sweeps the CPU x MEM x GPU resource matrix
 3. For each resource config: start container → poll `/ready` → optionally start tcpdump → run `client.py` as subprocess → collect energy via NVML thread → stop → write CSV
 4. `client.py` generates task-specific workloads via `workloads/` registry, iterates over input scales (warmup + repeat), measures latency
-5. Results merge into `results/<model>/result_all.csv` (31 fields defined in `config.CSV_FIELDS`)
+5. Results merge into `results/<model>/result_all.csv` for dynamic measurements, while one-row static metadata is written to `results/<model>/static_meta.csv`
 
 ### Extension points
 

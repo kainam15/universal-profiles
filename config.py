@@ -138,18 +138,10 @@ READY_POLL_INTERVAL_S = 0.1
 # CSV 输出字段
 # ─────────────────────────────────────────────
 CSV_FIELDS = [
-    "model_id",
-    "model_revision",
-    "task_family",
-    "pipeline_tag",
-    "runtime_backend",
-    "image_tag",
     "cpu_cores",
     "mem_cap_gb",
     "gpu_mode",
-    "batch_size",
     "input_scale",
-    "input_scale_type",
     "task_param",
     "repeat_idx",
     "warmup",
@@ -173,6 +165,13 @@ CSV_FIELDS = [
 
 STATIC_META_FIELDS = [
     "model_name",
+    "model_revision",
+    "task_family",
+    "pipeline_tag",
+    "runtime_backend",
+    "image_tag",
+    "batch_size",
+    "input_scale_type",
     "model_download_url",
     "gpu",
     "model_weight_bytes",

@@ -55,14 +55,15 @@ We perform a comprehensive sweep across multiple resource dimensions to construc
 ### Output Files
 Each model run writes two top-level CSV artifacts under `results/<model>/`:
 
-* **result_all.csv**: Dynamic profiling measurements across the full resource matrix.
-* **static_meta.csv**: One-row static metadata summary with `model_name`, `model_download_url`, `gpu`, `model_weight_bytes`, and `docker_image_bytes`.
+* **result_all.csv**: Dynamic profiling measurements across the full resource matrix. It contains per-run fields only, such as resource settings, `input_scale`, timing, power, energy, and status columns.
+* **static_meta.csv**: One-row static metadata summary. `model_name` stores the HuggingFace model ID, and the file also carries `model_revision`, `task_family`, `pipeline_tag`, `runtime_backend`, `image_tag`, `batch_size`, `input_scale_type`, `model_download_url`, `gpu`, `model_weight_bytes`, and `docker_image_bytes`.
 
 Static metadata is collected on the host after the model image is ready and before the profiling matrix starts. The byte fields use these exact measurement rules:
 
 * `model_weight_bytes`: Total bytes of downloaded Hugging Face cache artifacts stored under `/models/hf` inside the built model image.
 * `docker_image_bytes`: Local Docker image size reported by `docker image inspect` for the model image.
 * `gpu`: Host GPU model name for device 0, or `unknown` when the machine does not expose an NVIDIA GPU.
+* `input_scale_type`: The semantic name of `result_all.csv/input_scale`, for example `seq_length` or `resolution_scale`.
 
 ## Measurement Environment
 - OS: Ubuntu 24.04.6 LTS  

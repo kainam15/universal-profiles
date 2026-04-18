@@ -1,5 +1,6 @@
 """AC-Prof Universal Profiler - Plotting tool adapted for generalized CSV schema."""
 
+import csv
 import colorsys
 import os
 import sys
@@ -69,6 +70,17 @@ def prepare_df(csv_path: str) -> pd.DataFrame:
     df = df[df["input_scale"].notna() & (df["input_scale"] > 0)].copy()
 
     return df
+
+
+def read_static_meta(csv_path: str) -> dict[str, str]:
+    static_meta_path = os.path.join(os.path.dirname(csv_path) or ".", "static_meta.csv")
+    if not os.path.exists(static_meta_path):
+        return {}
+
+    with open(static_meta_path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        row = next(reader, None)
+    return row or {}
 
 
 def _sort_key(config: tuple[int, int, bool]) -> tuple[int, int, int]:
@@ -205,10 +217,12 @@ def plot_metric(df: pd.DataFrame, metric: str, title: str, ylabel: str, xlabel: 
 def main():
     csv_path = sys.argv[1] if len(sys.argv) > 1 else CSV_PATH
     df = prepare_df(csv_path)
+    static_meta = read_static_meta(csv_path)
 
-    # Determine x-axis label from input_scale_type
     scale_type = "input_scale"
-    if "input_scale_type" in df.columns:
+    if static_meta.get("input_scale_type"):
+        scale_type = static_meta["input_scale_type"]
+    elif "input_scale_type" in df.columns:
         types = df["input_scale_type"].dropna().unique()
         if len(types) == 1:
             scale_type = types[0]

@@ -38,6 +38,13 @@ class ImageInfo:
 @dataclass
 class StaticMeta:
     model_name: str
+    model_revision: str
+    task_family: str
+    pipeline_tag: str
+    runtime_backend: str
+    image_tag: str
+    batch_size: int
+    input_scale_type: str
     model_download_url: str
     gpu: str
     model_weight_bytes: int
@@ -171,11 +178,20 @@ def _docker_model_weight_bytes(image_tag: str, cache_root: str = "/models/hf") -
 def collect_static_meta(
     task_info: TaskInfo,
     image_info: ImageInfo,
+    batch_size: int,
+    input_scale_type: str,
     device_index: int = 0,
 ) -> StaticMeta:
     """Collect static metadata for the current model/image pair."""
     return StaticMeta(
         model_name=task_info.model_id,
+        model_revision=task_info.model_revision,
+        task_family=task_info.task_family,
+        pipeline_tag=task_info.pipeline_tag,
+        runtime_backend=task_info.runtime_backend,
+        image_tag=image_info.tag,
+        batch_size=batch_size,
+        input_scale_type=input_scale_type,
         model_download_url=_build_model_download_url(task_info.model_id),
         gpu=_get_gpu_name(device_index=device_index),
         model_weight_bytes=_docker_model_weight_bytes(image_info.tag),
@@ -189,7 +205,11 @@ def write_static_meta_csv(static_meta: StaticMeta, output_path: str) -> None:
 
     row = {field: getattr(static_meta, field) for field in STATIC_META_FIELDS}
     with open(output_path, "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=STATIC_META_FIELDS)
+        writer = csv.DictWriter(
+            f,
+            fieldnames=STATIC_META_FIELDS,
+            quoting=csv.QUOTE_MINIMAL,
+        )
         writer.writeheader()
         writer.writerow(row)
 
@@ -564,7 +584,11 @@ def merge_all_csvs(csv_paths: List[str], output_path: str) -> None:
                 all_rows.append(row)
 
     with open(output_path, "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        writer = csv.DictWriter(
+            f,
+            fieldnames=CSV_FIELDS,
+            quoting=csv.QUOTE_MINIMAL,
+        )
         writer.writeheader()
         writer.writerows(all_rows)
 

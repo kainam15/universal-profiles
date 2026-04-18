@@ -98,11 +98,6 @@ else:
     else:
         input_scales = [1.0]
 
-input_scale_type = ""
-scaling_cfg = SCALING_DIMENSIONS.get(TASK_FAMILY)
-if scaling_cfg:
-    input_scale_type = scaling_cfg.param_name
-
 # Task param (secondary parameter)
 task_param = TASK_PARAM_STR
 if not task_param:
@@ -170,7 +165,11 @@ def _append_row(writer: csv.DictWriter, row: Dict[str, Any], f) -> None:
 def main() -> None:
     need_header = _is_file_empty(OUT_CSV)
     with open(OUT_CSV, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        writer = csv.DictWriter(
+            f,
+            fieldnames=CSV_FIELDS,
+            quoting=csv.QUOTE_MINIMAL,
+        )
         if need_header:
             writer.writeheader()
             f.flush()
@@ -184,16 +183,9 @@ def main() -> None:
         except Exception as e:
             row = {k: "nan" for k in CSV_FIELDS}
             row.update({
-                "model_id": MODEL_ID,
-                "model_revision": MODEL_REVISION,
-                "task_family": TASK_FAMILY,
-                "pipeline_tag": PIPELINE_TAG,
-                "runtime_backend": RUNTIME_BACKEND,
-                "image_tag": IMAGE_TAG,
                 "cpu_cores": CPU_CORES,
                 "mem_cap_gb": MEM_CAP_GB,
                 "gpu_mode": GPU_MODE,
-                "batch_size": str(BATCH_SIZE),
                 "cold_start_s": COLD_START_S,
                 "status": "error",
                 "error": f"ready_failed: {repr(e)}",
@@ -302,18 +294,10 @@ def main() -> None:
                     throughput = float("nan")
 
                 row = {
-                    "model_id": MODEL_ID,
-                    "model_revision": MODEL_REVISION,
-                    "task_family": TASK_FAMILY,
-                    "pipeline_tag": PIPELINE_TAG,
-                    "runtime_backend": RUNTIME_BACKEND,
-                    "image_tag": IMAGE_TAG,
                     "cpu_cores": CPU_CORES,
                     "mem_cap_gb": MEM_CAP_GB,
                     "gpu_mode": GPU_MODE,
-                    "batch_size": str(BATCH_SIZE),
                     "input_scale": str(scale_val),
-                    "input_scale_type": input_scale_type,
                     "task_param": task_param,
                     "repeat_idx": str(repeat_idx),
                     "warmup": str(warmup_flag),
