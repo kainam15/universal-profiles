@@ -25,6 +25,7 @@ from config import (
     SERVER_PORT,
     READY_POLL_INTERVAL_S,
     READY_TIMEOUT_S,
+    STATIC_META_FIELDS,
 )
 from detect import TaskInfo
 
@@ -32,6 +33,15 @@ from detect import TaskInfo
 @dataclass
 class ImageInfo:
     tag: str
+
+
+@dataclass
+class StaticMeta:
+    model_name: str
+    model_download_url: str
+    gpu: str
+    model_weight_bytes: int
+    docker_image_bytes: int
 
 
 def _sanitize_model_id(model_id: str) -> str:
@@ -57,6 +67,133 @@ def _url_host(url: str) -> str:
     """Extract host from a URL for pip trusted-host."""
     parsed = urlparse(url)
     return parsed.netloc or parsed.path
+
+
+def _build_model_download_url(model_id: str) -> str:
+    """Return the canonical Hugging Face model URL."""
+    return f"https://huggingface.co/{model_id}"
+
+
+def _get_gpu_name(device_index: int = 0) -> str:
+    """Detect the host GPU model name for static metadata."""
+    try:
+        import pynvml
+
+        pynvml.nvmlInit()
+        try:
+            handle = pynvml.nvmlDeviceGetHandleByIndex(int(device_index))
+            gpu_name = pynvml.nvmlDeviceGetName(handle)
+        finally:
+            pynvml.nvmlShutdown()
+
+        if isinstance(gpu_name, bytes):
+            gpu_name = gpu_name.decode("utf-8", errors="ignore")
+        gpu_name = str(gpu_name).strip()
+        return gpu_name or "unknown"
+    except Exception:
+        pass
+
+    nvidia_smi = shutil.which("nvidia-smi")
+    if not nvidia_smi:
+        return "unknown"
+
+    result = _run(
+        [nvidia_smi, "--query-gpu=name", "--format=csv,noheader"],
+        check=False,
+    )
+    if result.returncode != 0:
+        return "unknown"
+
+    gpu_names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if not gpu_names:
+        return "unknown"
+    if 0 <= device_index < len(gpu_names):
+        return gpu_names[device_index]
+    return gpu_names[0]
+
+
+def _docker_image_size_bytes(image_tag: str) -> int:
+    """Get the local Docker image size in bytes."""
+    result = _run(
+        ["docker", "image", "inspect", image_tag, "--format", "{{.Size}}"],
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"failed to inspect image size for {image_tag}: {result.stderr.strip()}")
+
+    try:
+        return int(result.stdout.strip())
+    except ValueError as exc:
+        raise RuntimeError(
+            f"invalid docker image size for {image_tag}: {result.stdout.strip()!r}"
+        ) from exc
+
+
+def _docker_model_weight_bytes(image_tag: str, cache_root: str = "/models/hf") -> int:
+    """Measure total bytes of downloaded model artifacts stored in the image."""
+    script = (
+        "import os, stat\n"
+        f"root = {cache_root!r}\n"
+        "if not os.path.isdir(root):\n"
+        "    raise SystemExit(f'model cache directory not found: {root}')\n"
+        "total = 0\n"
+        "seen = set()\n"
+        "for dirpath, _, filenames in os.walk(root):\n"
+        "    for name in filenames:\n"
+        "        path = os.path.join(dirpath, name)\n"
+        "        st = os.lstat(path)\n"
+        "        if stat.S_ISLNK(st.st_mode):\n"
+        "            continue\n"
+        "        key = (st.st_dev, st.st_ino)\n"
+        "        if key in seen:\n"
+        "            continue\n"
+        "        seen.add(key)\n"
+        "        total += st.st_size\n"
+        "print(total)\n"
+    )
+    result = _run(
+        ["docker", "run", "--rm", "--entrypoint", "python", image_tag, "-c", script],
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"failed to inspect model cache size for {image_tag}: {result.stderr.strip()}"
+        )
+
+    try:
+        return int(result.stdout.strip())
+    except ValueError as exc:
+        raise RuntimeError(
+            f"invalid model cache size for {image_tag}: {result.stdout.strip()!r}"
+        ) from exc
+
+
+def collect_static_meta(
+    task_info: TaskInfo,
+    image_info: ImageInfo,
+    device_index: int = 0,
+) -> StaticMeta:
+    """Collect static metadata for the current model/image pair."""
+    return StaticMeta(
+        model_name=task_info.model_id,
+        model_download_url=_build_model_download_url(task_info.model_id),
+        gpu=_get_gpu_name(device_index=device_index),
+        model_weight_bytes=_docker_model_weight_bytes(image_info.tag),
+        docker_image_bytes=_docker_image_size_bytes(image_info.tag),
+    )
+
+
+def write_static_meta_csv(static_meta: StaticMeta, output_path: str) -> None:
+    """Write static metadata to a single-row CSV."""
+    import csv
+
+    row = {field: getattr(static_meta, field) for field in STATIC_META_FIELDS}
+    with open(output_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=STATIC_META_FIELDS)
+        writer.writeheader()
+        writer.writerow(row)
+
+    print(f"[meta] Static meta CSV: {output_path}")
 
 
 # ─────────────────────────────────────────────

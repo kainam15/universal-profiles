@@ -132,7 +132,13 @@ Examples:
     print(f"  Detected: {task_info.detection_method}")
 
     # ── Step 2: Build Docker image ──
-    from orchestrator import build_image, run_matrix, merge_all_csvs
+    from orchestrator import (
+        build_image,
+        collect_static_meta,
+        merge_all_csvs,
+        run_matrix,
+        write_static_meta_csv,
+    )
 
     if args.skip_build:
         from orchestrator import ImageInfo
@@ -143,13 +149,19 @@ Examples:
     else:
         image_info = build_image(task_info, PROJECT_DIR)
 
-    # ── Step 3: Run profiling matrix ──
+    # ── Step 3: Collect static metadata ──
     cpu_list = _parse_int_list(args.cpus)
     mem_list = _parse_int_list(args.mems)
     gpu_list = _parse_str_list(args.gpus)
 
     output_dir = os.path.join(PROJECT_DIR, args.output_dir, task_info.model_id.replace("/", "--"))
     os.makedirs(output_dir, exist_ok=True)
+
+    static_meta_csv = os.path.join(output_dir, "static_meta.csv")
+    static_meta = collect_static_meta(task_info=task_info, image_info=image_info)
+    write_static_meta_csv(static_meta, static_meta_csv)
+
+    # ── Step 4: Run profiling matrix ──
 
     from config import SCALING_DIMENSIONS
     scaling_cfg = SCALING_DIMENSIONS.get(task_info.task_family)
@@ -187,18 +199,19 @@ Examples:
         input_scales=args.input_scales,
     )
 
-    # ── Step 4: Merge all CSVs ──
+    # ── Step 5: Merge all CSVs ──
     if csv_paths:
         final_csv = os.path.join(output_dir, "result_all.csv")
         merge_all_csvs(csv_paths, final_csv)
         _cleanup_intermediate_results(csv_paths, output_dir, final_csv)
         print(f"\n{'='*60}")
         print(f"Profiling complete!")
+        print(f"  Static meta:      {static_meta_csv}")
         print(f"  Merged results:   {final_csv}")
         print(f"  Intermediate files from this run were cleaned up.")
         print(f"{'='*60}")
     else:
-        print("\n[WARN] No results produced.")
+        print(f"\n[WARN] No results produced. Static meta is still available: {static_meta_csv}")
 
 
 if __name__ == "__main__":

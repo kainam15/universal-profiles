@@ -171,6 +171,14 @@ CSV_FIELDS = [
     "error",
 ]
 
+STATIC_META_FIELDS = [
+    "model_name",
+    "model_download_url",
+    "gpu",
+    "model_weight_bytes",
+    "docker_image_bytes",
+]
+
 # ─────────────────────────────────────────────
 # Docker 镜像命名
 # ─────────────────────────────────────────────
