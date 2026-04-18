@@ -259,7 +259,7 @@ model_revision        模型版本 (commit hash 或 "main")
 task_family           任务族 (nlp/cv/audio/timeseries)
 pipeline_tag          具体任务 (text-generation, image-classification, ...)
 runtime_backend       运行时后端 (transformers_pipeline, chronos, ...)
-image_digest          Docker 镜像 SHA256 摘要
+image_tag             Docker 镜像名/tag
 cpu_cores             CPU 核心数
 mem_cap_gb            内存上限 (GB)
 gpu_mode              GPU 模式 (on/off)
@@ -287,7 +287,7 @@ status                状态 (ok/warn/error)
 error                 错误信息
 ```
 
-新增字段：`model_id`, `model_revision`, `task_family`, `pipeline_tag`, `runtime_backend`, `image_digest`, `input_scale`, `input_scale_type`, `task_param`
+新增字段：`model_id`, `model_revision`, `task_family`, `pipeline_tag`, `runtime_backend`, `image_tag`, `input_scale`, `input_scale_type`, `task_param`
 
 ---
 
@@ -319,9 +319,9 @@ FROM python:3.10-slim
 4. 在基础镜像上叠加模型下载层，生成 `acprof-{family}-{model_hash}:latest`
 5. 镜像缓存：同 family + 同 model 跳过构建
 
-### 镜像摘要记录
+### 镜像名称记录
 
-构建完成后通过 `docker inspect --format='{{.Id}}'` 获取 image_digest，写入 CSV 的 `image_digest` 字段。
+运行时将实际使用的镜像 tag 写入 CSV 的 `image_tag` 字段。即使启用 `--skip-build`，也会记录本次使用的镜像名。
 
 ---
 
@@ -331,7 +331,7 @@ Python 替代 shell 脚本，核心函数：
 
 ```python
 def build_image(task_info: TaskInfo) -> ImageInfo:
-    """构建 Docker 镜像，返回 image_tag + image_digest"""
+    """构建 Docker 镜像，返回 image_tag 及相关元数据"""
 
 def run_single_case(task_info, cpu, mem, gpu, image_info, output_dir, ...) -> str:
     """

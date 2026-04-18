@@ -143,7 +143,7 @@ CSV_FIELDS = [
     "task_family",
     "pipeline_tag",
     "runtime_backend",
-    "image_digest",
+    "image_tag",
     "cpu_cores",
     "mem_cap_gb",
     "gpu_mode",

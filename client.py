@@ -24,7 +24,7 @@ MODEL_REVISION = os.getenv("MODEL_REVISION", "main")
 TASK_FAMILY = os.getenv("TASK_FAMILY", "nlp")
 PIPELINE_TAG = os.getenv("PIPELINE_TAG", "text-generation")
 RUNTIME_BACKEND = os.getenv("RUNTIME_BACKEND", "transformers_pipeline")
-IMAGE_DIGEST = os.getenv("IMAGE_DIGEST", "")
+IMAGE_TAG = os.getenv("IMAGE_TAG", "")
 
 CPU_CORES = os.getenv("CPU_CORES", "")
 MEM_CAP_GB = os.getenv("MEM_CAP_GB", "")
@@ -189,7 +189,7 @@ def main() -> None:
                 "task_family": TASK_FAMILY,
                 "pipeline_tag": PIPELINE_TAG,
                 "runtime_backend": RUNTIME_BACKEND,
-                "image_digest": IMAGE_DIGEST,
+                "image_tag": IMAGE_TAG,
                 "cpu_cores": CPU_CORES,
                 "mem_cap_gb": MEM_CAP_GB,
                 "gpu_mode": GPU_MODE,
@@ -307,7 +307,7 @@ def main() -> None:
                     "task_family": TASK_FAMILY,
                     "pipeline_tag": PIPELINE_TAG,
                     "runtime_backend": RUNTIME_BACKEND,
-                    "image_digest": IMAGE_DIGEST,
+                    "image_tag": IMAGE_TAG,
                     "cpu_cores": CPU_CORES,
                     "mem_cap_gb": MEM_CAP_GB,
                     "gpu_mode": GPU_MODE,

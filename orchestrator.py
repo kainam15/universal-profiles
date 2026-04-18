@@ -279,7 +279,7 @@ def run_single_case(
         "TASK_FAMILY": task_info.task_family,
         "PIPELINE_TAG": task_info.pipeline_tag,
         "RUNTIME_BACKEND": task_info.runtime_backend,
-        "IMAGE_DIGEST": image_info.digest,
+        "IMAGE_TAG": image_info.tag,
         "CPU_CORES": str(cpu),
         "MEM_CAP_GB": str(mem),
         "GPU_MODE": gpu,
