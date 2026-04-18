@@ -48,7 +48,7 @@ def prepare_df(csv_path: str) -> pd.DataFrame:
     num_cols = [
         "input_scale", "latency_s", "latency_app_s",
         "avg_power_eff_w", "peak_power_eff_w", "energy_eff_j",
-        "cpu_cores", "mem_cap_gb", "warmup",
+        "cpu_cores", "mem_cap_gb", "warmup", "cold_start_s",
         "throughput_samples_per_s",
     ]
     for c in num_cols:
@@ -147,6 +147,23 @@ def aggregate_metric(df: pd.DataFrame, metric: str) -> pd.DataFrame:
     return agg_df
 
 
+def aggregate_cold_start(df: pd.DataFrame) -> pd.DataFrame:
+    group_cols = ["cpu_cores", "mem_cap_gb", "gpu_mode"]
+    metric_df = df[group_cols + ["cold_start_s"]].copy()
+    metric_df = metric_df[metric_df["cold_start_s"].notna()].copy()
+    if metric_df.empty:
+        return metric_df
+
+    if AGG_FUNC == "median":
+        agg_df = metric_df.groupby(group_cols, as_index=False)["cold_start_s"].median()
+    else:
+        agg_df = metric_df.groupby(group_cols, as_index=False)["cold_start_s"].mean()
+
+    agg_df["config"] = agg_df.apply(make_config_label, axis=1)
+    agg_df["gpu_on"] = agg_df["gpu_mode"].map(is_gpu_on)
+    return agg_df
+
+
 def plot_metric(df: pd.DataFrame, metric: str, title: str, ylabel: str, xlabel: str, out_png: str | None):
     if metric not in df.columns:
         print(f"[skip] Column {metric} not in CSV")
@@ -214,6 +231,62 @@ def plot_metric(df: pd.DataFrame, metric: str, title: str, ylabel: str, xlabel: 
     plt.close()
 
 
+def plot_cold_start_bar(df: pd.DataFrame, title: str, ylabel: str, out_png: str | None):
+    if "cold_start_s" not in df.columns:
+        print("[skip] Column cold_start_s not in CSV")
+        return
+
+    agg_df = aggregate_cold_start(df)
+    if agg_df.empty:
+        print("[skip] cold_start_s all NaN")
+        return
+
+    cpu_values = sorted(int(value) for value in agg_df["cpu_cores"].unique())
+    mem_values = sorted(int(value) for value in agg_df["mem_cap_gb"].unique())
+    cpu_colors = build_cpu_base_colors(cpu_values)
+    mem_rank_map = {mem: index for index, mem in enumerate(mem_values)}
+
+    configs = sorted(
+        [
+            (int(row.cpu_cores), int(row.mem_cap_gb), bool(row.gpu_on), row.config, float(row.cold_start_s))
+            for row in agg_df.itertuples(index=False)
+        ],
+        key=lambda item: _sort_key(item[:3]),
+    )
+    has_cpu_series = any(not gpu_on for _, _, gpu_on, _, _ in configs)
+    gpu_mixed_colors = build_gpu_mixed_colors([item[:3] for item in configs]) if has_cpu_series else {}
+
+    labels = []
+    values = []
+    colors = []
+    for cpu, mem, gpu_on, label, cold_start_s in configs:
+        if gpu_on and has_cpu_series:
+            color = gpu_mixed_colors[(cpu, mem, gpu_on)]
+        else:
+            color = shade_for_mem(cpu_colors[cpu], mem_rank_map[mem], len(mem_values))
+
+        labels.append(label)
+        values.append(cold_start_s)
+        colors.append(color)
+
+    plt.figure(figsize=(max(10, len(labels) * 0.55), 6))
+    plt.bar(labels, values, color=colors)
+    plt.title(title)
+    plt.xlabel("Configuration")
+    plt.ylabel(ylabel)
+    plt.grid(True, axis="y", linestyle="-", alpha=0.5)
+    plt.xticks(rotation=45, ha="right")
+    plt.tight_layout()
+
+    if out_png:
+        plt.savefig(out_png, dpi=200)
+        print(f"[saved] {out_png}")
+
+    if SHOW_PLOTS:
+        plt.show()
+    plt.close()
+
+
 def main():
     csv_path = sys.argv[1] if len(sys.argv) > 1 else CSV_PATH
     df = prepare_df(csv_path)
@@ -264,6 +337,13 @@ def main():
         title="Throughput vs. Input Scale",
         ylabel="Samples/s", xlabel=xlabel,
         out_png=os.path.join(output_dir, "throughput_vs_scale.png") if SAVE_PNG else None,
+    )
+
+    plot_cold_start_bar(
+        df,
+        title="Cold Start by Configuration",
+        ylabel="Cold Start (s)",
+        out_png=os.path.join(output_dir, "cold_start_bar.png") if SAVE_PNG else None,
     )
 
 
