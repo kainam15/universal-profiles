@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from pathlib import Path
 
 from config import SCALING_DIMENSIONS
@@ -25,6 +26,18 @@ def _parse_int_list(s: str) -> list:
 
 def _parse_str_list(s: str) -> list:
     return [x.strip() for x in s.split(",") if x.strip()]
+
+
+def _format_elapsed(seconds: float) -> str:
+    total_seconds = max(0, int(round(seconds)))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+
+    if hours:
+        return f"{hours}h {minutes}m {secs}s"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
 
 
 def _cleanup_intermediate_results(csv_paths: list[str], output_dir: str, final_csv: str) -> None:
@@ -73,6 +86,7 @@ def _cleanup_intermediate_results(csv_paths: list[str], output_dir: str, final_c
 
 
 def main():
+    start_time = time.perf_counter()
     bootstrap_project_env(PROJECT_DIR)
 
     parser = argparse.ArgumentParser(
@@ -231,14 +245,17 @@ Examples:
         final_csv = os.path.join(output_dir, "result_all.csv")
         merge_all_csvs(csv_paths, final_csv)
         _cleanup_intermediate_results(csv_paths, output_dir, final_csv)
+        elapsed = _format_elapsed(time.perf_counter() - start_time)
         print(f"\n{'='*60}")
         print(f"Profiling complete!")
         print(f"  Static meta:      {static_meta_csv}")
         print(f"  Merged results:   {final_csv}")
+        print(f"  Total elapsed:    {elapsed}")
         print(f"  Intermediate files from this run were cleaned up.")
         print(f"{'='*60}")
     else:
-        print(f"\n[WARN] No results produced. Static meta is still available: {static_meta_csv}")
+        elapsed = _format_elapsed(time.perf_counter() - start_time)
+        print(f"\n[WARN] No results produced after {elapsed}. Static meta is still available: {static_meta_csv}")
 
 
 if __name__ == "__main__":
