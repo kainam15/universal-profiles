@@ -303,14 +303,24 @@ def write_static_meta_csv(static_meta: StaticMeta, output_path: str) -> None:
     import csv
 
     row = {field: getattr(static_meta, field) for field in STATIC_META_FIELDS}
+
+    def _serialize_csv_value(value: Any, *, force_quote: bool = False) -> str:
+        text = "" if value is None else str(value)
+        escaped = text.replace('"', '""')
+        needs_quote = force_quote or any(ch in text for ch in [",", '"', "\n", "\r"])
+        return f'"{escaped}"' if needs_quote else escaped
+
     with open(output_path, "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=STATIC_META_FIELDS,
-            quoting=csv.QUOTE_MINIMAL,
+        header = ",".join(_serialize_csv_value(field) for field in STATIC_META_FIELDS)
+        values = ",".join(
+            _serialize_csv_value(
+                row[field],
+                force_quote=field == "model_download_url",
+            )
+            for field in STATIC_META_FIELDS
         )
-        writer.writeheader()
-        writer.writerow(row)
+        f.write(header + "\n")
+        f.write(values + "\n")
 
     print(f"[meta] Static meta CSV: {output_path}")
 
