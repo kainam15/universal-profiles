@@ -353,7 +353,7 @@ def main() -> None:
                             eff_low_signal = (
                                 (energy_iters == energy_iters and energy_iters < MIN_ENERGY_ITERS)
                                 or (avg_power_eff_w == avg_power_eff_w and abs(avg_power_eff_w) <= EFF_POWER_EPS_W)
-                                or (energy_eff_j == energy_eff_j and abs(energy_eff_j) <= EFF_ENERGY_EPS_J)
+                                or (energy_eff_j == energy_eff_j and abs      (energy_eff_j) <= EFF_ENERGY_EPS_J)
                             )
                             if (
                                 peak_power_eff_w == peak_power_eff_w

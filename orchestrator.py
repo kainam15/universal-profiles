@@ -50,6 +50,7 @@ class StaticMeta:
     gpu: str
     model_weight_bytes: int
     docker_image_bytes: int
+    environment: str
 
 
 @dataclass
@@ -218,6 +219,82 @@ def _get_gpu_name(device_index: int = 0) -> str:
     return gpu_names[0]
 
 
+def _linux_environment_label() -> str:
+    try:
+        os_release = platform.freedesktop_os_release()
+    except Exception:
+        return "linux"
+
+    distro_id = str(os_release.get("ID", "")).strip().lower()
+    version_id = str(os_release.get("VERSION_ID", "")).strip().strip('"')
+    if not distro_id:
+        return "linux"
+    if version_id:
+        return f"{distro_id}{version_id}"
+    return distro_id
+
+
+def _windows_environment_label() -> str:
+    release = str(platform.release()).strip().lower()
+    if release in {"10", "11"}:
+        return f"windows{release}"
+    return "windows"
+
+
+def _macos_environment_label() -> str:
+    release = platform.mac_ver()[0].strip()
+    if not release:
+        return "macos"
+    major = release.split(".", 1)[0]
+    if major.isdigit():
+        return f"macos{major}"
+    return "macos"
+
+
+def _process_is_wsl() -> bool:
+    if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"):
+        return True
+
+    try:
+        return platform.system() == "Linux" and "microsoft" in platform.release().lower()
+    except Exception:
+        return False
+
+
+def _docker_kernel_indicates_wsl() -> bool:
+    try:
+        result = _run(
+            ["docker", "info", "--format", "{{.KernelVersion}}"],
+            check=False,
+        )
+    except Exception:
+        return False
+
+    if result.returncode != 0:
+        return False
+    return "microsoft-standard-wsl" in result.stdout.strip().lower()
+
+
+def _detect_environment() -> str:
+    try:
+        system = platform.system()
+    except Exception:
+        return "unknown"
+
+    if system == "Windows":
+        label = _windows_environment_label()
+    elif system == "Linux":
+        label = _linux_environment_label()
+    elif system == "Darwin":
+        label = _macos_environment_label()
+    else:
+        label = str(system).strip().lower() or "unknown"
+
+    if label != "unknown" and (_process_is_wsl() or _docker_kernel_indicates_wsl()):
+        return f"{label}+wsl"
+    return label
+
+
 def _docker_image_size_bytes(image_tag: str) -> int:
     """Get the local Docker image size in bytes."""
     result = _run(
@@ -295,6 +372,7 @@ def collect_static_meta(
         gpu=_get_gpu_name(device_index=device_index),
         model_weight_bytes=_docker_model_weight_bytes(image_info.tag),
         docker_image_bytes=_docker_image_size_bytes(image_info.tag),
+        environment=_detect_environment(),
     )
 
 

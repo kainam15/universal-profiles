@@ -176,6 +176,7 @@ STATIC_META_FIELDS = [
     "gpu",
     "model_weight_bytes",
     "docker_image_bytes",
+    "environment",
 ]
 
 # ─────────────────────────────────────────────
