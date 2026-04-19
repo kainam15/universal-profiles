@@ -25,6 +25,10 @@ class BaseHandler(ABC):
     def postprocess(self, model_ctx: Dict[str, Any], raw_output: Any) -> Dict[str, Any]:
         """Convert model output to standardized response (shape/metadata only)."""
 
+    def get_scale_metadata(self, model_ctx: Dict[str, Any], raw_input: Dict[str, Any]) -> Dict[str, Any]:
+        """Return optional scale-planning metadata for the current model."""
+        return {}
+
 
 class HandlerRegistry:
     """Registry mapping (task_family, runtime_backend) -> Handler instance."""

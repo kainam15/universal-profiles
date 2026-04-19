@@ -55,7 +55,7 @@ We perform a comprehensive sweep across multiple resource dimensions to construc
 ### Output Files
 Each model run writes two top-level CSV artifacts under `results/<model>/`:
 
-* **result_all.csv**: Dynamic profiling measurements across the full resource matrix. It contains per-run fields only, such as resource settings, `input_scale`, timing, power, energy, and status columns. For NLP models, `input_scale` records the effective token length after any model-side truncation so the CSV stays aligned with the actual inference input.
+* **result_all.csv**: Dynamic profiling measurements across the full resource matrix. It contains per-run fields only, such as resource settings, `input_scale`, timing, power, energy, and status columns. By default, AC-Prof now auto-plans exactly 6 `input_scale` levels before profiling starts. For `nlp`, the last point is chosen to stay as close as possible to the tokenizer's usable maximum length, and the CSV keeps recording the effective input scale actually executed.
 * **static_meta.csv**: One-row static metadata summary. `model_name` stores the HuggingFace model ID, and the file also carries `model_revision`, `task_family`, `pipeline_tag`, `runtime_backend`, `image_tag`, `batch_size`, `input_scale_type`, `model_download_url`, `gpu`, `model_weight_bytes`, and `docker_image_bytes`.
 
 Static metadata is collected on the host after the model image is ready and before the profiling matrix starts. The byte fields use these exact measurement rules:
@@ -64,6 +64,11 @@ Static metadata is collected on the host after the model image is ready and befo
 * `docker_image_bytes`: Local Docker image size reported by `docker image inspect` for the model image.
 * `gpu`: Host GPU model name for device 0, or `unknown` when the machine does not expose an NVIDIA GPU.
 * `input_scale_type`: The semantic name of `result_all.csv/input_scale`, for example `seq_length` or `resolution_scale`.
+* Scale planning:
+  When `--input-scales` is not provided, AC-Prof auto-generates 6 scale levels for each run.
+  `nlp` uses the container-side tokenizer metadata to estimate the maximum usable input length, then derives 6 legal sequence lengths with the final point near that maximum.
+  `cv`, `audio`, and `timeseries` also default to 6 automatically planned levels based on their family-specific maximum scale.
+  When `--input-scales` is provided, the manual values are used as-is; `nlp` and `timeseries` still validate that those values are legal before the sweep starts.
 
 ## Measurement Environment
 - OS: Ubuntu 24.04.6 LTS  

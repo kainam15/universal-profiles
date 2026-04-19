@@ -53,6 +53,7 @@ MIN_ENERGY_ITERS = int(os.getenv("MIN_ENERGY_ITERS", "6"))
 
 # Input scales from task family config
 INPUT_SCALES_STR = os.getenv("INPUT_SCALES", "")
+INPUT_SCALE_PLAN_FILE = os.getenv("INPUT_SCALE_PLAN_FILE", "").strip()
 TASK_PARAM_STR = os.getenv("TASK_PARAM", "")
 
 
@@ -147,8 +148,8 @@ from workloads import get_generator  # noqa: E402
 workload_gen = get_generator(TASK_FAMILY, MODEL_ID, PIPELINE_TAG, BATCH_SIZE)
 
 
-def _one_request(scale_value: float, req_id: str) -> Dict[str, Any]:
-    payload = workload_gen.generate(scale_value)
+def _one_request(scale_value: float, req_id: str, payload_override: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    payload = payload_override if payload_override is not None else workload_gen.generate(scale_value)
 
     headers = {
         "Connection": "close",
@@ -170,6 +171,52 @@ def _one_request(scale_value: float, req_id: str) -> Dict[str, Any]:
         "resp": resp,
         "effective_input_scale": _parse_effective_input_scale(resp),
     }
+
+
+def _load_input_scale_entries() -> List[Dict[str, Any]]:
+    if INPUT_SCALE_PLAN_FILE:
+        with open(INPUT_SCALE_PLAN_FILE, "r", encoding="utf-8") as f:
+            plan = json.load(f)
+
+        entries = plan.get("entries")
+        if not isinstance(entries, list) or not entries:
+            raise RuntimeError(f"invalid input scale plan file: {INPUT_SCALE_PLAN_FILE}")
+
+        loaded_entries: List[Dict[str, Any]] = []
+        for idx, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                raise RuntimeError(
+                    f"invalid input scale plan entry at index {idx}: {entry!r}"
+                )
+
+            raw_scale = entry.get("input_scale")
+            payload = entry.get("payload")
+            if raw_scale is None or not isinstance(payload, dict):
+                raise RuntimeError(
+                    f"input scale plan entry missing input_scale/payload at index {idx}"
+                )
+
+            scale_value = float(raw_scale)
+            scale_label = str(entry.get("scale_label") or workload_gen.scale_label(scale_value))
+            loaded_entries.append({
+                "input_scale": scale_value,
+                "scale_label": scale_label,
+                "payload": payload,
+            })
+
+        return loaded_entries
+
+    return [
+        {
+            "input_scale": float(scale_value),
+            "scale_label": workload_gen.scale_label(scale_value),
+            "payload": None,
+        }
+        for scale_value in input_scales
+    ]
+
+
+input_scale_entries = _load_input_scale_entries()
 
 
 # ─────────────────────────────────────────────
@@ -225,12 +272,14 @@ def main() -> None:
             _append_row(writer, row, f)
             return
 
-        for scale_val in input_scales:
+        for scale_entry in input_scale_entries:
+            scale_val = float(scale_entry["input_scale"])
+            payload_override = scale_entry.get("payload")
             for idx in range(WARMUP + REPEAT):
                 warmup_flag = 1 if idx < WARMUP else 0
                 repeat_idx = idx if warmup_flag else (idx - WARMUP)
 
-                scale_label = workload_gen.scale_label(scale_val)
+                scale_label = str(scale_entry["scale_label"])
                 phase = "w" if warmup_flag else "r"
                 sniff_group_id = f"{CASE_NAME}_{scale_label}_{phase}{repeat_idx}"
 
@@ -259,7 +308,7 @@ def main() -> None:
                             lat_sum = 0.0
                             for k in range(REPEAT_IN_WINDOW):
                                 req_id = f"{sniff_group_id}:{k}"
-                                out = _one_request(scale_val, req_id=req_id)
+                                out = _one_request(scale_val, req_id=req_id, payload_override=payload_override)
                                 lat_sum += float(out["latency_app_s"])
                                 holder["effective_input_scale"] = _merge_effective_input_scale(
                                     holder.get("effective_input_scale"),
@@ -321,7 +370,7 @@ def main() -> None:
                         lat_sum = 0.0
                         for k in range(REPEAT_IN_WINDOW):
                             req_id = f"{sniff_group_id}:{k}"
-                            out = _one_request(scale_val, req_id=req_id)
+                            out = _one_request(scale_val, req_id=req_id, payload_override=payload_override)
                             lat_sum += float(out["latency_app_s"])
                             effective_input_scale = _merge_effective_input_scale(
                                 effective_input_scale,

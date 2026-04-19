@@ -8,6 +8,7 @@ from typing import Any, Dict
 from workloads import WorkloadGenerator, register_generator
 
 BASE_SEED = 12345
+MAX_CONTEXT_LENGTH = 2048
 
 
 class TimeseriesWorkloadGenerator(WorkloadGenerator):
@@ -21,7 +22,7 @@ class TimeseriesWorkloadGenerator(WorkloadGenerator):
         super().__init__(model_id, task_type, batch_size)
         # Pre-generate a long base sequence for slicing
         rng = random.Random(BASE_SEED)
-        self._max_len = 2048
+        self._max_len = MAX_CONTEXT_LENGTH
         self._base_seq = [rng.random() for _ in range(self._max_len)]
 
     def generate(self, scale_value: float) -> Dict[str, Any]:
@@ -40,6 +41,24 @@ class TimeseriesWorkloadGenerator(WorkloadGenerator):
 
     def scale_label(self, scale_value: float) -> str:
         return f"ctx{int(scale_value)}"
+
+    def effective_input_scale(
+        self,
+        scale_value: float,
+        payload: Dict[str, Any] | None = None,
+    ) -> float:
+        if payload is None:
+            return float(min(int(scale_value), self._max_len))
+
+        context = payload.get("context", [])
+        if context and isinstance(context, list):
+            first = context[0]
+            if isinstance(first, list):
+                return float(len(first))
+        return float(min(int(scale_value), self._max_len))
+
+    def max_input_scale(self) -> float:
+        return float(self._max_len)
 
 
 register_generator("timeseries", TimeseriesWorkloadGenerator)

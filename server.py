@@ -39,6 +39,23 @@ load_time_s = t_load_end - t_load_start
 
 print(f"[server] Model loaded in {load_time_s:.2f}s")
 
+
+def _extract_probe_metadata(processed: object) -> dict:
+    if not isinstance(processed, dict):
+        return {}
+    return {
+        "effective_input_scale": processed.get("_effective_input_scale"),
+        "truncated_by_limit": processed.get("_truncated_by_limit"),
+        "reason": processed.get("_probe_reason", ""),
+    }
+
+
+def _request_json_body() -> dict:
+    data = request.get_json(silent=True)
+    if isinstance(data, dict):
+        return data
+    return {}
+
 # ─────────────────────────────────────────────
 # Endpoints
 # ─────────────────────────────────────────────
@@ -55,17 +72,37 @@ def ready():
 
 @app.route("/predict", methods=["POST"])
 def predict():
-    data = request.json
+    data = _request_json_body()
     try:
         processed = handler.preprocess(model_ctx, data)
         with torch.inference_mode():
             output = handler.predict(model_ctx, processed)
         result = handler.postprocess(model_ctx, output)
-        if isinstance(processed, dict):
-            effective_input_scale = processed.get("_effective_input_scale")
-            if effective_input_scale is not None:
-                result["effective_input_scale"] = effective_input_scale
+        metadata = _extract_probe_metadata(processed)
+        effective_input_scale = metadata.get("effective_input_scale")
+        if effective_input_scale is not None:
+            result["effective_input_scale"] = effective_input_scale
         return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/probe", methods=["POST"])
+def probe():
+    data = _request_json_body()
+    try:
+        processed = handler.preprocess(model_ctx, data)
+        return jsonify(_extract_probe_metadata(processed))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/scale_meta", methods=["GET", "POST"])
+def scale_meta():
+    data = _request_json_body()
+    try:
+        metadata = handler.get_scale_metadata(model_ctx, data)
+        return jsonify(metadata)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

@@ -20,6 +20,7 @@ _CORPUS_WORDS = (
 ).split()
 
 BASE_SEED = 12345
+DEFAULT_QA_QUESTION = "What is the main topic?"
 
 
 class NLPWorkloadGenerator(WorkloadGenerator):
@@ -29,17 +30,15 @@ class NLPWorkloadGenerator(WorkloadGenerator):
         super().__init__(model_id, task_type, batch_size)
         self._rng = random.Random(BASE_SEED)
 
-    def _generate_text(self, target_tokens: int) -> str:
-        # Approximate: 1 word ~ 1.3 tokens, so generate more words than needed
-        n_words = int(target_tokens * 1.0)
+    def _generate_text_from_word_count(self, word_count: int) -> str:
+        n_words = max(1, int(word_count))
         words = []
         for i in range(n_words):
             words.append(_CORPUS_WORDS[i % len(_CORPUS_WORDS)])
         return " ".join(words)
 
-    def generate(self, scale_value: float) -> Dict[str, Any]:
-        seq_len = int(scale_value)
-        text = self._generate_text(seq_len)
+    def generate_for_word_count(self, word_count: int) -> Dict[str, Any]:
+        text = self._generate_text_from_word_count(word_count)
 
         payload: Dict[str, Any] = {"text": text, "params": {}}
 
@@ -56,10 +55,13 @@ class NLPWorkloadGenerator(WorkloadGenerator):
                               "summarization", "translation", "conversational"):
             payload["params"]["max_new_tokens"] = 64
         elif self.task_type == "question-answering":
-            payload["question"] = "What is the main topic?"
+            payload["question"] = DEFAULT_QA_QUESTION
             payload["context"] = text
 
         return payload
+
+    def generate(self, scale_value: float) -> Dict[str, Any]:
+        return self.generate_for_word_count(int(scale_value))
 
     def scale_label(self, scale_value: float) -> str:
         return f"seq{int(scale_value)}"

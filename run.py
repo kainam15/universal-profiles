@@ -141,7 +141,9 @@ Examples:
         build_image,
         collect_static_meta,
         merge_all_csvs,
+        plan_input_scales,
         run_matrix,
+        serialize_input_scales,
         write_static_meta_csv,
     )
 
@@ -175,15 +177,30 @@ Examples:
     write_static_meta_csv(static_meta, static_meta_csv)
 
     # ── Step 4: Run profiling matrix ──
+    try:
+        planned_input_scales = plan_input_scales(
+            task_info=task_info,
+            image_info=image_info,
+            cpu_list=cpu_list,
+            mem_list=mem_list,
+            gpu_list=gpu_list,
+            batch_size=args.batch_size,
+            output_dir=output_dir,
+            input_scales=args.input_scales,
+        )
+    except Exception as exc:
+        print(f"\n[scale][ERROR] {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    input_scales_arg = serialize_input_scales(planned_input_scales.scales)
     total_cases = len(cpu_list) * len(mem_list) * len(gpu_list)
-    if args.input_scales:
-        n_scales = len(_parse_str_list(args.input_scales))
-    else:
-        n_scales = len(scaling_cfg.values) if scaling_cfg else 1
+    n_scales = len(planned_input_scales.scales)
     total_iters = total_cases * n_scales * (args.warmup + args.repeat)
 
     print(f"\n  Resource matrix: {len(cpu_list)} CPUs x {len(mem_list)} MEMs x {len(gpu_list)} GPUs = {total_cases} cases")
     print(f"  Input scales: {n_scales} levels")
+    print(f"  Scale source: {planned_input_scales.source}")
+    print(f"  Validated scales: {input_scales_arg}")
     print(f"  Iterations per case: {args.warmup} warmup + {args.repeat} repeat")
     print(f"  Requests per iteration: {args.repeat_in_window}")
     print(f"  Total iterations: {total_iters}")
@@ -205,7 +222,8 @@ Examples:
         sample_hz=args.sample_hz,
         idle_seconds=args.idle_seconds,
         sniff_iface=args.sniff_iface,
-        input_scales=args.input_scales,
+        input_scales=input_scales_arg,
+        input_scale_plan_file=planned_input_scales.plan_file,
     )
 
     # ── Step 5: Merge all CSVs ──

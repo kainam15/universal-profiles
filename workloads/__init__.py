@@ -1,9 +1,9 @@
-"""AC-Prof Workload Generator Registry."""
+"""AC-Prof workload generator registry and helpers."""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
 class WorkloadGenerator(ABC):
@@ -21,6 +21,18 @@ class WorkloadGenerator(ABC):
     @abstractmethod
     def scale_label(self, scale_value: float) -> str:
         """Return a label for sniff_group_id, e.g., 'seq256', 'res0.5'."""
+
+    def effective_input_scale(
+        self,
+        scale_value: float,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Optional[float]:
+        """Return the effective input scale represented by the generated payload."""
+        return float(scale_value)
+
+    def max_input_scale(self) -> Optional[float]:
+        """Return the default maximum input scale for auto-planning when known."""
+        return None
 
 
 _generators: Dict[str, type] = {}
