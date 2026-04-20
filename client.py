@@ -328,27 +328,31 @@ def main() -> None:
                             "effective_input_scale": None,
                         }
 
-                        def fn():
-                            lat_sum = 0.0
-                            for k in range(REPEAT_IN_WINDOW):
-                                req_id = f"{sniff_group_id}:{k}"
-                                out = _one_request(scale_val, req_id=req_id, payload_override=payload_override)
-                                lat_sum += float(out["latency_app_s"])
-                                holder["effective_input_scale"] = _merge_effective_input_scale(
-                                    holder.get("effective_input_scale"),
-                                    out.get("effective_input_scale"),
-                                    scale_val,
-                                )
-                            holder["lat_app_sum"] = lat_sum
-
                         time.sleep(COOLDOWN_SECONDS)
-                        er, _gpu_name_ret, err, _samples = energy_mod.measure_energy_threaded(
-                            fn=fn,
+                        monitor = energy_mod.GPUEnergyMonitor(
                             sample_hz=SAMPLE_HZ,
                             idle_seconds=IDLE_SECONDS,
                             device_index=DEVICE_INDEX,
-                            align_to_fn=True,
                         )
+                        try:
+                            monitor.measure_idle()
+                            monitor.start()
+                            try:
+                                lat_sum = 0.0
+                                for k in range(REPEAT_IN_WINDOW):
+                                    req_id = f"{sniff_group_id}:{k}"
+                                    out = _one_request(scale_val, req_id=req_id, payload_override=payload_override)
+                                    lat_sum += float(out["latency_app_s"])
+                                    holder["effective_input_scale"] = _merge_effective_input_scale(
+                                        holder.get("effective_input_scale"),
+                                        out.get("effective_input_scale"),
+                                        scale_val,
+                                    )
+                                holder["lat_app_sum"] = lat_sum
+                            finally:
+                                er, _gpu_name_ret, err, _samples = monitor.stop()
+                        finally:
+                            monitor.close()
 
                         latency_total_app_s = _to_float_or_nan(holder.get("lat_app_sum"))
                         effective_input_scale = holder.get("effective_input_scale")
