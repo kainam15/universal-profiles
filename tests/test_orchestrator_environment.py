@@ -55,6 +55,37 @@ class DetectEnvironmentTests(unittest.TestCase):
 
         self.assertEqual(meta.environment, "windows11+wsl")
 
+    def test_resolve_packet_latency_runtime_uses_wsl_tools_on_windows_wsl(self) -> None:
+        project_dir = r"D:\DOR\universal-profiles"
+        pcap_file = r"D:\DOR\universal-profiles\results\test\sniff_case.pcap"
+
+        def fake_which(name: str) -> str | None:
+            if name.lower() in {"wsl", "wsl.exe"}:
+                return r"C:\Windows\System32\wsl.exe"
+            return None
+
+        with patch("orchestrator._detect_environment", return_value="windows11+wsl"), patch(
+            "orchestrator.shutil.which",
+            side_effect=fake_which,
+        ), patch(
+            "orchestrator._wsl_has_command",
+            return_value=True,
+        ):
+            runtime = orchestrator._resolve_packet_latency_runtime(
+                project_dir=project_dir,
+                pcap_file=pcap_file,
+                sniff_iface="docker0",
+            )
+
+        self.assertIsNotNone(runtime)
+        assert runtime is not None
+        self.assertEqual(runtime.mode, "wsl")
+        self.assertEqual(runtime.tcpdump_cmd[:3], ["wsl.exe", "-e", "sudo"])
+        self.assertIn("tcpdump", runtime.tcpdump_cmd)
+        self.assertIn("/mnt/d/DOR/universal-profiles/results/test/sniff_case.pcap", runtime.tcpdump_cmd)
+        self.assertEqual(runtime.parse_cmd[:3], ["wsl.exe", "-e", "python3"])
+        self.assertIn("/mnt/d/DOR/universal-profiles/sniff_parse_pcap.py", runtime.parse_cmd)
+
 
 if __name__ == "__main__":
     unittest.main()

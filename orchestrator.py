@@ -8,6 +8,7 @@ import json
 import math
 import os
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -66,6 +67,13 @@ class PlannedInputScales:
     scales: List[float]
     source: str
     plan_file: Optional[str] = None
+
+
+@dataclass
+class PacketLatencyRuntime:
+    mode: str
+    tcpdump_cmd: List[str]
+    parse_cmd: List[str]
 
 
 AUTO_INPUT_SCALE_COUNT = 6
@@ -293,6 +301,98 @@ def _detect_environment() -> str:
     if label != "unknown" and (_process_is_wsl() or _docker_kernel_indicates_wsl()):
         return f"{label}+wsl"
     return label
+
+
+def _windows_path_to_wsl(path: str) -> str:
+    abs_path = os.path.abspath(path)
+    drive, tail = os.path.splitdrive(abs_path)
+    if drive:
+        drive_letter = drive.rstrip(":").lower()
+        return f"/mnt/{drive_letter}{tail.replace('\\', '/')}"
+    return abs_path.replace("\\", "/")
+
+
+def _wsl_launcher() -> Optional[str]:
+    wsl_cmd = shutil.which("wsl.exe") or shutil.which("wsl")
+    if not wsl_cmd:
+        return None
+    return Path(wsl_cmd).name
+
+
+def _wsl_has_command(command: str) -> bool:
+    launcher = _wsl_launcher()
+    if not launcher:
+        return False
+
+    result = _run(
+        [launcher, "sh", "-lc", f"command -v {shlex.quote(command)} >/dev/null 2>&1"],
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _resolve_packet_latency_runtime(
+    project_dir: str,
+    pcap_file: str,
+    sniff_iface: str,
+) -> Optional[PacketLatencyRuntime]:
+    sniff_script = os.path.join(project_dir, "sniff_parse_pcap.py")
+
+    local_tcpdump = shutil.which("tcpdump")
+    local_tshark = shutil.which("tshark")
+    if local_tcpdump and local_tshark:
+        return PacketLatencyRuntime(
+            mode="local",
+            tcpdump_cmd=[
+                "sudo",
+                "tcpdump",
+                "-i",
+                sniff_iface,
+                "-s",
+                "0",
+                "-B",
+                "4096",
+                "-w",
+                pcap_file,
+                "tcp",
+                "port",
+                str(SERVER_PORT),
+            ],
+            parse_cmd=[sys.executable, sniff_script, pcap_file, str(SERVER_PORT)],
+        )
+
+    launcher = _wsl_launcher()
+    if (
+        launcher
+        and _detect_environment().endswith("+wsl")
+        and all(_wsl_has_command(cmd) for cmd in ("python3", "tcpdump", "tshark"))
+    ):
+        wsl_pcap = _windows_path_to_wsl(pcap_file)
+        wsl_sniff_script = _windows_path_to_wsl(sniff_script)
+        return PacketLatencyRuntime(
+            mode="wsl",
+            tcpdump_cmd=[
+                launcher,
+                "-e",
+                "sudo",
+                "-n",
+                "tcpdump",
+                "-i",
+                sniff_iface,
+                "-s",
+                "0",
+                "-B",
+                "4096",
+                "-w",
+                wsl_pcap,
+                "tcp",
+                "port",
+                str(SERVER_PORT),
+            ],
+            parse_cmd=[launcher, "-e", "python3", wsl_sniff_script, wsl_pcap, str(SERVER_PORT)],
+        )
+
+    return None
 
 
 def _docker_image_size_bytes(image_tag: str) -> int:
@@ -1119,26 +1219,22 @@ def _run_single_case_legacy(
 
     # ── Start tcpdump ──
     tcpdump_proc = None
-    can_sniff = shutil.which("tcpdump") is not None
+    sniff_runtime = _resolve_packet_latency_runtime(
+        project_dir=project_dir,
+        pcap_file=pcap_file,
+        sniff_iface=sniff_iface,
+    )
 
-    if can_sniff:
-        print(f"[sniff] Starting tcpdump on {sniff_iface}")
-        tcpdump_cmd = [
-            "sudo", "tcpdump",
-            "-i", sniff_iface,
-            "-s", "0",
-            "-B", "4096",
-            "-w", pcap_file,
-            "tcp", "port", str(SERVER_PORT),
-        ]
+    if sniff_runtime is not None:
+        print(f"[sniff] Starting tcpdump on {sniff_iface} via {sniff_runtime.mode}")
         tcpdump_proc = subprocess.Popen(
-            tcpdump_cmd,
+            sniff_runtime.tcpdump_cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
         time.sleep(0.3)  # Wait for tcpdump to start capturing
     else:
-        print("[sniff] tcpdump not available, skipping packet-level latency")
+        print("[sniff] tcpdump/tshark unavailable, skipping packet-level latency")
 
     # ── Run client workload ──
     print("[case] Running workload...")
@@ -1201,9 +1297,8 @@ def _run_single_case_legacy(
         # Parse PCAP
         if os.path.exists(pcap_file) and os.path.getsize(pcap_file) > 0:
             print("[sniff] Parsing pcap -> packet latencies...")
-            sniff_script = os.path.join(project_dir, "sniff_parse_pcap.py")
             parse_result = _run(
-                [sys.executable, sniff_script, pcap_file, str(SERVER_PORT)],
+                sniff_runtime.parse_cmd,
                 check=False,
             )
             if parse_result.returncode == 0 and parse_result.stdout.strip():
@@ -1289,27 +1384,23 @@ def run_single_case(
     base_url = session.base_url
     cold_start_s = session.cold_start_s
     tcpdump_proc = None
-    can_sniff = shutil.which("tcpdump") is not None
+    sniff_runtime = _resolve_packet_latency_runtime(
+        project_dir=project_dir,
+        pcap_file=pcap_file,
+        sniff_iface=sniff_iface,
+    )
 
     try:
-        if can_sniff:
-            print(f"[sniff] Starting tcpdump on {sniff_iface}")
-            tcpdump_cmd = [
-                "sudo", "tcpdump",
-                "-i", sniff_iface,
-                "-s", "0",
-                "-B", "4096",
-                "-w", pcap_file,
-                "tcp", "port", str(SERVER_PORT),
-            ]
+        if sniff_runtime is not None:
+            print(f"[sniff] Starting tcpdump on {sniff_iface} via {sniff_runtime.mode}")
             tcpdump_proc = subprocess.Popen(
-                tcpdump_cmd,
+                sniff_runtime.tcpdump_cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
             time.sleep(0.3)
         else:
-            print("[sniff] tcpdump not available, skipping packet-level latency")
+            print("[sniff] tcpdump/tshark unavailable, skipping packet-level latency")
 
         print("[case] Running workload...")
         scales_str = input_scales or serialize_input_scales(
@@ -1364,9 +1455,8 @@ def run_single_case(
 
             if os.path.exists(pcap_file) and os.path.getsize(pcap_file) > 0:
                 print("[sniff] Parsing pcap -> packet latencies...")
-                sniff_script = os.path.join(project_dir, "sniff_parse_pcap.py")
                 parse_result = _run(
-                    [sys.executable, sniff_script, pcap_file, str(SERVER_PORT)],
+                    sniff_runtime.parse_cmd,
                     check=False,
                 )
                 if parse_result.returncode == 0 and parse_result.stdout.strip():
