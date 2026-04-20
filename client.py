@@ -11,6 +11,20 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
+
+def _ensure_local_proxy_bypass() -> None:
+    local_hosts = ("localhost", "127.0.0.1", "::1")
+    for key in ("NO_PROXY", "no_proxy"):
+        current = os.environ.get(key, "")
+        parts = [part.strip() for part in current.split(",") if part.strip()]
+        known = {part.lower() for part in parts}
+        missing = [host for host in local_hosts if host.lower() not in known]
+        if missing:
+            os.environ[key] = ",".join(parts + missing)
+
+
+_ensure_local_proxy_bypass()
+
 import requests
 
 from config import CSV_FIELDS, SCALING_DIMENSIONS, DEFAULT_TASK_PARAMS
