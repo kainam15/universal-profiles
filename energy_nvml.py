@@ -117,7 +117,7 @@ def measure_energy_threaded(
         t1, p1 = samples[i]
         energy_total += 0.5 * (p0 + p1) * (t1 - t0)
 
-    powers_eff = [max(p - idle_power_w, 0.0) for p in powers]
+    powers_eff = [p - idle_power_w for p in powers]
 
     avg_power_eff = sum(powers_eff) / len(powers_eff)
     peak_power_eff = max(powers_eff)

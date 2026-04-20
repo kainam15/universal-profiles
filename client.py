@@ -47,10 +47,6 @@ IDLE_SECONDS = float(os.getenv("IDLE_SECONDS", "3"))
 DEVICE_INDEX = int(os.getenv("DEVICE_INDEX", "0"))
 COOLDOWN_SECONDS = 3
 
-EFF_POWER_EPS_W = float(os.getenv("EFF_POWER_EPS_W", "0.01"))
-EFF_ENERGY_EPS_J = float(os.getenv("EFF_ENERGY_EPS_J", "0.001"))
-MIN_ENERGY_ITERS = int(os.getenv("MIN_ENERGY_ITERS", "6"))
-
 # Input scales from task family config
 INPUT_SCALES_STR = os.getenv("INPUT_SCALES", "")
 INPUT_SCALE_PLAN_FILE = os.getenv("INPUT_SCALE_PLAN_FILE", "").strip()
@@ -84,6 +80,20 @@ def _fmt_float(x: float) -> str:
     if x is None or (isinstance(x, float) and (math.isnan(x) or math.isinf(x))):
         return "nan"
     return f"{x:.6f}"
+
+
+def _eff_negative_warnings(
+    *,
+    avg_power_eff_w: float,
+    peak_power_eff_w: float,
+    energy_eff_j: float,
+) -> List[str]:
+    metrics = [
+        ("avg_power_eff_w", avg_power_eff_w),
+        ("peak_power_eff_w", peak_power_eff_w),
+        ("energy_eff_j", energy_eff_j),
+    ]
+    return [f"{name}<0" for name, value in metrics if value == value and value < 0.0]
 
 
 def _parse_effective_input_scale(resp: Dict[str, Any]) -> Optional[float]:
@@ -350,21 +360,14 @@ def main() -> None:
                             if energy_eff_j == energy_eff_j:
                                 energy_eff_j = energy_eff_j / float(REPEAT_IN_WINDOW)
 
-                            eff_low_signal = (
-                                (energy_iters == energy_iters and energy_iters < MIN_ENERGY_ITERS)
-                                or (avg_power_eff_w == avg_power_eff_w and abs(avg_power_eff_w) <= EFF_POWER_EPS_W)
-                                or (energy_eff_j == energy_eff_j and abs      (energy_eff_j) <= EFF_ENERGY_EPS_J)
+                            eff_warnings = _eff_negative_warnings(
+                                avg_power_eff_w=avg_power_eff_w,
+                                peak_power_eff_w=peak_power_eff_w,
+                                energy_eff_j=energy_eff_j,
                             )
-                            if (
-                                peak_power_eff_w == peak_power_eff_w
-                                and abs(peak_power_eff_w) <= EFF_POWER_EPS_W
-                                and eff_low_signal
-                            ):
+                            if eff_warnings:
                                 status = "warn"
-                                err_msg = "eff_energy_near_zero_clamped; consider using total_energy_* or heavier workload"
-                                avg_power_eff_w = float("nan")
-                                peak_power_eff_w = float("nan")
-                                energy_eff_j = float("nan")
+                                err_msg = "; ".join(eff_warnings)
                     else:
                         # GPU off: still send REPEAT_IN_WINDOW requests for sniffing
                         lat_sum = 0.0
