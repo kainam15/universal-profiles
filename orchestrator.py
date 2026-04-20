@@ -52,6 +52,8 @@ class StaticMeta:
     model_weight_bytes: int
     docker_image_bytes: int
     environment: str
+    cpu_power_source: str
+    vcpu_power_method: str
 
 
 @dataclass
@@ -225,6 +227,18 @@ def _get_gpu_name(device_index: int = 0) -> str:
     if 0 <= device_index < len(gpu_names):
         return gpu_names[device_index]
     return gpu_names[0]
+
+
+def _cpu_power_metadata() -> Tuple[str, str]:
+    try:
+        import energy_cpu
+
+        return (
+            energy_cpu.detect_cpu_power_source(),
+            energy_cpu.detect_vcpu_power_method(),
+        )
+    except Exception:
+        return "unavailable", "unavailable"
 
 
 def _linux_environment_label() -> str:
@@ -459,6 +473,7 @@ def collect_static_meta(
     device_index: int = 0,
 ) -> StaticMeta:
     """Collect static metadata for the current model/image pair."""
+    cpu_power_source, vcpu_power_method = _cpu_power_metadata()
     return StaticMeta(
         model_name=task_info.model_id,
         model_revision=task_info.model_revision,
@@ -473,6 +488,8 @@ def collect_static_meta(
         model_weight_bytes=_docker_model_weight_bytes(image_info.tag),
         docker_image_bytes=_docker_image_size_bytes(image_info.tag),
         environment=_detect_environment(),
+        cpu_power_source=cpu_power_source,
+        vcpu_power_method=vcpu_power_method,
     )
 
 
@@ -1268,6 +1285,7 @@ def _run_single_case_legacy(
         "COLD_START_S": f"{cold_start_s:.3f}",
         "OUT_CSV": out_csv,
         "CASE_NAME": case_name,
+        "CONTAINER_NAME": container_name,
         "SAMPLE_HZ": str(sample_hz),
         "IDLE_SECONDS": str(idle_seconds),
         "DEVICE_INDEX": "0",
@@ -1427,6 +1445,7 @@ def run_single_case(
             "COLD_START_S": f"{cold_start_s:.3f}",
             "OUT_CSV": out_csv,
             "CASE_NAME": case_name,
+            "CONTAINER_NAME": container_name,
             "SAMPLE_HZ": str(sample_hz),
             "IDLE_SECONDS": str(idle_seconds),
             "DEVICE_INDEX": "0",

@@ -13,7 +13,7 @@
 
 It provides **two core assets** for the research community:
 1.  **The Dataset**: A comprehensive collection of performance metrics covering cold-starts and runtime behaviors under strict resource limits (CPU/GPU/Memory) and input variations.
-2.  **The Framework**: A decoupled, side-channel profiling tool that captures **Network Latency** (via packet sniffing) and **GPU Energy** (via NVML integration) with **zero code intrusion**.
+2.  **The Framework**: A decoupled, side-channel profiling tool that captures **Network Latency** (via packet sniffing), **GPU Energy** (via NVML integration), and Linux/WSL **CPU package / estimated vCPU energy** (via RAPL powercap plus cgroup CPU share) with **zero code intrusion**.
 
 ## 🌟 Key Features
 
@@ -32,7 +32,7 @@ The framework adopts a strict Control-Execution-Monitor separation principle to 
 | **Controller** | Orchestrates the experiment workflow (Warm-up $\rightarrow$ Input Scaling $\rightarrow$ Batch Loop $\rightarrow$ Cool-down). |
 | **Client** | Generates workloads and handles data serialization. Supports variable input scales (e.g., image resolution). |
 | **Server** | The black-box AI container (Flask/TorchServe) executing the inference logic. |
-| **Monitor** | **Side-channel Collector**: <br>1. **Sniffer**: Captures TCP packets on `docker0` bridge to measure physical transport latency. <br>2. **Energy**: Polls NVIDIA NVML at 20Hz to integrate total GPU power usage. |
+| **Monitor** | **Side-channel Collector**: <br>1. **Sniffer**: Captures TCP packets on `docker0` bridge to measure physical transport latency. <br>2. **GPU Energy**: Polls NVIDIA NVML at 20Hz to integrate total GPU power usage. <br>3. **CPU / vCPU Energy**: Reads Linux RAPL package counters and attributes estimated vCPU energy by container cgroup CPU share when available. |
 
 ## 📊 Dataset Specifications
 
@@ -48,15 +48,15 @@ We perform a comprehensive sweep across multiple resource dimensions to construc
 
 ### Collected Metrics
 * **End-to-End Latency**: latency (seconds).
-* **Energy Consumption**: Total GPU energy per inference (Joules).
-* **Power Draw**: Average and Peak GPU board power (Watts).
+* **Energy Consumption**: Total GPU energy, CPU package energy, and estimated vCPU energy per inference (Joules).
+* **Power Draw**: Average and Peak GPU board power, CPU package power, and estimated vCPU power (Watts).
 * **Static Meta**: Model weight size, Docker image download volume.
 
 ### Output Files
 Each model run writes two top-level CSV artifacts under `results/<model>/`:
 
 * **result_all.csv**: Dynamic profiling measurements across the full resource matrix. It contains per-run fields only, such as resource settings, `input_scale`, timing, power, energy, and status columns. By default, AC-Prof now auto-plans exactly 6 `input_scale` levels before profiling starts. For `nlp`, the last point is chosen to stay as close as possible to the tokenizer's usable maximum length, and the CSV keeps recording the effective input scale actually executed.
-* **static_meta.csv**: One-row static metadata summary. `model_name` stores the HuggingFace model ID, and the file also carries `model_revision`, `task_family`, `pipeline_tag`, `runtime_backend`, `image_tag`, `batch_size`, `input_scale_type`, `model_download_url`, `gpu`, `model_weight_bytes`, `docker_image_bytes`, and `environment`.
+* **static_meta.csv**: One-row static metadata summary. `model_name` stores the HuggingFace model ID, and the file also carries `model_revision`, `task_family`, `pipeline_tag`, `runtime_backend`, `image_tag`, `batch_size`, `input_scale_type`, `model_download_url`, `gpu`, `model_weight_bytes`, `docker_image_bytes`, `environment`, `cpu_power_source`, and `vcpu_power_method`.
 
 Static metadata is collected on the host after the model image is ready and before the profiling matrix starts. The byte fields use these exact measurement rules:
 
@@ -64,7 +64,10 @@ Static metadata is collected on the host after the model image is ready and befo
 * `docker_image_bytes`: Local Docker image size reported by `docker image inspect` for the model image.
 * `gpu`: Host GPU model name for device 0, or `unknown` when the machine does not expose an NVIDIA GPU.
 * `environment`: Short host execution environment label such as `windows11+wsl`, `ubuntu24.04`, or `macos15`.
+* `cpu_power_source`: `rapl` when Linux RAPL powercap counters are available, otherwise `unavailable`.
+* `vcpu_power_method`: `rapl_cgroup_cpu_share` when estimated vCPU energy can be derived from RAPL package energy and container cgroup CPU share, otherwise `unavailable`.
 * `input_scale_type`: The semantic name of `result_all.csv/input_scale`, for example `seq_length` or `resolution_scale`.
+* CPU / vCPU power fields remain `nan` when RAPL `/sys/class/powercap/*/energy_uj` is not exposed. AC-Prof does not synthesize CPU power from TDP or utilization-only estimates.
 * Scale planning:
   When `--input-scales` is not provided, AC-Prof auto-generates 6 scale levels for each run.
   `nlp` uses the container-side tokenizer metadata to estimate the maximum usable input length, then derives 6 legal sequence lengths with the final point near that maximum.

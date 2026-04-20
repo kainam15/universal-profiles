@@ -16,6 +16,7 @@ AC-Prof 是一个面向 containerized HuggingFace inference service 的运行时
 可选但会影响字段完整性：
 
 - NVIDIA GPU + NVIDIA Container Toolkit：用于 `--gpus on` 和 GPU energy metrics。
+- Linux RAPL powercap（`/sys/class/powercap/*/energy_uj`）：用于 CPU package power / energy 和 estimated vCPU energy metrics。
 - `tcpdump` + `tshark`：用于填充 `result_all.csv` 的 `latency_s` packet-level latency。
 - Linux / WSL native Docker 的 `docker0` bridge：packet sniffing 默认监听 `docker0`。如果抓包不可用，`latency_s` 会保留为 `nan`，但 `latency_app_s` 仍然可用。
 
@@ -147,6 +148,10 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 - `latency_app_vs_scale.png`
 - `avg_power_vs_scale.png`
 - `energy_vs_scale.png`
+- `cpu_avg_power_vs_scale.png`
+- `cpu_energy_vs_scale.png`
+- `vcpu_avg_power_vs_scale.png`
+- `vcpu_energy_vs_scale.png`
 - `throughput_vs_scale.png`
 - `cold_start_bar.png`
 
@@ -230,6 +235,22 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `avg_power_eff_w` | 扣除 idle baseline 后的 effective average power，单位 W。 |
 | `peak_power_eff_w` | 扣除 idle baseline 后的 effective peak power，单位 W。 |
 | `energy_eff_j` | 本行平均到单 request 的 effective GPU energy，单位 J。 |
+| `cpu_idle_power_w` | CPU package idle baseline power，单位 W。仅 Linux/WSL 暴露 RAPL `/sys/class/powercap/*/energy_uj` 时有值。 |
+| `cpu_energy_iters` | CPU package energy measurement 采样窗口中的 sample 数。 |
+| `cpu_avg_power_total_w` | 测量窗口内 host CPU package total average power，单位 W。 |
+| `cpu_peak_power_total_w` | 测量窗口内 host CPU package total peak power，单位 W。 |
+| `cpu_energy_total_j` | 本行平均到单 request 的 total CPU package energy，单位 J。 |
+| `cpu_avg_power_eff_w` | 扣除 CPU idle baseline 后的 CPU package effective average power，单位 W。 |
+| `cpu_peak_power_eff_w` | 扣除 CPU idle baseline 后的 CPU package effective peak power，单位 W。 |
+| `cpu_energy_eff_j` | 本行平均到单 request 的 effective CPU package energy，单位 J。 |
+| `vcpu_cpu_share` | container cgroup CPU time delta / host active CPU time delta，用于估算本 container 占 host active CPU 的比例。 |
+| `vcpu_cpu_time_s` | 本行平均到单 request 的 container CPU time，单位秒。 |
+| `vcpu_avg_power_total_w` | 按 `vcpu_cpu_share` 分摊后的 estimated vCPU total average power，单位 W。 |
+| `vcpu_peak_power_total_w` | 按 `vcpu_cpu_share` 分摊后的 estimated vCPU total peak power，单位 W。 |
+| `vcpu_energy_total_j` | 本行平均到单 request 的 estimated vCPU total energy，单位 J。 |
+| `vcpu_avg_power_eff_w` | 按 `vcpu_cpu_share` 分摊后的 estimated vCPU effective average power，单位 W。 |
+| `vcpu_peak_power_eff_w` | 按 `vcpu_cpu_share` 分摊后的 estimated vCPU effective peak power，单位 W。 |
+| `vcpu_energy_eff_j` | 本行平均到单 request 的 estimated vCPU effective energy，单位 J。 |
 | `cold_start_s` | 当前 container 从 `docker run` 到 `/ready` 成功的时间，单位秒。 |
 | `status` | `ok`、`warn` 或 `error`。`warn` 常用于可继续分析但存在异常值的行。 |
 | `error` | 错误或 warning 文本。正常行为空。 |
@@ -259,6 +280,8 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `model_weight_bytes` | Docker image 内 `/models/hf` 下 Hugging Face cache artifacts 的总字节数，不是严格的单一权重文件大小。 |
 | `docker_image_bytes` | `docker image inspect <image_tag> --format "{{.Size}}"` 返回的本地 image size，单位 bytes。 |
 | `environment` | 自动检测的运行环境标签，例如 `windows11+wsl`、`ubuntu24.04+wsl`、`ubuntu24.04`、`macos15`。 |
+| `cpu_power_source` | CPU package 功耗来源。`rapl` 表示使用 Linux RAPL powercap 真实计数器；`unavailable` 表示当前环境没有可用 RAPL。 |
+| `vcpu_power_method` | estimated vCPU 功耗计算方法。`rapl_cgroup_cpu_share` 表示用 RAPL package energy 乘以 container cgroup CPU share；`unavailable` 表示无法估算。 |
 
 ## 10. 结果行数估算
 
@@ -292,6 +315,12 @@ GPU energy 字段全是 `nan`：
 
 - `gpu_mode=off` 时这是正常结果。
 - `gpu_mode=on` 时检查 NVIDIA driver、NVIDIA Container Toolkit、`pynvml` 和容器 GPU 可见性。
+
+CPU / vCPU energy 字段全是 `nan`：
+
+- 这是当前环境没有暴露 RAPL `/sys/class/powercap/*/energy_uj` 时的正常结果，不会影响 latency / throughput 采集。
+- `cpu_*` 字段是 host CPU package 的真实 RAPL 测量值；`vcpu_*` 字段是在同一窗口内按 container cgroup CPU share 分摊出来的估计值。
+- 本项目不会用 TDP 或 CPU utilization 造功耗值；没有 RAPL 时保持 `nan`。
 
 `--skip-build` 后 `/scale_meta` 或 `/probe` 报错：
 

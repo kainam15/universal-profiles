@@ -55,6 +55,7 @@ REPEAT_IN_WINDOW = int(os.getenv("REPEAT_IN_WINDOW", "20"))
 COLD_START_S = os.getenv("COLD_START_S", "nan")
 OUT_CSV = os.getenv("OUT_CSV", "result.csv")
 CASE_NAME = os.getenv("CASE_NAME", "").strip()
+CONTAINER_NAME = os.getenv("CONTAINER_NAME", "").strip()
 
 SAMPLE_HZ = float(os.getenv("SAMPLE_HZ", "20"))
 IDLE_SECONDS = float(os.getenv("IDLE_SECONDS", "3"))
@@ -108,6 +109,10 @@ def _eff_negative_warnings(
         ("energy_eff_j", energy_eff_j),
     ]
     return [f"{name}<0" for name, value in metrics if value == value and value < 0.0]
+
+
+def _named_negative_warnings(metrics: Dict[str, float]) -> List[str]:
+    return [f"{name}<0" for name, value in metrics.items() if value == value and value < 0.0]
 
 
 def _parse_effective_input_scale(resp: Dict[str, Any]) -> Optional[float]:
@@ -257,6 +262,90 @@ if USE_ENERGY:
               file=__import__('sys').stderr)
         print("[WARN] Install pynvml: pip install pynvml", file=__import__('sys').stderr)
 
+cpu_energy_mod = None
+try:
+    import energy_cpu as cpu_energy_mod
+except Exception as _e:
+    cpu_energy_mod = None
+    print(f"[WARN] CPU energy monitoring unavailable: {_e.__class__.__name__}: {_e}",
+          file=__import__('sys').stderr)
+
+
+GPU_METRIC_FIELDS = [
+    "idle_power_w",
+    "energy_iters",
+    "avg_power_total_w",
+    "peak_power_total_w",
+    "energy_total_j",
+    "avg_power_eff_w",
+    "peak_power_eff_w",
+    "energy_eff_j",
+]
+
+CPU_METRIC_FIELDS = [
+    "cpu_idle_power_w",
+    "cpu_energy_iters",
+    "cpu_avg_power_total_w",
+    "cpu_peak_power_total_w",
+    "cpu_energy_total_j",
+    "cpu_avg_power_eff_w",
+    "cpu_peak_power_eff_w",
+    "cpu_energy_eff_j",
+    "vcpu_cpu_share",
+    "vcpu_cpu_time_s",
+    "vcpu_avg_power_total_w",
+    "vcpu_peak_power_total_w",
+    "vcpu_energy_total_j",
+    "vcpu_avg_power_eff_w",
+    "vcpu_peak_power_eff_w",
+    "vcpu_energy_eff_j",
+]
+
+
+def _nan_metrics(fields: List[str]) -> Dict[str, float]:
+    return {field: float("nan") for field in fields}
+
+
+def _divide_if_number(value: float, divisor: float) -> float:
+    value = _to_float_or_nan(value)
+    if value == value:
+        return value / divisor
+    return value
+
+
+def _gpu_metrics_from_result(result: Any) -> Dict[str, float]:
+    return {
+        "idle_power_w": _to_float_or_nan(result.idle_power_w),
+        "energy_iters": float(result.energy_iters),
+        "avg_power_total_w": _to_float_or_nan(result.avg_power_total_w),
+        "peak_power_total_w": _to_float_or_nan(result.peak_power_total_w),
+        "energy_total_j": _divide_if_number(result.energy_total_j, float(REPEAT_IN_WINDOW)),
+        "avg_power_eff_w": _to_float_or_nan(result.avg_power_eff_w),
+        "peak_power_eff_w": _to_float_or_nan(result.peak_power_eff_w),
+        "energy_eff_j": _divide_if_number(result.energy_eff_j, float(REPEAT_IN_WINDOW)),
+    }
+
+
+def _cpu_metrics_from_result(result: Any) -> Dict[str, float]:
+    return {
+        "cpu_idle_power_w": _to_float_or_nan(result.cpu_idle_power_w),
+        "cpu_energy_iters": float(result.cpu_energy_iters),
+        "cpu_avg_power_total_w": _to_float_or_nan(result.cpu_avg_power_total_w),
+        "cpu_peak_power_total_w": _to_float_or_nan(result.cpu_peak_power_total_w),
+        "cpu_energy_total_j": _divide_if_number(result.cpu_energy_total_j, float(REPEAT_IN_WINDOW)),
+        "cpu_avg_power_eff_w": _to_float_or_nan(result.cpu_avg_power_eff_w),
+        "cpu_peak_power_eff_w": _to_float_or_nan(result.cpu_peak_power_eff_w),
+        "cpu_energy_eff_j": _divide_if_number(result.cpu_energy_eff_j, float(REPEAT_IN_WINDOW)),
+        "vcpu_cpu_share": _to_float_or_nan(result.vcpu_cpu_share),
+        "vcpu_cpu_time_s": _divide_if_number(result.vcpu_cpu_time_s, float(REPEAT_IN_WINDOW)),
+        "vcpu_avg_power_total_w": _to_float_or_nan(result.vcpu_avg_power_total_w),
+        "vcpu_peak_power_total_w": _to_float_or_nan(result.vcpu_peak_power_total_w),
+        "vcpu_energy_total_j": _divide_if_number(result.vcpu_energy_total_j, float(REPEAT_IN_WINDOW)),
+        "vcpu_avg_power_eff_w": _to_float_or_nan(result.vcpu_avg_power_eff_w),
+        "vcpu_peak_power_eff_w": _to_float_or_nan(result.vcpu_peak_power_eff_w),
+        "vcpu_energy_eff_j": _divide_if_number(result.vcpu_energy_eff_j, float(REPEAT_IN_WINDOW)),
+    }
+
 
 def _append_row(writer: csv.DictWriter, row: Dict[str, Any], f) -> None:
     out = {k: row.get(k, "") for k in CSV_FIELDS}
@@ -310,84 +399,39 @@ def main() -> None:
                 latency_app_s = float("nan")
                 status = "ok"
                 err_msg = ""
-
-                idle_power_w = float("nan")
-                energy_iters = float("nan")
-                avg_power_total_w = float("nan")
-                peak_power_total_w = float("nan")
-                energy_total_j = float("nan")
-                avg_power_eff_w = float("nan")
-                peak_power_eff_w = float("nan")
-                energy_eff_j = float("nan")
+                gpu_metrics = _nan_metrics(GPU_METRIC_FIELDS)
+                cpu_metrics = _nan_metrics(CPU_METRIC_FIELDS)
                 effective_input_scale: Optional[float] = None
 
                 try:
-                    if USE_ENERGY and (energy_mod is not None):
-                        holder: Dict[str, Any] = {
-                            "lat_app_sum": 0.0,
-                            "effective_input_scale": None,
-                        }
-
-                        time.sleep(COOLDOWN_SECONDS)
-                        monitor = energy_mod.GPUEnergyMonitor(
-                            sample_hz=SAMPLE_HZ,
-                            idle_seconds=IDLE_SECONDS,
-                            device_index=DEVICE_INDEX,
-                        )
-                        try:
-                            monitor.measure_idle()
-                            monitor.start()
-                            try:
-                                lat_sum = 0.0
-                                for k in range(REPEAT_IN_WINDOW):
-                                    req_id = f"{sniff_group_id}:{k}"
-                                    out = _one_request(scale_val, req_id=req_id, payload_override=payload_override)
-                                    lat_sum += float(out["latency_app_s"])
-                                    holder["effective_input_scale"] = _merge_effective_input_scale(
-                                        holder.get("effective_input_scale"),
-                                        out.get("effective_input_scale"),
-                                        scale_val,
-                                    )
-                                holder["lat_app_sum"] = lat_sum
-                            finally:
-                                er, _gpu_name_ret, err, _samples = monitor.stop()
-                        finally:
-                            monitor.close()
-
-                        latency_total_app_s = _to_float_or_nan(holder.get("lat_app_sum"))
-                        effective_input_scale = holder.get("effective_input_scale")
-                        if latency_total_app_s == latency_total_app_s and latency_total_app_s > 0:
-                            latency_app_s = latency_total_app_s / float(REPEAT_IN_WINDOW)
-
-                        if err:
-                            status = "error"
-                            err_msg = err
-                        else:
-                            idle_power_w = _to_float_or_nan(er.idle_power_w)
-                            energy_iters = float(er.energy_iters)
-
-                            avg_power_total_w = _to_float_or_nan(er.avg_power_total_w)
-                            peak_power_total_w = _to_float_or_nan(er.peak_power_total_w)
-                            energy_total_j = _to_float_or_nan(er.energy_total_j)
-                            if energy_total_j == energy_total_j:
-                                energy_total_j = energy_total_j / float(REPEAT_IN_WINDOW)
-
-                            avg_power_eff_w = _to_float_or_nan(er.avg_power_eff_w)
-                            peak_power_eff_w = _to_float_or_nan(er.peak_power_eff_w)
-                            energy_eff_j = _to_float_or_nan(er.energy_eff_j)
-                            if energy_eff_j == energy_eff_j:
-                                energy_eff_j = energy_eff_j / float(REPEAT_IN_WINDOW)
-
-                            eff_warnings = _eff_negative_warnings(
-                                avg_power_eff_w=avg_power_eff_w,
-                                peak_power_eff_w=peak_power_eff_w,
-                                energy_eff_j=energy_eff_j,
+                    gpu_monitor = None
+                    cpu_monitor = None
+                    gpu_result = None
+                    cpu_result = None
+                    try:
+                        if USE_ENERGY and (energy_mod is not None):
+                            # Preserve the existing GPU cooldown behavior.
+                            time.sleep(COOLDOWN_SECONDS)
+                            gpu_monitor = energy_mod.GPUEnergyMonitor(
+                                sample_hz=SAMPLE_HZ,
+                                idle_seconds=IDLE_SECONDS,
+                                device_index=DEVICE_INDEX,
                             )
-                            if eff_warnings:
-                                status = "warn"
-                                err_msg = "; ".join(eff_warnings)
-                    else:
-                        # GPU off: still send REPEAT_IN_WINDOW requests for sniffing
+                            gpu_monitor.measure_idle()
+
+                        if cpu_energy_mod is not None:
+                            cpu_monitor = cpu_energy_mod.CPUEnergyMonitor(
+                                sample_hz=SAMPLE_HZ,
+                                idle_seconds=IDLE_SECONDS,
+                                container_name=CONTAINER_NAME,
+                            )
+                            cpu_monitor.measure_idle()
+
+                        if gpu_monitor is not None:
+                            gpu_monitor.start()
+                        if cpu_monitor is not None:
+                            cpu_monitor.start()
+
                         lat_sum = 0.0
                         for k in range(REPEAT_IN_WINDOW):
                             req_id = f"{sniff_group_id}:{k}"
@@ -398,7 +442,42 @@ def main() -> None:
                                 out.get("effective_input_scale"),
                                 scale_val,
                             )
-                        latency_app_s = lat_sum / float(REPEAT_IN_WINDOW)
+                    finally:
+                        if gpu_monitor is not None:
+                            try:
+                                gpu_result, _gpu_name_ret, _gpu_err, _gpu_samples = gpu_monitor.stop()
+                            finally:
+                                gpu_monitor.close()
+                        if cpu_monitor is not None:
+                            try:
+                                cpu_result, _cpu_err, _cpu_samples = cpu_monitor.stop()
+                            finally:
+                                cpu_monitor.close()
+
+                    latency_app_s = lat_sum / float(REPEAT_IN_WINDOW)
+
+                    if gpu_result is not None:
+                        gpu_metrics = _gpu_metrics_from_result(gpu_result)
+                    if cpu_result is not None:
+                        cpu_metrics = _cpu_metrics_from_result(cpu_result)
+
+                    warnings = []
+                    warnings.extend(_eff_negative_warnings(
+                        avg_power_eff_w=gpu_metrics["avg_power_eff_w"],
+                        peak_power_eff_w=gpu_metrics["peak_power_eff_w"],
+                        energy_eff_j=gpu_metrics["energy_eff_j"],
+                    ))
+                    warnings.extend(_named_negative_warnings({
+                        "cpu_avg_power_eff_w": cpu_metrics["cpu_avg_power_eff_w"],
+                        "cpu_peak_power_eff_w": cpu_metrics["cpu_peak_power_eff_w"],
+                        "cpu_energy_eff_j": cpu_metrics["cpu_energy_eff_j"],
+                        "vcpu_avg_power_eff_w": cpu_metrics["vcpu_avg_power_eff_w"],
+                        "vcpu_peak_power_eff_w": cpu_metrics["vcpu_peak_power_eff_w"],
+                        "vcpu_energy_eff_j": cpu_metrics["vcpu_energy_eff_j"],
+                    }))
+                    if warnings:
+                        status = "warn"
+                        err_msg = "; ".join(warnings)
 
                     if latency_app_s == latency_app_s and latency_app_s > 0:
                         throughput = float(BATCH_SIZE) / float(latency_app_s)
@@ -425,14 +504,8 @@ def main() -> None:
                     "latency_s": "nan",  # Placeholder: filled by merge_packet_latency
                     "latency_app_s": _fmt_float(latency_app_s),
                     "throughput_samples_per_s": _fmt_float(throughput),
-                    "idle_power_w": _fmt_float(idle_power_w),
-                    "energy_iters": _fmt_float(energy_iters),
-                    "avg_power_total_w": _fmt_float(avg_power_total_w),
-                    "peak_power_total_w": _fmt_float(peak_power_total_w),
-                    "energy_total_j": _fmt_float(energy_total_j),
-                    "avg_power_eff_w": _fmt_float(avg_power_eff_w),
-                    "peak_power_eff_w": _fmt_float(peak_power_eff_w),
-                    "energy_eff_j": _fmt_float(energy_eff_j),
+                    **{field: _fmt_float(gpu_metrics[field]) for field in GPU_METRIC_FIELDS},
+                    **{field: _fmt_float(cpu_metrics[field]) for field in CPU_METRIC_FIELDS},
                     "cold_start_s": COLD_START_S if COLD_START_S else "nan",
                     "status": status,
                     "error": err_msg,

@@ -48,6 +48,9 @@ def prepare_df(csv_path: str) -> pd.DataFrame:
     num_cols = [
         "input_scale", "latency_s", "latency_app_s",
         "avg_power_eff_w", "peak_power_eff_w", "energy_eff_j",
+        "cpu_avg_power_eff_w", "cpu_peak_power_eff_w", "cpu_energy_eff_j",
+        "vcpu_avg_power_eff_w", "vcpu_peak_power_eff_w", "vcpu_energy_eff_j",
+        "vcpu_cpu_share", "vcpu_cpu_time_s",
         "cpu_cores", "mem_cap_gb", "warmup", "cold_start_s",
         "throughput_samples_per_s",
     ]
@@ -330,6 +333,34 @@ def main():
         title="Effective Energy vs. Input Scale",
         ylabel="Energy (J)", xlabel=xlabel,
         out_png=os.path.join(output_dir, "energy_vs_scale.png") if SAVE_PNG else None,
+    )
+
+    plot_metric(
+        df, metric="cpu_avg_power_eff_w",
+        title="CPU Package Average Effective Power vs. Input Scale",
+        ylabel="Power (W)", xlabel=xlabel,
+        out_png=os.path.join(output_dir, "cpu_avg_power_vs_scale.png") if SAVE_PNG else None,
+    )
+
+    plot_metric(
+        df, metric="cpu_energy_eff_j",
+        title="CPU Package Effective Energy vs. Input Scale",
+        ylabel="Energy (J)", xlabel=xlabel,
+        out_png=os.path.join(output_dir, "cpu_energy_vs_scale.png") if SAVE_PNG else None,
+    )
+
+    plot_metric(
+        df, metric="vcpu_avg_power_eff_w",
+        title="Estimated vCPU Average Effective Power vs. Input Scale",
+        ylabel="Power (W)", xlabel=xlabel,
+        out_png=os.path.join(output_dir, "vcpu_avg_power_vs_scale.png") if SAVE_PNG else None,
+    )
+
+    plot_metric(
+        df, metric="vcpu_energy_eff_j",
+        title="Estimated vCPU Effective Energy vs. Input Scale",
+        ylabel="Energy (J)", xlabel=xlabel,
+        out_png=os.path.join(output_dir, "vcpu_energy_vs_scale.png") if SAVE_PNG else None,
     )
 
     plot_metric(
