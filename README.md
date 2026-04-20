@@ -75,6 +75,22 @@ python run.py --model google-bert/bert-base-uncased \
   --output-dir results/smoke
 ```
 
+### 采集 `latency_s` 的推荐启动方式
+
+如果只需要 host-side application latency，看 `latency_app_s` 即可，普通 `python run.py ...` 可以使用。  
+如果要稳定采集 `latency_s`，推荐从 WSL 启动，并显式使用 WSL native Docker daemon，不要落回 Docker Desktop daemon：
+
+```bash
+wsl.exe sh -lc "cd /mnt/d/DOR/universal-profiles && DOCKER_HOST=unix:///var/run/docker-native.sock python3 run.py --model google-bert/bert-base-uncased --skip-build --output-dir results/test"
+```
+
+这条路径用于让 `tcpdump` 在 WSL Docker 的 `docker0` bridge 上抓到容器流量。前提是：
+
+- WSL native Docker daemon 已启动，并监听 `unix:///var/run/docker-native.sock`。
+- WSL 内已安装 `tcpdump` 和 `tshark`。
+- `--skip-build` 只有在该 native daemon 的 image store 里已经有对应 image 时才可用；Docker Desktop 和 WSL native Docker 的 image store 不是同一个。
+- 实验需要完整跑到 merge 阶段，`latency_s` 才会从 `nan` 更新为 packet-level latency。
+
 如果 Docker image 已经存在，可以跳过 build：
 
 ```bash
