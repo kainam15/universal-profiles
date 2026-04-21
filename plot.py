@@ -17,6 +17,7 @@ SAVE_PNG = True
 SHOW_PLOTS = False
 GPU_GREEN = (0.18, 0.62, 0.28)
 GPU_LIGHT_GREEN = (0.49, 0.78, 0.53)
+BYTES_PER_GIB = 1024 ** 3
 CPU_FIXED_COLORS = {
     1: (0.12, 0.47, 0.71),
     2: (0.93, 0.69, 0.13),
@@ -51,12 +52,31 @@ def prepare_df(csv_path: str) -> pd.DataFrame:
         "cpu_avg_power_eff_w", "cpu_peak_power_eff_w", "cpu_energy_eff_j",
         "vcpu_avg_power_eff_w", "vcpu_peak_power_eff_w", "vcpu_energy_eff_j",
         "vcpu_cpu_share", "vcpu_cpu_time_s",
+        "resource_usage_iters",
+        "container_cpu_util_avg_pct", "container_cpu_util_peak_pct",
+        "container_mem_usage_avg_bytes", "container_mem_usage_peak_bytes",
+        "container_mem_util_avg_pct", "container_mem_util_peak_pct",
+        "gpu_util_avg_pct", "gpu_util_peak_pct",
+        "gpu_mem_used_avg_bytes", "gpu_mem_used_peak_bytes",
+        "gpu_mem_util_avg_pct", "gpu_mem_util_peak_pct",
+        "gpu_mem_total_bytes",
         "cpu_cores", "mem_cap_gb", "warmup", "cold_start_s",
         "throughput_samples_per_s",
     ]
     for c in num_cols:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    bytes_to_gib = {
+        "container_mem_usage_avg_bytes": "container_mem_usage_avg_gib",
+        "container_mem_usage_peak_bytes": "container_mem_usage_peak_gib",
+        "gpu_mem_used_avg_bytes": "gpu_mem_used_avg_gib",
+        "gpu_mem_used_peak_bytes": "gpu_mem_used_peak_gib",
+        "gpu_mem_total_bytes": "gpu_mem_total_gib",
+    }
+    for source_col, target_col in bytes_to_gib.items():
+        if source_col in df.columns:
+            df[target_col] = df[source_col] / float(BYTES_PER_GIB)
 
     if ONLY_OK and "status" in df.columns:
         df = df[df["status"].astype(str).str.lower() == "ok"].copy()
@@ -368,6 +388,48 @@ def main():
         title="Throughput vs. Input Scale",
         ylabel="Samples/s", xlabel=xlabel,
         out_png=os.path.join(output_dir, "throughput_vs_scale.png") if SAVE_PNG else None,
+    )
+
+    plot_metric(
+        df, metric="container_cpu_util_avg_pct",
+        title="Container CPU Utilization vs. Input Scale",
+        ylabel="CPU Utilization (%)", xlabel=xlabel,
+        out_png=os.path.join(output_dir, "container_cpu_util_vs_scale.png") if SAVE_PNG else None,
+    )
+
+    plot_metric(
+        df, metric="container_mem_util_avg_pct",
+        title="Container Memory Utilization vs. Input Scale",
+        ylabel="Memory Utilization (%)", xlabel=xlabel,
+        out_png=os.path.join(output_dir, "container_mem_util_vs_scale.png") if SAVE_PNG else None,
+    )
+
+    plot_metric(
+        df, metric="container_mem_usage_avg_gib",
+        title="Container Memory Usage vs. Input Scale",
+        ylabel="Memory Usage (GiB)", xlabel=xlabel,
+        out_png=os.path.join(output_dir, "container_mem_usage_vs_scale.png") if SAVE_PNG else None,
+    )
+
+    plot_metric(
+        df, metric="gpu_util_avg_pct",
+        title="GPU Utilization vs. Input Scale",
+        ylabel="GPU Utilization (%)", xlabel=xlabel,
+        out_png=os.path.join(output_dir, "gpu_util_vs_scale.png") if SAVE_PNG else None,
+    )
+
+    plot_metric(
+        df, metric="gpu_mem_util_avg_pct",
+        title="GPU Memory Utilization vs. Input Scale",
+        ylabel="GPU Memory Utilization (%)", xlabel=xlabel,
+        out_png=os.path.join(output_dir, "gpu_mem_util_vs_scale.png") if SAVE_PNG else None,
+    )
+
+    plot_metric(
+        df, metric="gpu_mem_used_avg_gib",
+        title="GPU Memory Used vs. Input Scale",
+        ylabel="GPU Memory Used (GiB)", xlabel=xlabel,
+        out_png=os.path.join(output_dir, "gpu_mem_used_vs_scale.png") if SAVE_PNG else None,
     )
 
     plot_cold_start_bar(

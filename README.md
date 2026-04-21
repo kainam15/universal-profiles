@@ -15,8 +15,9 @@ AC-Prof 是一个面向 containerized HuggingFace inference service 的运行时
 
 可选但会影响字段完整性：
 
-- NVIDIA GPU + NVIDIA Container Toolkit：用于 `--gpus on` 和 GPU energy metrics。
+- NVIDIA GPU + NVIDIA Container Toolkit：用于 `--gpus on`、GPU energy metrics、GPU utilization 和 VRAM metrics。
 - Linux RAPL powercap（`/sys/class/powercap/*/energy_uj`）：用于 CPU package power / energy 和 estimated vCPU energy metrics。
+- Docker cgroup CPU / memory files：用于 container CPU utilization 和 memory footprint metrics。
 - `tcpdump` + `tshark`：用于填充 `result_all.csv` 的 `latency_s` packet-level latency。
 - Linux / WSL native Docker 的 `docker0` bridge：packet sniffing 默认监听 `docker0`。如果抓包不可用，`latency_s` 会保留为 `nan`，但 `latency_app_s` 仍然可用。
 
@@ -153,6 +154,12 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 - `vcpu_avg_power_vs_scale.png`
 - `vcpu_energy_vs_scale.png`
 - `throughput_vs_scale.png`
+- `container_cpu_util_vs_scale.png`
+- `container_mem_util_vs_scale.png`
+- `container_mem_usage_vs_scale.png`
+- `gpu_util_vs_scale.png`
+- `gpu_mem_util_vs_scale.png`
+- `gpu_mem_used_vs_scale.png`
 - `cold_start_bar.png`
 
 ## 5. CLI 参数
@@ -251,6 +258,20 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `vcpu_avg_power_eff_w` | 按 `vcpu_cpu_share` 分摊后的 estimated vCPU effective average power，单位 W。 |
 | `vcpu_peak_power_eff_w` | 按 `vcpu_cpu_share` 分摊后的 estimated vCPU effective peak power，单位 W。 |
 | `vcpu_energy_eff_j` | 本行平均到单 request 的 estimated vCPU effective energy，单位 J。 |
+| `resource_usage_iters` | resource usage monitor 在本行测量窗口内保留的 sample 数。 |
+| `container_cpu_util_avg_pct` | 当前 Docker container 在测量窗口内的平均 CPU 占用率，按 `container_cpu_time_delta / (elapsed_seconds * cpu_cores) * 100` 计算。 |
+| `container_cpu_util_peak_pct` | 当前 Docker container 在相邻采样间隔中的峰值 CPU 占用率，单位 `%`。 |
+| `container_mem_usage_avg_bytes` | 当前 Docker container 在测量窗口内的平均 memory usage，单位 bytes，来自 cgroup memory 文件。 |
+| `container_mem_usage_peak_bytes` | 当前 Docker container 在测量窗口内的峰值 memory usage，单位 bytes。 |
+| `container_mem_util_avg_pct` | 当前 Docker container 平均 memory usage / `mem_cap_gb` 的百分比。 |
+| `container_mem_util_peak_pct` | 当前 Docker container 峰值 memory usage / `mem_cap_gb` 的百分比。 |
+| `gpu_util_avg_pct` | NVML device 0 在测量窗口内的平均 GPU utilization，单位 `%`。这是 device-level 口径，不做 container process attribution。 |
+| `gpu_util_peak_pct` | NVML device 0 在测量窗口内的峰值 GPU utilization，单位 `%`。 |
+| `gpu_mem_used_avg_bytes` | NVML device 0 在测量窗口内的平均 used VRAM，单位 bytes。 |
+| `gpu_mem_used_peak_bytes` | NVML device 0 在测量窗口内的峰值 used VRAM，单位 bytes。 |
+| `gpu_mem_util_avg_pct` | NVML device 0 平均 used VRAM / total VRAM 的百分比。 |
+| `gpu_mem_util_peak_pct` | NVML device 0 峰值 used VRAM / total VRAM 的百分比。 |
+| `gpu_mem_total_bytes` | NVML device 0 reported total VRAM，单位 bytes。 |
 | `cold_start_s` | 当前 container 从 `docker run` 到 `/ready` 成功的时间，单位秒。 |
 | `status` | `ok`、`warn` 或 `error`。`warn` 常用于可继续分析但存在异常值的行。 |
 | `error` | 错误或 warning 文本。正常行为空。 |
@@ -321,6 +342,11 @@ CPU / vCPU energy 字段全是 `nan`：
 - 这是当前环境没有暴露 RAPL `/sys/class/powercap/*/energy_uj` 时的正常结果，不会影响 latency / throughput 采集。
 - `cpu_*` 字段是 host CPU package 的真实 RAPL 测量值；`vcpu_*` 字段是在同一窗口内按 container cgroup CPU share 分摊出来的估计值。
 - 本项目不会用 TDP 或 CPU utilization 造功耗值；没有 RAPL 时保持 `nan`。
+
+资源占用率字段全是 `nan`：
+
+- `container_*` usage 字段依赖被测容器的 cgroup CPU / memory 文件；如果 Docker inspect、`/proc/<pid>/cgroup` 或 `/sys/fs/cgroup` 不可读，会保持 `nan`。
+- `gpu_*` utilization / VRAM 字段仅在 `gpu_mode=on` 且 NVML 可用时采集；口径是 NVML device-level，可能包含同一 GPU 上其他进程的占用。
 
 `--skip-build` 后 `/scale_meta` 或 `/probe` 报错：
 

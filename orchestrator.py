@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import math
+import ntpath
 import os
 import platform
 import shlex
@@ -14,7 +15,6 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -318,11 +318,12 @@ def _detect_environment() -> str:
 
 
 def _windows_path_to_wsl(path: str) -> str:
-    abs_path = os.path.abspath(path)
-    drive, tail = os.path.splitdrive(abs_path)
+    drive, tail = ntpath.splitdrive(path)
     if drive:
         drive_letter = drive.rstrip(":").lower()
-        return f"/mnt/{drive_letter}{tail.replace('\\', '/')}"
+        wsl_tail = tail.replace("\\", "/")
+        return f"/mnt/{drive_letter}{wsl_tail}"
+    abs_path = os.path.abspath(path)
     return abs_path.replace("\\", "/")
 
 
@@ -330,7 +331,7 @@ def _wsl_launcher() -> Optional[str]:
     wsl_cmd = shutil.which("wsl.exe") or shutil.which("wsl")
     if not wsl_cmd:
         return None
-    return Path(wsl_cmd).name
+    return ntpath.basename(wsl_cmd)
 
 
 def _wsl_has_command(command: str) -> bool:

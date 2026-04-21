@@ -270,6 +270,14 @@ except Exception as _e:
     print(f"[WARN] CPU energy monitoring unavailable: {_e.__class__.__name__}: {_e}",
           file=__import__('sys').stderr)
 
+resource_usage_mod = None
+try:
+    import resource_usage as resource_usage_mod
+except Exception as _e:
+    resource_usage_mod = None
+    print(f"[WARN] Resource usage monitoring unavailable: {_e.__class__.__name__}: {_e}",
+          file=__import__('sys').stderr)
+
 
 GPU_METRIC_FIELDS = [
     "idle_power_w",
@@ -299,6 +307,23 @@ CPU_METRIC_FIELDS = [
     "vcpu_avg_power_eff_w",
     "vcpu_peak_power_eff_w",
     "vcpu_energy_eff_j",
+]
+
+RESOURCE_USAGE_METRIC_FIELDS = [
+    "resource_usage_iters",
+    "container_cpu_util_avg_pct",
+    "container_cpu_util_peak_pct",
+    "container_mem_usage_avg_bytes",
+    "container_mem_usage_peak_bytes",
+    "container_mem_util_avg_pct",
+    "container_mem_util_peak_pct",
+    "gpu_util_avg_pct",
+    "gpu_util_peak_pct",
+    "gpu_mem_used_avg_bytes",
+    "gpu_mem_used_peak_bytes",
+    "gpu_mem_util_avg_pct",
+    "gpu_mem_util_peak_pct",
+    "gpu_mem_total_bytes",
 ]
 
 
@@ -344,6 +369,25 @@ def _cpu_metrics_from_result(result: Any) -> Dict[str, float]:
         "vcpu_avg_power_eff_w": _to_float_or_nan(result.vcpu_avg_power_eff_w),
         "vcpu_peak_power_eff_w": _to_float_or_nan(result.vcpu_peak_power_eff_w),
         "vcpu_energy_eff_j": _divide_if_number(result.vcpu_energy_eff_j, float(REPEAT_IN_WINDOW)),
+    }
+
+
+def _resource_usage_metrics_from_result(result: Any) -> Dict[str, float]:
+    return {
+        "resource_usage_iters": float(result.resource_usage_iters),
+        "container_cpu_util_avg_pct": _to_float_or_nan(result.container_cpu_util_avg_pct),
+        "container_cpu_util_peak_pct": _to_float_or_nan(result.container_cpu_util_peak_pct),
+        "container_mem_usage_avg_bytes": _to_float_or_nan(result.container_mem_usage_avg_bytes),
+        "container_mem_usage_peak_bytes": _to_float_or_nan(result.container_mem_usage_peak_bytes),
+        "container_mem_util_avg_pct": _to_float_or_nan(result.container_mem_util_avg_pct),
+        "container_mem_util_peak_pct": _to_float_or_nan(result.container_mem_util_peak_pct),
+        "gpu_util_avg_pct": _to_float_or_nan(result.gpu_util_avg_pct),
+        "gpu_util_peak_pct": _to_float_or_nan(result.gpu_util_peak_pct),
+        "gpu_mem_used_avg_bytes": _to_float_or_nan(result.gpu_mem_used_avg_bytes),
+        "gpu_mem_used_peak_bytes": _to_float_or_nan(result.gpu_mem_used_peak_bytes),
+        "gpu_mem_util_avg_pct": _to_float_or_nan(result.gpu_mem_util_avg_pct),
+        "gpu_mem_util_peak_pct": _to_float_or_nan(result.gpu_mem_util_peak_pct),
+        "gpu_mem_total_bytes": _to_float_or_nan(result.gpu_mem_total_bytes),
     }
 
 
@@ -401,13 +445,16 @@ def main() -> None:
                 err_msg = ""
                 gpu_metrics = _nan_metrics(GPU_METRIC_FIELDS)
                 cpu_metrics = _nan_metrics(CPU_METRIC_FIELDS)
+                resource_usage_metrics = _nan_metrics(RESOURCE_USAGE_METRIC_FIELDS)
                 effective_input_scale: Optional[float] = None
 
                 try:
                     gpu_monitor = None
                     cpu_monitor = None
+                    resource_usage_monitor = None
                     gpu_result = None
                     cpu_result = None
+                    resource_usage_result = None
                     try:
                         if USE_ENERGY and (energy_mod is not None):
                             # Preserve the existing GPU cooldown behavior.
@@ -427,10 +474,22 @@ def main() -> None:
                             )
                             cpu_monitor.measure_idle()
 
+                        if resource_usage_mod is not None:
+                            resource_usage_monitor = resource_usage_mod.ResourceUsageMonitor(
+                                sample_hz=SAMPLE_HZ,
+                                container_name=CONTAINER_NAME,
+                                cpu_cores=_to_float_or_nan(CPU_CORES),
+                                mem_cap_gb=_to_float_or_nan(MEM_CAP_GB),
+                                use_gpu=USE_ENERGY,
+                                device_index=DEVICE_INDEX,
+                            )
+
                         if gpu_monitor is not None:
                             gpu_monitor.start()
                         if cpu_monitor is not None:
                             cpu_monitor.start()
+                        if resource_usage_monitor is not None:
+                            resource_usage_monitor.start()
 
                         lat_sum = 0.0
                         for k in range(REPEAT_IN_WINDOW):
@@ -443,6 +502,10 @@ def main() -> None:
                                 scale_val,
                             )
                     finally:
+                        if resource_usage_monitor is not None:
+                            resource_usage_result, _resource_usage_err, _resource_usage_samples = (
+                                resource_usage_monitor.stop()
+                            )
                         if gpu_monitor is not None:
                             try:
                                 gpu_result, _gpu_name_ret, _gpu_err, _gpu_samples = gpu_monitor.stop()
@@ -453,6 +516,8 @@ def main() -> None:
                                 cpu_result, _cpu_err, _cpu_samples = cpu_monitor.stop()
                             finally:
                                 cpu_monitor.close()
+                        if resource_usage_monitor is not None:
+                            resource_usage_monitor.close()
 
                     latency_app_s = lat_sum / float(REPEAT_IN_WINDOW)
 
@@ -460,6 +525,8 @@ def main() -> None:
                         gpu_metrics = _gpu_metrics_from_result(gpu_result)
                     if cpu_result is not None:
                         cpu_metrics = _cpu_metrics_from_result(cpu_result)
+                    if resource_usage_result is not None:
+                        resource_usage_metrics = _resource_usage_metrics_from_result(resource_usage_result)
 
                     warnings = []
                     warnings.extend(_eff_negative_warnings(
@@ -506,6 +573,7 @@ def main() -> None:
                     "throughput_samples_per_s": _fmt_float(throughput),
                     **{field: _fmt_float(gpu_metrics[field]) for field in GPU_METRIC_FIELDS},
                     **{field: _fmt_float(cpu_metrics[field]) for field in CPU_METRIC_FIELDS},
+                    **{field: _fmt_float(resource_usage_metrics[field]) for field in RESOURCE_USAGE_METRIC_FIELDS},
                     "cold_start_s": COLD_START_S if COLD_START_S else "nan",
                     "status": status,
                     "error": err_msg,
