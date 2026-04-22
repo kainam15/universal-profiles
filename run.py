@@ -122,6 +122,14 @@ Examples:
     parser.add_argument("--idle-seconds", type=float, default=3.0, help="GPU idle baseline duration")
     parser.add_argument("--input-scales", default=None, help="Override input scale values (comma-separated)")
 
+    # Compute profiling
+    parser.add_argument("--no-compute-profile", action="store_true", help="Disable Intel Advisor / ncu MFLOPS profiling")
+    parser.add_argument("--advisor-root", default=None, help="Host Intel Advisor install root or advisor executable")
+    parser.add_argument("--ncu-root", default=None, help="Host Nsight Compute install root or ncu executable")
+    parser.add_argument("--advisor-repeat", type=int, default=20, help="Intel Advisor profiled inference repetitions")
+    parser.add_argument("--ncu-repeat", type=int, default=1, help="ncu profiled inference repetitions")
+    parser.add_argument("--keep-compute-profiles", action="store_true", help="Keep raw Advisor/ncu profiler artifacts")
+
     # Infrastructure
     parser.add_argument("--sniff-iface", default="docker0", help="Network interface for tcpdump")
     parser.add_argument("--output-dir", default="results", help="Output directory")
@@ -207,6 +215,32 @@ Examples:
         sys.exit(1)
 
     input_scales_arg = serialize_input_scales(planned_input_scales.scales)
+    compute_profile_plan_file = ""
+    if args.no_compute_profile:
+        print("[compute] Compute profiling disabled by --no-compute-profile")
+    else:
+        try:
+            from compute_profile import collect_compute_profile_plan
+
+            compute_profile_plan_file = collect_compute_profile_plan(
+                task_info=task_info,
+                image_tag=image_info.tag,
+                cpu_list=cpu_list,
+                mem_list=mem_list,
+                gpu_list=gpu_list,
+                batch_size=args.batch_size,
+                output_dir=output_dir,
+                input_scale_plan_file=planned_input_scales.plan_file,
+                input_scales=input_scales_arg,
+                advisor_root=args.advisor_root,
+                ncu_root=args.ncu_root,
+                advisor_repeat=args.advisor_repeat,
+                ncu_repeat=args.ncu_repeat,
+                keep_profiles=args.keep_compute_profiles,
+            )
+        except Exception as exc:
+            print(f"[compute][WARN] Compute profiling unavailable: {exc}")
+
     total_cases = len(cpu_list) * len(mem_list) * len(gpu_list)
     n_scales = len(planned_input_scales.scales)
     total_iters = total_cases * n_scales * (args.warmup + args.repeat)
@@ -238,6 +272,7 @@ Examples:
         sniff_iface=args.sniff_iface,
         input_scales=input_scales_arg,
         input_scale_plan_file=planned_input_scales.plan_file,
+        compute_profile_plan_file=compute_profile_plan_file,
     )
 
     # ── Step 5: Merge all CSVs ──

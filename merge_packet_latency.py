@@ -58,6 +58,13 @@ for r in rows:
                 r["throughput_samples_per_s"] = f"{(bs/lat):.6f}"
         except Exception:
             pass
+        try:
+            lat = float(r["latency_s"])
+            model_mflop_per_request = float(r.get("model_mflop_per_request", "nan"))
+            if lat > 0 and model_mflop_per_request == model_mflop_per_request:
+                r["compute_mflops"] = f"{(model_mflop_per_request / lat):.6f}"
+        except Exception:
+            pass
     else:
         # 没匹配到就保持 nan，方便你发现抓包/解析问题
         pass

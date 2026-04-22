@@ -1,0 +1,143 @@
+import csv
+import json
+import os
+import tempfile
+import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from detect import TaskInfo
+
+import compute_profile
+
+
+class ComputeProfileTests(unittest.TestCase):
+    def test_parse_advisor_report_sums_self_gflop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = os.path.join(tmp, "advisor.csv")
+            with open(report_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=["Function", "Self GFLOP"])
+                writer.writeheader()
+                writer.writerow({"Function": "a", "Self GFLOP": "1.5"})
+                writer.writerow({"Function": "b", "Self GFLOP": "2.25"})
+
+            self.assertAlmostEqual(
+                compute_profile.parse_advisor_self_gflop_csv(report_path),
+                3.75,
+            )
+
+    def test_parse_ncu_raw_csv_sums_flop_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = os.path.join(tmp, "ncu.csv")
+            with open(report_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=["Kernel Name", "Metric Name", "Metric Unit", "Metric Value"],
+                )
+                writer.writeheader()
+                writer.writerow({
+                    "Kernel Name": "kernel_a",
+                    "Metric Name": "flop_count_sp",
+                    "Metric Unit": "FLOP",
+                    "Metric Value": "1,000",
+                })
+                writer.writerow({
+                    "Kernel Name": "kernel_b",
+                    "Metric Name": "sm__ops_path_tensor_src_fp16_dst_fp32.sum",
+                    "Metric Unit": "FLOP",
+                    "Metric Value": "2.5K",
+                })
+                writer.writerow({
+                    "Kernel Name": "kernel_c",
+                    "Metric Name": "gpu__time_duration.sum",
+                    "Metric Unit": "nsecond",
+                    "Metric Value": "10",
+                })
+
+            self.assertAlmostEqual(
+                compute_profile.parse_ncu_flop_csv(report_path),
+                3500.0,
+            )
+
+    def test_missing_tools_write_nan_profiles_with_errors(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "compute_profile._find_executable",
+            return_value=None,
+        ), patch(
+            "compute_profile._run",
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ):
+            plan_path = compute_profile.collect_compute_profile_plan(
+                task_info=task_info,
+                image_tag="acprof-test:latest",
+                cpu_list=[1],
+                mem_list=[4],
+                gpu_list=["off", "on"],
+                batch_size=1,
+                output_dir=tmp,
+                input_scale_plan_file=None,
+                input_scales="8",
+                advisor_root=None,
+                ncu_root=None,
+                advisor_repeat=20,
+                ncu_repeat=1,
+                keep_profiles=False,
+            )
+
+            with open(plan_path, "r", encoding="utf-8") as f:
+                plan = json.load(f)
+
+        self.assertIn("advisor_not_found", plan["profiles"]["cpu"]["error"])
+        self.assertIn("ncu_not_found", plan["profiles"]["gpu"]["error"])
+        self.assertEqual(
+            plan["profiles"]["cpu"]["entries"][0]["model_mflop_per_request"],
+            None,
+        )
+        self.assertEqual(
+            plan["profiles"]["gpu"]["entries"][0]["model_mflop_per_request"],
+            None,
+        )
+
+    def test_find_executable_searches_default_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            compute_profile,
+            "DEFAULT_TOOL_SEARCH_ROOTS",
+            (tmp,),
+        ):
+            bin_dir = os.path.join(tmp, "latest", "bin64")
+            os.makedirs(bin_dir)
+            advisor_path = os.path.join(bin_dir, "advisor")
+            with open(advisor_path, "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\n")
+
+            self.assertEqual(
+                compute_profile._find_executable(None, ("advisor", "advixe-cl")),
+                advisor_path,
+            )
+
+    def test_tool_mount_root_uses_profiler_install_root(self) -> None:
+        advisor_bin = "/opt/intel/oneapi/advisor/2025.5/bin64/advisor"
+        ncu_bin = "/opt/nvidia/nsight-compute/2025.1.0/ncu"
+
+        self.assertEqual(
+            compute_profile._tool_mount_root(advisor_bin, None),
+            "/opt/intel/oneapi/advisor/2025.5",
+        )
+        self.assertEqual(
+            compute_profile._tool_mount_root(ncu_bin, None),
+            "/opt/nvidia/nsight-compute/2025.1.0",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

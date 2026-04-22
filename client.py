@@ -65,6 +65,7 @@ COOLDOWN_SECONDS = 3
 # Input scales from task family config
 INPUT_SCALES_STR = os.getenv("INPUT_SCALES", "")
 INPUT_SCALE_PLAN_FILE = os.getenv("INPUT_SCALE_PLAN_FILE", "").strip()
+COMPUTE_PROFILE_PLAN_FILE = os.getenv("COMPUTE_PROFILE_PLAN_FILE", "").strip()
 TASK_PARAM_STR = os.getenv("TASK_PARAM", "")
 
 
@@ -141,6 +142,87 @@ def _merge_effective_input_scale(
             f"{current} vs {resolved}"
         )
     return current
+
+
+def _load_compute_profile_plan(path: str) -> Dict[str, Any]:
+    if not path:
+        return {"profiles": {}, "_load_error": "compute_profile_disabled"}
+    if not os.path.exists(path):
+        return {"profiles": {}, "_load_error": f"compute_profile_plan_not_found:{path}"}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            plan = json.load(f)
+    except Exception as exc:
+        return {"profiles": {}, "_load_error": f"compute_profile_plan_invalid:{exc!r}"}
+    if not isinstance(plan, dict):
+        return {"profiles": {}, "_load_error": "compute_profile_plan_invalid:not_dict"}
+    profiles = plan.get("profiles")
+    if not isinstance(profiles, dict):
+        return {"profiles": {}, "_load_error": "compute_profile_plan_invalid:missing_profiles"}
+    return plan
+
+
+def _find_compute_profile_entry(
+    plan: Dict[str, Any],
+    gpu_mode: str,
+    input_scale: float,
+) -> Dict[str, Any]:
+    profile_key = "gpu" if gpu_mode == "on" else "cpu"
+    load_error = str(plan.get("_load_error", "") or "")
+    if load_error:
+        return {
+            "tool": "nan",
+            "model_mflop_per_request": float("nan"),
+            "error": load_error,
+        }
+
+    profile = plan.get("profiles", {}).get(profile_key)
+    if not isinstance(profile, dict):
+        return {
+            "tool": "nan",
+            "model_mflop_per_request": float("nan"),
+            "error": f"compute_profile_missing_profile:{profile_key}",
+        }
+
+    tool = str(profile.get("tool") or "nan")
+    profile_error = str(profile.get("error") or "")
+    entries = profile.get("entries")
+    if not isinstance(entries, list):
+        return {
+            "tool": tool,
+            "model_mflop_per_request": float("nan"),
+            "error": profile_error or f"compute_profile_missing_entries:{profile_key}",
+        }
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            entry_scale = float(entry.get("input_scale"))
+        except (TypeError, ValueError):
+            continue
+        if math.isclose(entry_scale, float(input_scale), rel_tol=0.0, abs_tol=1e-6):
+            return {
+                "tool": str(entry.get("tool") or tool or "nan"),
+                "model_mflop_per_request": _to_float_or_nan(
+                    entry.get("model_mflop_per_request")
+                ),
+                "error": str(entry.get("error") or profile_error),
+            }
+
+    return {
+        "tool": tool,
+        "model_mflop_per_request": float("nan"),
+        "error": f"compute_profile_missing_scale:{input_scale:g}",
+    }
+
+
+def _compute_mflops(model_mflop_per_request: float, latency_s: float) -> float:
+    mflop = _to_float_or_nan(model_mflop_per_request)
+    latency = _to_float_or_nan(latency_s)
+    if mflop == mflop and latency == latency and latency > 0:
+        return mflop / latency
+    return float("nan")
 
 
 # ─────────────────────────────────────────────
@@ -399,6 +481,7 @@ def _append_row(writer: csv.DictWriter, row: Dict[str, Any], f) -> None:
 
 
 def main() -> None:
+    compute_profile_plan = _load_compute_profile_plan(COMPUTE_PROFILE_PLAN_FILE)
     need_header = _is_file_empty(OUT_CSV)
     with open(OUT_CSV, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
@@ -578,6 +661,26 @@ def main() -> None:
                     "status": status,
                     "error": err_msg,
                 }
+                row_scale = _to_float_or_nan(row["input_scale"])
+                compute_profile = _find_compute_profile_entry(
+                    compute_profile_plan,
+                    GPU_MODE,
+                    row_scale,
+                )
+                model_mflop_per_request = _to_float_or_nan(
+                    compute_profile["model_mflop_per_request"]
+                )
+                compute_mflops_app = _compute_mflops(
+                    model_mflop_per_request,
+                    latency_app_s,
+                )
+                row.update({
+                    "compute_profile_tool": compute_profile["tool"],
+                    "model_mflop_per_request": _fmt_float(model_mflop_per_request),
+                    "compute_mflops_app": _fmt_float(compute_mflops_app),
+                    "compute_mflops": _fmt_float(compute_mflops_app),
+                    "compute_profile_error": compute_profile["error"],
+                })
                 _append_row(writer, row, f)
 
 

@@ -62,6 +62,7 @@ def prepare_df(csv_path: str) -> pd.DataFrame:
         "gpu_mem_total_bytes",
         "cpu_cores", "mem_cap_gb", "warmup", "cold_start_s",
         "throughput_samples_per_s",
+        "model_mflop_per_request", "compute_mflops_app", "compute_mflops",
     ]
     for c in num_cols:
         if c in df.columns:
@@ -388,6 +389,13 @@ def main():
         title="Throughput vs. Input Scale",
         ylabel="Samples/s", xlabel=xlabel,
         out_png=os.path.join(output_dir, "throughput_vs_scale.png") if SAVE_PNG else None,
+    )
+
+    plot_metric(
+        df, metric="compute_mflops",
+        title="Compute Throughput vs. Input Scale",
+        ylabel="MFLOPS", xlabel=xlabel,
+        out_png=os.path.join(output_dir, "compute_mflops_vs_scale.png") if SAVE_PNG else None,
     )
 
     plot_metric(

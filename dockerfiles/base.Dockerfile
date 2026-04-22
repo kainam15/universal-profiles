@@ -28,6 +28,7 @@ RUN pip install --no-cache-dir -i ${PYPI_INDEX_URL} \
 # Copy shared code
 COPY download_model.py .
 COPY server.py .
+COPY compute_profile_runner.py .
 COPY handlers/ handlers/
 
 EXPOSE 8002

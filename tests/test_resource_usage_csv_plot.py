@@ -70,6 +70,41 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
         self.assertEqual(float(df["gpu_mem_used_avg_gib"].iloc[0]), 3.0)
         self.assertEqual(float(df["gpu_mem_total_gib"].iloc[0]), 8.0)
 
+    def test_prepare_df_converts_compute_profile_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = os.path.join(tmp, "result_all.csv")
+            fieldnames = [
+                "cpu_cores",
+                "mem_cap_gb",
+                "gpu_mode",
+                "input_scale",
+                "warmup",
+                "status",
+                "model_mflop_per_request",
+                "compute_mflops_app",
+                "compute_mflops",
+            ]
+            with open(csv_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerow({
+                    "cpu_cores": "1",
+                    "mem_cap_gb": "4",
+                    "gpu_mode": "off",
+                    "input_scale": "64",
+                    "warmup": "0",
+                    "status": "ok",
+                    "model_mflop_per_request": "200.5",
+                    "compute_mflops_app": "401.0",
+                    "compute_mflops": "802.0",
+                })
+
+            df = plot.prepare_df(csv_path)
+
+        self.assertEqual(float(df["model_mflop_per_request"].iloc[0]), 200.5)
+        self.assertEqual(float(df["compute_mflops_app"].iloc[0]), 401.0)
+        self.assertEqual(float(df["compute_mflops"].iloc[0]), 802.0)
+
 
 if __name__ == "__main__":
     unittest.main()

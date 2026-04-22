@@ -13,7 +13,7 @@
 
 It provides **two core assets** for the research community:
 1.  **The Dataset**: A comprehensive collection of performance metrics covering cold-starts and runtime behaviors under strict resource limits (CPU/GPU/Memory) and input variations.
-2.  **The Framework**: A decoupled, side-channel profiling tool that captures **Network Latency** (via packet sniffing), **GPU Energy** (via NVML integration), Linux/WSL **CPU package / estimated vCPU energy** (via RAPL powercap plus cgroup CPU share), and **resource utilization** (container CPU/memory plus NVML GPU/VRAM usage) with **zero code intrusion**.
+2.  **The Framework**: A decoupled, side-channel profiling tool that captures **Network Latency** (via packet sniffing), **GPU Energy** (via NVML integration), Linux/WSL **CPU package / estimated vCPU energy** (via RAPL powercap plus cgroup CPU share), **resource utilization** (container CPU/memory plus NVML GPU/VRAM usage), and vendor-tool **MFLOPS** probes (Intel Advisor for CPU, NVIDIA Nsight Compute `ncu` for GPU).
 
 ## 🌟 Key Features
 
@@ -32,7 +32,7 @@ The framework adopts a strict Control-Execution-Monitor separation principle to 
 | **Controller** | Orchestrates the experiment workflow (Warm-up $\rightarrow$ Input Scaling $\rightarrow$ Batch Loop $\rightarrow$ Cool-down). |
 | **Client** | Generates workloads and handles data serialization. Supports variable input scales (e.g., image resolution). |
 | **Server** | The black-box AI container (Flask/TorchServe) executing the inference logic. |
-| **Monitor** | **Side-channel Collector**: <br>1. **Sniffer**: Captures TCP packets on `docker0` bridge to measure physical transport latency. <br>2. **GPU Energy**: Polls NVIDIA NVML at 20Hz to integrate total GPU power usage. <br>3. **CPU / vCPU Energy**: Reads Linux RAPL package counters and attributes estimated vCPU energy by container cgroup CPU share when available. <br>4. **Resource Usage**: Samples container cgroup CPU/memory usage and NVML device-level GPU utilization / VRAM usage in the same workload window. |
+| **Monitor** | **Side-channel Collector**: <br>1. **Sniffer**: Captures TCP packets on `docker0` bridge to measure physical transport latency. <br>2. **GPU Energy**: Polls NVIDIA NVML at 20Hz to integrate total GPU power usage. <br>3. **CPU / vCPU Energy**: Reads Linux RAPL package counters and attributes estimated vCPU energy by container cgroup CPU share when available. <br>4. **Resource Usage**: Samples container cgroup CPU/memory usage and NVML device-level GPU utilization / VRAM usage in the same workload window. <br>5. **Compute Throughput**: Runs separate profiler containers with Intel Advisor for CPU FLOPs and NVIDIA Nsight Compute `ncu` for GPU FLOP/tensor counters, then reports MFLOPS using normal AC-Prof latencies. |
 
 ## 📊 Dataset Specifications
 
@@ -51,6 +51,7 @@ We perform a comprehensive sweep across multiple resource dimensions to construc
 * **Energy Consumption**: Total GPU energy, CPU package energy, and estimated vCPU energy per inference (Joules).
 * **Power Draw**: Average and Peak GPU board power, CPU package power, and estimated vCPU power (Watts).
 * **Resource Utilization**: Container CPU utilization, container memory usage/cap percentage, device-level GPU utilization, and device-level VRAM usage/cap percentage.
+* **Compute Throughput**: `model_mflop_per_request`, `compute_mflops_app`, and packet-latency-adjusted `compute_mflops` when Intel Advisor or `ncu` is available.
 * **Static Meta**: Model weight size, Docker image download volume.
 
 ### Output Files
@@ -58,6 +59,7 @@ Each model run writes two top-level CSV artifacts under `results/<model>/`:
 
 * **result_all.csv**: Dynamic profiling measurements across the full resource matrix. It contains per-run fields only, such as resource settings, `input_scale`, timing, power, energy, resource utilization, and status columns. By default, AC-Prof now auto-plans exactly 6 `input_scale` levels before profiling starts. For `nlp`, the last point is chosen to stay as close as possible to the tokenizer's usable maximum length, and the CSV keeps recording the effective input scale actually executed.
 * **static_meta.csv**: One-row static metadata summary. `model_name` stores the HuggingFace model ID, and the file also carries `model_revision`, `task_family`, `pipeline_tag`, `runtime_backend`, `image_tag`, `batch_size`, `input_scale_type`, `model_download_url`, `gpu`, `model_weight_bytes`, `docker_image_bytes`, `environment`, `cpu_power_source`, and `vcpu_power_method`.
+* **compute_profile_plan.json**: Per-scale vendor FLOP profile data used to fill compute columns in `result_all.csv`. Missing Advisor/ncu tooling records diagnostics here and keeps compute values as `nan`.
 
 Static metadata is collected on the host after the model image is ready and before the profiling matrix starts. The byte fields use these exact measurement rules:
 

@@ -1,4 +1,5 @@
 import csv
+import json
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -224,6 +225,127 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(rows[0]["error"], "")
         self.assertEqual(rows[0]["container_cpu_util_avg_pct"], "nan")
         self.assertEqual(rows[0]["gpu_util_avg_pct"], "nan")
+
+    def test_compute_profile_metrics_are_written_from_plan(self) -> None:
+        plan = {
+            "profiles": {
+                "cpu": {
+                    "tool": "intel_advisor",
+                    "entries": [
+                        {
+                            "input_scale": 1.0,
+                            "model_mflop_per_request": 200.0,
+                            "error": "",
+                        }
+                    ],
+                }
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_csv = f"{tmp_dir}/result.csv"
+            plan_path = f"{tmp_dir}/compute_profile_plan.json"
+            with open(plan_path, "w", encoding="utf-8") as f:
+                json.dump(plan, f)
+
+            with patch.object(
+                client, "OUT_CSV", out_csv
+            ), patch.object(
+                client, "WARMUP", 0
+            ), patch.object(
+                client, "REPEAT", 1
+            ), patch.object(
+                client, "REPEAT_IN_WINDOW", 1
+            ), patch.object(
+                client, "USE_ENERGY", False
+            ), patch.object(
+                client, "GPU_MODE", "off"
+            ), patch.object(
+                client, "COMPUTE_PROFILE_PLAN_FILE", plan_path, create=True
+            ), patch.object(
+                client, "energy_mod", None
+            ), patch.object(
+                client,
+                "cpu_energy_mod",
+                None,
+            ), patch.object(
+                client,
+                "resource_usage_mod",
+                None,
+            ), patch.object(
+                client,
+                "input_scale_entries",
+                [{"input_scale": 1.0, "scale_label": "1", "payload": {}}],
+            ), patch.object(
+                client.requests,
+                "get",
+                return_value=SimpleNamespace(status_code=200, text="ok"),
+            ), patch.object(
+                client,
+                "_one_request",
+                return_value={"latency_app_s": 0.5, "effective_input_scale": 1.0},
+            ):
+                client.main()
+                with open(out_csv, "r", encoding="utf-8", newline="") as f:
+                    rows = list(csv.DictReader(f))
+
+        self.assertEqual(rows[0]["status"], "ok")
+        self.assertEqual(rows[0]["compute_profile_tool"], "intel_advisor")
+        self.assertEqual(rows[0]["model_mflop_per_request"], "200.000000")
+        self.assertEqual(rows[0]["compute_mflops_app"], "400.000000")
+        self.assertEqual(rows[0]["compute_mflops"], "400.000000")
+        self.assertEqual(rows[0]["compute_profile_error"], "")
+
+    def test_missing_compute_profile_keeps_successful_row_ok_with_nan_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_csv = f"{tmp_dir}/result.csv"
+            missing_plan_path = f"{tmp_dir}/missing_compute_profile_plan.json"
+
+            with patch.object(
+                client, "OUT_CSV", out_csv
+            ), patch.object(
+                client, "WARMUP", 0
+            ), patch.object(
+                client, "REPEAT", 1
+            ), patch.object(
+                client, "REPEAT_IN_WINDOW", 1
+            ), patch.object(
+                client, "USE_ENERGY", False
+            ), patch.object(
+                client, "GPU_MODE", "off"
+            ), patch.object(
+                client, "COMPUTE_PROFILE_PLAN_FILE", missing_plan_path, create=True
+            ), patch.object(
+                client, "energy_mod", None
+            ), patch.object(
+                client,
+                "cpu_energy_mod",
+                None,
+            ), patch.object(
+                client,
+                "resource_usage_mod",
+                None,
+            ), patch.object(
+                client,
+                "input_scale_entries",
+                [{"input_scale": 1.0, "scale_label": "1", "payload": {}}],
+            ), patch.object(
+                client.requests,
+                "get",
+                return_value=SimpleNamespace(status_code=200, text="ok"),
+            ), patch.object(
+                client,
+                "_one_request",
+                return_value={"latency_app_s": 0.5, "effective_input_scale": 1.0},
+            ):
+                client.main()
+                with open(out_csv, "r", encoding="utf-8", newline="") as f:
+                    rows = list(csv.DictReader(f))
+
+        self.assertEqual(rows[0]["status"], "ok")
+        self.assertEqual(rows[0]["model_mflop_per_request"], "nan")
+        self.assertEqual(rows[0]["compute_mflops"], "nan")
+        self.assertIn("compute_profile_plan_not_found", rows[0]["compute_profile_error"])
 
 
 if __name__ == "__main__":

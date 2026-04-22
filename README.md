@@ -19,6 +19,8 @@ AC-Prof 是一个面向 containerized HuggingFace inference service 的运行时
 - Linux RAPL powercap（`/sys/class/powercap/*/energy_uj`）：用于 CPU package power / energy 和 estimated vCPU energy metrics。
 - Docker cgroup CPU / memory files：用于 container CPU utilization 和 memory footprint metrics。
 - `tcpdump` + `tshark`：用于填充 `result_all.csv` 的 `latency_s` packet-level latency。
+- Intel Advisor：用于 `gpu_mode=off` 行的 CPU FLOP / MFLOPS profiling。通过 `--advisor-root` 挂载到临时 profiler container；不可用时 compute 字段为 `nan`。
+- NVIDIA Nsight Compute CLI (`ncu`)：用于 `gpu_mode=on` 行的 GPU FLOP / MFLOPS profiling。通过 `--ncu-root` 挂载到临时 profiler container；不可用或性能计数器被限制时 compute 字段为 `nan`。
 - Linux / WSL native Docker 的 `docker0` bridge：packet sniffing 默认监听 `docker0`。如果抓包不可用，`latency_s` 会保留为 `nan`，但 `latency_app_s` 仍然可用。
 
 Hugging Face token 可以放在项目根目录 `.env.local`：
@@ -76,6 +78,17 @@ python run.py --model google-bert/bert-base-uncased \
   --warmup 0 --repeat 1 --repeat-in-window 1 \
   --output-dir results/smoke
 ```
+
+如果要采集 MFLOPS，并且 vendor tools 不在默认 `PATH`，显式指定安装根目录：
+
+```bash
+python run.py --model google-bert/bert-base-uncased \
+  --advisor-root /opt/intel/oneapi/advisor/latest \
+  --ncu-root /usr/local/cuda-12.8/nsight-compute-2025.1.0 \
+  --cpus 1 --mems 4 --gpus off,on
+```
+
+MFLOPS profiling 默认启用，但它运行在独立的临时 profiler container 中，不会污染正常 latency / energy window。只想跑原始 latency/energy 时可加 `--no-compute-profile`。
 
 ### 采集 `latency_s` 的推荐启动方式
 
@@ -212,6 +225,7 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `result_all.csv` | 动态测量结果。每一行对应一个 resource config、一个 input scale、一次 warmup/repeat iteration。 |
 | `static_meta.csv` | 一行静态元数据。记录模型、镜像、batch、input scale 语义、GPU、环境和大小信息。 |
 | `input_scale_plan.json` | 自动 input scale 规划文件。手动 `--input-scales` 时可能不存在。 |
+| `compute_profile_plan.json` | Intel Advisor / ncu 的 per-scale FLOP profiling 结果。工具不可用时也会写入错误信息，供 `result_all.csv` compute 字段引用。 |
 | `*.png` | `plot.py` 生成的图表。 |
 
 中间文件 `result_case_*.csv`、`lat_case_*.json`、`sniff_case_*.pcap` 会在 `result_all.csv` 成功 merge 后自动清理。若运行被中断，这些中间文件可能保留。
@@ -234,6 +248,11 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `latency_s` | packet-level latency，来自 `tcpdump` PCAP + `tshark` 解析 + `merge_packet_latency.py` merge。抓包不可用、PCAP 为空或运行中断时为 `nan`。 |
 | `latency_app_s` | host-side application latency。`client.py` 用 `requests.post()` 外层 `time.perf_counter()` 测得，通常比 `latency_s` 更容易稳定产出。 |
 | `throughput_samples_per_s` | 吞吐量，约等于 `batch_size / latency`。如果 `latency_s` 成功 merge，会优先按 `latency_s` 更新；否则按 `latency_app_s` 计算。 |
+| `compute_profile_tool` | FLOP profiling 工具。CPU-only 行为 `intel_advisor`，GPU 行为 `ncu`；未采集时为 `nan`。 |
+| `model_mflop_per_request` | vendor profiler 采集到的单 request 模型计算量，单位 MFLOP。CPU 来自 Intel Advisor `Self GFLOP`；GPU 来自 ncu FLOP / tensor operation counters。 |
+| `compute_mflops_app` | `model_mflop_per_request / latency_app_s`，单位 MFLOPS。 |
+| `compute_mflops` | 默认等于 `compute_mflops_app`；如果 `latency_s` 成功 merge，则用 packet-level `latency_s` 重算。 |
+| `compute_profile_error` | compute profiling 的诊断信息。正常为空；工具缺失、性能计数器受限、报告解析失败时记录原因。 |
 | `idle_power_w` | GPU idle baseline power，单位 W。仅 `gpu_mode=on` 且 NVML 可用时有值。 |
 | `energy_iters` | GPU energy measurement 内部采样窗口中的 iteration 数。 |
 | `avg_power_total_w` | 测量窗口内 GPU total average power，单位 W。 |
@@ -347,6 +366,12 @@ CPU / vCPU energy 字段全是 `nan`：
 
 - `container_*` usage 字段依赖被测容器的 cgroup CPU / memory 文件；如果 Docker inspect、`/proc/<pid>/cgroup` 或 `/sys/fs/cgroup` 不可读，会保持 `nan`。
 - `gpu_*` utilization / VRAM 字段仅在 `gpu_mode=on` 且 NVML 可用时采集；口径是 NVML device-level，可能包含同一 GPU 上其他进程的占用。
+
+MFLOPS / compute profiling 字段全是 `nan`：
+
+- `gpu_mode=off` 时检查 Intel Advisor 是否安装，以及 `--advisor-root` 是否指向可在容器中 bind mount 的 Advisor root 或 executable。
+- `gpu_mode=on` 时检查 `ncu` 是否安装、`--ncu-root` 是否正确、NVIDIA driver 是否允许 performance counters。
+- compute profiling 是独立 probe；失败不会影响 latency / energy / resource usage 采集。具体原因看 `compute_profile_error` 和 `compute_profile_plan.json`。
 
 `--skip-build` 后 `/scale_meta` 或 `/probe` 报错：
 

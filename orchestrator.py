@@ -1369,6 +1369,7 @@ def run_single_case(
     sniff_iface: str = "docker0",
     input_scales: Optional[str] = None,
     input_scale_plan_file: Optional[str] = None,
+    compute_profile_plan_file: Optional[str] = None,
 ) -> str:
     """Run one profiling case and return result CSV path."""
     model_tag = _sanitize_model_id(task_info.model_id)
@@ -1452,6 +1453,7 @@ def run_single_case(
             "DEVICE_INDEX": "0",
             "INPUT_SCALES": scales_str,
             "INPUT_SCALE_PLAN_FILE": input_scale_plan_file or "",
+            "COMPUTE_PROFILE_PLAN_FILE": compute_profile_plan_file or "",
         }
 
         client_result = _run(
@@ -1526,6 +1528,7 @@ def run_matrix(
     sniff_iface: str = "docker0",
     input_scales: Optional[str] = None,
     input_scale_plan_file: Optional[str] = None,
+    compute_profile_plan_file: Optional[str] = None,
 ) -> List[str]:
     """Sweep all resource combinations."""
     os.makedirs(output_dir, exist_ok=True)
@@ -1559,6 +1562,7 @@ def run_matrix(
                     sniff_iface=sniff_iface,
                     input_scales=input_scales,
                     input_scale_plan_file=input_scale_plan_file,
+                    compute_profile_plan_file=compute_profile_plan_file,
                 )
                 if csv_path:
                     result_csvs.append(csv_path)
