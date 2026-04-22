@@ -20,7 +20,7 @@ AC-Prof 是一个面向 containerized HuggingFace inference service 的运行时
 - Docker cgroup CPU / memory files：用于 container CPU utilization 和 memory footprint metrics。
 - `tcpdump` + `tshark`：用于填充 `result_all.csv` 的 `latency_s` packet-level latency。
 - Intel Advisor：用于 `gpu_mode=off` 行的 CPU FLOP / MFLOPS profiling。通过 `--advisor-root` 挂载到临时 profiler container；不可用时 compute 字段为 `nan`。
-- NVIDIA Nsight Compute CLI (`ncu`)：用于 `gpu_mode=on` 行的 GPU FLOP / MFLOPS profiling。通过 `--ncu-root` 挂载到临时 profiler container；不可用或性能计数器被限制时 compute 字段为 `nan`。
+- NVIDIA Nsight Compute CLI (`ncu`)：用于 `gpu_mode=on` 行的 GPU FLOP / MFLOPS profiling。通过 `--ncu-root` 挂载到临时 profiler container；不可用、不兼容当前 CUDA/driver、或性能计数器被限制时 compute 字段为 `nan`。Ubuntu multiverse 的 `nsight-compute` 可能过旧，推荐使用 NVIDIA CUDA apt 源里的版本化包，例如 `/opt/nvidia/nsight-compute/<version>/ncu`。
 - Linux / WSL native Docker 的 `docker0` bridge：packet sniffing 默认监听 `docker0`。如果抓包不可用，`latency_s` 会保留为 `nan`，但 `latency_app_s` 仍然可用。
 
 Hugging Face token 可以放在项目根目录 `.env.local`：
@@ -84,11 +84,12 @@ python run.py --model google-bert/bert-base-uncased \
 ```bash
 python run.py --model google-bert/bert-base-uncased \
   --advisor-root /opt/intel/oneapi/advisor/latest \
-  --ncu-root /usr/local/cuda-12.8/nsight-compute-2025.1.0 \
+  --ncu-root /opt/nvidia/nsight-compute/2024.1.1 \
+  --compute-profile-cpus 8 --compute-profile-mem 16 \
   --cpus 1 --mems 4 --gpus off,on
 ```
 
-MFLOPS profiling 默认启用，但它运行在独立的临时 profiler container 中，不会污染正常 latency / energy window。只想跑原始 latency/energy 时可加 `--no-compute-profile`。
+MFLOPS profiling 默认启用，但它运行在独立的临时 profiler container 中，不会污染正常 latency / energy window。默认 profiler container 使用 host 逻辑 CPU 全量和 host memory 的 75%，以提高 Advisor `tripcounts --flop` 跑出结果的概率；如果需要更保守的资源占用，可用 `--compute-profile-cpus` / `--compute-profile-mem` 显式覆盖。开发 smoke 可以先用 `--no-compute-profile` 验证主流程，或只跑 `--gpus on` 验证 ncu。只想跑原始 latency/energy 时可加 `--no-compute-profile`。
 
 ### 采集 `latency_s` 的推荐启动方式
 
@@ -193,6 +194,14 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `--sample-hz` | `20.0` | GPU power sampling rate，单位 Hz。 |
 | `--idle-seconds` | `3.0` | GPU idle baseline 测量时长。 |
 | `--input-scales` | auto | 手动覆盖 input scale 列表。未提供时自动规划 6 档。 |
+| `--no-compute-profile` | false | 禁用 Intel Advisor / ncu MFLOPS probe。 |
+| `--advisor-root` | auto | Host Intel Advisor install root or executable；显式值优先于自动检测。 |
+| `--ncu-root` | auto | Host Nsight Compute install root or `ncu` executable；显式值优先于自动检测。 |
+| `--advisor-repeat` | `20` | Advisor probe 中重复推理次数；最终 FLOP 会除回单 request。 |
+| `--ncu-repeat` | `1` | ncu probe 中重复推理次数；最终 FLOP 会除回单 request。 |
+| `--compute-profile-cpus` | host logical CPUs | 临时 Advisor/ncu profiler container 的 CPU core cap。 |
+| `--compute-profile-mem` | 75% host memory | 临时 Advisor/ncu profiler container 的 memory cap，单位 GB。 |
+| `--keep-compute-profiles` | false | 保留 raw Advisor project 和 ncu report/CSV。 |
 | `--sniff-iface` | `docker0` | `tcpdump` 抓包网卡。 |
 | `--output-dir` | `results` | 输出根目录。最终还会追加 model name 子目录。 |
 | `--skip-build` | false | 跳过 Docker build，直接使用已存在的 image tag。 |
@@ -370,7 +379,7 @@ CPU / vCPU energy 字段全是 `nan`：
 MFLOPS / compute profiling 字段全是 `nan`：
 
 - `gpu_mode=off` 时检查 Intel Advisor 是否安装，以及 `--advisor-root` 是否指向可在容器中 bind mount 的 Advisor root 或 executable。
-- `gpu_mode=on` 时检查 `ncu` 是否安装、`--ncu-root` 是否正确、NVIDIA driver 是否允许 performance counters。
+- `gpu_mode=on` 时检查 `ncu` 是否安装、`--ncu-root` 是否正确、NVIDIA driver 是否允许 performance counters。若 `ncu` 下 CUDA 初始化报 `Error 36` 或没有 kernel，被测镜像裸跑 CUDA 正常但 ncu 下不正常，通常是 Nsight Compute 版本过旧；安装 NVIDIA CUDA apt 源里的较新版本后再试。
 - compute profiling 是独立 probe；失败不会影响 latency / energy / resource usage 采集。具体原因看 `compute_profile_error` 和 `compute_profile_plan.json`。
 
 `--skip-build` 后 `/scale_meta` 或 `/probe` 报错：

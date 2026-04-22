@@ -128,6 +128,8 @@ Examples:
     parser.add_argument("--ncu-root", default=None, help="Host Nsight Compute install root or ncu executable")
     parser.add_argument("--advisor-repeat", type=int, default=20, help="Intel Advisor profiled inference repetitions")
     parser.add_argument("--ncu-repeat", type=int, default=1, help="ncu profiled inference repetitions")
+    parser.add_argument("--compute-profile-cpus", type=int, default=None, help="CPU cores for temporary compute profiler containers (default: host logical CPUs)")
+    parser.add_argument("--compute-profile-mem", type=int, default=None, help="Memory GB for temporary compute profiler containers (default: 75%% of host memory)")
     parser.add_argument("--keep-compute-profiles", action="store_true", help="Keep raw Advisor/ncu profiler artifacts")
 
     # Infrastructure
@@ -237,6 +239,8 @@ Examples:
                 advisor_repeat=args.advisor_repeat,
                 ncu_repeat=args.ncu_repeat,
                 keep_profiles=args.keep_compute_profiles,
+                compute_profile_cpus=args.compute_profile_cpus,
+                compute_profile_mem=args.compute_profile_mem,
             )
         except Exception as exc:
             print(f"[compute][WARN] Compute profiling unavailable: {exc}")

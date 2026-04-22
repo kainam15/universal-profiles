@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import glob
 import json
 import math
 import os
@@ -41,7 +42,16 @@ def _find_payload(payload_file: str, input_scale: float) -> Dict[str, Any]:
 class _ITTControl:
     def __init__(self) -> None:
         self._lib: Optional[Any] = None
-        for name in (None, "libittnotify.so"):
+        candidates = [
+            None,
+            os.getenv("ADVISOR_ITT_LIB") or "",
+            "/opt/intel/oneapi/advisor/latest/lib64/runtime/libittnotify.so",
+            *glob.glob("/opt/intel/oneapi/advisor/*/lib64/runtime/libittnotify.so"),
+            "libittnotify.so",
+        ]
+        for name in candidates:
+            if name and not os.path.exists(name) and os.sep in name:
+                continue
             try:
                 self._lib = ctypes.CDLL(name) if name else ctypes.CDLL(None)
                 getattr(self._lib, "__itt_resume")
@@ -86,6 +96,9 @@ def main() -> None:
     runtime_backend = os.getenv("RUNTIME_BACKEND", "transformers_pipeline")
     use_gpu = int(os.getenv("USE_GPU", "0"))
     device = "cuda" if use_gpu and torch.cuda.is_available() else "cpu"
+    torch_threads = int(os.getenv("TORCH_NUM_THREADS", "0") or "0")
+    if torch_threads > 0:
+        torch.set_num_threads(torch_threads)
 
     handler = HandlerRegistry.get(task_family, runtime_backend)
     t_load = time.perf_counter()

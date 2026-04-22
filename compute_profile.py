@@ -19,6 +19,17 @@ COMPUTE_PROFILE_PLAN_NAME = "compute_profile_plan.json"
 COMPUTE_PROFILE_PAYLOADS_NAME = "compute_profile_payloads.json"
 NCU_TENSOR_METRIC_RE = re.compile(r"^sm__ops_path_tensor_src_.*_dst_.*\.sum$")
 NCU_SCALAR_FLOP_METRICS = ("flop_count_hp", "flop_count_sp", "flop_count_dp")
+NCU_SASS_FLOP_WEIGHTS = {
+    "smsp__sass_thread_inst_executed_op_dadd_pred_on": 1.0,
+    "smsp__sass_thread_inst_executed_op_dmul_pred_on": 1.0,
+    "smsp__sass_thread_inst_executed_op_dfma_pred_on": 2.0,
+    "smsp__sass_thread_inst_executed_op_fadd_pred_on": 1.0,
+    "smsp__sass_thread_inst_executed_op_fmul_pred_on": 1.0,
+    "smsp__sass_thread_inst_executed_op_ffma_pred_on": 2.0,
+    "smsp__sass_thread_inst_executed_op_hadd_pred_on": 1.0,
+    "smsp__sass_thread_inst_executed_op_hmul_pred_on": 1.0,
+    "smsp__sass_thread_inst_executed_op_hfma_pred_on": 2.0,
+}
 DEFAULT_TOOL_SEARCH_ROOTS = (
     "/opt/intel/oneapi/advisor",
     "/opt/intel/oneapi",
@@ -26,6 +37,7 @@ DEFAULT_TOOL_SEARCH_ROOTS = (
     "/usr/local/NVIDIA-Nsight-Compute",
     "/usr/local/cuda",
     "/usr/local/cuda-*",
+    "/usr/lib/nsight-compute",
 )
 
 
@@ -55,6 +67,35 @@ def _format_scale_value(scale: float) -> str:
 
 def _normal_gpu_mode(gpu: str) -> str:
     return "on" if str(gpu).lower() == "on" else "off"
+
+
+def _host_logical_cpus() -> int:
+    return max(1, int(os.cpu_count() or 1))
+
+
+def _host_memory_gb_fraction(fraction: float = 0.75) -> int:
+    total_bytes = 0
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    total_bytes = int(line.split()[1]) * 1024
+                    break
+    except OSError:
+        total_bytes = 0
+
+    if total_bytes <= 0:
+        return 1
+    return max(1, int((total_bytes * fraction) // (1024 ** 3)))
+
+
+def _default_compute_profile_resources(
+    compute_profile_cpus: Optional[int],
+    compute_profile_mem: Optional[int],
+) -> Tuple[int, int]:
+    cpu = max(1, int(compute_profile_cpus or _host_logical_cpus()))
+    mem = max(1, int(compute_profile_mem or _host_memory_gb_fraction(0.75)))
+    return cpu, mem
 
 
 def _tool_error_entries(entries: List[Dict[str, Any]], error: str) -> List[Dict[str, Any]]:
@@ -136,8 +177,20 @@ def _metric_value_from_row(row: Dict[str, str]) -> float:
     return float("nan")
 
 
+def _ncu_metric_flop_weight(metric_name: str) -> Optional[float]:
+    if metric_name in NCU_SCALAR_FLOP_METRICS or NCU_TENSOR_METRIC_RE.match(metric_name):
+        return 1.0
+    if metric_name in NCU_SASS_FLOP_WEIGHTS:
+        return NCU_SASS_FLOP_WEIGHTS[metric_name]
+    if metric_name.endswith(".sum"):
+        base_name = metric_name[:-len(".sum")]
+        if base_name in NCU_SASS_FLOP_WEIGHTS:
+            return NCU_SASS_FLOP_WEIGHTS[base_name]
+    return None
+
+
 def _is_ncu_flop_metric(metric_name: str) -> bool:
-    return metric_name in NCU_SCALAR_FLOP_METRICS or bool(NCU_TENSOR_METRIC_RE.match(metric_name))
+    return _ncu_metric_flop_weight(metric_name) is not None
 
 
 def parse_ncu_flop_csv(report_path: str) -> float:
@@ -152,13 +205,30 @@ def parse_ncu_flop_csv(report_path: str) -> float:
     reader = csv.DictReader(filtered_lines)
     if reader.fieldnames is None:
         return float("nan")
+
+    wide_metric_fields = [
+        (field, weight)
+        for field in reader.fieldnames
+        for weight in [_ncu_metric_flop_weight(field)]
+        if weight is not None
+    ]
+    if wide_metric_fields and "Metric Name" not in reader.fieldnames:
+        for row in reader:
+            for field, weight in wide_metric_fields:
+                value = _to_float(row.get(field))
+                if value == value:
+                    total_flop += value * weight
+                    found = True
+        return total_flop if found else float("nan")
+
     for row in reader:
         metric_name = _metric_name_from_row(row)
-        if not _is_ncu_flop_metric(metric_name):
+        weight = _ncu_metric_flop_weight(metric_name)
+        if weight is None:
             continue
         value = _metric_value_from_row(row)
         if value == value:
-            total_flop += value
+            total_flop += value * weight
             found = True
     return total_flop if found else float("nan")
 
@@ -175,31 +245,55 @@ def _candidate_executable_paths(root: str, names: Sequence[str]) -> Iterable[str
                 name,
                 os.path.join("bin", name),
                 os.path.join("bin64", name),
+                os.path.join("*", name),
+                os.path.join("*", "bin", name),
+                os.path.join("*", "bin64", name),
                 os.path.join("latest", "bin", name),
                 os.path.join("latest", "bin64", name),
                 os.path.join("advisor", "latest", "bin64", name),
                 os.path.join("target", "linux-desktop-glibc_2_11_3-x64", name),
             ):
-                yield os.path.join(expanded_root, suffix)
+                for candidate in glob.glob(os.path.join(expanded_root, suffix)):
+                    yield candidate
+
+
+def _executable_version_key(path: str, names: Sequence[str]) -> Tuple[Tuple[int, ...], int, str]:
+    basename = os.path.basename(path)
+    try:
+        name_rank = len(names) - names.index(basename)
+    except ValueError:
+        name_rank = 0
+    return tuple(int(part) for part in re.findall(r"\d+", path)), name_rank, path
+
+
+def _best_existing_executable(roots: Sequence[str], names: Sequence[str]) -> Optional[str]:
+    candidates = [
+        os.path.realpath(candidate)
+        for root in roots
+        for candidate in _candidate_executable_paths(root, names)
+        if os.path.isfile(candidate)
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: _executable_version_key(path, names))
 
 
 def _find_executable(root: Optional[str], names: Sequence[str]) -> Optional[str]:
     if root:
-        for candidate in _candidate_executable_paths(root, names):
-            if os.path.isfile(candidate):
-                return os.path.realpath(candidate)
+        best = _best_existing_executable([root], names)
+        if best:
+            return best
         for name in names:
             for candidate in glob.glob(os.path.join(root, "**", name), recursive=True):
                 if os.path.isfile(candidate):
                     return os.path.realpath(candidate)
+    best_default = _best_existing_executable(DEFAULT_TOOL_SEARCH_ROOTS, names)
+    if best_default:
+        return best_default
     for name in names:
         found = shutil.which(name)
         if found:
             return os.path.realpath(found)
-    for default_root in DEFAULT_TOOL_SEARCH_ROOTS:
-        for candidate in _candidate_executable_paths(default_root, names):
-            if os.path.isfile(candidate):
-                return os.path.realpath(candidate)
     return None
 
 
@@ -215,7 +309,7 @@ def _tool_mount_root(tool_path: str, requested_root: Optional[str]) -> str:
             return os.sep + os.path.join(*parts[1:idx + 2])
     if "nsight-compute" in parts:
         idx = parts.index("nsight-compute")
-        if idx + 1 < len(parts):
+        if idx + 1 < len(parts) and parts[idx + 1] not in {"ncu", "nv-nsight-cu-cli"}:
             return os.sep + os.path.join(*parts[1:idx + 2])
         return os.sep + os.path.join(*parts[1:idx + 1])
     if os.path.basename(path) in {"ncu", "nv-nsight-cu-cli"}:
@@ -226,6 +320,23 @@ def _tool_mount_root(tool_path: str, requested_root: Optional[str]) -> str:
     if os.path.isfile(path):
         return os.path.dirname(path)
     return path
+
+
+def _tool_mount_roots(tool_path: str, requested_root: Optional[str]) -> List[str]:
+    root = _tool_mount_root(tool_path, requested_root)
+    roots = [root]
+    for ncu_target in glob.glob(os.path.join(root, "target", "*")):
+        real_target = os.path.realpath(ncu_target)
+        if real_target == os.path.abspath(ncu_target):
+            continue
+        parts = real_target.split(os.sep)
+        if "nsight-compute" not in parts:
+            continue
+        idx = parts.index("nsight-compute")
+        real_root = os.sep + os.path.join(*parts[1:idx + 1])
+        if real_root not in roots:
+            roots.append(real_root)
+    return roots
 
 
 def _default_scales(task_info: TaskInfo) -> List[float]:
@@ -297,15 +408,15 @@ def _base_docker_cmd(
     use_gpu: bool,
     payload_file: str,
     profile_root: str,
-    tool_mount_root: str,
+    tool_mount_roots: Sequence[str],
 ) -> List[str]:
+    runner_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "compute_profile_runner.py")
     cmd = [
         "docker", "run", "--rm",
         f"--cpus={cpu}",
         f"--memory={mem}g",
         "-v", f"{os.path.abspath(payload_file)}:/payloads/{COMPUTE_PROFILE_PAYLOADS_NAME}:ro",
         "-v", f"{os.path.abspath(profile_root)}:/profiles",
-        "-v", f"{os.path.abspath(tool_mount_root)}:{os.path.abspath(tool_mount_root)}:ro",
         "-e", f"MODEL_ID={task_info.model_id}",
         "-e", f"TASK_FAMILY={task_info.task_family}",
         "-e", f"TASK_TYPE={task_info.pipeline_tag}",
@@ -317,7 +428,18 @@ def _base_docker_cmd(
         "-e", "HF_HOME=/models/hf",
         "-e", "HF_HUB_CACHE=/models/hf",
         "-e", "TRANSFORMERS_CACHE=/models/hf",
+        "-e", "HOME=/tmp",
+        "-e", f"OMP_NUM_THREADS={max(1, int(cpu))}",
+        "-e", f"MKL_NUM_THREADS={max(1, int(cpu))}",
+        "-e", f"OPENBLAS_NUM_THREADS={max(1, int(cpu))}",
+        "-e", f"NUMEXPR_NUM_THREADS={max(1, int(cpu))}",
+        "-e", f"TORCH_NUM_THREADS={max(1, int(cpu))}",
     ]
+    if os.path.exists(runner_path):
+        cmd.extend(["-v", f"{runner_path}:/app/compute_profile_runner.py:ro"])
+    for tool_mount_root in tool_mount_roots:
+        abs_root = os.path.abspath(tool_mount_root)
+        cmd.extend(["-v", f"{abs_root}:{abs_root}:ro"])
     if use_gpu:
         cmd.extend([
             "--gpus", "all",
@@ -348,7 +470,7 @@ def _run_advisor_for_entry(
     mem: int,
     payload_file: str,
     profile_root: str,
-    tool_mount_root: str,
+    tool_mount_roots: Sequence[str],
     entry: Dict[str, Any],
     repeat: int,
 ) -> Dict[str, Any]:
@@ -364,14 +486,14 @@ def _run_advisor_for_entry(
         use_gpu=False,
         payload_file=payload_file,
         profile_root=profile_root,
-        tool_mount_root=tool_mount_root,
+        tool_mount_roots=tool_mount_roots,
     )
     runner_args = _runner_args(entry, repeat, "cpu")
     commands = [
         [
             advisor_bin,
             "--collect=survey",
-            "--profile-python",
+            "--profile-python=off",
             "--start-paused",
             "--project-dir", project_dir,
             "--",
@@ -427,19 +549,60 @@ def _parse_ncu_metric_names(query_output: str) -> List[str]:
             token = token.strip()
             if not token:
                 continue
-            if token in NCU_SCALAR_FLOP_METRICS or NCU_TENSOR_METRIC_RE.match(token):
+            if _is_ncu_flop_metric(token):
                 names.add(token)
     return sorted(names)
 
 
+def _select_ncu_flop_metrics(available_metrics: Iterable[str]) -> List[str]:
+    available = set(available_metrics)
+    modern_metrics = sorted(
+        metric for metric in available
+        if metric in NCU_SCALAR_FLOP_METRICS or NCU_TENSOR_METRIC_RE.match(metric)
+    )
+    if modern_metrics:
+        return modern_metrics
+    return [
+        metric for metric in NCU_SASS_FLOP_WEIGHTS
+        if metric in available
+    ]
+
+
 def _resolve_ncu_metrics(ncu_bin: str) -> Tuple[List[str], str]:
-    result = _run([ncu_bin, "--query-metrics", "--query-metrics-mode", "suffix"], check=False)
-    if result.returncode != 0:
-        return [], f"ncu_query_failed:{result.stderr.strip() or result.stdout.strip()}"
-    metrics = _parse_ncu_metric_names(result.stdout)
-    if not metrics:
-        return [], "ncu_no_flop_metrics_found"
-    return metrics, ""
+    query_errors = []
+    for command in (
+        [ncu_bin, "--query-metrics", "--query-metrics-mode", "suffix"],
+        [ncu_bin, "--query-metrics"],
+    ):
+        result = _run(command, check=False)
+        if result.returncode != 0:
+            query_errors.append(result.stderr.strip() or result.stdout.strip())
+            continue
+        metrics = _select_ncu_flop_metrics(_parse_ncu_metric_names(result.stdout))
+        if metrics:
+            return metrics, ""
+    error = "; ".join(error for error in query_errors if error)
+    if error:
+        return [], f"ncu_no_flop_metrics_found:{error}"
+    return [], "ncu_no_flop_metrics_found"
+
+
+def _ncu_supports_nvtx_filter(ncu_bin: str) -> bool:
+    result = _run([ncu_bin, "--help"], check=False)
+    return result.returncode == 0 and "--nvtx-include" in result.stdout
+
+
+def _ncu_collect_filter_args(ncu_bin: str) -> List[str]:
+    if _ncu_supports_nvtx_filter(ncu_bin):
+        return ["--nvtx", "--nvtx-include", "acprof_compute/"]
+    return ["--nvtx", "--nvtx-include", "acprof_compute"]
+
+
+def _ncu_section_args(ncu_bin: str) -> List[str]:
+    section_dir = os.path.join(os.path.dirname(os.path.realpath(ncu_bin)), "sections")
+    if os.path.isdir(section_dir):
+        return ["--section-folder", section_dir, "--apply-rules", "no"]
+    return []
 
 
 def _run_ncu_for_entry(
@@ -452,7 +615,7 @@ def _run_ncu_for_entry(
     mem: int,
     payload_file: str,
     profile_root: str,
-    tool_mount_root: str,
+    tool_mount_roots: Sequence[str],
     entry: Dict[str, Any],
     repeat: int,
 ) -> Dict[str, Any]:
@@ -467,13 +630,13 @@ def _run_ncu_for_entry(
         use_gpu=True,
         payload_file=payload_file,
         profile_root=profile_root,
-        tool_mount_root=tool_mount_root,
+        tool_mount_roots=tool_mount_roots,
     )
     collect_cmd = [
         ncu_bin,
         "--target-processes", "all",
-        "--nvtx",
-        "--nvtx-include", "acprof_compute/",
+        *_ncu_collect_filter_args(ncu_bin),
+        *_ncu_section_args(ncu_bin),
         "--page", "raw",
         "--csv",
         "--metrics", ",".join(ncu_metrics),
@@ -536,7 +699,7 @@ def _profile_cpu_entries(
             "error": "advisor_not_found",
             "entries": _tool_error_entries(entries, "advisor_not_found"),
         }
-    mount_root = _tool_mount_root(advisor_bin, advisor_root)
+    mount_roots = _tool_mount_roots(advisor_bin, advisor_root)
     profile_entries = [
         _run_advisor_for_entry(
             advisor_bin=advisor_bin,
@@ -546,7 +709,7 @@ def _profile_cpu_entries(
             mem=mem,
             payload_file=payload_file,
             profile_root=profile_root,
-            tool_mount_root=mount_root,
+            tool_mount_roots=mount_roots,
             entry=entry,
             repeat=repeat,
         )
@@ -589,7 +752,7 @@ def _profile_gpu_entries(
             "error": metric_error,
             "entries": _tool_error_entries(entries, metric_error),
         }
-    mount_root = _tool_mount_root(ncu_bin, ncu_root)
+    mount_roots = _tool_mount_roots(ncu_bin, ncu_root)
     profile_entries = [
         _run_ncu_for_entry(
             ncu_bin=ncu_bin,
@@ -600,7 +763,7 @@ def _profile_gpu_entries(
             mem=mem,
             payload_file=payload_file,
             profile_root=profile_root,
-            tool_mount_root=mount_root,
+            tool_mount_roots=mount_roots,
             entry=entry,
             repeat=repeat,
         )
@@ -632,6 +795,8 @@ def collect_compute_profile_plan(
     advisor_repeat: int,
     ncu_repeat: int,
     keep_profiles: bool,
+    compute_profile_cpus: Optional[int] = None,
+    compute_profile_mem: Optional[int] = None,
 ) -> str:
     """Collect or synthesize vendor-tool compute profiles and write a plan file."""
     os.makedirs(output_dir, exist_ok=True)
@@ -642,8 +807,10 @@ def collect_compute_profile_plan(
 
     advisor_bin = _find_executable(advisor_root, ("advisor", "advixe-cl"))
     ncu_bin = _find_executable(ncu_root, ("ncu", "nv-nsight-cu-cli"))
-    max_cpu = max(cpu_list) if cpu_list else 1
-    max_mem = max(mem_list) if mem_list else 1
+    max_cpu, max_mem = _default_compute_profile_resources(
+        compute_profile_cpus,
+        compute_profile_mem,
+    )
     normalized_gpus = {_normal_gpu_mode(gpu) for gpu in gpu_list}
 
     profiles: Dict[str, Any] = {}

@@ -59,6 +59,54 @@ class ComputeProfileTests(unittest.TestCase):
                 3500.0,
             )
 
+    def test_parse_ncu_raw_csv_weights_sass_fma_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = os.path.join(tmp, "ncu.csv")
+            with open(report_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=["Kernel Name", "Metric Name", "Metric Unit", "Metric Value"],
+                )
+                writer.writeheader()
+                writer.writerow({
+                    "Kernel Name": "kernel_a",
+                    "Metric Name": "smsp__sass_thread_inst_executed_op_fadd_pred_on",
+                    "Metric Unit": "inst",
+                    "Metric Value": "10",
+                })
+                writer.writerow({
+                    "Kernel Name": "kernel_b",
+                    "Metric Name": "smsp__sass_thread_inst_executed_op_ffma_pred_on",
+                    "Metric Unit": "inst",
+                    "Metric Value": "10",
+                })
+
+            self.assertAlmostEqual(
+                compute_profile.parse_ncu_flop_csv(report_path),
+                30.0,
+            )
+
+    def test_parse_ncu_wide_csv_sums_metric_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = os.path.join(tmp, "ncu_wide.csv")
+            with open(report_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    "ID",
+                    "Kernel Name",
+                    "smsp__sass_thread_inst_executed_op_fadd_pred_on.sum",
+                    "smsp__sass_thread_inst_executed_op_ffma_pred_on.sum",
+                    "gpu__time_duration.sum",
+                ])
+                writer.writerow(["", "", "inst", "inst", "nsecond"])
+                writer.writerow(["0", "kernel_a", "10", "20", "100"])
+                writer.writerow(["1", "kernel_b", "1K", "2K", "200"])
+
+            self.assertAlmostEqual(
+                compute_profile.parse_ncu_flop_csv(report_path),
+                10 + 20 * 2 + 1000 + 2000 * 2,
+            )
+
     def test_missing_tools_write_nan_profiles_with_errors(self) -> None:
         task_info = TaskInfo(
             model_id="google-bert/bert-base-uncased",
@@ -108,6 +156,105 @@ class ComputeProfileTests(unittest.TestCase):
             None,
         )
 
+    def test_compute_profile_resource_overrides_are_used(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+        calls = []
+
+        def fake_cpu_profile(**kwargs):
+            calls.append(("cpu", kwargs["cpu"], kwargs["mem"]))
+            return {"tool": "intel_advisor", "repeat": 1, "error": "", "entries": []}
+
+        def fake_gpu_profile(**kwargs):
+            calls.append(("gpu", kwargs["cpu"], kwargs["mem"]))
+            return {"tool": "ncu", "repeat": 1, "error": "", "entries": []}
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "compute_profile._find_executable",
+            return_value="/usr/bin/tool",
+        ), patch(
+            "compute_profile._profile_cpu_entries",
+            side_effect=fake_cpu_profile,
+        ), patch(
+            "compute_profile._profile_gpu_entries",
+            side_effect=fake_gpu_profile,
+        ):
+            compute_profile.collect_compute_profile_plan(
+                task_info=task_info,
+                image_tag="acprof-test:latest",
+                cpu_list=[1],
+                mem_list=[4],
+                gpu_list=["off", "on"],
+                batch_size=1,
+                output_dir=tmp,
+                input_scale_plan_file=None,
+                input_scales="8",
+                advisor_root=None,
+                ncu_root=None,
+                advisor_repeat=20,
+                ncu_repeat=1,
+                keep_profiles=False,
+                compute_profile_cpus=8,
+                compute_profile_mem=16,
+            )
+
+        self.assertEqual(calls, [("cpu", 8, 16), ("gpu", 8, 16)])
+
+    def test_compute_profile_default_resources_use_host_capacity(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+        calls = []
+
+        def fake_cpu_profile(**kwargs):
+            calls.append(("cpu", kwargs["cpu"], kwargs["mem"]))
+            return {"tool": "intel_advisor", "repeat": 1, "error": "", "entries": []}
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "compute_profile._find_executable",
+            return_value="/usr/bin/tool",
+        ), patch(
+            "compute_profile._host_logical_cpus",
+            return_value=12,
+        ), patch(
+            "compute_profile._host_memory_gb_fraction",
+            return_value=48,
+        ), patch(
+            "compute_profile._profile_cpu_entries",
+            side_effect=fake_cpu_profile,
+        ):
+            compute_profile.collect_compute_profile_plan(
+                task_info=task_info,
+                image_tag="acprof-test:latest",
+                cpu_list=[1],
+                mem_list=[4],
+                gpu_list=["off"],
+                batch_size=1,
+                output_dir=tmp,
+                input_scale_plan_file=None,
+                input_scales="8",
+                advisor_root=None,
+                ncu_root=None,
+                advisor_repeat=20,
+                ncu_repeat=1,
+                keep_profiles=False,
+            )
+
+        self.assertEqual(calls, [("cpu", 12, 48)])
+
     def test_find_executable_searches_default_roots(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch.object(
             compute_profile,
@@ -137,6 +284,24 @@ class ComputeProfileTests(unittest.TestCase):
             compute_profile._tool_mount_root(ncu_bin, None),
             "/opt/nvidia/nsight-compute/2025.1.0",
         )
+
+    def test_debian_ncu_mount_roots_include_target_symlink_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            lib_root = os.path.join(tmp, "usr", "lib", "nsight-compute")
+            arch_root = os.path.join(tmp, "usr", "lib", "x86_64-linux-gnu", "nsight-compute")
+            target_root = os.path.join(lib_root, "target")
+            real_target = os.path.join(arch_root, "target", "linux-desktop-glibc_2_11_3-x64")
+            os.makedirs(target_root)
+            os.makedirs(real_target)
+            os.symlink(real_target, os.path.join(target_root, "linux-desktop-glibc_2_11_3-x64"))
+            ncu_path = os.path.join(lib_root, "ncu")
+            with open(ncu_path, "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\n")
+
+            self.assertEqual(
+                compute_profile._tool_mount_roots(ncu_path, None),
+                [lib_root, arch_root],
+            )
 
 
 if __name__ == "__main__":
