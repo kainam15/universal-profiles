@@ -1,3 +1,6 @@
+import json
+import os
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -151,6 +154,59 @@ class DetectEnvironmentTests(unittest.TestCase):
             ["environment", "cpu_power_source", "vcpu_power_method"],
         )
 
+    def test_manual_nlp_scales_write_effective_scale_plan(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+        session = orchestrator.RunningContainer(
+            name="probe_google-bert--bert-base-uncased_1c_4g_off",
+            base_url="http://127.0.0.1:8106",
+            host_port=8106,
+            cold_start_s=1.0,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "orchestrator._start_probe_session",
+            return_value=session,
+        ), patch(
+            "orchestrator._stop_container_session",
+        ), patch(
+            "orchestrator._post_probe_payload",
+            return_value={
+                "effective_input_scale": 254.0,
+                "truncated_by_limit": False,
+                "reason": "within_model_limit",
+                "payload": {"text": "hello [MASK]", "params": {}},
+            },
+        ):
+            planned = orchestrator.plan_input_scales(
+                task_info=task_info,
+                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                cpu_list=[1],
+                mem_list=[4],
+                gpu_list=["off"],
+                batch_size=1,
+                output_dir=tmp,
+                input_scales="64",
+            )
+
+            self.assertEqual(planned.scales, [254.0])
+            self.assertEqual(planned.source, "manual")
+            self.assertIsNotNone(planned.plan_file)
+            assert planned.plan_file is not None
+            self.assertTrue(os.path.exists(planned.plan_file))
+            with open(planned.plan_file, "r", encoding="utf-8") as f:
+                plan = json.load(f)
+
+        self.assertEqual(plan["entries"][0]["input_scale"], 254.0)
+        self.assertEqual(plan["entries"][0]["payload"], {"text": "hello [MASK]", "params": {}})
+
     def test_run_single_case_passes_container_name_to_client(self) -> None:
         task_info = TaskInfo(
             model_id="google-bert/bert-base-uncased",
@@ -276,6 +332,38 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertIn("/mnt/d/DOR/universal-profiles/results/test/sniff_case.pcap", runtime.tcpdump_cmd)
         self.assertEqual(runtime.parse_cmd[:3], ["wsl.exe", "-e", "python3"])
         self.assertIn("/mnt/d/DOR/universal-profiles/sniff_parse_pcap.py", runtime.parse_cmd)
+
+    def test_resolve_packet_latency_runtime_uses_tcpdump_without_sudo_when_capable(self) -> None:
+        def fake_which(name: str) -> str | None:
+            return {
+                "tcpdump": "/usr/bin/tcpdump",
+                "tshark": "/usr/bin/tshark",
+            }.get(name)
+
+        def fake_run(cmd, check=True, capture=True, **kwargs):
+            if cmd[:2] == ["getcap", "/usr/bin/tcpdump"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="/usr/bin/tcpdump cap_net_admin,cap_net_raw=eip\n",
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+        with patch("orchestrator.shutil.which", side_effect=fake_which), patch(
+            "orchestrator._run",
+            side_effect=fake_run,
+        ):
+            runtime = orchestrator._resolve_packet_latency_runtime(
+                project_dir="/repo",
+                pcap_file="/repo/results/sniff_case.pcap",
+                sniff_iface="docker0",
+            )
+
+        self.assertIsNotNone(runtime)
+        assert runtime is not None
+        self.assertEqual(runtime.mode, "local")
+        self.assertEqual(runtime.tcpdump_cmd[0], "/usr/bin/tcpdump")
+        self.assertNotIn("sudo", runtime.tcpdump_cmd)
 
 
 if __name__ == "__main__":

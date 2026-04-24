@@ -406,6 +406,18 @@ def _wsl_has_command(command: str) -> bool:
     return result.returncode == 0
 
 
+def _tcpdump_can_capture_without_sudo(tcpdump_path: str) -> bool:
+    if os.geteuid() == 0:
+        return True
+
+    result = _run(["getcap", tcpdump_path], check=False)
+    if result.returncode != 0:
+        return False
+
+    caps = result.stdout.lower()
+    return "cap_net_raw" in caps and "cap_net_admin" in caps
+
+
 def _resolve_packet_latency_runtime(
     project_dir: str,
     pcap_file: str,
@@ -416,11 +428,10 @@ def _resolve_packet_latency_runtime(
     local_tcpdump = shutil.which("tcpdump")
     local_tshark = shutil.which("tshark")
     if local_tcpdump and local_tshark:
+        tcpdump_cmd = [local_tcpdump] if _tcpdump_can_capture_without_sudo(local_tcpdump) else ["sudo", "tcpdump"]
         return PacketLatencyRuntime(
             mode="local",
-            tcpdump_cmd=[
-                "sudo",
-                "tcpdump",
+            tcpdump_cmd=tcpdump_cmd + [
                 "-i",
                 sniff_iface,
                 "-s",
@@ -985,6 +996,73 @@ def _assert_manual_nlp_scales_legal(
     return scales
 
 
+def _plan_manual_nlp_scales(
+    task_info: TaskInfo,
+    image_info: ImageInfo,
+    cpu_list: List[int],
+    mem_list: List[int],
+    gpu_list: List[str],
+    scales: List[float],
+    batch_size: int,
+    output_dir: str,
+) -> PlannedInputScales:
+    from workloads import get_generator
+
+    session: Optional[RunningContainer] = None
+    try:
+        session = _start_probe_session(task_info, image_info, cpu_list, mem_list, gpu_list)
+        workload_gen = get_generator(
+            task_info.task_family,
+            task_info.model_id,
+            task_info.pipeline_tag,
+            batch_size,
+        )
+        invalid: Dict[float, str] = {}
+        entries: List[Dict[str, Any]] = []
+        actual_scales: List[float] = []
+
+        for scale in scales:
+            payload = workload_gen.generate(scale)
+            result = _post_probe_payload(
+                session,
+                payload,
+                f"manual scale {_format_scale_value(scale)}",
+            )
+            if result["truncated_by_limit"]:
+                invalid[scale] = (
+                    f"{result['reason']}; effective_input_scale="
+                    f"{_format_scale_value(result['effective_input_scale'])}"
+                )
+                continue
+
+            actual_scale = float(result["effective_input_scale"])
+            actual_scales.append(actual_scale)
+            entries.append({
+                "input_scale": actual_scale,
+                "scale_label": workload_gen.scale_label(actual_scale),
+                "payload": result["payload"],
+            })
+
+        if invalid:
+            details = ", ".join(
+                f"{_format_scale_value(scale)} ({reason})" for scale, reason in invalid.items()
+            )
+            raise RuntimeError(f"manual NLP input scales exceed the usable tokenizer limit: {details}")
+    finally:
+        if session is not None:
+            _stop_container_session(session.name, log_prefix="[probe]")
+
+    plan_file = _scale_plan_file_path(output_dir)
+    _write_scale_plan_file(plan_file, task_info, entries)
+
+    print(
+        "[scale] Using manual input scales: "
+        f"{serialize_input_scales(scales)}; effective scales: "
+        f"{serialize_input_scales(actual_scales)}"
+    )
+    return PlannedInputScales(scales=actual_scales, source="manual", plan_file=plan_file)
+
+
 def _plan_nlp_auto_scales(
     task_info: TaskInfo,
     image_info: ImageInfo,
@@ -1149,7 +1227,7 @@ def plan_input_scales(
     if input_scales:
         manual_scales = resolve_input_scales(task_info.task_family, input_scales=input_scales)
         if task_info.task_family == "nlp":
-            manual_scales = _assert_manual_nlp_scales_legal(
+            return _plan_manual_nlp_scales(
                 task_info=task_info,
                 image_info=image_info,
                 cpu_list=cpu_list,
@@ -1157,6 +1235,7 @@ def plan_input_scales(
                 gpu_list=gpu_list,
                 scales=manual_scales,
                 batch_size=batch_size,
+                output_dir=output_dir,
             )
         elif task_info.task_family == "timeseries":
             manual_scales = _assert_manual_timeseries_scales_legal(
