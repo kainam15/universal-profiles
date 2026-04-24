@@ -9,6 +9,7 @@ import math
 import ntpath
 import os
 import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -79,6 +80,10 @@ class PacketLatencyRuntime:
 
 
 AUTO_INPUT_SCALE_COUNT = 6
+DEFAULT_NLP_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu128"
+CUDA124_NLP_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu124"
+DEFAULT_NLP_TORCH_SPEC = "torch>=2.7"
+CUDA124_NLP_TORCH_SPEC = "torch>=2.6,<2.7"
 
 
 def _sanitize_model_id(model_id: str) -> str:
@@ -227,6 +232,61 @@ def _get_gpu_name(device_index: int = 0) -> str:
     if 0 <= device_index < len(gpu_names):
         return gpu_names[device_index]
     return gpu_names[0]
+
+
+def _parse_cuda_version(raw: str) -> Optional[Tuple[int, int]]:
+    match = re.search(r"(\d+)\.(\d+)", str(raw))
+    if not match:
+        return None
+
+    return int(match.group(1)), int(match.group(2))
+
+
+def _host_cuda_version() -> Optional[Tuple[int, int]]:
+    override = (os.environ.get("ACPROF_HOST_CUDA_VERSION") or "").strip()
+    if override:
+        return _parse_cuda_version(override)
+
+    nvidia_smi = shutil.which("nvidia-smi")
+    if not nvidia_smi:
+        return None
+
+    result = _run([nvidia_smi], check=False)
+    if result.returncode != 0:
+        return None
+
+    match = re.search(r"CUDA Version:\s*(\d+\.\d+)", result.stdout)
+    if not match:
+        return None
+
+    return _parse_cuda_version(match.group(1))
+
+
+def _select_nlp_torch_index_url() -> str:
+    override = (os.environ.get("ACPROF_NLP_TORCH_INDEX_URL") or "").strip()
+    if override:
+        return override
+
+    cuda_version = _host_cuda_version()
+    if cuda_version is None:
+        return DEFAULT_NLP_TORCH_INDEX_URL
+
+    if cuda_version >= (12, 8):
+        return DEFAULT_NLP_TORCH_INDEX_URL
+    if cuda_version >= (12, 4):
+        return CUDA124_NLP_TORCH_INDEX_URL
+    return DEFAULT_NLP_TORCH_INDEX_URL
+
+
+def _select_nlp_torch_spec(torch_index_url: Optional[str] = None) -> str:
+    override = (os.environ.get("ACPROF_NLP_TORCH_SPEC") or "").strip()
+    if override:
+        return override
+
+    resolved_index_url = (torch_index_url or _select_nlp_torch_index_url()).rstrip("/")
+    if resolved_index_url == CUDA124_NLP_TORCH_INDEX_URL:
+        return CUDA124_NLP_TORCH_SPEC
+    return DEFAULT_NLP_TORCH_SPEC
 
 
 def _cpu_power_metadata() -> Tuple[str, str]:
@@ -563,12 +623,27 @@ def build_image(task_info: TaskInfo, project_dir: str) -> ImageInfo:
         print(f"[build] Dockerfile not found: {family_dockerfile}", file=sys.stderr)
         sys.exit(1)
 
-    result = _run([
-        "docker", "build",
-        "-f", family_dockerfile,
+    family_build_args = [
         "--build-arg", f"BASE_IMAGE={base_tag}",
         "--build-arg", f"MODEL_ID={task_info.model_id}",
         "--build-arg", "HF_TOKEN",
+    ]
+    if task_info.task_family == "nlp":
+        torch_index_url = _select_nlp_torch_index_url()
+        torch_spec = _select_nlp_torch_spec(torch_index_url)
+        family_build_args.extend([
+            "--build-arg",
+            f"TORCH_INDEX_URL={torch_index_url}",
+            "--build-arg",
+            f"TORCH_PACKAGE_SPEC={torch_spec}",
+        ])
+        print(f"[build] NLP torch index: {torch_index_url}")
+        print(f"[build] NLP torch spec:  {torch_spec}")
+
+    result = _run([
+        "docker", "build",
+        "-f", family_dockerfile,
+        *family_build_args,
         "-t", family_tag,
         project_dir,
     ], check=False)

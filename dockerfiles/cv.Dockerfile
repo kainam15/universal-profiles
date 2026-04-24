@@ -4,8 +4,8 @@ FROM ${BASE_IMAGE}
 # CV-specific dependencies
 RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple \
     --trusted-host pypi.tuna.tsinghua.edu.cn \
-    torch>=2.2 \
-    transformers>=4.40 \
+    'torch>=2.2' \
+    'transformers>=4.40' \
     torchvision \
     Pillow \
     accelerate

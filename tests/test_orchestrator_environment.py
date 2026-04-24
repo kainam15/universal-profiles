@@ -8,6 +8,90 @@ from detect import TaskInfo
 
 
 class DetectEnvironmentTests(unittest.TestCase):
+    def test_select_nlp_torch_index_url_uses_cu124_for_cuda_12_4_driver(self) -> None:
+        with patch("orchestrator.shutil.which", return_value="/usr/bin/nvidia-smi"), patch(
+            "orchestrator._run",
+            return_value=SimpleNamespace(
+                returncode=0,
+                stdout="Driver Version: 550.78    CUDA Version: 12.4\n",
+                stderr="",
+            ),
+        ):
+            self.assertEqual(
+                orchestrator._select_nlp_torch_index_url(),
+                orchestrator.CUDA124_NLP_TORCH_INDEX_URL,
+            )
+
+    def test_select_nlp_torch_index_url_respects_explicit_override(self) -> None:
+        with patch.dict(
+            "orchestrator.os.environ",
+            {"ACPROF_NLP_TORCH_INDEX_URL": "https://example.invalid/torch"},
+            clear=True,
+        ):
+            self.assertEqual(
+                orchestrator._select_nlp_torch_index_url(),
+                "https://example.invalid/torch",
+            )
+
+    def test_select_nlp_torch_spec_uses_compatible_range_for_cu124(self) -> None:
+        self.assertEqual(
+            orchestrator._select_nlp_torch_spec(orchestrator.CUDA124_NLP_TORCH_INDEX_URL),
+            orchestrator.CUDA124_NLP_TORCH_SPEC,
+        )
+
+    def test_select_nlp_torch_spec_accepts_cu124_index_with_trailing_slash(self) -> None:
+        self.assertEqual(
+            orchestrator._select_nlp_torch_spec(
+                orchestrator.CUDA124_NLP_TORCH_INDEX_URL + "/"
+            ),
+            orchestrator.CUDA124_NLP_TORCH_SPEC,
+        )
+
+    def test_select_nlp_torch_spec_respects_explicit_override(self) -> None:
+        with patch.dict(
+            "orchestrator.os.environ",
+            {"ACPROF_NLP_TORCH_SPEC": "torch==9.9.9"},
+            clear=True,
+        ):
+            self.assertEqual(
+                orchestrator._select_nlp_torch_spec(),
+                "torch==9.9.9",
+            )
+
+    def test_build_image_passes_nlp_torch_index_build_arg(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+        commands = []
+
+        def fake_run(cmd, check=True, capture=True, **kwargs):
+            commands.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch(
+            "orchestrator._select_nlp_torch_index_url",
+            return_value=orchestrator.CUDA124_NLP_TORCH_INDEX_URL,
+        ), patch("orchestrator.os.path.exists", return_value=True), patch(
+            "orchestrator._run",
+            side_effect=fake_run,
+        ):
+            orchestrator.build_image(task_info, ".")
+
+        self.assertIn(
+            f"TORCH_INDEX_URL={orchestrator.CUDA124_NLP_TORCH_INDEX_URL}",
+            commands[1],
+        )
+        self.assertIn(
+            f"TORCH_PACKAGE_SPEC={orchestrator.CUDA124_NLP_TORCH_SPEC}",
+            commands[1],
+        )
+
     def test_detect_environment_windows_11_with_wsl_kernel(self) -> None:
         with patch("orchestrator.platform.system", return_value="Windows"), patch(
             "orchestrator.platform.release", return_value="11"

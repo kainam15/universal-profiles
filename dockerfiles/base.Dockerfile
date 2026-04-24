@@ -1,4 +1,5 @@
-FROM python:3.10-slim
+ARG PYTHON_BASE_IMAGE=docker.m.daocloud.io/library/python:3.10-slim
+FROM ${PYTHON_BASE_IMAGE}
 
 WORKDIR /app
 
@@ -22,8 +23,8 @@ ENV HF_FALLBACK_ENDPOINTS=${HF_FALLBACK_ENDPOINTS}
 RUN pip install --no-cache-dir -i ${PYPI_INDEX_URL} \
     --trusted-host ${PYPI_TRUSTED_HOST} \
     flask==3.0.2 \
-    huggingface_hub>=0.23.0 \
-    numpy>=1.26
+    'huggingface_hub>=0.23.0' \
+    'numpy>=1.26'
 
 # Copy shared code
 COPY download_model.py .

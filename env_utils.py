@@ -5,6 +5,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import urlparse
+
+from config import HF_MIRROR_ENDPOINT
 
 
 def _iter_env_files(project_dir: str | os.PathLike[str]) -> Iterable[Path]:
@@ -36,6 +39,41 @@ def load_project_env(project_dir: str | os.PathLike[str]) -> None:
             os.environ.setdefault(key, value)
 
 
+def _endpoint_host(endpoint: str) -> str:
+    parsed = urlparse(endpoint)
+    host = parsed.netloc or parsed.path
+    return host.strip().lower().rstrip("/")
+
+
+def _append_no_proxy_host(host: str) -> None:
+    if not host:
+        return
+
+    for key in ("NO_PROXY", "no_proxy"):
+        current = os.environ.get(key, "")
+        parts = [part.strip() for part in current.split(",") if part.strip()]
+        known = {part.lower() for part in parts}
+        if host not in known:
+            os.environ[key] = ",".join(parts + [host]) if parts else host
+
+
+def _set_default_if_blank(key: str, value: str) -> None:
+    if not os.environ.get(key, "").strip():
+        os.environ[key] = value
+
+
+def configure_hf_network() -> str:
+    """Normalize host-side Hugging Face endpoint and proxy bypass for metadata calls."""
+    endpoint = (os.environ.get("HF_ENDPOINT") or os.environ.get("HF_HUB_ENDPOINT") or "").strip()
+    if not endpoint:
+        endpoint = HF_MIRROR_ENDPOINT
+
+    _set_default_if_blank("HF_ENDPOINT", endpoint)
+    _set_default_if_blank("HF_HUB_ENDPOINT", endpoint)
+    _append_no_proxy_host(_endpoint_host(endpoint))
+    return endpoint
+
+
 def resolve_hf_token() -> str | None:
     """Populate HF_TOKEN from env or local Hugging Face login when available."""
     token = (os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN") or "").strip()
@@ -58,4 +96,5 @@ def resolve_hf_token() -> str | None:
 def bootstrap_project_env(project_dir: str | os.PathLike[str]) -> str | None:
     """Load project env files and normalize Hugging Face auth env vars."""
     load_project_env(project_dir)
+    configure_hf_network()
     return resolve_hf_token()

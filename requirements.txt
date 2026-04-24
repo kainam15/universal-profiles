@@ -4,6 +4,7 @@
 # Core
 requests>=2.31
 huggingface_hub>=0.23.0
+socksio>=1.0.0
 
 # Plotting (optional)
 pandas>=2.0
