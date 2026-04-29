@@ -59,7 +59,7 @@ python run.py --model google-bert/bert-base-uncased
 - input scale: 自动规划 6 档
 - warmup: 2
 - repeat: 5
-- repeat-in-window: 20 requests per row
+- repeat-in-window: 自动按当前 case / input scale 的单次推理时间校准，默认目标约 10 秒 workload window
 
 默认完整矩阵较慢。开发和验证建议先跑小矩阵：
 
@@ -190,9 +190,10 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `--batch-size` | `1` | 每个 request 的 batch size。 |
 | `--warmup` | `2` | 每个资源配置、每个 input scale 的 warmup 行数。 |
 | `--repeat` | `5` | 每个资源配置、每个 input scale 的正式测量行数。 |
-| `--repeat-in-window` | `20` | 每一行内部连续发送的 `/predict` request 数量。 |
+| `--repeat-in-window` | `0` | 每一行内部连续发送的 `/predict` request 数量。`0` 表示按单次推理时间自动校准。 |
+| `--repeat-window-seconds` | `10.0` | `--repeat-in-window 0` 时的目标 workload window 秒数。 |
 | `--sample-hz` | `20.0` | GPU power sampling rate，单位 Hz。 |
-| `--idle-seconds` | `3.0` | GPU idle baseline 测量时长。 |
+| `--idle-seconds` | `3.0` | 每个 workload window 前的 GPU idle baseline 测量时长。GPU mode 为 `on` 时，case 结束后会复查该 case CSV 中所有有效 `gpu_idle_power_w` 的相对极差；达到或超过 5% 会退出实验并提示增大该值或稳定 GPU 环境。 |
 | `--input-scales` | auto | 手动覆盖 input scale 列表。未提供时自动规划 6 档。 |
 | `--no-compute-profile` | false | 禁用 MFLOPS compute profiling。 |
 | `--compute-profile-tool` | `auto` | `auto` / `torch` 使用 PyTorch profiler；`vendor` 使用 Intel Advisor / ncu。 |
@@ -262,14 +263,14 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `compute_mflops_app` | `model_mflop_per_request / latency_app_s`，单位 MFLOPS。 |
 | `compute_mflops` | 默认等于 `compute_mflops_app`；如果 `latency_s` 成功 merge，则用 packet-level `latency_s` 重算。 |
 | `compute_profile_error` | compute profiling 的诊断信息。正常为空；工具缺失、性能计数器受限、报告解析失败时记录原因。 |
-| `idle_power_w` | GPU idle baseline power，单位 W。仅 `gpu_mode=on` 且 NVML 可用时有值。 |
-| `energy_iters` | GPU energy measurement 内部采样窗口中的 iteration 数。 |
-| `avg_power_total_w` | 测量窗口内 GPU total average power，单位 W。 |
-| `peak_power_total_w` | 测量窗口内 GPU total peak power，单位 W。 |
-| `energy_total_j` | 本行平均到单 request 的 total GPU energy，单位 J。 |
-| `avg_power_eff_w` | 扣除 idle baseline 后的 effective average power，单位 W。 |
-| `peak_power_eff_w` | 扣除 idle baseline 后的 effective peak power，单位 W。 |
-| `energy_eff_j` | 本行平均到单 request 的 effective GPU energy，单位 J。 |
+| `gpu_idle_power_w` | GPU idle baseline power，单位 W。仅 `gpu_mode=on` 且 NVML 可用时有值。 |
+| `gpu_energy_iters` | GPU energy measurement 内部采样窗口中的 iteration 数。 |
+| `gpu_avg_power_total_w` | 测量窗口内 GPU total average power，单位 W。 |
+| `gpu_peak_power_total_w` | 测量窗口内 GPU total peak power，单位 W。 |
+| `gpu_energy_total_j` | 本行平均到单 request 的 total GPU energy，单位 J。 |
+| `gpu_avg_power_eff_w` | 扣除 idle baseline 后的 effective average power，单位 W。 |
+| `gpu_peak_power_eff_w` | 扣除 idle baseline 后的 effective peak power，单位 W。 |
+| `gpu_energy_eff_j` | 本行平均到单 request 的 effective GPU energy，单位 J。 |
 | `cpu_idle_power_w` | CPU package idle baseline power，单位 W。仅 Linux/WSL 暴露 RAPL `/sys/class/powercap/*/energy_uj` 时有值。 |
 | `cpu_energy_iters` | CPU package energy measurement 采样窗口中的 sample 数。 |
 | `cpu_avg_power_total_w` | 测量窗口内 host CPU package total average power，单位 W。 |
@@ -346,10 +347,10 @@ len(cpus) * len(mems) * len(gpus) * len(input_scales) * (warmup + repeat)
 repeat_in_window
 ```
 
-个 `/predict` request。因此默认完整 run 的 request 数较大：
+个 `/predict` request。默认 `repeat_in_window=0` 会先对每个 resource case / input scale 发 3 个校准请求，并按 `--repeat-window-seconds` 计算实际 request 数；因此默认完整 run 的 request 数取决于模型单次推理延迟。手动指定固定窗口时，请按下式估算：
 
 ```text
-4 CPU * 4 MEM * 2 GPU * 6 scales * (2 warmup + 5 repeat) * 20 requests = 26880 requests
+len(cpus) * len(mems) * len(gpus) * len(input_scales) * (warmup + repeat) * repeat_in_window
 ```
 
 ## 11. 常见判断

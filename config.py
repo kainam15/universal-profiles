@@ -126,7 +126,8 @@ DEFAULT_GPU_LIST = ["off", "on"]
 DEFAULT_BATCH_SIZE = 1
 DEFAULT_WARMUP = 2
 DEFAULT_REPEAT = 5
-DEFAULT_REPEAT_IN_WINDOW = 20
+DEFAULT_REPEAT_IN_WINDOW = 0
+DEFAULT_REPEAT_WINDOW_SECONDS = 10.0
 DEFAULT_SAMPLE_HZ = 20.0
 DEFAULT_IDLE_SECONDS = 3.0
 DEFAULT_COOLDOWN_SECONDS = 3
@@ -154,14 +155,14 @@ CSV_FIELDS = [
     "compute_mflops_app",
     "compute_mflops",
     "compute_profile_error",
-    "idle_power_w",
-    "energy_iters",
-    "avg_power_total_w",
-    "peak_power_total_w",
-    "energy_total_j",
-    "avg_power_eff_w",
-    "peak_power_eff_w",
-    "energy_eff_j",
+    "gpu_idle_power_w",
+    "gpu_energy_iters",
+    "gpu_avg_power_total_w",
+    "gpu_peak_power_total_w",
+    "gpu_energy_total_j",
+    "gpu_avg_power_eff_w",
+    "gpu_peak_power_eff_w",
+    "gpu_energy_eff_j",
     "cpu_idle_power_w",
     "cpu_energy_iters",
     "cpu_avg_power_total_w",

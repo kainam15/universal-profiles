@@ -1,3 +1,4 @@
+import csv
 import json
 import os
 import tempfile
@@ -6,8 +7,26 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import orchestrator
-from config import STATIC_META_FIELDS
+from config import CSV_FIELDS, STATIC_META_FIELDS
 from detect import TaskInfo
+
+
+def _write_gpu_case_csv(path: str, idle_power_values: list[float]) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        writer.writeheader()
+        for idx, idle_power_w in enumerate(idle_power_values):
+            row = {field: "nan" for field in CSV_FIELDS}
+            row.update({
+                "gpu_mode": "on",
+                "gpu_idle_power_w": str(idle_power_w),
+                "repeat_idx": str(idx),
+                "warmup": "0",
+                "status": "ok",
+                "error": "",
+            })
+            writer.writerow(row)
 
 
 class DetectEnvironmentTests(unittest.TestCase):
@@ -303,6 +322,241 @@ class DetectEnvironmentTests(unittest.TestCase):
             captured_env["COMPUTE_PROFILE_PLAN_FILE"],
             "results/test-unit/compute_profile_plan.json",
         )
+
+    def test_run_single_case_passes_auto_repeat_window_settings_to_client(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+        captured_env = {}
+
+        def fake_run(cmd, check=True, capture=True, **kwargs):
+            if cmd and str(cmd[-1]).endswith("client.py"):
+                captured_env.update(kwargs.get("env", {}))
+                _write_gpu_case_csv(captured_env["OUT_CSV"], [10.0])
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch(
+            "orchestrator._start_container_session",
+            return_value=orchestrator.RunningContainer(
+                name="case_google-bert--bert-base-uncased_1c_4g_on",
+                base_url="http://127.0.0.1:8106",
+                host_port=8106,
+                cold_start_s=1.0,
+            ),
+        ), patch("orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
+            "orchestrator._stop_container_session"
+        ), patch("orchestrator._run", side_effect=fake_run):
+            orchestrator.run_single_case(
+                task_info=task_info,
+                cpu=1,
+                mem=4,
+                gpu="on",
+                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                output_dir="results/test-unit",
+                project_dir=".",
+                warmup=0,
+                repeat=1,
+                repeat_in_window=0,
+                repeat_window_seconds=10.0,
+                input_scales="64",
+                require_packet_latency=False,
+            )
+
+        self.assertEqual(captured_env["REPEAT_IN_WINDOW"], "0")
+        self.assertEqual(captured_env["REPEAT_WINDOW_SECONDS"], "10.0")
+
+    def test_run_single_case_preserves_manual_repeat_window_to_client(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+        captured_env = {}
+
+        def fake_run(cmd, check=True, capture=True, **kwargs):
+            if cmd and str(cmd[-1]).endswith("client.py"):
+                captured_env.update(kwargs.get("env", {}))
+                _write_gpu_case_csv(captured_env["OUT_CSV"], [10.0])
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch(
+            "orchestrator._start_container_session",
+            return_value=orchestrator.RunningContainer(
+                name="case_google-bert--bert-base-uncased_1c_4g_on",
+                base_url="http://127.0.0.1:8106",
+                host_port=8106,
+                cold_start_s=1.0,
+            ),
+        ), patch("orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
+            "orchestrator._stop_container_session"
+        ), patch("orchestrator._run", side_effect=fake_run):
+            orchestrator.run_single_case(
+                task_info=task_info,
+                cpu=1,
+                mem=4,
+                gpu="on",
+                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                output_dir="results/test-unit",
+                project_dir=".",
+                warmup=0,
+                repeat=1,
+                repeat_in_window=1000,
+                repeat_window_seconds=10.0,
+                input_scales="64",
+                require_packet_latency=False,
+            )
+
+        self.assertEqual(captured_env["REPEAT_IN_WINDOW"], "1000")
+        self.assertEqual(captured_env["REPEAT_WINDOW_SECONDS"], "10.0")
+
+    def test_run_single_case_aborts_when_client_exits_nonzero(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+
+        def fake_run(cmd, check=True, capture=True, **kwargs):
+            if cmd and str(cmd[-1]).endswith("client.py"):
+                return SimpleNamespace(returncode=7, stdout="", stderr="idle unstable")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch(
+            "orchestrator._start_container_session",
+            return_value=orchestrator.RunningContainer(
+                name="case_google-bert--bert-base-uncased_1c_4g_on",
+                base_url="http://127.0.0.1:8106",
+                host_port=8106,
+                cold_start_s=1.0,
+            ),
+        ), patch("orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
+            "orchestrator._stop_container_session"
+        ), patch("orchestrator._run", side_effect=fake_run):
+            with self.assertRaises(orchestrator.EnergyProfilingError) as raised:
+                orchestrator.run_single_case(
+                    task_info=task_info,
+                    cpu=1,
+                    mem=4,
+                    gpu="on",
+                    image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                    output_dir="results/test-unit",
+                    project_dir=".",
+                    warmup=0,
+                    repeat=1,
+                    repeat_in_window=0,
+                    input_scales="64",
+                    require_packet_latency=False,
+                )
+
+        self.assertIn("client.py exited with code 7", str(raised.exception))
+
+    def test_run_single_case_accepts_stable_idle_power_case_csv(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+
+        def fake_run(cmd, check=True, capture=True, **kwargs):
+            if cmd and str(cmd[-1]).endswith("client.py"):
+                _write_gpu_case_csv(kwargs["env"]["OUT_CSV"], [10.0, 10.2, 10.1])
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as tmp_dir, patch(
+            "orchestrator._start_container_session",
+            return_value=orchestrator.RunningContainer(
+                name="case_google-bert--bert-base-uncased_1c_4g_on",
+                base_url="http://127.0.0.1:8106",
+                host_port=8106,
+                cold_start_s=1.0,
+            ),
+        ), patch("orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
+            "orchestrator._stop_container_session"
+        ), patch("orchestrator._run", side_effect=fake_run):
+            csv_path = orchestrator.run_single_case(
+                task_info=task_info,
+                cpu=1,
+                mem=4,
+                gpu="on",
+                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                output_dir=tmp_dir,
+                project_dir=".",
+                warmup=0,
+                repeat=3,
+                repeat_in_window=1,
+                input_scales="64",
+                require_packet_latency=False,
+            )
+
+        self.assertTrue(csv_path.endswith(".csv"))
+
+    def test_run_single_case_aborts_when_case_idle_power_csv_is_unstable(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+
+        def fake_run(cmd, check=True, capture=True, **kwargs):
+            if cmd and str(cmd[-1]).endswith("client.py"):
+                _write_gpu_case_csv(kwargs["env"]["OUT_CSV"], [10.0, 10.7, 10.2])
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as tmp_dir, patch(
+            "orchestrator._start_container_session",
+            return_value=orchestrator.RunningContainer(
+                name="case_google-bert--bert-base-uncased_1c_4g_on",
+                base_url="http://127.0.0.1:8106",
+                host_port=8106,
+                cold_start_s=1.0,
+            ),
+        ), patch("orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
+            "orchestrator._stop_container_session"
+        ), patch("orchestrator._run", side_effect=fake_run):
+            with self.assertRaises(orchestrator.EnergyProfilingError) as raised:
+                orchestrator.run_single_case(
+                    task_info=task_info,
+                    cpu=1,
+                    mem=4,
+                    gpu="on",
+                    image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                    output_dir=tmp_dir,
+                    project_dir=".",
+                    warmup=0,
+                    repeat=3,
+                    repeat_in_window=1,
+                    input_scales="64",
+                    require_packet_latency=False,
+                )
+
+        message = str(raised.exception)
+        self.assertIn("gpu_idle_power_w", message)
+        self.assertIn("6.8%", message)
+        self.assertIn("5.0%", message)
+        self.assertIn("--idle-seconds", message)
+        self.assertIn("GPU processes", message)
 
     def test_resolve_packet_latency_runtime_uses_wsl_tools_on_windows_wsl(self) -> None:
         project_dir = r"D:\DOR\universal-profiles"

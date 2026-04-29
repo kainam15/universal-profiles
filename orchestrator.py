@@ -4,6 +4,7 @@ Python replacement for run_case.sh / run_matrix.sh.
 """
 from __future__ import annotations
 
+import csv
 import json
 import math
 import ntpath
@@ -21,6 +22,7 @@ from urllib.parse import urlparse
 
 from config import (
     DEFAULT_REPEAT_IN_WINDOW,
+    DEFAULT_REPEAT_WINDOW_SECONDS,
     DOCKER_IMAGE_PREFIX,
     HF_MIRROR_ENDPOINT,
     PYPI_MIRROR_INDEX,
@@ -83,6 +85,11 @@ class PacketLatencyError(RuntimeError):
     """Raised when required packet-level latency cannot be collected."""
 
 
+class EnergyProfilingError(RuntimeError):
+    """Raised when energy profiling cannot continue reliably."""
+
+
+IDLE_POWER_RELATIVE_RANGE_THRESHOLD = 0.05
 AUTO_INPUT_SCALE_COUNT = 6
 DEFAULT_NLP_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu128"
 CUDA124_NLP_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu124"
@@ -204,6 +211,83 @@ def _build_model_download_url(model_id: str) -> str:
 
 def _normalize_gpu_mode(gpu: str) -> str:
     return "on" if str(gpu).lower() == "on" else "off"
+
+
+def _format_watts(values: List[float]) -> str:
+    return "[" + ", ".join(f"{value:.3f}" for value in values) + "]"
+
+
+def _parse_csv_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def _assert_case_idle_power_stable(
+    csv_path: str,
+    threshold: float = IDLE_POWER_RELATIVE_RANGE_THRESHOLD,
+) -> None:
+    """Validate that GPU idle baseline did not drift across a finished case CSV."""
+    if not os.path.exists(csv_path):
+        raise EnergyProfilingError(
+            f"gpu_idle_power_w case validation failed: result CSV does not exist: {csv_path}"
+        )
+
+    gpu_rows = 0
+    invalid_rows = 0
+    idle_values: List[float] = []
+    with open(csv_path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if _normalize_gpu_mode(row.get("gpu_mode", "off")) != "on":
+                continue
+            gpu_rows += 1
+            gpu_idle_power_w = _parse_csv_float(
+                row.get("gpu_idle_power_w", row.get("idle_power_w"))
+            )
+            if not math.isfinite(gpu_idle_power_w) or gpu_idle_power_w <= 0.0:
+                invalid_rows += 1
+                continue
+            idle_values.append(gpu_idle_power_w)
+
+    if gpu_rows == 0:
+        return
+    if invalid_rows or not idle_values:
+        raise EnergyProfilingError(
+            "gpu_idle_power_w case validation failed: "
+            f"csv={csv_path}, valid_rows={len(idle_values)}, invalid_rows={invalid_rows}. "
+            "This case's energy data is not reliable. Increase --idle-seconds, close other "
+            "GPU processes, wait for GPU clocks/power to stabilize, then rerun."
+        )
+
+    mean_idle = sum(idle_values) / len(idle_values)
+    if mean_idle <= 0.0:
+        raise EnergyProfilingError(
+            "gpu_idle_power_w case validation failed: idle baseline mean is not positive. "
+            f"csv={csv_path}. This case's energy data is not reliable. Increase "
+            "--idle-seconds, close other GPU processes, wait for GPU clocks/power to "
+            "stabilize, then rerun."
+        )
+
+    relative_range = (max(idle_values) - min(idle_values)) / mean_idle
+    if relative_range >= threshold:
+        raise EnergyProfilingError(
+            "gpu_idle_power_w case validation failed: "
+            f"csv={csv_path}, gpu_idle_power_w={_format_watts(idle_values)} W, "
+            f"min={min(idle_values):.3f} W, max={max(idle_values):.3f} W, "
+            f"mean={mean_idle:.3f} W, relative_range={relative_range * 100.0:.1f}%, "
+            f"threshold={threshold * 100.0:.1f}%. This case's energy data is not "
+            "reliable. Increase --idle-seconds, close other GPU processes, wait for "
+            "GPU clocks/power to stabilize, then rerun."
+        )
+
+    print(
+        "[energy] gpu_idle_power_w case check passed: "
+        f"rows={len(idle_values)}, min={min(idle_values):.3f} W, "
+        f"max={max(idle_values):.3f} W, mean={mean_idle:.3f} W, "
+        f"relative_range={relative_range * 100.0:.1f}%",
+    )
 
 
 def _host_port(cpu: int, mem: int) -> int:
@@ -1452,6 +1536,7 @@ def _run_single_case_legacy(
     warmup: int = 2,
     repeat: int = 5,
     repeat_in_window: int = DEFAULT_REPEAT_IN_WINDOW,
+    repeat_window_seconds: float = DEFAULT_REPEAT_WINDOW_SECONDS,
     sample_hz: float = 20.0,
     idle_seconds: float = 3.0,
     sniff_iface: str = "docker0",
@@ -1682,6 +1767,7 @@ def run_single_case(
     warmup: int = 2,
     repeat: int = 5,
     repeat_in_window: int = DEFAULT_REPEAT_IN_WINDOW,
+    repeat_window_seconds: float = DEFAULT_REPEAT_WINDOW_SECONDS,
     sample_hz: float = 20.0,
     idle_seconds: float = 3.0,
     sniff_iface: str = "docker0",
@@ -1775,6 +1861,7 @@ def run_single_case(
             "WARMUP": str(warmup),
             "REPEAT": str(repeat),
             "REPEAT_IN_WINDOW": str(repeat_in_window),
+            "REPEAT_WINDOW_SECONDS": str(repeat_window_seconds),
             "COLD_START_S": f"{cold_start_s:.3f}",
             "OUT_CSV": out_csv,
             "CASE_NAME": case_name,
@@ -1795,7 +1882,11 @@ def run_single_case(
         )
 
         if client_result.returncode != 0:
-            print(f"[case] Client exited with code {client_result.returncode}")
+            raise EnergyProfilingError(
+                "client.py exited with code "
+                f"{client_result.returncode}; aborting profiling matrix. "
+                "Review the client output above for the energy stability diagnostic."
+            )
 
         if tcpdump_proc is not None:
             time.sleep(1.0)
@@ -1861,6 +1952,9 @@ def run_single_case(
                 os.replace(merged_csv, out_csv)
                 if require_packet_latency:
                     _assert_packet_latency_csv_complete(out_csv)
+
+        if _normalize_gpu_mode(gpu) == "on":
+            _assert_case_idle_power_stable(out_csv)
     finally:
         if tcpdump_proc is not None and tcpdump_proc.poll() is None:
             tcpdump_proc.terminate()
@@ -1886,6 +1980,7 @@ def run_matrix(
     warmup: int = 2,
     repeat: int = 5,
     repeat_in_window: int = DEFAULT_REPEAT_IN_WINDOW,
+    repeat_window_seconds: float = DEFAULT_REPEAT_WINDOW_SECONDS,
     sample_hz: float = 20.0,
     idle_seconds: float = 3.0,
     sniff_iface: str = "docker0",
@@ -1920,6 +2015,7 @@ def run_matrix(
                     warmup=warmup,
                     repeat=repeat,
                     repeat_in_window=repeat_in_window,
+                    repeat_window_seconds=repeat_window_seconds,
                     sample_hz=sample_hz,
                     idle_seconds=idle_seconds,
                     sniff_iface=sniff_iface,

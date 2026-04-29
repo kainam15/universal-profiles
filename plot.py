@@ -24,6 +24,15 @@ CPU_FIXED_COLORS = {
     4: (0.84, 0.15, 0.16),
     8: (0.58, 0.40, 0.74),
 }
+GPU_METRIC_ALIASES = {
+    "energy_iters": "gpu_energy_iters",
+    "avg_power_total_w": "gpu_avg_power_total_w",
+    "peak_power_total_w": "gpu_peak_power_total_w",
+    "energy_total_j": "gpu_energy_total_j",
+    "avg_power_eff_w": "gpu_avg_power_eff_w",
+    "peak_power_eff_w": "gpu_peak_power_eff_w",
+    "energy_eff_j": "gpu_energy_eff_j",
+}
 
 
 def make_config_label(row) -> str:
@@ -45,10 +54,15 @@ def prepare_df(csv_path: str) -> pd.DataFrame:
         raise FileNotFoundError(f"Cannot find {csv_path}")
 
     df = pd.read_csv(csv_path)
+    for old_name, new_name in GPU_METRIC_ALIASES.items():
+        if new_name not in df.columns and old_name in df.columns:
+            df[new_name] = df[old_name]
 
     num_cols = [
         "input_scale", "latency_s", "latency_app_s",
-        "avg_power_eff_w", "peak_power_eff_w", "energy_eff_j",
+        "gpu_energy_iters",
+        "gpu_avg_power_total_w", "gpu_peak_power_total_w", "gpu_energy_total_j",
+        "gpu_avg_power_eff_w", "gpu_peak_power_eff_w", "gpu_energy_eff_j",
         "cpu_avg_power_eff_w", "cpu_peak_power_eff_w", "cpu_energy_eff_j",
         "vcpu_avg_power_eff_w", "vcpu_peak_power_eff_w", "vcpu_energy_eff_j",
         "vcpu_cpu_share", "vcpu_cpu_time_s",
@@ -343,14 +357,14 @@ def main():
     )
 
     plot_metric(
-        df, metric="avg_power_eff_w",
+        df, metric="gpu_avg_power_eff_w",
         title="Average Effective Power vs. Input Scale",
         ylabel="Power (W)", xlabel=xlabel,
         out_png=os.path.join(output_dir, "avg_power_vs_scale.png") if SAVE_PNG else None,
     )
 
     plot_metric(
-        df, metric="energy_eff_j",
+        df, metric="gpu_energy_eff_j",
         title="Effective Energy vs. Input Scale",
         ylabel="Energy (J)", xlabel=xlabel,
         out_png=os.path.join(output_dir, "energy_vs_scale.png") if SAVE_PNG else None,

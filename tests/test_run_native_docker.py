@@ -1,9 +1,14 @@
+import io
 import sys
+import tempfile
 import unittest
+from contextlib import redirect_stderr
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import orchestrator
 import run
+from detect import TaskInfo
 
 
 class NativeDockerGuardTests(unittest.TestCase):
@@ -88,6 +93,70 @@ class NativeDockerGuardTests(unittest.TestCase):
             project_dir=run.PROJECT_DIR,
             sniff_iface="docker0",
         )
+
+    def test_main_defaults_to_auto_repeat_window_and_reports_energy_abort(self) -> None:
+        task_info = TaskInfo(
+            model_id="dummy-model",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="unit",
+        )
+        stderr = io.StringIO()
+
+        with tempfile.TemporaryDirectory() as tmp_dir, patch.object(
+            sys,
+            "argv",
+            [
+                "run.py",
+                "--model",
+                "dummy-model",
+                "--skip-build",
+                "--no-compute-profile",
+                "--cpus",
+                "1",
+                "--mems",
+                "2",
+                "--gpus",
+                "on",
+                "--output-dir",
+                tmp_dir,
+            ],
+        ), patch(
+            "run.bootstrap_project_env",
+            return_value=None,
+        ), patch(
+            "run.require_native_docker"
+        ), patch(
+            "run.require_packet_latency_prerequisites"
+        ), patch(
+            "detect.detect_task",
+            return_value=task_info,
+        ), patch(
+            "orchestrator.collect_static_meta",
+            return_value=SimpleNamespace(),
+        ), patch(
+            "orchestrator.write_static_meta_csv"
+        ), patch(
+            "orchestrator.plan_input_scales",
+            return_value=orchestrator.PlannedInputScales(
+                scales=[1.0],
+                source="unit",
+                plan_file=None,
+            ),
+        ), patch(
+            "orchestrator.run_matrix",
+            side_effect=orchestrator.EnergyProfilingError("gpu_idle_power_w unstable"),
+        ) as run_matrix, self.assertRaises(SystemExit) as raised, redirect_stderr(stderr):
+            run.main()
+
+        self.assertEqual(raised.exception.code, 1)
+        self.assertIn("[energy][ERROR] gpu_idle_power_w unstable", stderr.getvalue())
+        _, kwargs = run_matrix.call_args
+        self.assertEqual(kwargs["repeat_in_window"], 0)
+        self.assertEqual(kwargs["repeat_window_seconds"], 10.0)
 
 
 if __name__ == "__main__":

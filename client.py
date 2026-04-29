@@ -8,6 +8,7 @@ import csv
 import json
 import math
 import os
+import sys
 import time
 from typing import Any, Dict, List, Optional
 
@@ -27,7 +28,13 @@ _ensure_local_proxy_bypass()
 
 import requests
 
-from config import CSV_FIELDS, SCALING_DIMENSIONS, DEFAULT_TASK_PARAMS
+from config import (
+    CSV_FIELDS,
+    DEFAULT_REPEAT_IN_WINDOW,
+    DEFAULT_REPEAT_WINDOW_SECONDS,
+    DEFAULT_TASK_PARAMS,
+    SCALING_DIMENSIONS,
+)
 
 # ─────────────────────────────────────────────
 # Config from env
@@ -50,7 +57,9 @@ ENDPOINT = os.getenv("ENDPOINT", "/predict")
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "1"))
 WARMUP = int(os.getenv("WARMUP", "2"))
 REPEAT = int(os.getenv("REPEAT", "5"))
-REPEAT_IN_WINDOW = int(os.getenv("REPEAT_IN_WINDOW", "20"))
+REPEAT_IN_WINDOW = int(os.getenv("REPEAT_IN_WINDOW", str(DEFAULT_REPEAT_IN_WINDOW)))
+REPEAT_WINDOW_SECONDS = float(os.getenv("REPEAT_WINDOW_SECONDS", str(DEFAULT_REPEAT_WINDOW_SECONDS)))
+CALIBRATION_REQUESTS = 3
 
 COLD_START_S = os.getenv("COLD_START_S", "nan")
 OUT_CSV = os.getenv("OUT_CSV", "result.csv")
@@ -103,6 +112,20 @@ def _fmt_float(x: float) -> str:
     return f"{x:.6f}"
 
 
+class EnergyAbort(RuntimeError):
+    """Raised when energy measurement prerequisites are not stable enough."""
+
+
+def _median(xs: List[float]) -> float:
+    if not xs:
+        return float("nan")
+    values = sorted(xs)
+    n = len(values)
+    if n % 2:
+        return values[n // 2]
+    return 0.5 * (values[n // 2 - 1] + values[n // 2])
+
+
 def _eff_negative_warnings(
     *,
     avg_power_eff_w: float,
@@ -110,9 +133,9 @@ def _eff_negative_warnings(
     energy_eff_j: float,
 ) -> List[str]:
     metrics = [
-        ("avg_power_eff_w", avg_power_eff_w),
-        ("peak_power_eff_w", peak_power_eff_w),
-        ("energy_eff_j", energy_eff_j),
+        ("gpu_avg_power_eff_w", avg_power_eff_w),
+        ("gpu_peak_power_eff_w", peak_power_eff_w),
+        ("gpu_energy_eff_j", energy_eff_j),
     ]
     return [f"{name}<0" for name, value in metrics if value == value and value < 0.0]
 
@@ -228,6 +251,41 @@ def _compute_mflops(model_mflop_per_request: float, latency_s: float) -> float:
     if mflop == mflop and latency == latency and latency > 0:
         return mflop / latency
     return float("nan")
+
+
+def _calibrate_repeat_in_window(
+    scale_value: float,
+    scale_label: str,
+    payload_override: Optional[Dict[str, Any]],
+) -> int:
+    if REPEAT_IN_WINDOW > 0:
+        return REPEAT_IN_WINDOW
+    if REPEAT_WINDOW_SECONDS <= 0.0:
+        raise EnergyAbort(
+            f"invalid REPEAT_WINDOW_SECONDS={REPEAT_WINDOW_SECONDS!r}; expected a positive value"
+        )
+
+    latencies: List[float] = []
+    for idx in range(CALIBRATION_REQUESTS):
+        req_id = f"{CASE_NAME}_{scale_label}_calib{idx}"
+        out = _one_request(scale_value, req_id=req_id, payload_override=payload_override)
+        latency = _to_float_or_nan(out.get("latency_app_s"))
+        if not math.isfinite(latency) or latency <= 0.0:
+            raise EnergyAbort(
+                "repeat-in-window auto calibration failed: calibration request returned "
+                f"invalid latency_app_s={latency!r} for input_scale={scale_value:g}"
+            )
+        latencies.append(latency)
+
+    median_latency = _median(latencies)
+    repeat_in_window = max(1, int(math.ceil(REPEAT_WINDOW_SECONDS / median_latency)))
+    print(
+        "[client] auto repeat-in-window "
+        f"scale={scale_value:g} median_latency_s={median_latency:.6f} "
+        f"target_window_s={REPEAT_WINDOW_SECONDS:.3f} repeat_in_window={repeat_in_window}",
+        flush=True,
+    )
+    return repeat_in_window
 
 
 # ─────────────────────────────────────────────
@@ -367,14 +425,14 @@ except Exception as _e:
 
 
 GPU_METRIC_FIELDS = [
-    "idle_power_w",
-    "energy_iters",
-    "avg_power_total_w",
-    "peak_power_total_w",
-    "energy_total_j",
-    "avg_power_eff_w",
-    "peak_power_eff_w",
-    "energy_eff_j",
+    "gpu_idle_power_w",
+    "gpu_energy_iters",
+    "gpu_avg_power_total_w",
+    "gpu_peak_power_total_w",
+    "gpu_energy_total_j",
+    "gpu_avg_power_eff_w",
+    "gpu_peak_power_eff_w",
+    "gpu_energy_eff_j",
 ]
 
 CPU_METRIC_FIELDS = [
@@ -425,37 +483,37 @@ def _divide_if_number(value: float, divisor: float) -> float:
     return value
 
 
-def _gpu_metrics_from_result(result: Any) -> Dict[str, float]:
+def _gpu_metrics_from_result(result: Any, repeat_in_window: int) -> Dict[str, float]:
     return {
-        "idle_power_w": _to_float_or_nan(result.idle_power_w),
-        "energy_iters": float(result.energy_iters),
-        "avg_power_total_w": _to_float_or_nan(result.avg_power_total_w),
-        "peak_power_total_w": _to_float_or_nan(result.peak_power_total_w),
-        "energy_total_j": _divide_if_number(result.energy_total_j, float(REPEAT_IN_WINDOW)),
-        "avg_power_eff_w": _to_float_or_nan(result.avg_power_eff_w),
-        "peak_power_eff_w": _to_float_or_nan(result.peak_power_eff_w),
-        "energy_eff_j": _divide_if_number(result.energy_eff_j, float(REPEAT_IN_WINDOW)),
+        "gpu_idle_power_w": _to_float_or_nan(result.idle_power_w),
+        "gpu_energy_iters": float(result.energy_iters),
+        "gpu_avg_power_total_w": _to_float_or_nan(result.avg_power_total_w),
+        "gpu_peak_power_total_w": _to_float_or_nan(result.peak_power_total_w),
+        "gpu_energy_total_j": _divide_if_number(result.energy_total_j, float(repeat_in_window)),
+        "gpu_avg_power_eff_w": _to_float_or_nan(result.avg_power_eff_w),
+        "gpu_peak_power_eff_w": _to_float_or_nan(result.peak_power_eff_w),
+        "gpu_energy_eff_j": _divide_if_number(result.energy_eff_j, float(repeat_in_window)),
     }
 
 
-def _cpu_metrics_from_result(result: Any) -> Dict[str, float]:
+def _cpu_metrics_from_result(result: Any, repeat_in_window: int) -> Dict[str, float]:
     return {
         "cpu_idle_power_w": _to_float_or_nan(result.cpu_idle_power_w),
         "cpu_energy_iters": float(result.cpu_energy_iters),
         "cpu_avg_power_total_w": _to_float_or_nan(result.cpu_avg_power_total_w),
         "cpu_peak_power_total_w": _to_float_or_nan(result.cpu_peak_power_total_w),
-        "cpu_energy_total_j": _divide_if_number(result.cpu_energy_total_j, float(REPEAT_IN_WINDOW)),
+        "cpu_energy_total_j": _divide_if_number(result.cpu_energy_total_j, float(repeat_in_window)),
         "cpu_avg_power_eff_w": _to_float_or_nan(result.cpu_avg_power_eff_w),
         "cpu_peak_power_eff_w": _to_float_or_nan(result.cpu_peak_power_eff_w),
-        "cpu_energy_eff_j": _divide_if_number(result.cpu_energy_eff_j, float(REPEAT_IN_WINDOW)),
+        "cpu_energy_eff_j": _divide_if_number(result.cpu_energy_eff_j, float(repeat_in_window)),
         "vcpu_cpu_share": _to_float_or_nan(result.vcpu_cpu_share),
-        "vcpu_cpu_time_s": _divide_if_number(result.vcpu_cpu_time_s, float(REPEAT_IN_WINDOW)),
+        "vcpu_cpu_time_s": _divide_if_number(result.vcpu_cpu_time_s, float(repeat_in_window)),
         "vcpu_avg_power_total_w": _to_float_or_nan(result.vcpu_avg_power_total_w),
         "vcpu_peak_power_total_w": _to_float_or_nan(result.vcpu_peak_power_total_w),
-        "vcpu_energy_total_j": _divide_if_number(result.vcpu_energy_total_j, float(REPEAT_IN_WINDOW)),
+        "vcpu_energy_total_j": _divide_if_number(result.vcpu_energy_total_j, float(repeat_in_window)),
         "vcpu_avg_power_eff_w": _to_float_or_nan(result.vcpu_avg_power_eff_w),
         "vcpu_peak_power_eff_w": _to_float_or_nan(result.vcpu_peak_power_eff_w),
-        "vcpu_energy_eff_j": _divide_if_number(result.vcpu_energy_eff_j, float(REPEAT_IN_WINDOW)),
+        "vcpu_energy_eff_j": _divide_if_number(result.vcpu_energy_eff_j, float(repeat_in_window)),
     }
 
 
@@ -499,6 +557,12 @@ def _append_row(
 
 
 def main() -> None:
+    if USE_ENERGY and energy_mod is None:
+        raise EnergyAbort(
+            "GPU energy monitoring is required for gpu_mode=on but NVML/pynvml is unavailable. "
+            "Install pynvml, verify NVIDIA driver access, or rerun with --gpus off."
+        )
+
     compute_profile_plan = _load_compute_profile_plan(COMPUTE_PROFILE_PLAN_FILE)
     need_header = _is_file_empty(OUT_CSV)
     sidecar_mode = "w" if need_header else "a"
@@ -538,6 +602,11 @@ def main() -> None:
         for scale_entry in input_scale_entries:
             scale_val = float(scale_entry["input_scale"])
             payload_override = scale_entry.get("payload")
+            actual_repeat_in_window = _calibrate_repeat_in_window(
+                scale_val,
+                str(scale_entry["scale_label"]),
+                payload_override,
+            )
             for idx in range(WARMUP + REPEAT):
                 warmup_flag = 1 if idx < WARMUP else 0
                 repeat_idx = idx if warmup_flag else (idx - WARMUP)
@@ -598,7 +667,7 @@ def main() -> None:
                             resource_usage_monitor.start()
 
                         lat_sum = 0.0
-                        for k in range(REPEAT_IN_WINDOW):
+                        for k in range(actual_repeat_in_window):
                             req_id = f"{sniff_group_id}:{k}"
                             out = _one_request(scale_val, req_id=req_id, payload_override=payload_override)
                             lat_sum += float(out["latency_app_s"])
@@ -625,20 +694,26 @@ def main() -> None:
                         if resource_usage_monitor is not None:
                             resource_usage_monitor.close()
 
-                    latency_app_s = lat_sum / float(REPEAT_IN_WINDOW)
+                    latency_app_s = lat_sum / float(actual_repeat_in_window)
 
                     if gpu_result is not None:
-                        gpu_metrics = _gpu_metrics_from_result(gpu_result)
+                        gpu_metrics = _gpu_metrics_from_result(
+                            gpu_result,
+                            actual_repeat_in_window,
+                        )
                     if cpu_result is not None:
-                        cpu_metrics = _cpu_metrics_from_result(cpu_result)
+                        cpu_metrics = _cpu_metrics_from_result(
+                            cpu_result,
+                            actual_repeat_in_window,
+                        )
                     if resource_usage_result is not None:
                         resource_usage_metrics = _resource_usage_metrics_from_result(resource_usage_result)
 
                     warnings = []
                     warnings.extend(_eff_negative_warnings(
-                        avg_power_eff_w=gpu_metrics["avg_power_eff_w"],
-                        peak_power_eff_w=gpu_metrics["peak_power_eff_w"],
-                        energy_eff_j=gpu_metrics["energy_eff_j"],
+                        avg_power_eff_w=gpu_metrics["gpu_avg_power_eff_w"],
+                        peak_power_eff_w=gpu_metrics["gpu_peak_power_eff_w"],
+                        energy_eff_j=gpu_metrics["gpu_energy_eff_j"],
                     ))
                     warnings.extend(_named_negative_warnings({
                         "cpu_avg_power_eff_w": cpu_metrics["cpu_avg_power_eff_w"],
@@ -657,6 +732,8 @@ def main() -> None:
                     else:
                         throughput = float("nan")
 
+                except EnergyAbort:
+                    raise
                 except Exception as e:
                     status = "error"
                     err_msg = repr(e)
@@ -672,7 +749,7 @@ def main() -> None:
                     "task_param": task_param,
                     "repeat_idx": str(repeat_idx),
                     "warmup": str(warmup_flag),
-                    "repeat_in_window": str(REPEAT_IN_WINDOW),
+                    "repeat_in_window": str(actual_repeat_in_window),
                     "latency_s": "nan",  # Placeholder: filled by merge_packet_latency
                     "latency_app_s": _fmt_float(latency_app_s),
                     "throughput_samples_per_s": _fmt_float(throughput),
@@ -706,5 +783,13 @@ def main() -> None:
                 _append_row(writer, row, f, sidecar_f, sniff_group_id)
 
 
+def run_cli() -> None:
+    try:
+        main()
+    except EnergyAbort as exc:
+        print(f"[energy][ERROR] {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
+
+
 if __name__ == "__main__":
-    main()
+    run_cli()

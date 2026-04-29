@@ -105,6 +105,38 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
         self.assertEqual(float(df["compute_mflops_app"].iloc[0]), 401.0)
         self.assertEqual(float(df["compute_mflops"].iloc[0]), 802.0)
 
+    def test_prepare_df_aliases_legacy_gpu_energy_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = os.path.join(tmp, "result_all.csv")
+            fieldnames = [
+                "cpu_cores",
+                "mem_cap_gb",
+                "gpu_mode",
+                "input_scale",
+                "warmup",
+                "status",
+                "avg_power_eff_w",
+                "energy_eff_j",
+            ]
+            with open(csv_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerow({
+                    "cpu_cores": "1",
+                    "mem_cap_gb": "4",
+                    "gpu_mode": "on",
+                    "input_scale": "64",
+                    "warmup": "0",
+                    "status": "ok",
+                    "avg_power_eff_w": "2.5",
+                    "energy_eff_j": "0.25",
+                })
+
+            df = plot.prepare_df(csv_path)
+
+        self.assertEqual(float(df["gpu_avg_power_eff_w"].iloc[0]), 2.5)
+        self.assertEqual(float(df["gpu_energy_eff_j"].iloc[0]), 0.25)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -15,9 +15,17 @@ import sys
 import time
 from pathlib import Path
 
-from config import SCALING_DIMENSIONS
+from config import (
+    DEFAULT_REPEAT_IN_WINDOW,
+    DEFAULT_REPEAT_WINDOW_SECONDS,
+    SCALING_DIMENSIONS,
+)
 from env_utils import bootstrap_project_env
-from orchestrator import PacketLatencyError, require_packet_latency_prerequisites
+from orchestrator import (
+    EnergyProfilingError,
+    PacketLatencyError,
+    require_packet_latency_prerequisites,
+)
 
 PROJECT_DIR = str(Path(__file__).resolve().parent)
 
@@ -205,9 +213,25 @@ Examples:
     parser.add_argument("--batch-size", type=int, default=1, help="Batch size")
     parser.add_argument("--warmup", type=int, default=2, help="Warmup iterations")
     parser.add_argument("--repeat", type=int, default=5, help="Measurement repeat count")
-    parser.add_argument("--repeat-in-window", type=int, default=20, help="Requests per energy window")
+    parser.add_argument(
+        "--repeat-in-window",
+        type=int,
+        default=DEFAULT_REPEAT_IN_WINDOW,
+        help="Requests per energy window; 0 enables auto calibration",
+    )
+    parser.add_argument(
+        "--repeat-window-seconds",
+        type=float,
+        default=DEFAULT_REPEAT_WINDOW_SECONDS,
+        help="Target workload window duration for auto repeat-in-window",
+    )
     parser.add_argument("--sample-hz", type=float, default=20.0, help="GPU energy sampling rate")
-    parser.add_argument("--idle-seconds", type=float, default=3.0, help="GPU idle baseline duration")
+    parser.add_argument(
+        "--idle-seconds",
+        type=float,
+        default=3.0,
+        help="GPU idle baseline duration before each workload window",
+    )
     parser.add_argument("--input-scales", default=None, help="Override input scale values (comma-separated)")
 
     # Compute profiling
@@ -232,6 +256,11 @@ Examples:
     parser.add_argument("--skip-build", action="store_true", help="Skip Docker image build (use existing)")
 
     args = parser.parse_args()
+    if args.repeat_in_window < 0:
+        parser.error("--repeat-in-window must be >= 0")
+    if args.repeat_window_seconds <= 0.0:
+        parser.error("--repeat-window-seconds must be > 0")
+
     require_native_docker()
 
     try:
@@ -359,7 +388,11 @@ Examples:
     print(f"  Scale source: {planned_input_scales.source}")
     print(f"  Validated scales: {input_scales_arg}")
     print(f"  Iterations per case: {args.warmup} warmup + {args.repeat} repeat")
-    print(f"  Requests per iteration: {args.repeat_in_window}")
+    if args.repeat_in_window > 0:
+        repeat_desc = str(args.repeat_in_window)
+    else:
+        repeat_desc = f"auto target {args.repeat_window_seconds:.1f}s"
+    print(f"  Requests per iteration: {repeat_desc}")
     print(f"  Total iterations: {total_iters}")
     print(f"  Output: {output_dir}")
     print()
@@ -377,6 +410,7 @@ Examples:
             warmup=args.warmup,
             repeat=args.repeat,
             repeat_in_window=args.repeat_in_window,
+            repeat_window_seconds=args.repeat_window_seconds,
             sample_hz=args.sample_hz,
             idle_seconds=args.idle_seconds,
             sniff_iface=args.sniff_iface,
@@ -386,6 +420,9 @@ Examples:
         )
     except PacketLatencyError as exc:
         print(f"\n[sniff][ERROR] {exc}", file=sys.stderr)
+        sys.exit(1)
+    except EnergyProfilingError as exc:
+        print(f"\n[energy][ERROR] {exc}", file=sys.stderr)
         sys.exit(1)
 
     # ── Step 5: Merge all CSVs ──
