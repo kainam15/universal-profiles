@@ -17,6 +17,8 @@ from detect import TaskInfo
 
 COMPUTE_PROFILE_PLAN_NAME = "compute_profile_plan.json"
 COMPUTE_PROFILE_PAYLOADS_NAME = "compute_profile_payloads.json"
+TORCH_PROFILER_TOOL = "torch_profiler"
+COMPUTE_PROFILE_TOOL_MODES = {"auto", "torch", "vendor"}
 NCU_TENSOR_METRIC_RE = re.compile(r"^sm__ops_path_tensor_src_.*_dst_.*\.sum$")
 NCU_SCALAR_FLOP_METRICS = ("flop_count_hp", "flop_count_sp", "flop_count_dp")
 NCU_SASS_FLOP_WEIGHTS = {
@@ -134,6 +136,20 @@ def _to_float(value: Any) -> float:
         return float(value)
     except Exception:
         return float("nan")
+
+
+def _parse_last_json_line(text: str) -> Dict[str, Any]:
+    for line in reversed((text or "").splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
 
 
 def parse_advisor_self_gflop_csv(report_path: str) -> float:
@@ -568,10 +584,14 @@ def _select_ncu_flop_metrics(available_metrics: Iterable[str]) -> List[str]:
     ]
 
 
+def _fallback_ncu_flop_metrics() -> List[str]:
+    return list(NCU_SASS_FLOP_WEIGHTS)
+
+
 def _resolve_ncu_metrics(ncu_bin: str) -> Tuple[List[str], str]:
     query_errors = []
     for command in (
-        [ncu_bin, "--query-metrics", "--query-metrics-mode", "suffix"],
+        [ncu_bin, "--query-metrics", "--query-metrics-mode", "all"],
         [ncu_bin, "--query-metrics"],
     ):
         result = _run(command, check=False)
@@ -581,6 +601,9 @@ def _resolve_ncu_metrics(ncu_bin: str) -> Tuple[List[str], str]:
         metrics = _select_ncu_flop_metrics(_parse_ncu_metric_names(result.stdout))
         if metrics:
             return metrics, ""
+    fallback_metrics = _fallback_ncu_flop_metrics()
+    if fallback_metrics:
+        return fallback_metrics, ""
     error = "; ".join(error for error in query_errors if error)
     if error:
         return [], f"ncu_no_flop_metrics_found:{error}"
@@ -676,6 +699,98 @@ def _run_ncu_for_entry(
         "model_mflop_per_request": (flop / 1_000_000.0) / float(max(1, int(repeat))),
         "error": "",
         "report": host_csv,
+    }
+
+
+def _run_torch_profiler_for_entry(
+    *,
+    task_info: TaskInfo,
+    image_tag: str,
+    cpu: int,
+    mem: int,
+    use_gpu: bool,
+    payload_file: str,
+    profile_root: str,
+    entry: Dict[str, Any],
+    repeat: int,
+) -> Dict[str, Any]:
+    base_cmd = _base_docker_cmd(
+        task_info=task_info,
+        image_tag=image_tag,
+        cpu=cpu,
+        mem=mem,
+        use_gpu=use_gpu,
+        payload_file=payload_file,
+        profile_root=profile_root,
+        tool_mount_roots=(),
+    )
+    runner_mode = "torch_gpu" if use_gpu else "torch_cpu"
+    result = _run([*base_cmd, *_runner_args(entry, repeat, runner_mode)], check=False)
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        return {
+            "input_scale": float(entry["input_scale"]),
+            "tool": TORCH_PROFILER_TOOL,
+            "model_mflop_per_request": None,
+            "error": f"torch_profiler_failed:{detail}",
+        }
+
+    payload = _parse_last_json_line(result.stdout)
+    mflop = _to_float(payload.get("model_mflop_per_request"))
+    total_flops = _to_float(payload.get("total_flops"))
+    if mflop != mflop and total_flops == total_flops:
+        mflop = (total_flops / 1_000_000.0) / float(max(1, int(repeat)))
+    if mflop != mflop or mflop <= 0:
+        return {
+            "input_scale": float(entry["input_scale"]),
+            "tool": TORCH_PROFILER_TOOL,
+            "model_mflop_per_request": None,
+            "error": "torch_profiler_parse_failed:model_mflop_per_request_missing",
+        }
+
+    return {
+        "input_scale": float(entry["input_scale"]),
+        "tool": TORCH_PROFILER_TOOL,
+        "model_mflop_per_request": mflop,
+        "error": "",
+        "total_flops": total_flops if total_flops == total_flops else None,
+    }
+
+
+def _profile_torch_entries(
+    *,
+    entries: List[Dict[str, Any]],
+    task_info: TaskInfo,
+    image_tag: str,
+    cpu: int,
+    mem: int,
+    use_gpu: bool,
+    profile_key: str,
+    payload_file: str,
+    profile_root: str,
+    repeat: int,
+) -> Dict[str, Any]:
+    profile_entries = [
+        _run_torch_profiler_for_entry(
+            task_info=task_info,
+            image_tag=image_tag,
+            cpu=cpu,
+            mem=mem,
+            use_gpu=use_gpu,
+            payload_file=payload_file,
+            profile_root=profile_root,
+            entry=entry,
+            repeat=repeat,
+        )
+        for entry in entries
+    ]
+    errors = [entry["error"] for entry in profile_entries if entry.get("error")]
+    return {
+        "tool": TORCH_PROFILER_TOOL,
+        "repeat": max(1, int(repeat)),
+        "profile": profile_key,
+        "error": "; ".join(errors),
+        "entries": profile_entries,
     }
 
 
@@ -797,16 +912,24 @@ def collect_compute_profile_plan(
     keep_profiles: bool,
     compute_profile_cpus: Optional[int] = None,
     compute_profile_mem: Optional[int] = None,
+    compute_profile_tool: str = "auto",
 ) -> str:
     """Collect or synthesize vendor-tool compute profiles and write a plan file."""
     os.makedirs(output_dir, exist_ok=True)
+    tool_mode = (compute_profile_tool or "auto").strip().lower()
+    if tool_mode not in COMPUTE_PROFILE_TOOL_MODES:
+        raise ValueError(
+            "compute_profile_tool must be one of "
+            f"{', '.join(sorted(COMPUTE_PROFILE_TOOL_MODES))}, got {compute_profile_tool!r}"
+        )
+
     profile_root = os.path.join(output_dir, "compute_profiles")
     os.makedirs(profile_root, exist_ok=True)
     entries = _load_payload_entries(task_info, batch_size, input_scale_plan_file, input_scales)
     payload_file = _write_payload_file(output_dir, task_info, entries)
 
-    advisor_bin = _find_executable(advisor_root, ("advisor", "advixe-cl"))
-    ncu_bin = _find_executable(ncu_root, ("ncu", "nv-nsight-cu-cli"))
+    advisor_bin = _find_executable(advisor_root, ("advisor", "advixe-cl")) if tool_mode == "vendor" else None
+    ncu_bin = _find_executable(ncu_root, ("ncu", "nv-nsight-cu-cli")) if tool_mode == "vendor" else None
     max_cpu, max_mem = _default_compute_profile_resources(
         compute_profile_cpus,
         compute_profile_mem,
@@ -815,37 +938,66 @@ def collect_compute_profile_plan(
 
     profiles: Dict[str, Any] = {}
     if "off" in normalized_gpus:
-        profiles["cpu"] = _profile_cpu_entries(
-            entries=entries,
-            advisor_bin=advisor_bin,
-            advisor_root=advisor_root,
-            task_info=task_info,
-            image_tag=image_tag,
-            cpu=max_cpu,
-            mem=max_mem,
-            payload_file=payload_file,
-            profile_root=profile_root,
-            repeat=advisor_repeat,
-        )
+        if tool_mode == "vendor":
+            profiles["cpu"] = _profile_cpu_entries(
+                entries=entries,
+                advisor_bin=advisor_bin,
+                advisor_root=advisor_root,
+                task_info=task_info,
+                image_tag=image_tag,
+                cpu=max_cpu,
+                mem=max_mem,
+                payload_file=payload_file,
+                profile_root=profile_root,
+                repeat=advisor_repeat,
+            )
+        else:
+            profiles["cpu"] = _profile_torch_entries(
+                entries=entries,
+                task_info=task_info,
+                image_tag=image_tag,
+                cpu=max_cpu,
+                mem=max_mem,
+                use_gpu=False,
+                profile_key="cpu",
+                payload_file=payload_file,
+                profile_root=profile_root,
+                repeat=advisor_repeat,
+            )
     if "on" in normalized_gpus:
-        profiles["gpu"] = _profile_gpu_entries(
-            entries=entries,
-            ncu_bin=ncu_bin,
-            ncu_root=ncu_root,
-            task_info=task_info,
-            image_tag=image_tag,
-            cpu=max_cpu,
-            mem=max_mem,
-            payload_file=payload_file,
-            profile_root=profile_root,
-            repeat=ncu_repeat,
-        )
+        if tool_mode == "vendor":
+            profiles["gpu"] = _profile_gpu_entries(
+                entries=entries,
+                ncu_bin=ncu_bin,
+                ncu_root=ncu_root,
+                task_info=task_info,
+                image_tag=image_tag,
+                cpu=max_cpu,
+                mem=max_mem,
+                payload_file=payload_file,
+                profile_root=profile_root,
+                repeat=ncu_repeat,
+            )
+        else:
+            profiles["gpu"] = _profile_torch_entries(
+                entries=entries,
+                task_info=task_info,
+                image_tag=image_tag,
+                cpu=max_cpu,
+                mem=max_mem,
+                use_gpu=True,
+                profile_key="gpu",
+                payload_file=payload_file,
+                profile_root=profile_root,
+                repeat=ncu_repeat,
+            )
 
     plan = {
         "model_id": task_info.model_id,
         "task_family": task_info.task_family,
         "pipeline_tag": task_info.pipeline_tag,
         "runtime_backend": task_info.runtime_backend,
+        "compute_profile_tool_mode": tool_mode,
         "profiles": profiles,
     }
     plan_path = os.path.join(output_dir, COMPUTE_PROFILE_PLAN_NAME)

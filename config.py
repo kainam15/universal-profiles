@@ -145,7 +145,6 @@ CSV_FIELDS = [
     "task_param",
     "repeat_idx",
     "warmup",
-    "sniff_group_id",
     "repeat_in_window",
     "latency_s",
     "latency_app_s",

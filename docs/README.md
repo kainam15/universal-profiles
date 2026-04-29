@@ -51,7 +51,7 @@ We perform a comprehensive sweep across multiple resource dimensions to construc
 * **Energy Consumption**: Total GPU energy, CPU package energy, and estimated vCPU energy per inference (Joules).
 * **Power Draw**: Average and Peak GPU board power, CPU package power, and estimated vCPU power (Watts).
 * **Resource Utilization**: Container CPU utilization, container memory usage/cap percentage, device-level GPU utilization, and device-level VRAM usage/cap percentage.
-* **Compute Throughput**: `model_mflop_per_request`, `compute_mflops_app`, and packet-latency-adjusted `compute_mflops` when Intel Advisor or `ncu` is available.
+* **Compute Throughput**: `model_mflop_per_request`, `compute_mflops_app`, and packet-latency-adjusted `compute_mflops` from the default PyTorch profiler path, or from Intel Advisor / `ncu` when `--compute-profile-tool vendor` is selected.
 * **Static Meta**: Model weight size, Docker image download volume.
 
 ### Output Files
@@ -59,7 +59,7 @@ Each model run writes two top-level CSV artifacts under `results/<model>/`:
 
 * **result_all.csv**: Dynamic profiling measurements across the full resource matrix. It contains per-run fields only, such as resource settings, `input_scale`, timing, power, energy, resource utilization, and status columns. By default, AC-Prof now auto-plans exactly 6 `input_scale` levels before profiling starts. For `nlp`, the last point is chosen to stay as close as possible to the tokenizer's usable maximum length, and the CSV keeps recording the effective input scale actually executed.
 * **static_meta.csv**: One-row static metadata summary. `model_name` stores the HuggingFace model ID, and the file also carries `model_revision`, `task_family`, `pipeline_tag`, `runtime_backend`, `image_tag`, `batch_size`, `input_scale_type`, `model_download_url`, `gpu`, `model_weight_bytes`, `docker_image_bytes`, `environment`, `cpu_power_source`, and `vcpu_power_method`.
-* **compute_profile_plan.json**: Per-scale vendor FLOP profile data used to fill compute columns in `result_all.csv`. Missing Advisor/ncu tooling records diagnostics here and keeps compute values as `nan`.
+* **compute_profile_plan.json**: Per-scale FLOP profile data used to fill compute columns in `result_all.csv`. The default path uses PyTorch profiler; vendor mode uses Advisor/ncu. Profiler failures record diagnostics here and keep compute values as `nan`.
 
 Static metadata is collected on the host after the model image is ready and before the profiling matrix starts. The byte fields use these exact measurement rules:
 

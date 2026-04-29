@@ -79,11 +79,25 @@ class PacketLatencyRuntime:
     parse_cmd: List[str]
 
 
+class PacketLatencyError(RuntimeError):
+    """Raised when required packet-level latency cannot be collected."""
+
+
 AUTO_INPUT_SCALE_COUNT = 6
 DEFAULT_NLP_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu128"
 CUDA124_NLP_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu124"
 DEFAULT_NLP_TORCH_SPEC = "torch>=2.7"
 CUDA124_NLP_TORCH_SPEC = "torch>=2.6,<2.7"
+TCPDUMP_CAPTURE_CAPABILITY = "cap_net_raw,cap_net_admin=eip"
+PACKET_LATENCY_RECOVERY_STEPS = (
+    "Recovery steps:\n"
+    "  1. Install packet tools: sudo apt-get install -y tcpdump tshark\n"
+    "  2. Grant capture capability: sudo setcap "
+    f"{TCPDUMP_CAPTURE_CAPABILITY} $(command -v tcpdump)\n"
+    "  3. Verify capability: getcap $(command -v tcpdump)\n"
+    "  4. Verify Docker bridge: ip link show docker0\n"
+    "  5. If your bridge differs, pass --sniff-iface <iface>."
+)
 
 
 def _sanitize_model_id(model_id: str) -> str:
@@ -418,6 +432,116 @@ def _tcpdump_can_capture_without_sudo(tcpdump_path: str) -> bool:
     return "cap_net_raw" in caps and "cap_net_admin" in caps
 
 
+def _packet_latency_error(reason: str, detail: str = "") -> PacketLatencyError:
+    parts = [f"packet latency is required but unavailable: {reason}."]
+    if detail:
+        parts.append(f"Details: {detail}")
+    parts.append(PACKET_LATENCY_RECOVERY_STEPS)
+    return PacketLatencyError("\n".join(parts))
+
+
+def _sniff_interface_exists(sniff_iface: str) -> bool:
+    if not sniff_iface:
+        return False
+
+    sysfs_path = os.path.join("/sys/class/net", sniff_iface)
+    if os.path.exists(sysfs_path):
+        return True
+
+    ip_cmd = shutil.which("ip")
+    if not ip_cmd:
+        return False
+
+    result = _run([ip_cmd, "link", "show", sniff_iface], check=False)
+    return result.returncode == 0
+
+
+def require_packet_latency_prerequisites(project_dir: str, sniff_iface: str) -> None:
+    """Fail early when packet-level latency cannot be collected."""
+    del project_dir  # Reserved for future remote/WSL checks; local Linux is the strict path.
+
+    missing_tools = [
+        name for name in ("tcpdump", "tshark")
+        if shutil.which(name) is None
+    ]
+    if missing_tools:
+        raise _packet_latency_error(
+            f"missing required command(s): {', '.join(missing_tools)}"
+        )
+
+    if not _sniff_interface_exists(sniff_iface):
+        raise _packet_latency_error(
+            f"network interface {sniff_iface!r} was not found"
+        )
+
+    tcpdump_path = shutil.which("tcpdump")
+    if not tcpdump_path:
+        raise _packet_latency_error("tcpdump was not found")
+
+    if not _ensure_tcpdump_capture_capability(tcpdump_path):
+        raise _packet_latency_error(
+            f"tcpdump lacks capture capability: {tcpdump_path}"
+        )
+
+
+def _try_set_tcpdump_capture_capability(tcpdump_path: str) -> bool:
+    setcap_cmd = ["setcap", TCPDUMP_CAPTURE_CAPABILITY, tcpdump_path]
+
+    if os.geteuid() == 0:
+        result = _run(setcap_cmd, check=False)
+        return result.returncode == 0
+
+    result = _run(["sudo", "-n", *setcap_cmd], check=False)
+    if result.returncode == 0:
+        return True
+
+    sudo_password = os.environ.get("ACPROF_SUDO_PASSWORD", "").strip()
+    if not sudo_password:
+        print(
+            "[sniff][WARN] tcpdump lacks capture capability and sudo needs a password. "
+            "Set ACPROF_SUDO_PASSWORD in .env.local or run "
+            f"`sudo setcap {TCPDUMP_CAPTURE_CAPABILITY} {tcpdump_path}` once.",
+            file=sys.stderr,
+        )
+        return False
+
+    result = _run(
+        ["sudo", "-S", "-p", "", *setcap_cmd],
+        check=False,
+        input=f"{sudo_password}\n",
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        print(
+            "[sniff][WARN] Failed to grant tcpdump capture capability via sudo. "
+            f"Packet latency may remain nan. Details: {detail}",
+            file=sys.stderr,
+        )
+        return False
+
+    return True
+
+
+def _ensure_tcpdump_capture_capability(tcpdump_path: str) -> bool:
+    if _tcpdump_can_capture_without_sudo(tcpdump_path):
+        return True
+
+    print(f"[sniff] tcpdump capture capability missing; trying to grant it on {tcpdump_path}")
+    if not _try_set_tcpdump_capture_capability(tcpdump_path):
+        return False
+
+    if _tcpdump_can_capture_without_sudo(tcpdump_path):
+        print("[sniff] tcpdump capture capability is ready")
+        return True
+
+    print(
+        "[sniff][WARN] setcap finished but tcpdump capability is still unavailable. "
+        "Packet latency may remain nan.",
+        file=sys.stderr,
+    )
+    return False
+
+
 def _resolve_packet_latency_runtime(
     project_dir: str,
     pcap_file: str,
@@ -428,7 +552,11 @@ def _resolve_packet_latency_runtime(
     local_tcpdump = shutil.which("tcpdump")
     local_tshark = shutil.which("tshark")
     if local_tcpdump and local_tshark:
-        tcpdump_cmd = [local_tcpdump] if _tcpdump_can_capture_without_sudo(local_tcpdump) else ["sudo", "tcpdump"]
+        tcpdump_cmd = (
+            [local_tcpdump]
+            if _ensure_tcpdump_capture_capability(local_tcpdump)
+            else ["sudo", "-n", "tcpdump"]
+        )
         return PacketLatencyRuntime(
             mode="local",
             tcpdump_cmd=tcpdump_cmd + [
@@ -479,6 +607,42 @@ def _resolve_packet_latency_runtime(
         )
 
     return None
+
+
+def _assert_packet_latency_csv_complete(csv_path: str) -> None:
+    import csv
+
+    if not os.path.exists(csv_path):
+        raise _packet_latency_error(f"result CSV does not exist: {csv_path}")
+
+    with open(csv_path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames:
+            raise _packet_latency_error(f"result CSV is empty: {csv_path}")
+        if "latency_s" not in reader.fieldnames:
+            raise _packet_latency_error(f"latency_s column is missing in {csv_path}")
+
+        total = 0
+        missing = 0
+        for row in reader:
+            total += 1
+            raw_value = (row.get("latency_s") or "").strip()
+            try:
+                value = float(raw_value)
+            except Exception:
+                missing += 1
+                continue
+
+            if not math.isfinite(value) or value <= 0:
+                missing += 1
+
+    if total == 0:
+        raise _packet_latency_error(f"result CSV has no rows: {csv_path}")
+
+    if missing:
+        raise _packet_latency_error(
+            f"latency_s is missing for {missing}/{total} row(s) in {csv_path}"
+        )
 
 
 def _docker_image_size_bytes(image_tag: str) -> int:
@@ -1524,6 +1688,7 @@ def run_single_case(
     input_scales: Optional[str] = None,
     input_scale_plan_file: Optional[str] = None,
     compute_profile_plan_file: Optional[str] = None,
+    require_packet_latency: bool = True,
 ) -> str:
     """Run one profiling case and return result CSV path."""
     model_tag = _sanitize_model_id(task_info.model_id)
@@ -1567,13 +1732,25 @@ def run_single_case(
     try:
         if sniff_runtime is not None:
             print(f"[sniff] Starting tcpdump on {sniff_iface} via {sniff_runtime.mode}")
-            tcpdump_proc = subprocess.Popen(
-                sniff_runtime.tcpdump_cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            try:
+                tcpdump_proc = subprocess.Popen(
+                    sniff_runtime.tcpdump_cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except OSError as exc:
+                raise _packet_latency_error("failed to start tcpdump", repr(exc)) from exc
             time.sleep(0.3)
+            if require_packet_latency and tcpdump_proc.poll() is not None:
+                raise _packet_latency_error(
+                    "tcpdump exited before workload started",
+                    f"command={' '.join(sniff_runtime.tcpdump_cmd)}",
+                )
         else:
+            if require_packet_latency:
+                raise _packet_latency_error(
+                    "tcpdump/tshark runtime could not be resolved"
+                )
             print("[sniff] tcpdump/tshark unavailable, skipping packet-level latency")
 
         print("[case] Running workload...")
@@ -1629,29 +1806,61 @@ def run_single_case(
                 tcpdump_proc.kill()
             time.sleep(0.2)
 
-            if os.path.exists(pcap_file) and os.path.getsize(pcap_file) > 0:
+            if not os.path.exists(pcap_file) or os.path.getsize(pcap_file) <= 0:
+                if require_packet_latency:
+                    raise _packet_latency_error(
+                        f"pcap file is missing or empty: {pcap_file}"
+                    )
+            else:
                 print("[sniff] Parsing pcap -> packet latencies...")
-                parse_result = _run(
-                    sniff_runtime.parse_cmd,
+                assert sniff_runtime is not None
+                parse_result = _run(sniff_runtime.parse_cmd, check=False)
+                parse_output = parse_result.stdout.strip()
+                if parse_result.returncode != 0:
+                    raise _packet_latency_error(
+                        "pcap parsing failed",
+                        (parse_result.stderr or parse_result.stdout or "").strip(),
+                    )
+                if not parse_output:
+                    raise _packet_latency_error("pcap parser produced no output")
+                try:
+                    latency_payload = json.loads(parse_output)
+                except json.JSONDecodeError as exc:
+                    raise _packet_latency_error(
+                        "pcap parser produced invalid JSON",
+                        repr(exc),
+                    ) from exc
+                if not latency_payload:
+                    raise _packet_latency_error(
+                        "pcap parser did not find matching request latency records"
+                    )
+                with open(lat_json, "w", encoding="utf-8") as lf:
+                    json.dump(latency_payload, lf, ensure_ascii=True, indent=2)
+
+                if not os.path.exists(out_csv):
+                    raise _packet_latency_error(
+                        f"client did not produce result CSV: {out_csv}"
+                    )
+
+                print("[sniff] Merging packet latency into CSV...")
+                merge_script = os.path.join(project_dir, "merge_packet_latency.py")
+                merged_csv = out_csv + ".merged"
+                merge_result = _run(
+                    [sys.executable, merge_script, out_csv, lat_json, merged_csv],
                     check=False,
                 )
-                if parse_result.returncode == 0 and parse_result.stdout.strip():
-                    with open(lat_json, "w", encoding="utf-8") as lf:
-                        lf.write(parse_result.stdout)
-                else:
-                    with open(lat_json, "w", encoding="utf-8") as lf:
-                        lf.write("{}")
-
-                if os.path.exists(lat_json) and os.path.exists(out_csv):
-                    print("[sniff] Merging packet latency into CSV...")
-                    merge_script = os.path.join(project_dir, "merge_packet_latency.py")
-                    merged_csv = out_csv + ".merged"
-                    _run(
-                        [sys.executable, merge_script, out_csv, lat_json, merged_csv],
-                        check=False,
+                if merge_result.returncode != 0:
+                    raise _packet_latency_error(
+                        "packet latency merge failed",
+                        (merge_result.stderr or merge_result.stdout or "").strip(),
                     )
-                    if os.path.exists(merged_csv):
-                        os.replace(merged_csv, out_csv)
+                if not os.path.exists(merged_csv):
+                    raise _packet_latency_error(
+                        f"packet latency merge did not produce {merged_csv}"
+                    )
+                os.replace(merged_csv, out_csv)
+                if require_packet_latency:
+                    _assert_packet_latency_csv_complete(out_csv)
     finally:
         if tcpdump_proc is not None and tcpdump_proc.poll() is None:
             tcpdump_proc.terminate()
@@ -1747,6 +1956,7 @@ def merge_all_csvs(csv_paths: List[str], output_path: str) -> None:
             f,
             fieldnames=CSV_FIELDS,
             quoting=csv.QUOTE_MINIMAL,
+            extrasaction="ignore",
         )
         writer.writeheader()
         writer.writerows(all_rows)

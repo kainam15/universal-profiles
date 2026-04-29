@@ -10,6 +10,57 @@ import energy_cpu
 
 
 class EffectiveEnergyWarningTests(unittest.TestCase):
+    def test_sniff_group_id_is_hidden_from_csv_but_kept_for_packet_merge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_csv = f"{tmp_dir}/result.csv"
+            with patch.object(
+                client, "OUT_CSV", out_csv
+            ), patch.object(
+                client, "CASE_NAME", "case"
+            ), patch.object(
+                client, "WARMUP", 0
+            ), patch.object(
+                client, "REPEAT", 1
+            ), patch.object(
+                client, "REPEAT_IN_WINDOW", 1
+            ), patch.object(
+                client, "USE_ENERGY", False
+            ), patch.object(
+                client, "energy_mod", None
+            ), patch.object(
+                client,
+                "cpu_energy_mod",
+                None,
+            ), patch.object(
+                client,
+                "resource_usage_mod",
+                None,
+            ), patch.object(
+                client,
+                "input_scale_entries",
+                [{"input_scale": 1.0, "scale_label": "seq1", "payload": {}}],
+            ), patch.object(
+                client.requests,
+                "get",
+                return_value=SimpleNamespace(status_code=200, text="ok"),
+            ), patch.object(
+                client,
+                "_one_request",
+                return_value={"latency_app_s": 0.5, "effective_input_scale": 1.0},
+            ):
+                client.main()
+                with open(out_csv, "r", encoding="utf-8", newline="") as f:
+                    reader = csv.DictReader(f)
+                    rows = list(reader)
+                    fieldnames = reader.fieldnames or []
+
+            with open(f"{out_csv}.sniff_groups.jsonl", "r", encoding="utf-8") as f:
+                sidecar_rows = [json.loads(line) for line in f if line.strip()]
+
+        self.assertNotIn("sniff_group_id", fieldnames)
+        self.assertNotIn("sniff_group_id", rows[0])
+        self.assertEqual(sidecar_rows, [{"sniff_group_id": "case_seq1_r0"}])
+
     def test_negative_effective_metrics_are_reported_per_field(self) -> None:
         warnings = client._eff_negative_warnings(
             avg_power_eff_w=-0.1,

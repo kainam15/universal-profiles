@@ -107,7 +107,38 @@ class ComputeProfileTests(unittest.TestCase):
                 10 + 20 * 2 + 1000 + 2000 * 2,
             )
 
-    def test_missing_tools_write_nan_profiles_with_errors(self) -> None:
+    def test_resolve_ncu_metrics_falls_back_when_query_requires_privileges(self) -> None:
+        calls = []
+
+        def fake_run(cmd, check=False):
+            calls.append(cmd)
+            if "--query-metrics-mode" in cmd:
+                return SimpleNamespace(
+                    returncode=1,
+                    stdout="",
+                    stderr=(
+                        "==ERROR== Invalid option --query-metrics-mode suffix. "
+                        "Please specify along with --metrics."
+                    ),
+                )
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "Device NVIDIA GeForce RTX 4060 Laptop GPU\n"
+                    "==ERROR== ERR_NVGPUCTRPERM - The user does not have "
+                    "permission to access NVIDIA GPU Performance Counters\n"
+                ),
+                stderr="",
+            )
+
+        with patch("compute_profile._run", side_effect=fake_run):
+            metrics, error = compute_profile._resolve_ncu_metrics("/opt/ncu")
+
+        self.assertEqual(metrics, list(compute_profile.NCU_SASS_FLOP_WEIGHTS))
+        self.assertEqual(error, "")
+        self.assertEqual(len(calls), 2)
+
+    def test_vendor_mode_missing_tools_write_nan_profiles_with_errors(self) -> None:
         task_info = TaskInfo(
             model_id="google-bert/bert-base-uncased",
             pipeline_tag="fill-mask",
@@ -140,6 +171,7 @@ class ComputeProfileTests(unittest.TestCase):
                 advisor_repeat=20,
                 ncu_repeat=1,
                 keep_profiles=False,
+                compute_profile_tool="vendor",
             )
 
             with open(plan_path, "r", encoding="utf-8") as f:
@@ -155,6 +187,117 @@ class ComputeProfileTests(unittest.TestCase):
             plan["profiles"]["gpu"]["entries"][0]["model_mflop_per_request"],
             None,
         )
+
+    def test_auto_compute_profile_uses_torch_profiler_before_vendor_tools(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+        calls = []
+
+        def fake_torch_profile(**kwargs):
+            calls.append((kwargs["profile_key"], kwargs["use_gpu"]))
+            return {
+                "tool": "torch_profiler",
+                "repeat": kwargs["repeat"],
+                "error": "",
+                "entries": [
+                    {
+                        "input_scale": 8.0,
+                        "tool": "torch_profiler",
+                        "model_mflop_per_request": 123.0,
+                        "error": "",
+                    }
+                ],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "compute_profile._find_executable",
+            return_value="/usr/bin/vendor-tool",
+        ), patch(
+            "compute_profile._profile_torch_entries",
+            side_effect=fake_torch_profile,
+        ), patch(
+            "compute_profile._profile_cpu_entries",
+            side_effect=AssertionError("vendor CPU profiler should not run in auto mode"),
+        ), patch(
+            "compute_profile._profile_gpu_entries",
+            side_effect=AssertionError("vendor GPU profiler should not run in auto mode"),
+        ):
+            plan_path = compute_profile.collect_compute_profile_plan(
+                task_info=task_info,
+                image_tag="acprof-test:latest",
+                cpu_list=[1],
+                mem_list=[4],
+                gpu_list=["off", "on"],
+                batch_size=1,
+                output_dir=tmp,
+                input_scale_plan_file=None,
+                input_scales="8",
+                advisor_root=None,
+                ncu_root=None,
+                advisor_repeat=20,
+                ncu_repeat=1,
+                keep_profiles=False,
+            )
+
+            with open(plan_path, "r", encoding="utf-8") as f:
+                plan = json.load(f)
+
+        self.assertEqual(calls, [("cpu", False), ("gpu", True)])
+        self.assertEqual(plan["profiles"]["cpu"]["tool"], "torch_profiler")
+        self.assertEqual(plan["profiles"]["gpu"]["tool"], "torch_profiler")
+        self.assertEqual(
+            plan["profiles"]["cpu"]["entries"][0]["model_mflop_per_request"],
+            123.0,
+        )
+
+    def test_vendor_compute_profile_mode_keeps_missing_tool_errors(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "compute_profile._find_executable",
+            return_value=None,
+        ), patch(
+            "compute_profile._run",
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ):
+            plan_path = compute_profile.collect_compute_profile_plan(
+                task_info=task_info,
+                image_tag="acprof-test:latest",
+                cpu_list=[1],
+                mem_list=[4],
+                gpu_list=["off", "on"],
+                batch_size=1,
+                output_dir=tmp,
+                input_scale_plan_file=None,
+                input_scales="8",
+                advisor_root=None,
+                ncu_root=None,
+                advisor_repeat=20,
+                ncu_repeat=1,
+                keep_profiles=False,
+                compute_profile_tool="vendor",
+            )
+
+            with open(plan_path, "r", encoding="utf-8") as f:
+                plan = json.load(f)
+
+        self.assertIn("advisor_not_found", plan["profiles"]["cpu"]["error"])
+        self.assertIn("ncu_not_found", plan["profiles"]["gpu"]["error"])
 
     def test_compute_profile_resource_overrides_are_used(self) -> None:
         task_info = TaskInfo(
@@ -203,6 +346,7 @@ class ComputeProfileTests(unittest.TestCase):
                 keep_profiles=False,
                 compute_profile_cpus=8,
                 compute_profile_mem=16,
+                compute_profile_tool="vendor",
             )
 
         self.assertEqual(calls, [("cpu", 8, 16), ("gpu", 8, 16)])
@@ -251,6 +395,7 @@ class ComputeProfileTests(unittest.TestCase):
                 advisor_repeat=20,
                 ncu_repeat=1,
                 keep_profiles=False,
+                compute_profile_tool="vendor",
             )
 
         self.assertEqual(calls, [("cpu", 12, 48)])

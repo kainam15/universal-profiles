@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 from config import SCALING_DIMENSIONS
 from env_utils import bootstrap_project_env
+from orchestrator import PacketLatencyError, require_packet_latency_prerequisites
 
 PROJECT_DIR = str(Path(__file__).resolve().parent)
 
@@ -40,6 +42,91 @@ def _format_elapsed(seconds: float) -> str:
     return f"{secs}s"
 
 
+def _docker_info_is_docker_desktop(info: str) -> bool:
+    normalized = (info or "").lower()
+    return "docker desktop" in normalized or "name=docker-desktop" in normalized
+
+
+def _docker_context_is_docker_desktop(context_name: str) -> bool:
+    normalized = (context_name or "").strip().lower()
+    return normalized in {"desktop-linux", "docker-desktop"} or normalized.startswith("desktop-")
+
+
+def _exit_docker_desktop() -> None:
+    print(
+        "[infra][ERROR] AC-Prof is currently connected to Docker Desktop, not "
+        "the native Linux Docker daemon.\n\n"
+        "Docker Desktop cannot reliably expose the host /opt profiler installs, "
+        "docker0 traffic, or NVIDIA GPU runtime needed by this project.\n\n"
+        "Switch to native Docker before running again, for example:\n"
+        "  docker context use default\n"
+        "or run one command with:\n"
+        "  DOCKER_HOST=unix:///var/run/docker.sock python run.py ...\n",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def require_native_docker() -> None:
+    """Exit early when the current Docker daemon is Docker Desktop."""
+    try:
+        context_result = subprocess.run(
+            ["docker", "context", "show"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+        )
+        if (
+            context_result.returncode == 0
+            and _docker_context_is_docker_desktop(context_result.stdout)
+        ):
+            _exit_docker_desktop()
+
+        result = subprocess.run(
+            [
+                "docker",
+                "info",
+                "--format",
+                "Name={{.Name}}\n"
+                "OperatingSystem={{.OperatingSystem}}\n"
+                "DockerRootDir={{.DockerRootDir}}",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+        )
+    except FileNotFoundError:
+        print(
+            "[infra][ERROR] Docker CLI was not found. Install Docker and run AC-Prof "
+            "against the native Linux Docker daemon.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except subprocess.TimeoutExpired:
+        print(
+            "[infra][ERROR] `docker info` timed out. Check that the native Linux "
+            "Docker daemon is running before starting AC-Prof.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        print(
+            "[infra][ERROR] Could not talk to Docker. Start the native Linux Docker "
+            f"daemon and retry.\n\nDocker output:\n{detail}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if _docker_info_is_docker_desktop(result.stdout):
+        _exit_docker_desktop()
+
+
 def _cleanup_intermediate_results(csv_paths: list[str], output_dir: str, final_csv: str) -> None:
     """Delete per-run intermediate artifacts after the merged CSV is safely written."""
     if not csv_paths:
@@ -56,6 +143,7 @@ def _cleanup_intermediate_results(csv_paths: list[str], output_dir: str, final_c
     targets = set()
     for csv_path in csv_paths:
         targets.add(csv_path)
+        targets.add(f"{csv_path}.sniff_groups.jsonl")
 
         base_name = os.path.basename(csv_path)
         if not (base_name.startswith("result_case_") and base_name.endswith(".csv")):
@@ -123,7 +211,13 @@ Examples:
     parser.add_argument("--input-scales", default=None, help="Override input scale values (comma-separated)")
 
     # Compute profiling
-    parser.add_argument("--no-compute-profile", action="store_true", help="Disable Intel Advisor / ncu MFLOPS profiling")
+    parser.add_argument("--no-compute-profile", action="store_true", help="Disable MFLOPS compute profiling")
+    parser.add_argument(
+        "--compute-profile-tool",
+        choices=("auto", "torch", "vendor"),
+        default="auto",
+        help="Compute FLOP profiler: auto/torch uses PyTorch profiler; vendor uses Intel Advisor / ncu",
+    )
     parser.add_argument("--advisor-root", default=None, help="Host Intel Advisor install root or advisor executable")
     parser.add_argument("--ncu-root", default=None, help="Host Nsight Compute install root or ncu executable")
     parser.add_argument("--advisor-repeat", type=int, default=20, help="Intel Advisor profiled inference repetitions")
@@ -138,6 +232,16 @@ Examples:
     parser.add_argument("--skip-build", action="store_true", help="Skip Docker image build (use existing)")
 
     args = parser.parse_args()
+    require_native_docker()
+
+    try:
+        require_packet_latency_prerequisites(
+            project_dir=PROJECT_DIR,
+            sniff_iface=args.sniff_iface,
+        )
+    except PacketLatencyError as exc:
+        print(f"\n[sniff][ERROR] {exc}", file=sys.stderr)
+        sys.exit(1)
 
     # ── Step 1: Detect task ──
     print("=" * 60)
@@ -241,6 +345,7 @@ Examples:
                 keep_profiles=args.keep_compute_profiles,
                 compute_profile_cpus=args.compute_profile_cpus,
                 compute_profile_mem=args.compute_profile_mem,
+                compute_profile_tool=args.compute_profile_tool,
             )
         except Exception as exc:
             print(f"[compute][WARN] Compute profiling unavailable: {exc}")
@@ -259,25 +364,29 @@ Examples:
     print(f"  Output: {output_dir}")
     print()
 
-    csv_paths = run_matrix(
-        task_info=task_info,
-        image_info=image_info,
-        cpu_list=cpu_list,
-        mem_list=mem_list,
-        gpu_list=gpu_list,
-        output_dir=output_dir,
-        project_dir=PROJECT_DIR,
-        batch_size=args.batch_size,
-        warmup=args.warmup,
-        repeat=args.repeat,
-        repeat_in_window=args.repeat_in_window,
-        sample_hz=args.sample_hz,
-        idle_seconds=args.idle_seconds,
-        sniff_iface=args.sniff_iface,
-        input_scales=input_scales_arg,
-        input_scale_plan_file=planned_input_scales.plan_file,
-        compute_profile_plan_file=compute_profile_plan_file,
-    )
+    try:
+        csv_paths = run_matrix(
+            task_info=task_info,
+            image_info=image_info,
+            cpu_list=cpu_list,
+            mem_list=mem_list,
+            gpu_list=gpu_list,
+            output_dir=output_dir,
+            project_dir=PROJECT_DIR,
+            batch_size=args.batch_size,
+            warmup=args.warmup,
+            repeat=args.repeat,
+            repeat_in_window=args.repeat_in_window,
+            sample_hz=args.sample_hz,
+            idle_seconds=args.idle_seconds,
+            sniff_iface=args.sniff_iface,
+            input_scales=input_scales_arg,
+            input_scale_plan_file=planned_input_scales.plan_file,
+            compute_profile_plan_file=compute_profile_plan_file,
+        )
+    except PacketLatencyError as exc:
+        print(f"\n[sniff][ERROR] {exc}", file=sys.stderr)
+        sys.exit(1)
 
     # ── Step 5: Merge all CSVs ──
     if csv_paths:

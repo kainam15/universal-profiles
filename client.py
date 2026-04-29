@@ -56,6 +56,7 @@ COLD_START_S = os.getenv("COLD_START_S", "nan")
 OUT_CSV = os.getenv("OUT_CSV", "result.csv")
 CASE_NAME = os.getenv("CASE_NAME", "").strip()
 CONTAINER_NAME = os.getenv("CONTAINER_NAME", "").strip()
+SNIFF_GROUPS_PATH = os.getenv("SNIFF_GROUPS_PATH", "").strip()
 
 SAMPLE_HZ = float(os.getenv("SAMPLE_HZ", "20"))
 IDLE_SECONDS = float(os.getenv("IDLE_SECONDS", "3"))
@@ -81,6 +82,10 @@ def _is_file_empty(path: str) -> bool:
         return (not os.path.exists(path)) or os.path.getsize(path) == 0
     except Exception:
         return True
+
+
+def _sniff_groups_path(csv_path: str) -> str:
+    return SNIFF_GROUPS_PATH or f"{csv_path}.sniff_groups.jsonl"
 
 
 def _to_float_or_nan(x: Any) -> float:
@@ -473,17 +478,35 @@ def _resource_usage_metrics_from_result(result: Any) -> Dict[str, float]:
     }
 
 
-def _append_row(writer: csv.DictWriter, row: Dict[str, Any], f) -> None:
+def _append_sniff_group(sidecar_f, sniff_group_id: str) -> None:
+    sidecar_f.write(json.dumps({"sniff_group_id": sniff_group_id}, ensure_ascii=True) + "\n")
+    sidecar_f.flush()
+    os.fsync(sidecar_f.fileno())
+
+
+def _append_row(
+    writer: csv.DictWriter,
+    row: Dict[str, Any],
+    f,
+    sidecar_f,
+    sniff_group_id: str,
+) -> None:
     out = {k: row.get(k, "") for k in CSV_FIELDS}
     writer.writerow(out)
     f.flush()
     os.fsync(f.fileno())
+    _append_sniff_group(sidecar_f, sniff_group_id)
 
 
 def main() -> None:
     compute_profile_plan = _load_compute_profile_plan(COMPUTE_PROFILE_PLAN_FILE)
     need_header = _is_file_empty(OUT_CSV)
-    with open(OUT_CSV, "a", newline="", encoding="utf-8") as f:
+    sidecar_mode = "w" if need_header else "a"
+    with open(OUT_CSV, "a", newline="", encoding="utf-8") as f, open(
+        _sniff_groups_path(OUT_CSV),
+        sidecar_mode,
+        encoding="utf-8",
+    ) as sidecar_f:
         writer = csv.DictWriter(
             f,
             fieldnames=CSV_FIELDS,
@@ -509,7 +532,7 @@ def main() -> None:
                 "status": "error",
                 "error": f"ready_failed: {repr(e)}",
             })
-            _append_row(writer, row, f)
+            _append_row(writer, row, f, sidecar_f, "")
             return
 
         for scale_entry in input_scale_entries:
@@ -649,7 +672,6 @@ def main() -> None:
                     "task_param": task_param,
                     "repeat_idx": str(repeat_idx),
                     "warmup": str(warmup_flag),
-                    "sniff_group_id": sniff_group_id,
                     "repeat_in_window": str(REPEAT_IN_WINDOW),
                     "latency_s": "nan",  # Placeholder: filled by merge_packet_latency
                     "latency_app_s": _fmt_float(latency_app_s),
@@ -681,7 +703,7 @@ def main() -> None:
                     "compute_mflops": _fmt_float(compute_mflops_app),
                     "compute_profile_error": compute_profile["error"],
                 })
-                _append_row(writer, row, f)
+                _append_row(writer, row, f, sidecar_f, sniff_group_id)
 
 
 if __name__ == "__main__":

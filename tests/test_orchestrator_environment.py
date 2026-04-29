@@ -247,6 +247,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 repeat=1,
                 repeat_in_window=1,
                 input_scales="64",
+                require_packet_latency=False,
             )
 
         self.assertEqual(
@@ -295,6 +296,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 repeat_in_window=1,
                 input_scales="64",
                 compute_profile_plan_file="results/test-unit/compute_profile_plan.json",
+                require_packet_latency=False,
             )
 
         self.assertEqual(
@@ -364,6 +366,111 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(runtime.mode, "local")
         self.assertEqual(runtime.tcpdump_cmd[0], "/usr/bin/tcpdump")
         self.assertNotIn("sudo", runtime.tcpdump_cmd)
+
+    def test_resolve_packet_latency_runtime_bootstraps_tcpdump_capability(self) -> None:
+        def fake_which(name: str) -> str | None:
+            return {
+                "tcpdump": "/usr/bin/tcpdump",
+                "tshark": "/usr/bin/tshark",
+            }.get(name)
+
+        calls = []
+        has_capability = False
+
+        def fake_run(cmd, check=True, capture=True, **kwargs):
+            nonlocal has_capability
+            calls.append((cmd, kwargs))
+            if cmd[:2] == ["getcap", "/usr/bin/tcpdump"]:
+                stdout = (
+                    "/usr/bin/tcpdump cap_net_admin,cap_net_raw=eip\n"
+                    if has_capability
+                    else ""
+                )
+                return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+            if cmd[:5] == ["sudo", "-S", "-p", "", "setcap"]:
+                self.assertEqual(kwargs.get("input"), "secret\n")
+                has_capability = True
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+        with patch("orchestrator.shutil.which", side_effect=fake_which), patch(
+            "orchestrator.os.geteuid",
+            return_value=1000,
+        ), patch.dict(
+            "orchestrator.os.environ",
+            {"ACPROF_SUDO_PASSWORD": "secret"},
+            clear=True,
+        ), patch(
+            "orchestrator._run",
+            side_effect=fake_run,
+        ):
+            runtime = orchestrator._resolve_packet_latency_runtime(
+                project_dir="/repo",
+                pcap_file="/repo/results/sniff_case.pcap",
+                sniff_iface="docker0",
+            )
+
+        self.assertIsNotNone(runtime)
+        assert runtime is not None
+        self.assertEqual(runtime.tcpdump_cmd[0], "/usr/bin/tcpdump")
+        self.assertNotIn("sudo", runtime.tcpdump_cmd)
+        self.assertTrue(
+            any(call[0][:5] == ["sudo", "-S", "-p", "", "setcap"] for call in calls)
+        )
+
+    def test_run_single_case_fails_when_packet_latency_runtime_unavailable(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+
+        with patch(
+            "orchestrator._start_container_session",
+            return_value=orchestrator.RunningContainer(
+                name="case_google-bert--bert-base-uncased_1c_4g_off",
+                base_url="http://127.0.0.1:8106",
+                host_port=8106,
+                cold_start_s=1.0,
+            ),
+        ), patch("orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
+            "orchestrator._stop_container_session"
+        ):
+            with self.assertRaises(orchestrator.PacketLatencyError) as raised:
+                orchestrator.run_single_case(
+                    task_info=task_info,
+                    cpu=1,
+                    mem=4,
+                    gpu="off",
+                    image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                    output_dir="results/test-unit",
+                    project_dir=".",
+                    warmup=0,
+                    repeat=1,
+                    repeat_in_window=1,
+                    input_scales="64",
+                )
+
+        message = str(raised.exception)
+        self.assertIn("packet latency is required", message)
+        self.assertIn("tcpdump", message)
+        self.assertIn("tshark", message)
+        self.assertIn("sudo setcap", message)
+
+    def test_assert_packet_latency_csv_complete_rejects_nan_latency(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = os.path.join(tmp, "result_case.csv")
+            with open(csv_path, "w", encoding="utf-8", newline="") as f:
+                f.write("latency_s,status\nnan,ok\n")
+
+            with self.assertRaises(orchestrator.PacketLatencyError) as raised:
+                orchestrator._assert_packet_latency_csv_complete(csv_path)
+
+        self.assertIn("latency_s is missing", str(raised.exception))
 
 
 if __name__ == "__main__":
