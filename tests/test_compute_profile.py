@@ -188,6 +188,97 @@ class ComputeProfileTests(unittest.TestCase):
             None,
         )
 
+    def test_default_compute_profile_uses_vendor_tools(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+        calls = []
+
+        def fake_cpu_profile(**kwargs):
+            calls.append(("cpu", kwargs["advisor_bin"]))
+            return {
+                "tool": "intel_advisor",
+                "repeat": kwargs["repeat"],
+                "error": "",
+                "entries": [
+                    {
+                        "input_scale": 8.0,
+                        "tool": "intel_advisor",
+                        "model_mflop_per_request": 200.0,
+                        "error": "",
+                    }
+                ],
+            }
+
+        def fake_gpu_profile(**kwargs):
+            calls.append(("gpu", kwargs["ncu_bin"]))
+            return {
+                "tool": "ncu",
+                "repeat": kwargs["repeat"],
+                "error": "",
+                "entries": [
+                    {
+                        "input_scale": 8.0,
+                        "tool": "ncu",
+                        "model_mflop_per_request": 300.0,
+                        "error": "",
+                    }
+                ],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "compute_profile._find_executable",
+            side_effect=[
+                "/opt/intel/oneapi/advisor/latest/bin64/advisor",
+                "/opt/nvidia/nsight-compute/2024.1.1/ncu",
+            ],
+        ), patch(
+            "compute_profile._profile_cpu_entries",
+            side_effect=fake_cpu_profile,
+        ), patch(
+            "compute_profile._profile_gpu_entries",
+            side_effect=fake_gpu_profile,
+        ), patch(
+            "compute_profile._profile_torch_entries",
+            side_effect=AssertionError("torch profiler should not run by default"),
+        ):
+            plan_path = compute_profile.collect_compute_profile_plan(
+                task_info=task_info,
+                image_tag="acprof-test:latest",
+                cpu_list=[1],
+                mem_list=[4],
+                gpu_list=["off", "on"],
+                batch_size=1,
+                output_dir=tmp,
+                input_scale_plan_file=None,
+                input_scales="8",
+                advisor_root=None,
+                ncu_root=None,
+                advisor_repeat=20,
+                ncu_repeat=1,
+                keep_profiles=False,
+            )
+
+            with open(plan_path, "r", encoding="utf-8") as f:
+                plan = json.load(f)
+
+        self.assertEqual(
+            calls,
+            [
+                ("cpu", "/opt/intel/oneapi/advisor/latest/bin64/advisor"),
+                ("gpu", "/opt/nvidia/nsight-compute/2024.1.1/ncu"),
+            ],
+        )
+        self.assertEqual(plan["compute_profile_tool_mode"], "vendor")
+        self.assertEqual(plan["profiles"]["cpu"]["tool"], "intel_advisor")
+        self.assertEqual(plan["profiles"]["gpu"]["tool"], "ncu")
+
     def test_auto_compute_profile_uses_torch_profiler_before_vendor_tools(self) -> None:
         task_info = TaskInfo(
             model_id="google-bert/bert-base-uncased",
@@ -244,6 +335,7 @@ class ComputeProfileTests(unittest.TestCase):
                 advisor_repeat=20,
                 ncu_repeat=1,
                 keep_profiles=False,
+                compute_profile_tool="auto",
             )
 
             with open(plan_path, "r", encoding="utf-8") as f:

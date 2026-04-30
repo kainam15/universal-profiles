@@ -158,6 +158,68 @@ class NativeDockerGuardTests(unittest.TestCase):
         self.assertEqual(kwargs["repeat_in_window"], 0)
         self.assertEqual(kwargs["repeat_window_seconds"], 10.0)
 
+    def test_main_defaults_compute_profile_tool_to_vendor(self) -> None:
+        task_info = TaskInfo(
+            model_id="dummy-model",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="unit",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir, patch.object(
+            sys,
+            "argv",
+            [
+                "run.py",
+                "--model",
+                "dummy-model",
+                "--skip-build",
+                "--cpus",
+                "1",
+                "--mems",
+                "2",
+                "--gpus",
+                "off,on",
+                "--output-dir",
+                tmp_dir,
+            ],
+        ), patch(
+            "run.bootstrap_project_env",
+            return_value=None,
+        ), patch(
+            "run.require_native_docker"
+        ), patch(
+            "run.require_packet_latency_prerequisites"
+        ), patch(
+            "detect.detect_task",
+            return_value=task_info,
+        ), patch(
+            "orchestrator.collect_static_meta",
+            return_value=SimpleNamespace(),
+        ), patch(
+            "orchestrator.write_static_meta_csv"
+        ), patch(
+            "orchestrator.plan_input_scales",
+            return_value=orchestrator.PlannedInputScales(
+                scales=[1.0],
+                source="unit",
+                plan_file=None,
+            ),
+        ), patch(
+            "compute_profile.collect_compute_profile_plan",
+            return_value=f"{tmp_dir}/compute_profile_plan.json",
+        ) as collect_compute_profile_plan, patch(
+            "orchestrator.run_matrix",
+            return_value=[],
+        ):
+            run.main()
+
+        _, kwargs = collect_compute_profile_plan.call_args
+        self.assertEqual(kwargs["compute_profile_tool"], "vendor")
+
 
 if __name__ == "__main__":
     unittest.main()
