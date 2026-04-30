@@ -23,7 +23,6 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             "gpu_mem_used_peak_bytes",
             "gpu_mem_util_avg_pct",
             "gpu_mem_util_peak_pct",
-            "gpu_mem_total_bytes",
         ]
 
         cold_start_index = CSV_FIELDS.index("cold_start_s")
@@ -45,7 +44,6 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 "container_cpu_util_avg_pct",
                 "container_mem_usage_avg_bytes",
                 "gpu_mem_used_avg_bytes",
-                "gpu_mem_total_bytes",
             ]
             with open(csv_path, "w", encoding="utf-8", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -60,14 +58,39 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                     "container_cpu_util_avg_pct": "25.5",
                     "container_mem_usage_avg_bytes": str(2 * 1024 ** 3),
                     "gpu_mem_used_avg_bytes": str(3 * 1024 ** 3),
-                    "gpu_mem_total_bytes": str(8 * 1024 ** 3),
                 })
+            static_meta_path = os.path.join(tmp, "static_meta.csv")
+            with open(static_meta_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=["gpu_mem_total_bytes"])
+                writer.writeheader()
+                writer.writerow({"gpu_mem_total_bytes": str(8 * 1024 ** 3)})
 
             df = plot.prepare_df(csv_path)
 
         self.assertEqual(float(df["container_cpu_util_avg_pct"].iloc[0]), 25.5)
         self.assertEqual(float(df["container_mem_usage_avg_gib"].iloc[0]), 2.0)
         self.assertEqual(float(df["gpu_mem_used_avg_gib"].iloc[0]), 3.0)
+        self.assertEqual(float(df["gpu_mem_total_gib"].iloc[0]), 8.0)
+
+    def test_prepare_df_accepts_padded_legacy_csv_headers_and_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = os.path.join(tmp, "result_all.csv")
+            with open(csv_path, "w", encoding="utf-8", newline="") as f:
+                f.write(
+                    "cpu_cores, mem_cap_gb, gpu_mode, input_scale, warmup, status, "
+                    "gpu_mem_used_avg_bytes\n"
+                )
+                f.write(f"1, 4, on     , 64, 0, ok    , {3 * 1024 ** 3}\n")
+            static_meta_path = os.path.join(tmp, "static_meta.csv")
+            with open(static_meta_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=["gpu_mem_total_bytes"])
+                writer.writeheader()
+                writer.writerow({"gpu_mem_total_bytes": str(8 * 1024 ** 3)})
+
+            df = plot.prepare_df(csv_path)
+
+        self.assertEqual(len(df), 1)
+        self.assertEqual(df["gpu_mode"].iloc[0], "on")
         self.assertEqual(float(df["gpu_mem_total_gib"].iloc[0]), 8.0)
 
     def test_prepare_df_converts_compute_profile_fields(self) -> None:

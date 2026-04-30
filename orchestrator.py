@@ -52,6 +52,7 @@ class StaticMeta:
     input_scale_type: str
     model_download_url: str
     gpu: str
+    gpu_mem_total_bytes: Optional[int]
     model_weight_bytes: int
     docker_image_bytes: int
     environment: str
@@ -330,6 +331,46 @@ def _get_gpu_name(device_index: int = 0) -> str:
     if 0 <= device_index < len(gpu_names):
         return gpu_names[device_index]
     return gpu_names[0]
+
+
+def _get_gpu_mem_total_bytes(device_index: int = 0) -> Optional[int]:
+    """Detect host GPU total VRAM in bytes for static metadata."""
+    try:
+        import pynvml
+
+        pynvml.nvmlInit()
+        try:
+            handle = pynvml.nvmlDeviceGetHandleByIndex(int(device_index))
+            mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        finally:
+            pynvml.nvmlShutdown()
+
+        total = int(mem.total)
+        return total if total > 0 else None
+    except Exception:
+        pass
+
+    nvidia_smi = shutil.which("nvidia-smi")
+    if not nvidia_smi:
+        return None
+
+    result = _run(
+        [nvidia_smi, "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+
+    memory_mib = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if not memory_mib:
+        return None
+
+    raw_value = memory_mib[device_index] if 0 <= device_index < len(memory_mib) else memory_mib[0]
+    try:
+        total = int(float(raw_value) * 1024 ** 2)
+    except ValueError:
+        return None
+    return total if total > 0 else None
 
 
 def _parse_cuda_version(raw: str) -> Optional[Tuple[int, int]]:
@@ -805,6 +846,7 @@ def collect_static_meta(
         input_scale_type=input_scale_type,
         model_download_url=_build_model_download_url(task_info.model_id),
         gpu=_get_gpu_name(device_index=device_index),
+        gpu_mem_total_bytes=_get_gpu_mem_total_bytes(device_index=device_index),
         model_weight_bytes=_docker_model_weight_bytes(image_info.tag),
         docker_image_bytes=_docker_image_size_bytes(image_info.tag),
         environment=_detect_environment(),

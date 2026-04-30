@@ -461,7 +461,7 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(rows[0]["status"], "ok")
         self.assertEqual(rows[0]["resource_usage_iters"], "2.000000")
         self.assertEqual(rows[0]["container_cpu_util_avg_pct"], "25.000000")
-        self.assertEqual(rows[0]["gpu_mem_total_bytes"], "100000.000000")
+        self.assertNotIn("gpu_mem_total_bytes", rows[0])
 
     def test_resource_usage_unavailable_keeps_successful_row_ok(self) -> None:
         class FakeUnavailableResourceUsageMonitor:

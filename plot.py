@@ -53,7 +53,19 @@ def prepare_df(csv_path: str) -> pd.DataFrame:
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"Cannot find {csv_path}")
 
-    df = pd.read_csv(csv_path)
+    df = pd.read_csv(csv_path, skipinitialspace=True)
+    df.columns = [str(col).strip() for col in df.columns]
+    for col in df.columns:
+        if pd.api.types.is_object_dtype(df[col]) or pd.api.types.is_string_dtype(df[col]):
+            df[col] = df[col].map(lambda value: value.strip() if isinstance(value, str) else value)
+
+    static_meta = read_static_meta(csv_path)
+    if "gpu_mem_total_bytes" not in df.columns and static_meta.get("gpu_mem_total_bytes"):
+        df["gpu_mem_total_bytes"] = pd.to_numeric(
+            static_meta["gpu_mem_total_bytes"],
+            errors="coerce",
+        )
+
     for old_name, new_name in GPU_METRIC_ALIASES.items():
         if new_name not in df.columns and old_name in df.columns:
             df[new_name] = df[old_name]

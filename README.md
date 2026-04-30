@@ -300,7 +300,6 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `gpu_mem_used_peak_bytes` | NVML device 0 在测量窗口内的峰值 used VRAM，单位 bytes。 |
 | `gpu_mem_util_avg_pct` | NVML device 0 平均 used VRAM / total VRAM 的百分比。 |
 | `gpu_mem_util_peak_pct` | NVML device 0 峰值 used VRAM / total VRAM 的百分比。 |
-| `gpu_mem_total_bytes` | NVML device 0 reported total VRAM，单位 bytes。 |
 | `cold_start_s` | 当前 container 从 `docker run` 到 `/ready` 成功的时间，单位秒。 |
 | `status` | `ok`、`warn` 或 `error`。`warn` 常用于可继续分析但存在异常值的行。 |
 | `error` | 错误或 warning 文本。正常行为空。 |
@@ -327,6 +326,7 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `input_scale_type` | `result_all.csv/input_scale` 的语义名，例如 `seq_length`。 |
 | `model_download_url` | Hugging Face model page URL。 |
 | `gpu` | host device 0 的 GPU 名称；没有可见 NVIDIA GPU 时为 `unknown`。 |
+| `gpu_mem_total_bytes` | host device 0 的 total VRAM，单位 bytes；无法读取时为空。 |
 | `model_weight_bytes` | Docker image 内 `/models/hf` 下 Hugging Face cache artifacts 的总字节数，不是严格的单一权重文件大小。 |
 | `docker_image_bytes` | `docker image inspect <image_tag> --format "{{.Size}}"` 返回的本地 image size，单位 bytes。 |
 | `environment` | 自动检测的运行环境标签，例如 `windows11+wsl`、`ubuntu24.04+wsl`、`ubuntu24.04`、`macos15`。 |

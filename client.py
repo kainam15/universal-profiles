@@ -468,7 +468,6 @@ RESOURCE_USAGE_METRIC_FIELDS = [
     "gpu_mem_used_peak_bytes",
     "gpu_mem_util_avg_pct",
     "gpu_mem_util_peak_pct",
-    "gpu_mem_total_bytes",
 ]
 
 
@@ -532,7 +531,6 @@ def _resource_usage_metrics_from_result(result: Any) -> Dict[str, float]:
         "gpu_mem_used_peak_bytes": _to_float_or_nan(result.gpu_mem_used_peak_bytes),
         "gpu_mem_util_avg_pct": _to_float_or_nan(result.gpu_mem_util_avg_pct),
         "gpu_mem_util_peak_pct": _to_float_or_nan(result.gpu_mem_util_peak_pct),
-        "gpu_mem_total_bytes": _to_float_or_nan(result.gpu_mem_total_bytes),
     }
 
 

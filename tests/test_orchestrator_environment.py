@@ -151,6 +151,8 @@ class DetectEnvironmentTests(unittest.TestCase):
         with patch("orchestrator._detect_environment", return_value="windows11+wsl"), patch(
             "orchestrator._get_gpu_name", return_value="Test GPU"
         ), patch(
+            "orchestrator._get_gpu_mem_total_bytes", return_value=987654321
+        ), patch(
             "orchestrator._docker_model_weight_bytes", return_value=123
         ), patch("orchestrator._docker_image_size_bytes", return_value=456), patch(
             "orchestrator._cpu_power_metadata",
@@ -164,10 +166,16 @@ class DetectEnvironmentTests(unittest.TestCase):
             )
 
         self.assertEqual(meta.environment, "windows11+wsl")
+        self.assertEqual(meta.gpu_mem_total_bytes, 987654321)
         self.assertEqual(meta.cpu_power_source, "rapl")
         self.assertEqual(meta.vcpu_power_method, "rapl_cgroup_cpu_share")
 
     def test_static_meta_cpu_power_fields_are_trailing(self) -> None:
+        self.assertIn("gpu_mem_total_bytes", STATIC_META_FIELDS)
+        self.assertLess(
+            STATIC_META_FIELDS.index("gpu_mem_total_bytes"),
+            STATIC_META_FIELDS.index("environment"),
+        )
         self.assertEqual(
             STATIC_META_FIELDS[-3:],
             ["environment", "cpu_power_source", "vcpu_power_method"],

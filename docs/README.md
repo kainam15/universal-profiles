@@ -58,7 +58,7 @@ We perform a comprehensive sweep across multiple resource dimensions to construc
 Each model run writes two top-level CSV artifacts under `results/<model>/`:
 
 * **result_all.csv**: Dynamic profiling measurements across the full resource matrix. It contains per-run fields only, such as resource settings, `input_scale`, timing, power, energy, resource utilization, and status columns. By default, AC-Prof now auto-plans exactly 6 `input_scale` levels before profiling starts. For `nlp`, the last point is chosen to stay as close as possible to the tokenizer's usable maximum length, and the CSV keeps recording the effective input scale actually executed.
-* **static_meta.csv**: One-row static metadata summary. `model_name` stores the HuggingFace model ID, and the file also carries `model_revision`, `task_family`, `pipeline_tag`, `runtime_backend`, `image_tag`, `batch_size`, `input_scale_type`, `model_download_url`, `gpu`, `model_weight_bytes`, `docker_image_bytes`, `environment`, `cpu_power_source`, and `vcpu_power_method`.
+* **static_meta.csv**: One-row static metadata summary. `model_name` stores the HuggingFace model ID, and the file also carries `model_revision`, `task_family`, `pipeline_tag`, `runtime_backend`, `image_tag`, `batch_size`, `input_scale_type`, `model_download_url`, `gpu`, `gpu_mem_total_bytes`, `model_weight_bytes`, `docker_image_bytes`, `environment`, `cpu_power_source`, and `vcpu_power_method`.
 * **compute_profile_plan.json**: Per-scale FLOP profile data used to fill compute columns in `result_all.csv`. The default path uses PyTorch profiler; vendor mode uses Advisor/ncu. Profiler failures record diagnostics here and keep compute values as `nan`.
 
 Static metadata is collected on the host after the model image is ready and before the profiling matrix starts. The byte fields use these exact measurement rules:
@@ -66,6 +66,7 @@ Static metadata is collected on the host after the model image is ready and befo
 * `model_weight_bytes`: Total bytes of downloaded Hugging Face cache artifacts stored under `/models/hf` inside the built model image.
 * `docker_image_bytes`: Local Docker image size reported by `docker image inspect` for the model image.
 * `gpu`: Host GPU model name for device 0, or `unknown` when the machine does not expose an NVIDIA GPU.
+* `gpu_mem_total_bytes`: Host GPU total VRAM for device 0 in bytes, or empty when unavailable.
 * `environment`: Short host execution environment label such as `windows11+wsl`, `ubuntu24.04`, or `macos15`.
 * `cpu_power_source`: `rapl` when Linux RAPL powercap counters are available, otherwise `unavailable`.
 * `vcpu_power_method`: `rapl_cgroup_cpu_share` when estimated vCPU energy can be derived from RAPL package energy and container cgroup CPU share, otherwise `unavailable`.
