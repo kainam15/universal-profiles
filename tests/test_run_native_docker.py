@@ -12,6 +12,49 @@ from detect import TaskInfo
 
 
 class NativeDockerGuardTests(unittest.TestCase):
+    def test_cpu_energy_preflight_exits_with_remediation_when_unavailable(self) -> None:
+        stderr = io.StringIO()
+
+        with patch("energy_cpu.detect_cpu_power_source", return_value="unavailable"), patch(
+            "energy_cpu.detect_vcpu_power_method",
+            return_value="unavailable",
+        ), self.assertRaises(SystemExit) as raised, redirect_stderr(stderr):
+            run.require_cpu_energy_prerequisites()
+
+        self.assertEqual(raised.exception.code, 1)
+        message = stderr.getvalue()
+        self.assertIn("[cpu-energy][ERROR]", message)
+        self.assertIn("CPU/vCPU energy profiling is required", message)
+        self.assertIn("cpu_power_source=unavailable", message)
+        self.assertIn("sudo chmod a+r /sys/class/powercap/intel-rapl:*/energy_uj", message)
+        self.assertIn("/etc/tmpfiles.d/acprof-rapl.conf", message)
+
+    def test_cpu_energy_preflight_allows_rapl_cgroup_share(self) -> None:
+        with patch("energy_cpu.detect_cpu_power_source", return_value="rapl"), patch(
+            "energy_cpu.detect_vcpu_power_method",
+            return_value="rapl_cgroup_cpu_share",
+        ):
+            run.require_cpu_energy_prerequisites()
+
+    def test_main_runs_cpu_energy_preflight_before_task_detection(self) -> None:
+        with patch.object(sys, "argv", ["run.py", "--model", "dummy-model"]), patch(
+            "run.bootstrap_project_env",
+            return_value=None,
+        ), patch("run.require_native_docker"), patch(
+            "run.require_packet_latency_prerequisites",
+        ), patch(
+            "run.require_cpu_energy_prerequisites",
+            side_effect=SystemExit(3),
+        ) as preflight, patch(
+            "detect.detect_task",
+            side_effect=AssertionError("detect_task should not run before CPU energy preflight"),
+        ):
+            with self.assertRaises(SystemExit) as raised:
+                run.main()
+
+        self.assertEqual(raised.exception.code, 3)
+        preflight.assert_called_once_with()
+
     def test_docker_desktop_context_exits_before_docker_info(self) -> None:
         context = SimpleNamespace(returncode=0, stdout="desktop-linux\n", stderr="")
 
@@ -82,6 +125,8 @@ class NativeDockerGuardTests(unittest.TestCase):
             "run.require_packet_latency_prerequisites",
             side_effect=SystemExit(2),
         ) as preflight, patch(
+            "run.require_cpu_energy_prerequisites",
+        ), patch(
             "detect.detect_task",
             side_effect=AssertionError("detect_task should not run before preflight"),
         ):
@@ -131,6 +176,8 @@ class NativeDockerGuardTests(unittest.TestCase):
             "run.require_native_docker"
         ), patch(
             "run.require_packet_latency_prerequisites"
+        ), patch(
+            "run.require_cpu_energy_prerequisites"
         ), patch(
             "detect.detect_task",
             return_value=task_info,
@@ -193,6 +240,8 @@ class NativeDockerGuardTests(unittest.TestCase):
             "run.require_native_docker"
         ), patch(
             "run.require_packet_latency_prerequisites"
+        ), patch(
+            "run.require_cpu_energy_prerequisites"
         ), patch(
             "detect.detect_task",
             return_value=task_info,

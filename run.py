@@ -135,6 +135,47 @@ def require_native_docker() -> None:
         _exit_docker_desktop()
 
 
+def require_cpu_energy_prerequisites() -> None:
+    """Exit early when CPU/vCPU energy profiling cannot be collected."""
+    try:
+        import energy_cpu
+
+        cpu_power_source = energy_cpu.detect_cpu_power_source()
+        vcpu_power_method = energy_cpu.detect_vcpu_power_method()
+    except Exception as exc:
+        print(
+            "[cpu-energy][ERROR] CPU/vCPU energy profiling is required, but "
+            f"AC-Prof could not run the CPU energy detector: {exc}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if cpu_power_source == "rapl" and vcpu_power_method == "rapl_cgroup_cpu_share":
+        return
+
+    print(
+        "[cpu-energy][ERROR] CPU/vCPU energy profiling is required, but AC-Prof "
+        "cannot read the Linux RAPL powercap counters needed for CPU package "
+        "energy and estimated vCPU energy.\n\n"
+        f"Detected: cpu_power_source={cpu_power_source}, "
+        f"vcpu_power_method={vcpu_power_method}\n\n"
+        "Common cause on Linux: /sys/class/powercap/intel-rapl:*/energy_uj "
+        "exists but is only readable by root.\n\n"
+        "Check current permissions:\n"
+        "  ls -l /sys/class/powercap/intel-rapl:*/energy_uj\n\n"
+        "Temporary fix for the current boot:\n"
+        "  sudo chmod a+r /sys/class/powercap/intel-rapl:*/energy_uj\n\n"
+        "Persistent fix with systemd-tmpfiles:\n"
+        "  echo 'z /sys/class/powercap/intel-rapl:*/energy_uj 0444 root root -' | "
+        "sudo tee /etc/tmpfiles.d/acprof-rapl.conf\n"
+        "  sudo systemd-tmpfiles --create /etc/tmpfiles.d/acprof-rapl.conf\n\n"
+        "After fixing permissions, rerun AC-Prof as your normal user. Avoid "
+        "`sudo python run.py ...` because it can leave result files owned by root.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
 def _cleanup_intermediate_results(csv_paths: list[str], output_dir: str, final_csv: str) -> None:
     """Delete per-run intermediate artifacts after the merged CSV is safely written."""
     if not csv_paths:
@@ -271,6 +312,8 @@ Examples:
     except PacketLatencyError as exc:
         print(f"\n[sniff][ERROR] {exc}", file=sys.stderr)
         sys.exit(1)
+
+    require_cpu_energy_prerequisites()
 
     # ── Step 1: Detect task ──
     print("=" * 60)
