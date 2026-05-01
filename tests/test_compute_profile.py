@@ -26,6 +26,25 @@ class ComputeProfileTests(unittest.TestCase):
                 3.75,
             )
 
+    def test_parse_advisor_report_skips_native_csv_preamble(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = os.path.join(tmp, "advisor.csv")
+            with open(report_path, "w", encoding="utf-8", newline="") as f:
+                f.write('sep=,\n\n')
+                f.write('"Intel(R) Advisor Command Line Tool\\n')
+                f.write('Copyright (C) 2009-2025 Intel Corporation. All rights reserved."\n')
+                f.write('"Survey Data version=1.1.0","delimiter=,"\n\n')
+                writer = csv.DictWriter(f, fieldnames=["ID", "Self GFLOP", "Module"])
+                writer.writeheader()
+                writer.writerow({"ID": "1", "Self GFLOP": "1.5", "Module": "libtorch_cpu.so"})
+                writer.writerow({"ID": "2", "Self GFLOP": "< 0.001", "Module": "libtorch_cpu.so"})
+                writer.writerow({"ID": "3", "Self GFLOP": "2.25", "Module": "libtorch_cpu.so"})
+
+            self.assertAlmostEqual(
+                compute_profile.parse_advisor_self_gflop_csv(report_path),
+                3.75,
+            )
+
     def test_parse_ncu_raw_csv_sums_flop_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             report_path = os.path.join(tmp, "ncu.csv")

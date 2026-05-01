@@ -156,15 +156,21 @@ def parse_advisor_self_gflop_csv(report_path: str) -> float:
     """Return summed Intel Advisor Self GFLOP from a CSV report."""
     total_gflop = 0.0
     with open(report_path, "r", encoding="utf-8-sig", newline="") as f:
-        reader = csv.DictReader(f)
-        if reader.fieldnames is None:
+        reader = csv.reader(f)
+        fieldnames = None
+        for row in reader:
+            field_map = {field.strip().lower(): field for field in row}
+            if "self gflop" in field_map:
+                fieldnames = row
+                break
+        if fieldnames is None:
             return float("nan")
-        field_map = {field.strip().lower(): field for field in reader.fieldnames}
+        field_map = {field.strip().lower(): field for field in fieldnames}
         gflop_field = field_map.get("self gflop")
         if gflop_field is None:
             return float("nan")
         found = False
-        for row in reader:
+        for row in csv.DictReader(f, fieldnames=fieldnames):
             value = _to_float(row.get(gflop_field))
             if value == value:
                 total_gflop += value
