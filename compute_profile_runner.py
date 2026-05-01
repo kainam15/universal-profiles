@@ -42,37 +42,62 @@ def _find_payload(payload_file: str, input_scale: float) -> Dict[str, Any]:
 class _ITTControl:
     def __init__(self) -> None:
         self._lib: Optional[Any] = None
-        candidates = [
-            None,
-            os.getenv("ADVISOR_ITT_LIB") or "",
-            "/opt/intel/oneapi/advisor/latest/lib64/runtime/libittnotify.so",
-            *glob.glob("/opt/intel/oneapi/advisor/*/lib64/runtime/libittnotify.so"),
-            "libittnotify.so",
-        ]
+        self._resume: Optional[Any] = None
+        self._pause: Optional[Any] = None
+        candidates = self._library_candidates()
         for name in candidates:
-            if name and not os.path.exists(name) and os.sep in name:
+            if name is not None and not os.path.exists(name) and os.sep in name:
                 continue
             try:
-                self._lib = ctypes.CDLL(name) if name else ctypes.CDLL(None)
-                getattr(self._lib, "__itt_resume")
-                getattr(self._lib, "__itt_pause")
+                lib = ctypes.CDLL(name) if name else ctypes.CDLL(None)
+                resume = getattr(lib, "__itt_resume")
+                pause = getattr(lib, "__itt_pause")
+                self._lib = lib
+                self._resume = resume
+                self._pause = pause
                 return
             except Exception:
                 self._lib = None
+                self._resume = None
+                self._pause = None
+
+    @staticmethod
+    def _library_candidates() -> list[Optional[str]]:
+        raw_candidates = [
+            os.getenv("ADVISOR_ITT_LIB") or "",
+            os.getenv("INTEL_LIBITTNOTIFY64") or "",
+            os.getenv("INTEL_JIT_PROFILER64") or "",
+            "/opt/intel/oneapi/advisor/latest/lib64/runtime/libittnotify_collector.so",
+            *glob.glob("/opt/intel/oneapi/advisor/*/lib64/runtime/libittnotify_collector.so"),
+            "/opt/intel/oneapi/advisor/latest/lib64/runtime/libittnotify.so",
+            *glob.glob("/opt/intel/oneapi/advisor/*/lib64/runtime/libittnotify.so"),
+            None,
+            "libittnotify.so",
+        ]
+        candidates: list[Optional[str]] = []
+        seen = set()
+        for name in raw_candidates:
+            if name == "":
+                continue
+            if name in seen:
+                continue
+            candidates.append(name)
+            seen.add(name)
+        return candidates
 
     def resume(self) -> None:
-        if self._lib is None:
+        if self._resume is None:
             return
         try:
-            self._lib.__itt_resume()
+            self._resume()
         except Exception:
             pass
 
     def pause(self) -> None:
-        if self._lib is None:
+        if self._pause is None:
             return
         try:
-            self._lib.__itt_pause()
+            self._pause()
         except Exception:
             pass
 
