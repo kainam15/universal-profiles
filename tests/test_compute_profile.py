@@ -207,7 +207,7 @@ class ComputeProfileTests(unittest.TestCase):
             None,
         )
 
-    def test_default_compute_profile_uses_torch_profiler(self) -> None:
+    def test_default_compute_profile_uses_cpu_torch_and_gpu_ncu(self) -> None:
         task_info = TaskInfo(
             model_id="google-bert/bert-base-uncased",
             pipeline_tag="fill-mask",
@@ -219,8 +219,14 @@ class ComputeProfileTests(unittest.TestCase):
         )
         calls = []
 
+        def fake_find_executable(root, names):
+            calls.append(("find", names))
+            if "ncu" in names:
+                return "/opt/nvidia/nsight-compute/2024.1.1/ncu"
+            raise AssertionError("advisor should not be resolved by default")
+
         def fake_torch_profile(**kwargs):
-            calls.append((kwargs["profile_key"], kwargs["use_gpu"]))
+            calls.append(("torch", kwargs["profile_key"], kwargs["use_gpu"]))
             return {
                 "tool": "torch_profiler",
                 "repeat": kwargs["repeat"],
@@ -235,9 +241,25 @@ class ComputeProfileTests(unittest.TestCase):
                 ],
             }
 
+        def fake_gpu_profile(**kwargs):
+            calls.append(("gpu", kwargs["ncu_bin"]))
+            return {
+                "tool": "ncu",
+                "repeat": kwargs["repeat"],
+                "error": "",
+                "entries": [
+                    {
+                        "input_scale": 8.0,
+                        "tool": "ncu",
+                        "model_mflop_per_request": 300.0,
+                        "error": "",
+                    }
+                ],
+            }
+
         with tempfile.TemporaryDirectory() as tmp, patch(
             "compute_profile._find_executable",
-            side_effect=AssertionError("vendor tools should not be resolved by default"),
+            side_effect=fake_find_executable,
         ), patch(
             "compute_profile._profile_torch_entries",
             side_effect=fake_torch_profile,
@@ -246,7 +268,7 @@ class ComputeProfileTests(unittest.TestCase):
             side_effect=AssertionError("vendor CPU profiler should not run by default"),
         ), patch(
             "compute_profile._profile_gpu_entries",
-            side_effect=AssertionError("vendor GPU profiler should not run by default"),
+            side_effect=fake_gpu_profile,
         ):
             plan_path = compute_profile.collect_compute_profile_plan(
                 task_info=task_info,
@@ -268,12 +290,19 @@ class ComputeProfileTests(unittest.TestCase):
             with open(plan_path, "r", encoding="utf-8") as f:
                 plan = json.load(f)
 
-        self.assertEqual(calls, [("cpu", False), ("gpu", True)])
-        self.assertEqual(plan["compute_profile_tool_mode"], "torch")
+        self.assertEqual(
+            calls,
+            [
+                ("find", ("ncu", "nv-nsight-cu-cli")),
+                ("torch", "cpu", False),
+                ("gpu", "/opt/nvidia/nsight-compute/2024.1.1/ncu"),
+            ],
+        )
+        self.assertEqual(plan["compute_profile_tool_mode"], "auto")
         self.assertEqual(plan["profiles"]["cpu"]["tool"], "torch_profiler")
-        self.assertEqual(plan["profiles"]["gpu"]["tool"], "torch_profiler")
+        self.assertEqual(plan["profiles"]["gpu"]["tool"], "ncu")
 
-    def test_auto_compute_profile_uses_torch_profiler_before_vendor_tools(self) -> None:
+    def test_auto_compute_profile_uses_cpu_torch_and_gpu_ncu(self) -> None:
         task_info = TaskInfo(
             model_id="google-bert/bert-base-uncased",
             pipeline_tag="fill-mask",
@@ -285,8 +314,14 @@ class ComputeProfileTests(unittest.TestCase):
         )
         calls = []
 
+        def fake_find_executable(root, names):
+            calls.append(("find", names))
+            if "ncu" in names:
+                return "/usr/bin/ncu"
+            raise AssertionError("advisor should not be resolved in auto mode")
+
         def fake_torch_profile(**kwargs):
-            calls.append((kwargs["profile_key"], kwargs["use_gpu"]))
+            calls.append(("torch", kwargs["profile_key"], kwargs["use_gpu"]))
             return {
                 "tool": "torch_profiler",
                 "repeat": kwargs["repeat"],
@@ -301,9 +336,25 @@ class ComputeProfileTests(unittest.TestCase):
                 ],
             }
 
+        def fake_gpu_profile(**kwargs):
+            calls.append(("gpu", kwargs["ncu_bin"]))
+            return {
+                "tool": "ncu",
+                "repeat": kwargs["repeat"],
+                "error": "",
+                "entries": [
+                    {
+                        "input_scale": 8.0,
+                        "tool": "ncu",
+                        "model_mflop_per_request": 456.0,
+                        "error": "",
+                    }
+                ],
+            }
+
         with tempfile.TemporaryDirectory() as tmp, patch(
             "compute_profile._find_executable",
-            return_value="/usr/bin/vendor-tool",
+            side_effect=fake_find_executable,
         ), patch(
             "compute_profile._profile_torch_entries",
             side_effect=fake_torch_profile,
@@ -312,7 +363,7 @@ class ComputeProfileTests(unittest.TestCase):
             side_effect=AssertionError("vendor CPU profiler should not run in auto mode"),
         ), patch(
             "compute_profile._profile_gpu_entries",
-            side_effect=AssertionError("vendor GPU profiler should not run in auto mode"),
+            side_effect=fake_gpu_profile,
         ):
             plan_path = compute_profile.collect_compute_profile_plan(
                 task_info=task_info,
@@ -335,12 +386,23 @@ class ComputeProfileTests(unittest.TestCase):
             with open(plan_path, "r", encoding="utf-8") as f:
                 plan = json.load(f)
 
-        self.assertEqual(calls, [("cpu", False), ("gpu", True)])
+        self.assertEqual(
+            calls,
+            [
+                ("find", ("ncu", "nv-nsight-cu-cli")),
+                ("torch", "cpu", False),
+                ("gpu", "/usr/bin/ncu"),
+            ],
+        )
         self.assertEqual(plan["profiles"]["cpu"]["tool"], "torch_profiler")
-        self.assertEqual(plan["profiles"]["gpu"]["tool"], "torch_profiler")
+        self.assertEqual(plan["profiles"]["gpu"]["tool"], "ncu")
         self.assertEqual(
             plan["profiles"]["cpu"]["entries"][0]["model_mflop_per_request"],
             123.0,
+        )
+        self.assertEqual(
+            plan["profiles"]["gpu"]["entries"][0]["model_mflop_per_request"],
+            456.0,
         )
 
     def test_vendor_compute_profile_mode_keeps_missing_tool_errors(self) -> None:

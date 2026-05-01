@@ -918,11 +918,11 @@ def collect_compute_profile_plan(
     keep_profiles: bool,
     compute_profile_cpus: Optional[int] = None,
     compute_profile_mem: Optional[int] = None,
-    compute_profile_tool: str = "torch",
+    compute_profile_tool: str = "auto",
 ) -> str:
     """Collect or synthesize compute profiles and write a plan file."""
     os.makedirs(output_dir, exist_ok=True)
-    tool_mode = (compute_profile_tool or "torch").strip().lower()
+    tool_mode = (compute_profile_tool or "auto").strip().lower()
     if tool_mode not in COMPUTE_PROFILE_TOOL_MODES:
         raise ValueError(
             "compute_profile_tool must be one of "
@@ -934,13 +934,21 @@ def collect_compute_profile_plan(
     entries = _load_payload_entries(task_info, batch_size, input_scale_plan_file, input_scales)
     payload_file = _write_payload_file(output_dir, task_info, entries)
 
-    advisor_bin = _find_executable(advisor_root, ("advisor", "advixe-cl")) if tool_mode == "vendor" else None
-    ncu_bin = _find_executable(ncu_root, ("ncu", "nv-nsight-cu-cli")) if tool_mode == "vendor" else None
+    normalized_gpus = {_normal_gpu_mode(gpu) for gpu in gpu_list}
+    advisor_bin = (
+        _find_executable(advisor_root, ("advisor", "advixe-cl"))
+        if tool_mode == "vendor" and "off" in normalized_gpus
+        else None
+    )
+    ncu_bin = (
+        _find_executable(ncu_root, ("ncu", "nv-nsight-cu-cli"))
+        if tool_mode in {"auto", "vendor"} and "on" in normalized_gpus
+        else None
+    )
     max_cpu, max_mem = _default_compute_profile_resources(
         compute_profile_cpus,
         compute_profile_mem,
     )
-    normalized_gpus = {_normal_gpu_mode(gpu) for gpu in gpu_list}
 
     profiles: Dict[str, Any] = {}
     if "off" in normalized_gpus:
@@ -971,7 +979,7 @@ def collect_compute_profile_plan(
                 repeat=advisor_repeat,
             )
     if "on" in normalized_gpus:
-        if tool_mode == "vendor":
+        if tool_mode in {"auto", "vendor"}:
             profiles["gpu"] = _profile_gpu_entries(
                 entries=entries,
                 ncu_bin=ncu_bin,
