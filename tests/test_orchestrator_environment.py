@@ -11,8 +11,13 @@ from config import CSV_FIELDS, STATIC_META_FIELDS
 from detect import TaskInfo
 
 
-def _write_gpu_case_csv(path: str, idle_power_values: list[float]) -> None:
+def _write_gpu_case_csv(
+    path: str,
+    idle_power_values: list[float],
+    cpu_idle_power_values: list[float] | None = None,
+) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    cpu_values = cpu_idle_power_values or [5.0 for _ in idle_power_values]
     with open(path, "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         writer.writeheader()
@@ -21,6 +26,25 @@ def _write_gpu_case_csv(path: str, idle_power_values: list[float]) -> None:
             row.update({
                 "gpu_mode": "on",
                 "gpu_idle_power_w": str(idle_power_w),
+                "cpu_idle_power_w": str(cpu_values[idx]),
+                "repeat_idx": str(idx),
+                "warmup": "0",
+                "status": "ok",
+                "error": "",
+            })
+            writer.writerow(row)
+
+
+def _write_cpu_case_csv(path: str, idle_power_values: list[float], gpu_mode: str = "off") -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        writer.writeheader()
+        for idx, idle_power_w in enumerate(idle_power_values):
+            row = {field: "nan" for field in CSV_FIELDS}
+            row.update({
+                "gpu_mode": gpu_mode,
+                "cpu_idle_power_w": str(idle_power_w),
                 "repeat_idx": str(idx),
                 "warmup": "0",
                 "status": "ok",
@@ -249,6 +273,7 @@ class DetectEnvironmentTests(unittest.TestCase):
         def fake_run(cmd, check=True, capture=True, **kwargs):
             if cmd and str(cmd[-1]).endswith("client.py"):
                 captured_env.update(kwargs.get("env", {}))
+                _write_cpu_case_csv(captured_env["OUT_CSV"], [5.0])
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with patch(
@@ -297,6 +322,7 @@ class DetectEnvironmentTests(unittest.TestCase):
         def fake_run(cmd, check=True, capture=True, **kwargs):
             if cmd and str(cmd[-1]).endswith("client.py"):
                 captured_env.update(kwargs.get("env", {}))
+                _write_cpu_case_csv(captured_env["OUT_CSV"], [5.0])
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with patch(
@@ -565,6 +591,56 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertIn("5.0%", message)
         self.assertIn("--idle-seconds", message)
         self.assertIn("GPU processes", message)
+
+    def test_run_single_case_aborts_when_cpu_idle_power_csv_is_unstable(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+
+        def fake_run(cmd, check=True, capture=True, **kwargs):
+            if cmd and str(cmd[-1]).endswith("client.py"):
+                _write_cpu_case_csv(kwargs["env"]["OUT_CSV"], [5.0, 5.4, 5.1])
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as tmp_dir, patch(
+            "orchestrator._start_container_session",
+            return_value=orchestrator.RunningContainer(
+                name="case_google-bert--bert-base-uncased_1c_4g_off",
+                base_url="http://127.0.0.1:8106",
+                host_port=8106,
+                cold_start_s=1.0,
+            ),
+        ), patch("orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
+            "orchestrator._stop_container_session"
+        ), patch("orchestrator._run", side_effect=fake_run):
+            with self.assertRaises(orchestrator.EnergyProfilingError) as raised:
+                orchestrator.run_single_case(
+                    task_info=task_info,
+                    cpu=1,
+                    mem=4,
+                    gpu="off",
+                    image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                    output_dir=tmp_dir,
+                    project_dir=".",
+                    warmup=0,
+                    repeat=3,
+                    repeat_in_window=1,
+                    input_scales="64",
+                    require_packet_latency=False,
+                )
+
+        message = str(raised.exception)
+        self.assertIn("cpu_idle_power_w", message)
+        self.assertIn("7.7%", message)
+        self.assertIn("5.0%", message)
+        self.assertIn("--idle-seconds", message)
+        self.assertIn("host background processes", message)
 
     def test_resolve_packet_latency_runtime_uses_wsl_tools_on_windows_wsl(self) -> None:
         project_dir = r"D:\DOR\universal-profiles"

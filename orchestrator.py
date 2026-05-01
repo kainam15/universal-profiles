@@ -225,7 +225,53 @@ def _parse_csv_float(value: Any) -> float:
         return float("nan")
 
 
-def _assert_case_idle_power_stable(
+def _assert_idle_power_values_stable(
+    *,
+    csv_path: str,
+    metric_name: str,
+    idle_values: List[float],
+    invalid_rows: int,
+    row_count: int,
+    threshold: float,
+    remediation: str,
+    skip_when_no_rows: bool = False,
+) -> None:
+    if row_count == 0 and skip_when_no_rows:
+        return
+    if invalid_rows or not idle_values:
+        raise EnergyProfilingError(
+            f"{metric_name} case validation failed: "
+            f"csv={csv_path}, valid_rows={len(idle_values)}, invalid_rows={invalid_rows}. "
+            f"This case's energy data is not reliable. {remediation}"
+        )
+
+    mean_idle = sum(idle_values) / len(idle_values)
+    if mean_idle <= 0.0:
+        raise EnergyProfilingError(
+            f"{metric_name} case validation failed: idle baseline mean is not positive. "
+            f"csv={csv_path}. This case's energy data is not reliable. {remediation}"
+        )
+
+    relative_range = (max(idle_values) - min(idle_values)) / mean_idle
+    if relative_range >= threshold:
+        raise EnergyProfilingError(
+            f"{metric_name} case validation failed: "
+            f"csv={csv_path}, {metric_name}={_format_watts(idle_values)} W, "
+            f"min={min(idle_values):.3f} W, max={max(idle_values):.3f} W, "
+            f"mean={mean_idle:.3f} W, relative_range={relative_range * 100.0:.1f}%, "
+            f"threshold={threshold * 100.0:.1f}%. This case's energy data is not "
+            f"reliable. {remediation}"
+        )
+
+    print(
+        f"[energy] {metric_name} case check passed: "
+        f"rows={len(idle_values)}, min={min(idle_values):.3f} W, "
+        f"max={max(idle_values):.3f} W, mean={mean_idle:.3f} W, "
+        f"relative_range={relative_range * 100.0:.1f}%",
+    )
+
+
+def _assert_case_gpu_idle_power_stable(
     csv_path: str,
     threshold: float = IDLE_POWER_RELATIVE_RANGE_THRESHOLD,
 ) -> None:
@@ -252,42 +298,55 @@ def _assert_case_idle_power_stable(
                 continue
             idle_values.append(gpu_idle_power_w)
 
-    if gpu_rows == 0:
-        return
-    if invalid_rows or not idle_values:
+    _assert_idle_power_values_stable(
+        csv_path=csv_path,
+        metric_name="gpu_idle_power_w",
+        idle_values=idle_values,
+        invalid_rows=invalid_rows,
+        row_count=gpu_rows,
+        threshold=threshold,
+        remediation=(
+            "Increase --idle-seconds, close other GPU processes, wait for GPU "
+            "clocks/power to stabilize, then rerun."
+        ),
+        skip_when_no_rows=True,
+    )
+
+
+def _assert_case_cpu_idle_power_stable(
+    csv_path: str,
+    threshold: float = IDLE_POWER_RELATIVE_RANGE_THRESHOLD,
+) -> None:
+    """Validate that CPU package idle baseline did not drift across a finished case CSV."""
+    if not os.path.exists(csv_path):
         raise EnergyProfilingError(
-            "gpu_idle_power_w case validation failed: "
-            f"csv={csv_path}, valid_rows={len(idle_values)}, invalid_rows={invalid_rows}. "
-            "This case's energy data is not reliable. Increase --idle-seconds, close other "
-            "GPU processes, wait for GPU clocks/power to stabilize, then rerun."
+            f"cpu_idle_power_w case validation failed: result CSV does not exist: {csv_path}"
         )
 
-    mean_idle = sum(idle_values) / len(idle_values)
-    if mean_idle <= 0.0:
-        raise EnergyProfilingError(
-            "gpu_idle_power_w case validation failed: idle baseline mean is not positive. "
-            f"csv={csv_path}. This case's energy data is not reliable. Increase "
-            "--idle-seconds, close other GPU processes, wait for GPU clocks/power to "
-            "stabilize, then rerun."
-        )
+    rows = 0
+    invalid_rows = 0
+    idle_values: List[float] = []
+    with open(csv_path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rows += 1
+            cpu_idle_power_w = _parse_csv_float(row.get("cpu_idle_power_w"))
+            if not math.isfinite(cpu_idle_power_w) or cpu_idle_power_w <= 0.0:
+                invalid_rows += 1
+                continue
+            idle_values.append(cpu_idle_power_w)
 
-    relative_range = (max(idle_values) - min(idle_values)) / mean_idle
-    if relative_range >= threshold:
-        raise EnergyProfilingError(
-            "gpu_idle_power_w case validation failed: "
-            f"csv={csv_path}, gpu_idle_power_w={_format_watts(idle_values)} W, "
-            f"min={min(idle_values):.3f} W, max={max(idle_values):.3f} W, "
-            f"mean={mean_idle:.3f} W, relative_range={relative_range * 100.0:.1f}%, "
-            f"threshold={threshold * 100.0:.1f}%. This case's energy data is not "
-            "reliable. Increase --idle-seconds, close other GPU processes, wait for "
-            "GPU clocks/power to stabilize, then rerun."
-        )
-
-    print(
-        "[energy] gpu_idle_power_w case check passed: "
-        f"rows={len(idle_values)}, min={min(idle_values):.3f} W, "
-        f"max={max(idle_values):.3f} W, mean={mean_idle:.3f} W, "
-        f"relative_range={relative_range * 100.0:.1f}%",
+    _assert_idle_power_values_stable(
+        csv_path=csv_path,
+        metric_name="cpu_idle_power_w",
+        idle_values=idle_values,
+        invalid_rows=invalid_rows,
+        row_count=rows,
+        threshold=threshold,
+        remediation=(
+            "Increase --idle-seconds, close host background processes, wait for "
+            "CPU package power to stabilize, then rerun."
+        ),
     )
 
 
@@ -1995,8 +2054,9 @@ def run_single_case(
                 if require_packet_latency:
                     _assert_packet_latency_csv_complete(out_csv)
 
+        _assert_case_cpu_idle_power_stable(out_csv)
         if _normalize_gpu_mode(gpu) == "on":
-            _assert_case_idle_power_stable(out_csv)
+            _assert_case_gpu_idle_power_stable(out_csv)
     finally:
         if tcpdump_proc is not None and tcpdump_proc.poll() is None:
             tcpdump_proc.terminate()
