@@ -280,8 +280,8 @@ Examples:
     parser.add_argument(
         "--compute-profile-tool",
         choices=("auto", "torch", "vendor"),
-        default="vendor",
-        help="Compute FLOP profiler: vendor uses Intel Advisor / ncu; auto/torch uses PyTorch profiler",
+        default="torch",
+        help="Compute FLOP profiler: torch/auto uses PyTorch profiler; vendor uses Intel Advisor / ncu",
     )
     parser.add_argument("--advisor-root", default=None, help="Host Intel Advisor install root or advisor executable")
     parser.add_argument("--ncu-root", default=None, help="Host Nsight Compute install root or ncu executable")

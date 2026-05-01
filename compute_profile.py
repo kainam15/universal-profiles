@@ -1,4 +1,4 @@
-"""Host-side vendor-tool FLOP profiling for AC-Prof."""
+"""Host-side FLOP profiling plan generation for AC-Prof."""
 from __future__ import annotations
 
 import csv
@@ -918,11 +918,11 @@ def collect_compute_profile_plan(
     keep_profiles: bool,
     compute_profile_cpus: Optional[int] = None,
     compute_profile_mem: Optional[int] = None,
-    compute_profile_tool: str = "vendor",
+    compute_profile_tool: str = "torch",
 ) -> str:
-    """Collect or synthesize vendor-tool compute profiles and write a plan file."""
+    """Collect or synthesize compute profiles and write a plan file."""
     os.makedirs(output_dir, exist_ok=True)
-    tool_mode = (compute_profile_tool or "vendor").strip().lower()
+    tool_mode = (compute_profile_tool or "torch").strip().lower()
     if tool_mode not in COMPUTE_PROFILE_TOOL_MODES:
         raise ValueError(
             "compute_profile_tool must be one of "

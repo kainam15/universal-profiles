@@ -19,8 +19,8 @@ AC-Prof 是一个面向 containerized HuggingFace inference service 的运行时
 - Linux RAPL powercap（`/sys/class/powercap/*/energy_uj`）：用于 CPU package power / energy 和 estimated vCPU energy metrics。
 - Docker cgroup CPU / memory files：用于 container CPU utilization 和 memory footprint metrics。
 - `tcpdump` + `tshark`：必需，用于填充 `result_all.csv` 的 `latency_s` packet-level latency。`run.py` 启动时会先做 preflight；不满足条件会直接退出并给出恢复提示。
-- Intel Advisor：默认用于 `gpu_mode=off` 行的 CPU FLOP / MFLOPS profiling。通过 `--advisor-root` 挂载到临时 profiler container；如需退回 PyTorch profiler，可显式传 `--compute-profile-tool auto` 或 `torch`。
-- NVIDIA Nsight Compute CLI (`ncu`)：默认用于 `gpu_mode=on` 行的 GPU FLOP / MFLOPS profiling。通过 `--ncu-root` 挂载到临时 profiler container；不可用、不兼容当前 CUDA/driver、或性能计数器被限制时 compute 字段为 `nan`。Ubuntu multiverse 的 `nsight-compute` 可能过旧，推荐使用 NVIDIA CUDA apt 源里的版本化包，例如 `/opt/nvidia/nsight-compute/<version>/ncu`。
+- Intel Advisor：仅在显式 `--compute-profile-tool vendor` 时用于 `gpu_mode=off` 行的 CPU FLOP / MFLOPS profiling。通过 `--advisor-root` 挂载到临时 profiler container。
+- NVIDIA Nsight Compute CLI (`ncu`)：仅在显式 `--compute-profile-tool vendor` 时用于 `gpu_mode=on` 行的 GPU FLOP / MFLOPS profiling。通过 `--ncu-root` 挂载到临时 profiler container；不可用、不兼容当前 CUDA/driver、或性能计数器被限制时 compute 字段为 `nan`。Ubuntu multiverse 的 `nsight-compute` 可能过旧，推荐使用 NVIDIA CUDA apt 源里的版本化包，例如 `/opt/nvidia/nsight-compute/<version>/ncu`。
 - Linux / WSL native Docker 的 `docker0` bridge：packet sniffing 默认监听 `docker0`。如果抓包条件不足、PCAP 为空或 merge 后仍有 `latency_s=nan`，程序会退出，不会产出看似完整但缺少 packet latency 的结果。
 
 Hugging Face token 可以放在项目根目录 `.env.local`：
@@ -79,14 +79,15 @@ python run.py --model google-bert/bert-base-uncased \
   --output-dir results/smoke
 ```
 
-MFLOPS profiling 默认启用，默认 `--compute-profile-tool vendor`：`gpu_mode=off` 行使用 Intel Advisor，`gpu_mode=on` 行使用 NVIDIA Nsight Compute `ncu`。采集不会污染正常 latency / energy window；临时 profiler container 默认使用 host 逻辑 CPU 全量和 host memory 的 75%。如果需要更保守的资源占用，可用 `--compute-profile-cpus` / `--compute-profile-mem` 显式覆盖。开发 smoke 可以先用 `--no-compute-profile` 验证主流程。只想跑原始 latency/energy 时可加 `--no-compute-profile`。
+MFLOPS profiling 默认启用，默认 `--compute-profile-tool torch`：CPU/GPU 行都使用 PyTorch profiler。采集不会污染正常 latency / energy window；临时 profiler container 默认使用 host 逻辑 CPU 全量和 host memory 的 75%。如果需要更保守的资源占用，可用 `--compute-profile-cpus` / `--compute-profile-mem` 显式覆盖。开发 smoke 可以先用 `--no-compute-profile` 验证主流程。只想跑原始 latency/energy 时可加 `--no-compute-profile`。
 
-默认会自动查找 Intel Advisor / ncu；如果工具不在默认 `PATH`，显式指定安装根目录：
+如需使用 Intel Advisor / ncu，显式指定 `--compute-profile-tool vendor`；如果工具不在默认 `PATH`，同时指定安装根目录：
 
 ```bash
 python run.py --model google-bert/bert-base-uncased \
   --advisor-root /opt/intel/oneapi/advisor/latest \
   --ncu-root /opt/nvidia/nsight-compute/2024.1.1 \
+  --compute-profile-tool vendor \
   --compute-profile-cpus 8 --compute-profile-mem 16 \
   --cpus 1 --mems 4 --gpus off,on
 ```
@@ -195,7 +196,7 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `--idle-seconds` | `3.0` | 每个 workload window 前的 GPU idle baseline 测量时长。GPU mode 为 `on` 时，case 结束后会复查该 case CSV 中所有有效 `gpu_idle_power_w` 的相对极差；达到或超过 5% 会退出实验并提示增大该值或稳定 GPU 环境。 |
 | `--input-scales` | auto | 手动覆盖 input scale 列表。未提供时自动规划 6 档。 |
 | `--no-compute-profile` | false | 禁用 MFLOPS compute profiling。 |
-| `--compute-profile-tool` | `vendor` | `vendor` 使用 Intel Advisor / ncu；`auto` / `torch` 使用 PyTorch profiler。 |
+| `--compute-profile-tool` | `torch` | `torch` / `auto` 使用 PyTorch profiler；`vendor` 使用 Intel Advisor / ncu。 |
 | `--advisor-root` | auto | Host Intel Advisor install root or executable；显式值优先于自动检测。 |
 | `--ncu-root` | auto | Host Nsight Compute install root or `ncu` executable；显式值优先于自动检测。 |
 | `--advisor-repeat` | `20` | CPU compute probe 中重复推理次数；最终 FLOP 会除回单 request。vendor 模式下对应 Advisor。 |
@@ -235,7 +236,7 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `result_all.csv` | 动态测量结果。每一行对应一个 resource config、一个 input scale、一次 warmup/repeat iteration。 |
 | `static_meta.csv` | 一行静态元数据。记录模型、镜像、batch、input scale 语义、GPU、环境和大小信息。 |
 | `input_scale_plan.json` | 自动 input scale 规划文件。手动 `--input-scales` 时可能不存在。 |
-| `compute_profile_plan.json` | per-scale FLOP profiling 结果。默认来自 Intel Advisor / ncu；显式 `--compute-profile-tool auto` 或 `torch` 时来自 PyTorch profiler。失败时也会写入错误信息，供 `result_all.csv` compute 字段引用。 |
+| `compute_profile_plan.json` | per-scale FLOP profiling 结果。默认来自 PyTorch profiler；显式 `--compute-profile-tool vendor` 时来自 Intel Advisor / ncu。失败时也会写入错误信息，供 `result_all.csv` compute 字段引用。 |
 | `*.png` | `plot.py` 生成的图表。 |
 
 中间文件 `result_case_*.csv`、`result_case_*.csv.sniff_groups.jsonl`、`lat_case_*.json`、`sniff_case_*.pcap` 会在 `result_all.csv` 成功 merge 后自动清理。若运行被中断，这些中间文件可能保留。
@@ -257,8 +258,8 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `latency_s` | packet-level latency，来自 `tcpdump` PCAP + `tshark` 解析 + `merge_packet_latency.py` merge。当前默认要求该字段完整；抓包不可用、PCAP 为空、解析为空或 merge 后仍有缺失时，程序会退出并给出恢复提示。 |
 | `latency_app_s` | host-side application latency。`client.py` 用 `requests.post()` 外层 `time.perf_counter()` 测得，通常比 `latency_s` 更容易稳定产出。 |
 | `throughput_samples_per_s` | 吞吐量，约等于 `batch_size / latency`。如果 `latency_s` 成功 merge，会优先按 `latency_s` 更新；否则按 `latency_app_s` 计算。 |
-| `compute_profile_tool` | FLOP profiling 工具。默认 CPU-only 行为 `intel_advisor`、GPU 行为 `ncu`；显式 `--compute-profile-tool auto` 或 `torch` 时为 `torch_profiler`；未采集时为 `nan`。 |
-| `model_mflop_per_request` | profiler 采集到的单 request 模型计算量，单位 MFLOP。默认 CPU 来自 Intel Advisor `Self GFLOP`，GPU 来自 ncu FLOP / tensor operation counters；PyTorch profiler 模式下根据 operator shapes 统计。 |
+| `compute_profile_tool` | FLOP profiling 工具。默认 `torch_profiler`；显式 `--compute-profile-tool vendor` 时 CPU-only 行为 `intel_advisor`、GPU 行为 `ncu`；未采集时为 `nan`。 |
+| `model_mflop_per_request` | profiler 采集到的单 request 模型计算量，单位 MFLOP。默认 PyTorch profiler 根据 operator shapes 统计；vendor 模式下 CPU 来自 Intel Advisor `Self GFLOP`，GPU 来自 ncu FLOP / tensor operation counters。 |
 | `compute_mflops_app` | `model_mflop_per_request / latency_app_s`，单位 MFLOPS。 |
 | `compute_mflops` | 默认等于 `compute_mflops_app`；如果 `latency_s` 成功 merge，则用 packet-level `latency_s` 重算。 |
 | `compute_profile_error` | compute profiling 的诊断信息。正常为空；工具缺失、性能计数器受限、报告解析失败时记录原因。 |
@@ -377,9 +378,9 @@ CPU / vCPU energy 字段全是 `nan`：
 
 MFLOPS / compute profiling 字段全是 `nan`：
 
-- 默认 `--compute-profile-tool vendor` 使用 Intel Advisor / ncu；先看 `compute_profile_error` 里的 `advisor_*` 或 `ncu_*` 诊断。如果要绕开 vendor tools，可显式传 `--compute-profile-tool auto` 或 `torch` 使用 PyTorch profiler。
-- `gpu_mode=off` 时检查 Intel Advisor 是否安装，以及 `--advisor-root` 是否指向可在容器中 bind mount 的 Advisor root 或 executable。
-- `gpu_mode=on` 时检查 `ncu` 是否安装、`--ncu-root` 是否正确、NVIDIA driver 是否允许 performance counters。若 `ncu` 下 CUDA 初始化报 `Error 36` 或没有 kernel，被测镜像裸跑 CUDA 正常但 ncu 下不正常，通常是 Nsight Compute 版本过旧；安装 NVIDIA CUDA apt 源里的较新版本后再试。
+- 默认 `--compute-profile-tool torch` 使用 PyTorch profiler；先看 `compute_profile_error` 里的 `torch_profiler_*` 诊断。
+- 如果显式使用 `--compute-profile-tool vendor`，`gpu_mode=off` 时检查 Intel Advisor 是否安装，以及 `--advisor-root` 是否指向可在容器中 bind mount 的 Advisor root 或 executable。
+- 如果显式使用 `--compute-profile-tool vendor`，`gpu_mode=on` 时检查 `ncu` 是否安装、`--ncu-root` 是否正确、NVIDIA driver 是否允许 performance counters。若 `ncu` 下 CUDA 初始化报 `Error 36` 或没有 kernel，被测镜像裸跑 CUDA 正常但 ncu 下不正常，通常是 Nsight Compute 版本过旧；安装 NVIDIA CUDA apt 源里的较新版本后再试。
 - compute profiling 是独立 probe；失败不会影响 latency / energy / resource usage 采集。具体原因看 `compute_profile_error` 和 `compute_profile_plan.json`。
 
 `--skip-build` 后 `/scale_meta` 或 `/probe` 报错：
