@@ -273,6 +273,11 @@ Examples:
         default=3.0,
         help="GPU idle baseline duration before each workload window",
     )
+    parser.add_argument(
+        "--idle-debug",
+        action="store_true",
+        help="Write CPU idle baseline timestamps and per-row diagnostic JSONL sidecars",
+    )
     parser.add_argument("--input-scales", default=None, help="Override input scale values (comma-separated)")
 
     # Compute profiling
@@ -456,6 +461,7 @@ Examples:
             repeat_window_seconds=args.repeat_window_seconds,
             sample_hz=args.sample_hz,
             idle_seconds=args.idle_seconds,
+            idle_debug=args.idle_debug,
             sniff_iface=args.sniff_iface,
             input_scales=input_scales_arg,
             input_scale_plan_file=planned_input_scales.plan_file,

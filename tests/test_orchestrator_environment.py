@@ -392,6 +392,54 @@ class DetectEnvironmentTests(unittest.TestCase):
             "results/test-unit/compute_profile_plan.json",
         )
 
+    def test_run_single_case_passes_idle_debug_settings_to_client(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+        captured_env = {}
+
+        def fake_run(cmd, check=True, capture=True, **kwargs):
+            if cmd and str(cmd[-1]).endswith("client.py"):
+                captured_env.update(kwargs.get("env", {}))
+                _write_cpu_case_csv(captured_env["OUT_CSV"], [5.0])
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch(
+            "orchestrator._start_container_session",
+            return_value=orchestrator.RunningContainer(
+                name="case_google-bert--bert-base-uncased_1c_4g_off",
+                base_url="http://127.0.0.1:8106",
+                host_port=8106,
+                cold_start_s=1.0,
+            ),
+        ), patch("orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
+            "orchestrator._stop_container_session"
+        ), patch("orchestrator._run", side_effect=fake_run):
+            orchestrator.run_single_case(
+                task_info=task_info,
+                cpu=1,
+                mem=4,
+                gpu="off",
+                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                output_dir="results/test-unit",
+                project_dir=".",
+                warmup=0,
+                repeat=1,
+                repeat_in_window=1,
+                input_scales="64",
+                idle_debug=True,
+                require_packet_latency=False,
+            )
+
+        self.assertEqual(captured_env["IDLE_DEBUG"], "1")
+        self.assertEqual(captured_env["IDLE_DIAG_PATH"], captured_env["OUT_CSV"] + ".idle_diag.jsonl")
+
     def test_run_single_case_passes_auto_repeat_window_settings_to_client(self) -> None:
         task_info = TaskInfo(
             model_id="google-bert/bert-base-uncased",

@@ -1,6 +1,7 @@
 import csv
 import io
 import json
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stderr
@@ -16,6 +17,13 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
     def test_csv_schema_uses_gpu_idle_power_w_field(self) -> None:
         self.assertIn("gpu_idle_power_w", CSV_FIELDS)
         self.assertNotIn("idle_power_w", CSV_FIELDS)
+
+    def test_csv_schema_includes_idle_debug_fields_after_cpu_idle_power(self) -> None:
+        self.assertIn("idle_measured_at", CSV_FIELDS)
+        self.assertIn("cpu_idle_rel_range_so_far", CSV_FIELDS)
+        cpu_idle_index = CSV_FIELDS.index("cpu_idle_power_w")
+        self.assertEqual(CSV_FIELDS[cpu_idle_index + 1], "idle_measured_at")
+        self.assertEqual(CSV_FIELDS[cpu_idle_index + 2], "cpu_idle_rel_range_so_far")
 
     def test_csv_schema_prefixes_gpu_energy_fields(self) -> None:
         expected = [
@@ -388,6 +396,175 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(rows[0]["status"], "ok")
         self.assertEqual(rows[0]["error"], "")
         self.assertEqual(rows[0]["cpu_energy_total_j"], "nan")
+
+    def test_idle_debug_writes_csv_fields_and_diagnostic_jsonl(self) -> None:
+        class FakeCPUMonitor:
+            idle_values = iter([5.0, 5.5])
+
+            def __init__(self, **kwargs):
+                self.idle_power_w = float("nan")
+
+            def measure_idle(self):
+                self.idle_power_w = next(type(self).idle_values)
+                return self.idle_power_w
+
+            def start(self):
+                return None
+
+            def stop(self):
+                return SimpleNamespace(
+                    cpu_energy_iters=2,
+                    cpu_idle_power_w=self.idle_power_w,
+                    cpu_avg_power_total_w=6.0,
+                    cpu_peak_power_total_w=7.0,
+                    cpu_energy_total_j=1.0,
+                    cpu_avg_power_eff_w=1.0,
+                    cpu_peak_power_eff_w=2.0,
+                    cpu_energy_eff_j=0.5,
+                    vcpu_cpu_share=0.5,
+                    vcpu_cpu_time_s=0.1,
+                    vcpu_avg_power_total_w=3.0,
+                    vcpu_peak_power_total_w=4.0,
+                    vcpu_energy_total_j=0.3,
+                    vcpu_avg_power_eff_w=0.4,
+                    vcpu_peak_power_eff_w=0.5,
+                    vcpu_energy_eff_j=0.2,
+                ), "", []
+
+            def close(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_csv = f"{tmp_dir}/result.csv"
+            diag_path = f"{out_csv}.idle_diag.jsonl"
+            with patch.object(
+                client, "OUT_CSV", out_csv
+            ), patch.object(
+                client, "CASE_NAME", "case"
+            ), patch.object(
+                client, "CPU_CORES", "1"
+            ), patch.object(
+                client, "MEM_CAP_GB", "2"
+            ), patch.object(
+                client, "WARMUP", 0
+            ), patch.object(
+                client, "REPEAT", 2
+            ), patch.object(
+                client, "REPEAT_IN_WINDOW", 1
+            ), patch.object(
+                client, "USE_ENERGY", False
+            ), patch.object(
+                client, "IDLE_DEBUG", True, create=True
+            ), patch.object(
+                client, "IDLE_DIAG_PATH", diag_path, create=True
+            ), patch.object(
+                client, "energy_mod", None
+            ), patch.object(
+                client,
+                "cpu_energy_mod",
+                SimpleNamespace(CPUEnergyMonitor=lambda **kwargs: FakeCPUMonitor(**kwargs)),
+            ), patch.object(
+                client,
+                "resource_usage_mod",
+                None,
+            ), patch.object(
+                client,
+                "input_scale_entries",
+                [{"input_scale": 1.0, "scale_label": "seq1", "payload": {}}],
+            ), patch.object(
+                client.requests,
+                "get",
+                return_value=SimpleNamespace(status_code=200, text="ok"),
+            ), patch.object(
+                client,
+                "_one_request",
+                return_value={"latency_app_s": 0.5, "effective_input_scale": 1.0},
+            ), patch.object(
+                client,
+                "_collect_idle_debug_snapshot",
+                return_value={
+                    "loadavg": [0.1, 0.2, 0.3],
+                    "top_cpu_processes": [{"pid": 123, "comm": "python", "cpu_pct": 4.5}],
+                    "docker_containers": [{"name": "case"}],
+                    "docker_stats": [{"name": "case", "cpu_perc": "0.1%"}],
+                },
+                create=True,
+            ), patch.object(
+                client,
+                "_now_iso",
+                side_effect=[
+                    "2026-05-02T10:00:00+08:00",
+                    "2026-05-02T10:00:01+08:00",
+                ],
+                create=True,
+            ):
+                client.main()
+                with open(out_csv, "r", encoding="utf-8", newline="") as f:
+                    rows = list(csv.DictReader(f))
+                with open(diag_path, "r", encoding="utf-8") as f:
+                    diag_rows = [json.loads(line) for line in f if line.strip()]
+
+        self.assertEqual(rows[0]["idle_measured_at"], "2026-05-02T10:00:00+08:00")
+        self.assertEqual(rows[0]["cpu_idle_rel_range_so_far"], "0.000000")
+        self.assertEqual(rows[1]["idle_measured_at"], "2026-05-02T10:00:01+08:00")
+        self.assertEqual(rows[1]["cpu_idle_rel_range_so_far"], "0.095238")
+        self.assertEqual(len(diag_rows), 2)
+        self.assertEqual(diag_rows[1]["sniff_group_id"], "case_seq1_r1")
+        self.assertEqual(diag_rows[1]["cpu_idle_valid_count"], 2)
+        self.assertAlmostEqual(diag_rows[1]["cpu_idle_mean_w"], 5.25)
+        self.assertEqual(diag_rows[1]["loadavg"], [0.1, 0.2, 0.3])
+        self.assertEqual(diag_rows[1]["top_cpu_processes"][0]["comm"], "python")
+        self.assertEqual(diag_rows[1]["docker_containers"][0]["name"], "case")
+        self.assertEqual(diag_rows[1]["docker_stats"][0]["cpu_perc"], "0.1%")
+
+    def test_idle_debug_disabled_fills_nan_and_does_not_write_diag_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_csv = f"{tmp_dir}/result.csv"
+            diag_path = f"{out_csv}.idle_diag.jsonl"
+            with patch.object(
+                client, "OUT_CSV", out_csv
+            ), patch.object(
+                client, "WARMUP", 0
+            ), patch.object(
+                client, "REPEAT", 1
+            ), patch.object(
+                client, "REPEAT_IN_WINDOW", 1
+            ), patch.object(
+                client, "USE_ENERGY", False
+            ), patch.object(
+                client, "IDLE_DEBUG", False, create=True
+            ), patch.object(
+                client, "IDLE_DIAG_PATH", diag_path, create=True
+            ), patch.object(
+                client, "energy_mod", None
+            ), patch.object(
+                client,
+                "cpu_energy_mod",
+                None,
+            ), patch.object(
+                client,
+                "resource_usage_mod",
+                None,
+            ), patch.object(
+                client,
+                "input_scale_entries",
+                [{"input_scale": 1.0, "scale_label": "1", "payload": {}}],
+            ), patch.object(
+                client.requests,
+                "get",
+                return_value=SimpleNamespace(status_code=200, text="ok"),
+            ), patch.object(
+                client,
+                "_one_request",
+                return_value={"latency_app_s": 0.5, "effective_input_scale": 1.0},
+            ):
+                client.main()
+                with open(out_csv, "r", encoding="utf-8", newline="") as f:
+                    rows = list(csv.DictReader(f))
+
+        self.assertEqual(rows[0]["idle_measured_at"], "nan")
+        self.assertEqual(rows[0]["cpu_idle_rel_range_so_far"], "nan")
+        self.assertFalse(os.path.exists(diag_path))
 
     def test_resource_usage_metrics_are_written_to_successful_row(self) -> None:
         class FakeResourceUsageMonitor:

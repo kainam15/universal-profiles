@@ -5,11 +5,14 @@ Runs on HOST (not inside container). Generalized from example-code/client.py.
 from __future__ import annotations
 
 import csv
+import datetime
 import json
 import math
 import os
+import subprocess
 import sys
 import time
+from contextlib import nullcontext
 from typing import Any, Dict, List, Optional
 
 
@@ -66,6 +69,8 @@ OUT_CSV = os.getenv("OUT_CSV", "result.csv")
 CASE_NAME = os.getenv("CASE_NAME", "").strip()
 CONTAINER_NAME = os.getenv("CONTAINER_NAME", "").strip()
 SNIFF_GROUPS_PATH = os.getenv("SNIFF_GROUPS_PATH", "").strip()
+IDLE_DEBUG = os.getenv("IDLE_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+IDLE_DIAG_PATH = os.getenv("IDLE_DIAG_PATH", "").strip()
 
 SAMPLE_HZ = float(os.getenv("SAMPLE_HZ", "20"))
 IDLE_SECONDS = float(os.getenv("IDLE_SECONDS", "3"))
@@ -97,6 +102,10 @@ def _sniff_groups_path(csv_path: str) -> str:
     return SNIFF_GROUPS_PATH or f"{csv_path}.sniff_groups.jsonl"
 
 
+def _idle_diag_path(csv_path: str) -> str:
+    return IDLE_DIAG_PATH or f"{csv_path}.idle_diag.jsonl"
+
+
 def _to_float_or_nan(x: Any) -> float:
     try:
         if x is None:
@@ -110,6 +119,15 @@ def _fmt_float(x: float) -> str:
     if x is None or (isinstance(x, float) and (math.isnan(x) or math.isinf(x))):
         return "nan"
     return f"{x:.6f}"
+
+
+def _now_iso() -> str:
+    return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _finite_positive(value: Any) -> bool:
+    number = _to_float_or_nan(value)
+    return math.isfinite(number) and number > 0.0
 
 
 class EnergyAbort(RuntimeError):
@@ -540,18 +558,157 @@ def _append_sniff_group(sidecar_f, sniff_group_id: str) -> None:
     os.fsync(sidecar_f.fileno())
 
 
+def _idle_debug_stats(values: List[float]) -> Dict[str, float]:
+    if not values:
+        return {
+            "cpu_idle_valid_count": 0,
+            "cpu_idle_min_w": float("nan"),
+            "cpu_idle_max_w": float("nan"),
+            "cpu_idle_mean_w": float("nan"),
+            "cpu_idle_rel_range_so_far": float("nan"),
+        }
+
+    mean_idle = sum(values) / len(values)
+    relative_range = (
+        (max(values) - min(values)) / mean_idle
+        if mean_idle > 0.0
+        else float("nan")
+    )
+    return {
+        "cpu_idle_valid_count": len(values),
+        "cpu_idle_min_w": min(values),
+        "cpu_idle_max_w": max(values),
+        "cpu_idle_mean_w": mean_idle,
+        "cpu_idle_rel_range_so_far": relative_range,
+    }
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _run_json_lines(cmd: List[str], timeout: float = 2.0) -> List[Dict[str, Any]]:
+    result = subprocess.run(
+        cmd,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "").strip())
+    rows = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line:
+            rows.append(json.loads(line))
+    return rows
+
+
+def _collect_top_cpu_processes(limit: int = 10) -> List[Dict[str, Any]]:
+    result = subprocess.run(
+        [
+            "ps",
+            "-eo",
+            "pid=,ppid=,user=,comm=,%cpu=,%mem=,args=",
+            "--sort=-%cpu",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=2.0,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "").strip())
+
+    processes = []
+    for line in result.stdout.splitlines():
+        parts = line.strip().split(None, 6)
+        if len(parts) < 7:
+            continue
+        pid, ppid, user, comm, cpu_pct, mem_pct, args = parts
+        processes.append({
+            "pid": int(pid),
+            "ppid": int(ppid),
+            "user": user,
+            "comm": comm,
+            "cpu_pct": _to_float_or_nan(cpu_pct),
+            "mem_pct": _to_float_or_nan(mem_pct),
+            "args": args,
+        })
+        if len(processes) >= limit:
+            break
+    return processes
+
+
+def _collect_idle_debug_snapshot() -> Dict[str, Any]:
+    snapshot: Dict[str, Any] = {}
+    try:
+        snapshot["loadavg"] = list(os.getloadavg())
+    except Exception as exc:
+        snapshot["loadavg_error"] = repr(exc)
+
+    try:
+        snapshot["top_cpu_processes"] = _collect_top_cpu_processes()
+    except Exception as exc:
+        snapshot["top_cpu_processes_error"] = repr(exc)
+
+    try:
+        snapshot["docker_containers"] = _run_json_lines([
+            "docker",
+            "ps",
+            "--format",
+            "{{json .}}",
+        ])
+    except Exception as exc:
+        snapshot["docker_containers_error"] = repr(exc)
+
+    try:
+        snapshot["docker_stats"] = _run_json_lines([
+            "docker",
+            "stats",
+            "--no-stream",
+            "--format",
+            "{{json .}}",
+        ])
+    except Exception as exc:
+        snapshot["docker_stats_error"] = repr(exc)
+
+    return snapshot
+
+
+def _append_idle_diag(diag_f, record: Dict[str, Any]) -> None:
+    diag_f.write(json.dumps(_json_safe(record), ensure_ascii=True, sort_keys=True) + "\n")
+    diag_f.flush()
+    os.fsync(diag_f.fileno())
+
+
 def _append_row(
     writer: csv.DictWriter,
     row: Dict[str, Any],
     f,
     sidecar_f,
     sniff_group_id: str,
+    diag_f=None,
+    idle_diag_record: Optional[Dict[str, Any]] = None,
 ) -> None:
     out = {k: row.get(k, "") for k in CSV_FIELDS}
     writer.writerow(out)
     f.flush()
     os.fsync(f.fileno())
     _append_sniff_group(sidecar_f, sniff_group_id)
+    if diag_f is not None and idle_diag_record is not None:
+        _append_idle_diag(diag_f, idle_diag_record)
 
 
 def main() -> None:
@@ -564,11 +721,16 @@ def main() -> None:
     compute_profile_plan = _load_compute_profile_plan(COMPUTE_PROFILE_PLAN_FILE)
     need_header = _is_file_empty(OUT_CSV)
     sidecar_mode = "w" if need_header else "a"
+    diag_context = (
+        open(_idle_diag_path(OUT_CSV), sidecar_mode, encoding="utf-8")
+        if IDLE_DEBUG
+        else nullcontext(None)
+    )
     with open(OUT_CSV, "a", newline="", encoding="utf-8") as f, open(
         _sniff_groups_path(OUT_CSV),
         sidecar_mode,
         encoding="utf-8",
-    ) as sidecar_f:
+    ) as sidecar_f, diag_context as diag_f:
         writer = csv.DictWriter(
             f,
             fieldnames=CSV_FIELDS,
@@ -597,6 +759,7 @@ def main() -> None:
             _append_row(writer, row, f, sidecar_f, "")
             return
 
+        cpu_idle_values_so_far: List[float] = []
         for scale_entry in input_scale_entries:
             scale_val = float(scale_entry["input_scale"])
             payload_override = scale_entry.get("payload")
@@ -620,6 +783,8 @@ def main() -> None:
                 cpu_metrics = _nan_metrics(CPU_METRIC_FIELDS)
                 resource_usage_metrics = _nan_metrics(RESOURCE_USAGE_METRIC_FIELDS)
                 effective_input_scale: Optional[float] = None
+                idle_measured_at = "nan"
+                idle_debug_snapshot: Optional[Dict[str, Any]] = None
 
                 try:
                     gpu_monitor = None
@@ -646,6 +811,9 @@ def main() -> None:
                                 container_name=CONTAINER_NAME,
                             )
                             cpu_monitor.measure_idle()
+                            if IDLE_DEBUG:
+                                idle_measured_at = _now_iso()
+                                idle_debug_snapshot = _collect_idle_debug_snapshot()
 
                         if resource_usage_mod is not None:
                             resource_usage_monitor = resource_usage_mod.ResourceUsageMonitor(
@@ -737,6 +905,11 @@ def main() -> None:
                     err_msg = repr(e)
                     throughput = float("nan")
 
+                idle_stats = _idle_debug_stats(cpu_idle_values_so_far)
+                if IDLE_DEBUG and _finite_positive(cpu_metrics["cpu_idle_power_w"]):
+                    cpu_idle_values_so_far.append(_to_float_or_nan(cpu_metrics["cpu_idle_power_w"]))
+                    idle_stats = _idle_debug_stats(cpu_idle_values_so_far)
+
                 row = {
                     "cpu_cores": CPU_CORES,
                     "mem_cap_gb": MEM_CAP_GB,
@@ -753,6 +926,12 @@ def main() -> None:
                     "throughput_samples_per_s": _fmt_float(throughput),
                     **{field: _fmt_float(gpu_metrics[field]) for field in GPU_METRIC_FIELDS},
                     **{field: _fmt_float(cpu_metrics[field]) for field in CPU_METRIC_FIELDS},
+                    "idle_measured_at": idle_measured_at if IDLE_DEBUG else "nan",
+                    "cpu_idle_rel_range_so_far": (
+                        _fmt_float(idle_stats["cpu_idle_rel_range_so_far"])
+                        if IDLE_DEBUG
+                        else "nan"
+                    ),
                     **{field: _fmt_float(resource_usage_metrics[field]) for field in RESOURCE_USAGE_METRIC_FIELDS},
                     "cold_start_s": COLD_START_S if COLD_START_S else "nan",
                     "status": status,
@@ -778,7 +957,34 @@ def main() -> None:
                     "compute_mflops": _fmt_float(compute_mflops_app),
                     "compute_profile_error": compute_profile["error"],
                 })
-                _append_row(writer, row, f, sidecar_f, sniff_group_id)
+                idle_diag_record = None
+                if IDLE_DEBUG:
+                    if idle_debug_snapshot is None:
+                        idle_debug_snapshot = _collect_idle_debug_snapshot()
+                    idle_diag_record = {
+                        "case_name": CASE_NAME,
+                        "gpu_mode": GPU_MODE,
+                        "cpu_cores": CPU_CORES,
+                        "mem_cap_gb": MEM_CAP_GB,
+                        "input_scale": row["input_scale"],
+                        "warmup": row["warmup"],
+                        "repeat_idx": row["repeat_idx"],
+                        "repeat_in_window": row["repeat_in_window"],
+                        "sniff_group_id": sniff_group_id,
+                        "idle_measured_at": row["idle_measured_at"],
+                        "cpu_idle_power_w": _to_float_or_nan(row["cpu_idle_power_w"]),
+                        **idle_stats,
+                        **idle_debug_snapshot,
+                    }
+                _append_row(
+                    writer,
+                    row,
+                    f,
+                    sidecar_f,
+                    sniff_group_id,
+                    diag_f=diag_f,
+                    idle_diag_record=idle_diag_record,
+                )
 
 
 def run_cli() -> None:

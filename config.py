@@ -164,6 +164,8 @@ CSV_FIELDS = [
     "gpu_peak_power_eff_w",
     "gpu_energy_eff_j",
     "cpu_idle_power_w",
+    "idle_measured_at",
+    "cpu_idle_rel_range_so_far",
     "cpu_energy_iters",
     "cpu_avg_power_total_w",
     "cpu_peak_power_total_w",
