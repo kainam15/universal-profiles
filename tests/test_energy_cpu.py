@@ -75,6 +75,73 @@ class CPUEnergyMonitorTests(unittest.TestCase):
 
         self.assertAlmostEqual(idle_power_w, 4.0)
 
+    def test_measure_idle_trace_records_subwindows_and_proc_cpu_delta(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_rapl_domain(tmp, "intel-rapl:0", "package-0")
+            monitor = energy_cpu.CPUEnergyMonitor(
+                sample_hz=1.0,
+                idle_seconds=3.0,
+                powercap_root=tmp,
+            )
+
+            fake_clock = {"now": 100.0}
+
+            def fake_perf_counter() -> float:
+                return fake_clock["now"]
+
+            def fake_sleep(seconds: float) -> None:
+                fake_clock["now"] += seconds
+
+            def fake_read_sample(timestamp: float) -> energy_cpu.CPUSample:
+                elapsed_s = int(round(timestamp - 100.0))
+                energy_by_elapsed = {
+                    0: 0,
+                    1: 1_000_000,
+                    2: 2_000_000,
+                    3: 11_000_000,
+                }
+                return energy_cpu.CPUSample(
+                    timestamp,
+                    [energy_by_elapsed[elapsed_s]],
+                    host_active_s=10.0 + elapsed_s,
+                    container_cpu_s=1.0 + (0.25 * elapsed_s),
+                )
+
+            proc_start = {
+                11: SimpleNamespace(pid=11, ppid=1, comm="quiet", cpu_s=2.0, cmdline="quiet"),
+                22: SimpleNamespace(pid=22, ppid=1, comm="busy", cpu_s=4.0, cmdline="busy --loop"),
+            }
+            proc_end = {
+                11: SimpleNamespace(pid=11, ppid=1, comm="quiet", cpu_s=2.01, cmdline="quiet"),
+                22: SimpleNamespace(pid=22, ppid=1, comm="busy", cpu_s=4.25, cmdline="busy --loop"),
+            }
+
+            with patch("energy_cpu.time.perf_counter", side_effect=fake_perf_counter):
+                with patch("energy_cpu.time.sleep", side_effect=fake_sleep):
+                    with patch.object(monitor, "_read_sample", side_effect=fake_read_sample):
+                        with patch(
+                            "energy_cpu._read_proc_cpu_snapshot",
+                            side_effect=[proc_start, proc_end],
+                            create=True,
+                        ):
+                            idle_power_w = monitor.measure_idle(trace_interval_s=1.0)
+
+        self.assertAlmostEqual(idle_power_w, 11.0 / 3.0)
+        self.assertEqual(monitor.idle_trace["idle_trace_schema"], "cpu_rapl_idle_v1")
+        self.assertAlmostEqual(monitor.idle_trace["actual_idle_duration_s"], 3.0)
+        self.assertAlmostEqual(monitor.idle_trace["idle_container_cpu_delta_s"], 0.75)
+        self.assertEqual(len(monitor.idle_trace["rapl_trace"]["power_windows"]), 3)
+        self.assertAlmostEqual(monitor.idle_trace["rapl_trace"]["power_max_w"], 9.0)
+        self.assertEqual(
+            monitor.idle_trace["rapl_trace"]["top_power_windows"][0]["t0_s"],
+            2.0,
+        )
+        self.assertEqual(monitor.idle_trace["idle_proc_cpu_top"][0]["comm"], "busy")
+        self.assertAlmostEqual(
+            monitor.idle_trace["idle_proc_cpu_top"][0]["cpu_time_ms"],
+            250.0,
+        )
+
     def test_result_integrates_rapl_energy_and_handles_wrap(self) -> None:
         domain = energy_cpu.RaplDomain("intel-rapl:0", "unused", 100)
         samples = [

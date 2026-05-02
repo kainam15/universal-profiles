@@ -71,6 +71,7 @@ CONTAINER_NAME = os.getenv("CONTAINER_NAME", "").strip()
 SNIFF_GROUPS_PATH = os.getenv("SNIFF_GROUPS_PATH", "").strip()
 IDLE_DEBUG = os.getenv("IDLE_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 IDLE_DIAG_PATH = os.getenv("IDLE_DIAG_PATH", "").strip()
+IDLE_DEBUG_TRACE_INTERVAL_S = float(os.getenv("IDLE_DEBUG_TRACE_INTERVAL_S", "0.1"))
 
 SAMPLE_HZ = float(os.getenv("SAMPLE_HZ", "20"))
 IDLE_SECONDS = float(os.getenv("IDLE_SECONDS", "3"))
@@ -652,7 +653,7 @@ def _collect_top_cpu_processes(limit: int = 10) -> List[Dict[str, Any]]:
 
 
 def _collect_idle_debug_snapshot() -> Dict[str, Any]:
-    snapshot: Dict[str, Any] = {}
+    snapshot: Dict[str, Any] = {"snapshot_scope": "after_idle"}
     try:
         snapshot["loadavg"] = list(os.getloadavg())
     except Exception as exc:
@@ -785,6 +786,7 @@ def main() -> None:
                 effective_input_scale: Optional[float] = None
                 idle_measured_at = "nan"
                 idle_debug_snapshot: Optional[Dict[str, Any]] = None
+                idle_trace: Dict[str, Any] = {}
 
                 try:
                     gpu_monitor = None
@@ -810,10 +812,13 @@ def main() -> None:
                                 idle_seconds=IDLE_SECONDS,
                                 container_name=CONTAINER_NAME,
                             )
-                            cpu_monitor.measure_idle()
                             if IDLE_DEBUG:
+                                cpu_monitor.measure_idle(trace_interval_s=IDLE_DEBUG_TRACE_INTERVAL_S)
                                 idle_measured_at = _now_iso()
+                                idle_trace = dict(getattr(cpu_monitor, "idle_trace", {}) or {})
                                 idle_debug_snapshot = _collect_idle_debug_snapshot()
+                            else:
+                                cpu_monitor.measure_idle()
 
                         if resource_usage_mod is not None:
                             resource_usage_monitor = resource_usage_mod.ResourceUsageMonitor(
@@ -974,6 +979,7 @@ def main() -> None:
                         "idle_measured_at": row["idle_measured_at"],
                         "cpu_idle_power_w": _to_float_or_nan(row["cpu_idle_power_w"]),
                         **idle_stats,
+                        **idle_trace,
                         **idle_debug_snapshot,
                     }
                 _append_row(

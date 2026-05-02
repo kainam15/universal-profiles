@@ -400,12 +400,25 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
     def test_idle_debug_writes_csv_fields_and_diagnostic_jsonl(self) -> None:
         class FakeCPUMonitor:
             idle_values = iter([5.0, 5.5])
+            trace_intervals = []
 
             def __init__(self, **kwargs):
                 self.idle_power_w = float("nan")
+                self.idle_trace = {}
 
-            def measure_idle(self):
+            def measure_idle(self, trace_interval_s=None):
+                type(self).trace_intervals.append(trace_interval_s)
                 self.idle_power_w = next(type(self).idle_values)
+                self.idle_trace = {
+                    "idle_trace_schema": "cpu_rapl_idle_v1",
+                    "actual_idle_duration_s": 3.0,
+                    "rapl_trace": {
+                        "interval_s": trace_interval_s,
+                        "power_windows": [{"t0_s": 0.0, "t1_s": 0.1, "power_w": 6.0}],
+                    },
+                    "idle_proc_cpu_top": [{"pid": 123, "comm": "python", "cpu_time_ms": 10.0}],
+                    "idle_container_cpu_delta_s": 0.01,
+                }
                 return self.idle_power_w
 
             def start(self):
@@ -483,6 +496,7 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                 client,
                 "_collect_idle_debug_snapshot",
                 return_value={
+                    "snapshot_scope": "after_idle",
                     "loadavg": [0.1, 0.2, 0.3],
                     "top_cpu_processes": [{"pid": 123, "comm": "python", "cpu_pct": 4.5}],
                     "docker_containers": [{"name": "case"}],
@@ -508,10 +522,17 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(rows[0]["cpu_idle_rel_range_so_far"], "0.000000")
         self.assertEqual(rows[1]["idle_measured_at"], "2026-05-02T10:00:01+08:00")
         self.assertEqual(rows[1]["cpu_idle_rel_range_so_far"], "0.095238")
+        self.assertEqual(FakeCPUMonitor.trace_intervals, [0.1, 0.1])
         self.assertEqual(len(diag_rows), 2)
         self.assertEqual(diag_rows[1]["sniff_group_id"], "case_seq1_r1")
+        self.assertEqual(diag_rows[1]["idle_trace_schema"], "cpu_rapl_idle_v1")
+        self.assertEqual(diag_rows[1]["actual_idle_duration_s"], 3.0)
+        self.assertEqual(diag_rows[1]["rapl_trace"]["interval_s"], 0.1)
+        self.assertEqual(diag_rows[1]["idle_proc_cpu_top"][0]["comm"], "python")
+        self.assertEqual(diag_rows[1]["idle_container_cpu_delta_s"], 0.01)
         self.assertEqual(diag_rows[1]["cpu_idle_valid_count"], 2)
         self.assertAlmostEqual(diag_rows[1]["cpu_idle_mean_w"], 5.25)
+        self.assertEqual(diag_rows[1]["snapshot_scope"], "after_idle")
         self.assertEqual(diag_rows[1]["loadavg"], [0.1, 0.2, 0.3])
         self.assertEqual(diag_rows[1]["top_cpu_processes"][0]["comm"], "python")
         self.assertEqual(diag_rows[1]["docker_containers"][0]["name"], "case")
