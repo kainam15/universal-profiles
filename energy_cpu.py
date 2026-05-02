@@ -72,14 +72,6 @@ def _nan_result(cpu_energy_iters: int = 0, cpu_idle_power_w: float = float("nan"
     )
 
 
-def _median(xs: List[float]) -> float:
-    if not xs:
-        return float("nan")
-    s = sorted(xs)
-    n = len(s)
-    return s[n // 2] if n % 2 else 0.5 * (s[n // 2 - 1] + s[n // 2])
-
-
 def _read_int(path: str) -> int:
     with open(path, "r", encoding="utf-8") as f:
         return int(f.read().strip())
@@ -93,6 +85,18 @@ def _discover_rapl_domains(powercap_root: str = "/sys/class/powercap") -> List[R
     for entry in sorted(os.scandir(powercap_root), key=lambda item: item.name):
         if not entry.is_dir(follow_symlinks=True):
             continue
+        if entry.name.count(":") != 1:
+            continue
+
+        name_path = os.path.join(entry.path, "name")
+        if os.path.exists(name_path):
+            try:
+                with open(name_path, "r", encoding="utf-8") as f:
+                    domain_name = f.read().strip()
+            except Exception:
+                continue
+            if not domain_name.startswith("package-"):
+                continue
 
         energy_path = os.path.join(entry.path, "energy_uj")
         if not os.path.isfile(energy_path):
@@ -394,25 +398,22 @@ class CPUEnergyMonitor:
         if not self.available:
             return float("nan")
 
-        idle_samples: List[CPUSample] = []
-        t_idle_end = time.perf_counter() + self.idle_seconds
         try:
-            idle_samples.append(self._read_sample(time.perf_counter()))
-            while time.perf_counter() < t_idle_end:
-                time.sleep(self.dt)
-                idle_samples.append(self._read_sample(time.perf_counter()))
+            start = self._read_sample(time.perf_counter())
+            sleep_s = max(0.0, self.idle_seconds)
+            if sleep_s > 0:
+                time.sleep(sleep_s)
+            end = self._read_sample(time.perf_counter())
         except Exception as exc:
             self._runtime_error = str(exc)
+            self.idle_power_w = float("nan")
+            return self.idle_power_w
 
-        interval_powers = []
-        for idx in range(1, len(idle_samples)):
-            prev = idle_samples[idx - 1]
-            curr = idle_samples[idx]
-            dt = curr.timestamp - prev.timestamp
-            if dt > 0:
-                interval_powers.append(_energy_delta_j(prev, curr, self.domains) / dt)
-
-        self.idle_power_w = _median(interval_powers)
+        duration_s = end.timestamp - start.timestamp
+        if duration_s > 0:
+            self.idle_power_w = _energy_delta_j(start, end, self.domains) / duration_s
+        else:
+            self.idle_power_w = float("nan")
         return self.idle_power_w
 
     def start(self) -> None:

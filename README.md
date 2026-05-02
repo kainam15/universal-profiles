@@ -192,8 +192,8 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `--repeat` | `5` | 每个资源配置、每个 input scale 的正式测量行数。 |
 | `--repeat-in-window` | `0` | 每一行内部连续发送的 `/predict` request 数量。`0` 表示按单次推理时间自动校准。 |
 | `--repeat-window-seconds` | `10.0` | `--repeat-in-window 0` 时的目标 workload window 秒数。 |
-| `--sample-hz` | `20.0` | GPU power sampling rate，单位 Hz。 |
-| `--idle-seconds` | `3.0` | 每个 workload window 前的 idle baseline 测量时长。case 结束后会复查该 case CSV 中所有有效 `cpu_idle_power_w` 的相对极差；`gpu_mode=on` 时也会复查 `gpu_idle_power_w`。达到或超过 5% 会退出实验并提示增大该值或稳定主机/GPU 环境。 |
+| `--sample-hz` | `20.0` | GPU power sampling rate，单位 Hz；CPU workload 期间也用它控制采样间隔以估计 peak power 和 vCPU share。CPU idle baseline 不使用该 20Hz 小区间 median。 |
+| `--idle-seconds` | `3.0` | 每个 workload window 前的 idle baseline 测量时长。CPU idle baseline 用整段 RAPL `energy_uj` 差值 / 实际 duration；`gpu_mode=on` 时 GPU idle baseline 仍来自 NVML power samples。case 结束后会复查该 case CSV 中所有有效 `cpu_idle_power_w` 的相对极差；`gpu_mode=on` 时也会复查 `gpu_idle_power_w`。达到或超过 5% 会退出实验并提示增大该值或稳定主机/GPU 环境。 |
 | `--idle-debug` | false | 开启 CPU idle baseline 调试输出。主 CSV 会填充 `idle_measured_at` 和 `cpu_idle_rel_range_so_far`，并写出 `result_case_*.csv.idle_diag.jsonl` 记录 loadavg、top CPU processes、Docker 容器和 `docker stats` 快照。 |
 | `--input-scales` | auto | 手动覆盖 input scale 列表。未提供时自动规划 6 档。 |
 | `--no-compute-profile` | false | 禁用 MFLOPS compute profiling。 |
@@ -265,7 +265,7 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `compute_mflops_app` | `model_mflop_per_request / latency_app_s`，单位 MFLOPS。 |
 | `compute_mflops` | 默认等于 `compute_mflops_app`；如果 `latency_s` 成功 merge，则用 packet-level `latency_s` 重算。 |
 | `compute_profile_error` | compute profiling 的诊断信息。正常为空；工具缺失、性能计数器受限、报告解析失败时记录原因。 |
-| `gpu_idle_power_w` | GPU idle baseline power，单位 W。仅 `gpu_mode=on` 且 NVML 可用时有值。 |
+| `gpu_idle_power_w` | GPU idle baseline power，单位 W。仅 `gpu_mode=on` 且 NVML 可用时有值；由 NVML power samples 取中位数得到。 |
 | `gpu_energy_iters` | GPU energy measurement 内部采样窗口中的 iteration 数。 |
 | `gpu_avg_power_total_w` | 测量窗口内 GPU total average power，单位 W。 |
 | `gpu_peak_power_total_w` | 测量窗口内 GPU total peak power，单位 W。 |
@@ -273,7 +273,7 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `gpu_avg_power_eff_w` | 扣除 idle baseline 后的 effective average power，单位 W。 |
 | `gpu_peak_power_eff_w` | 扣除 idle baseline 后的 effective peak power，单位 W。 |
 | `gpu_energy_eff_j` | 本行平均到单 request 的 effective GPU energy，单位 J。 |
-| `cpu_idle_power_w` | CPU package idle baseline power，单位 W。仅 Linux/WSL 暴露 RAPL `/sys/class/powercap/*/energy_uj` 时有值。 |
+| `cpu_idle_power_w` | CPU package idle baseline power，单位 W。仅 Linux/WSL 暴露 RAPL `/sys/class/powercap/*/energy_uj` 时有值；由整段 idle window 的 RAPL 能耗差 / 实际 duration 得到。 |
 | `idle_measured_at` | `--idle-debug` 开启时，CPU idle baseline 测量完成时的本地 ISO-8601 时间戳；未开启时为 `nan`。 |
 | `cpu_idle_rel_range_so_far` | `--idle-debug` 开启时，截至本行为止当前 case 内有效 `cpu_idle_power_w` 的相对极差，公式为 `(max - min) / mean`；`0.05` 表示 5%。未开启时为 `nan`。 |
 | `cpu_energy_iters` | CPU package energy measurement 采样窗口中的 sample 数。 |
@@ -374,7 +374,7 @@ GPU energy 字段全是 `nan`：
 CPU / vCPU energy 字段全是 `nan`：
 
 - 这是当前环境没有暴露 RAPL `/sys/class/powercap/*/energy_uj` 时的正常结果，不会影响 latency / throughput 采集。
-- `cpu_*` 字段是 host CPU package 的真实 RAPL 测量值；`vcpu_*` 字段是在同一窗口内按 container cgroup CPU share 分摊出来的估计值。
+- `cpu_*` 字段是 host CPU package/root domain 的真实 RAPL 测量值，不累加 `intel-rapl:*:*` 这类 core 子 domain；`vcpu_*` 字段是在同一窗口内按 container cgroup CPU share 分摊出来的估计值。
 - 本项目不会用 TDP 或 CPU utilization 造功耗值；没有 RAPL 时保持 `nan`。
 
 CPU idle baseline 波动导致实验退出：

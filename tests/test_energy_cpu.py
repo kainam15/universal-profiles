@@ -8,7 +8,73 @@ from unittest.mock import patch
 import energy_cpu
 
 
+def _write_rapl_domain(
+    root: str,
+    entry_name: str,
+    domain_name: str,
+    energy_uj: int = 0,
+    max_range_uj: int = 1_000_000_000,
+) -> str:
+    domain_dir = os.path.join(root, entry_name)
+    os.makedirs(domain_dir)
+    with open(os.path.join(domain_dir, "name"), "w", encoding="utf-8") as f:
+        f.write(f"{domain_name}\n")
+    with open(os.path.join(domain_dir, "energy_uj"), "w", encoding="utf-8") as f:
+        f.write(f"{energy_uj}\n")
+    with open(os.path.join(domain_dir, "max_energy_range_uj"), "w", encoding="utf-8") as f:
+        f.write(f"{max_range_uj}\n")
+    return domain_dir
+
+
 class CPUEnergyMonitorTests(unittest.TestCase):
+    def test_discover_rapl_domains_uses_package_domains_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_rapl_domain(tmp, "intel-rapl:0", "package-0")
+            _write_rapl_domain(tmp, "intel-rapl:0:0", "core")
+
+            domains = energy_cpu._discover_rapl_domains(tmp)
+
+        self.assertEqual([domain.name for domain in domains], ["intel-rapl:0"])
+
+    def test_measure_idle_uses_full_window_energy_delta(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_rapl_domain(tmp, "intel-rapl:0", "package-0")
+            monitor = energy_cpu.CPUEnergyMonitor(
+                sample_hz=1.0,
+                idle_seconds=3.0,
+                powercap_root=tmp,
+            )
+
+            fake_clock = {"now": 100.0}
+
+            def fake_perf_counter() -> float:
+                return fake_clock["now"]
+
+            def fake_sleep(seconds: float) -> None:
+                fake_clock["now"] += seconds
+
+            def fake_read_sample(timestamp: float) -> energy_cpu.CPUSample:
+                elapsed_s = int(round(timestamp - 100.0))
+                energy_by_elapsed = {
+                    0: 0,
+                    1: 1_000_000,
+                    2: 2_000_000,
+                    3: 12_000_000,
+                }
+                return energy_cpu.CPUSample(
+                    timestamp,
+                    [energy_by_elapsed[elapsed_s]],
+                    0.0,
+                    None,
+                )
+
+            with patch("energy_cpu.time.perf_counter", side_effect=fake_perf_counter):
+                with patch("energy_cpu.time.sleep", side_effect=fake_sleep):
+                    with patch.object(monitor, "_read_sample", side_effect=fake_read_sample):
+                        idle_power_w = monitor.measure_idle()
+
+        self.assertAlmostEqual(idle_power_w, 4.0)
+
     def test_result_integrates_rapl_energy_and_handles_wrap(self) -> None:
         domain = energy_cpu.RaplDomain("intel-rapl:0", "unused", 100)
         samples = [
