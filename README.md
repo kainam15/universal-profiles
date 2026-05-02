@@ -193,7 +193,8 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `--repeat-in-window` | `0` | 每一行内部连续发送的 `/predict` request 数量。`0` 表示按单次推理时间自动校准。 |
 | `--repeat-window-seconds` | `10.0` | `--repeat-in-window 0` 时的目标 workload window 秒数。 |
 | `--sample-hz` | `20.0` | GPU power sampling rate，单位 Hz。 |
-| `--idle-seconds` | `3.0` | 每个 workload window 前的 GPU idle baseline 测量时长。GPU mode 为 `on` 时，case 结束后会复查该 case CSV 中所有有效 `gpu_idle_power_w` 的相对极差；达到或超过 5% 会退出实验并提示增大该值或稳定 GPU 环境。 |
+| `--idle-seconds` | `3.0` | 每个 workload window 前的 idle baseline 测量时长。case 结束后会复查该 case CSV 中所有有效 `cpu_idle_power_w` 的相对极差；`gpu_mode=on` 时也会复查 `gpu_idle_power_w`。达到或超过 5% 会退出实验并提示增大该值或稳定主机/GPU 环境。 |
+| `--idle-debug` | false | 开启 CPU idle baseline 调试输出。主 CSV 会填充 `idle_measured_at` 和 `cpu_idle_rel_range_so_far`，并写出 `result_case_*.csv.idle_diag.jsonl` 记录 loadavg、top CPU processes、Docker 容器和 `docker stats` 快照。 |
 | `--input-scales` | auto | 手动覆盖 input scale 列表。未提供时自动规划 6 档。 |
 | `--no-compute-profile` | false | 禁用 MFLOPS compute profiling。 |
 | `--compute-profile-tool` | `auto` | `auto` 下 CPU 使用 PyTorch profiler、GPU 使用 ncu；`torch` 全部使用 PyTorch profiler；`vendor` 使用 Intel Advisor / ncu。 |
@@ -237,6 +238,7 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `static_meta.csv` | 一行静态元数据。记录模型、镜像、batch、input scale 语义、GPU、环境和大小信息。 |
 | `input_scale_plan.json` | 自动 input scale 规划文件。手动 `--input-scales` 时可能不存在。 |
 | `compute_profile_plan.json` | per-scale FLOP profiling 结果。默认 CPU 来自 PyTorch profiler、GPU 来自 ncu；显式 `--compute-profile-tool torch` 时全部来自 PyTorch profiler，显式 `vendor` 时来自 Intel Advisor / ncu。失败时也会写入错误信息，供 `result_all.csv` compute 字段引用。 |
+| `result_case_*.csv.idle_diag.jsonl` | 仅 `--idle-debug` 时生成。每行对应一个 workload window 的 CPU idle 调试快照，用于定位 `cpu_idle_power_w` case 内波动来源。 |
 | `*.png` | `plot.py` 生成的图表。 |
 
 中间文件 `result_case_*.csv`、`result_case_*.csv.sniff_groups.jsonl`、`lat_case_*.json`、`sniff_case_*.pcap` 会在 `result_all.csv` 成功 merge 后自动清理。若运行被中断，这些中间文件可能保留。
@@ -272,6 +274,8 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `gpu_peak_power_eff_w` | 扣除 idle baseline 后的 effective peak power，单位 W。 |
 | `gpu_energy_eff_j` | 本行平均到单 request 的 effective GPU energy，单位 J。 |
 | `cpu_idle_power_w` | CPU package idle baseline power，单位 W。仅 Linux/WSL 暴露 RAPL `/sys/class/powercap/*/energy_uj` 时有值。 |
+| `idle_measured_at` | `--idle-debug` 开启时，CPU idle baseline 测量完成时的本地 ISO-8601 时间戳；未开启时为 `nan`。 |
+| `cpu_idle_rel_range_so_far` | `--idle-debug` 开启时，截至本行为止当前 case 内有效 `cpu_idle_power_w` 的相对极差，公式为 `(max - min) / mean`；`0.05` 表示 5%。未开启时为 `nan`。 |
 | `cpu_energy_iters` | CPU package energy measurement 采样窗口中的 sample 数。 |
 | `cpu_avg_power_total_w` | 测量窗口内 host CPU package total average power，单位 W。 |
 | `cpu_peak_power_total_w` | 测量窗口内 host CPU package total peak power，单位 W。 |
@@ -332,6 +336,8 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `environment` | 自动检测的运行环境标签，例如 `windows11+wsl`、`ubuntu24.04+wsl`、`ubuntu24.04`、`macos15`。 |
 | `cpu_power_source` | CPU package 功耗来源。`rapl` 表示使用 Linux RAPL powercap 真实计数器；`unavailable` 表示当前环境没有可用 RAPL。 |
 | `vcpu_power_method` | estimated vCPU 功耗计算方法。`rapl_cgroup_cpu_share` 表示用 RAPL package energy 乘以 container cgroup CPU share；`unavailable` 表示无法估算。 |
+| `cpu_governor` | Host CPU frequency governor 汇总值，例如 `performance`、`powersave`、`schedutil`；如果各 CPU policy 不一致，会写成 `mixed:<governor>=<count>,...`；无法读取时为 `unavailable`。 |
+| `cpu_boost` | Host CPU boost / turbo 状态。`on` 表示 boost 可用，`off` 表示关闭；无法读取时为 `unavailable`。 |
 
 ## 10. 结果行数估算
 
@@ -370,6 +376,12 @@ CPU / vCPU energy 字段全是 `nan`：
 - 这是当前环境没有暴露 RAPL `/sys/class/powercap/*/energy_uj` 时的正常结果，不会影响 latency / throughput 采集。
 - `cpu_*` 字段是 host CPU package 的真实 RAPL 测量值；`vcpu_*` 字段是在同一窗口内按 container cgroup CPU share 分摊出来的估计值。
 - 本项目不会用 TDP 或 CPU utilization 造功耗值；没有 RAPL 时保持 `nan`。
+
+CPU idle baseline 波动导致实验退出：
+
+- `cpu_idle_power_w` 的 case 级相对极差达到或超过 5% 时，实验会退出并提示稳定主机环境。常见原因是 host 后台进程、IDE/远程桌面、Docker 其他容器、系统索引或 CPU 温度/频率策略变化。
+- 可先增大 `--idle-seconds`，关闭非必要后台进程，并检查 `static_meta.csv` 中的 `cpu_governor` / `cpu_boost` 是否符合实验设置。
+- 需要定位具体时间点和进程时，加 `--idle-debug` 重跑；查看 `result_case_*.csv.idle_diag.jsonl` 中同一 row 的 `loadavg`、`top_cpu_processes` 和 Docker 快照。
 
 资源占用率字段全是 `nan`：
 
