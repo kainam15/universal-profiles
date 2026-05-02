@@ -181,6 +181,9 @@ class DetectEnvironmentTests(unittest.TestCase):
         ), patch("orchestrator._docker_image_size_bytes", return_value=456), patch(
             "orchestrator._cpu_power_metadata",
             return_value=("rapl", "rapl_cgroup_cpu_share"),
+        ), patch(
+            "orchestrator._cpu_frequency_policy_metadata",
+            return_value=("performance", "on"),
         ):
             meta = orchestrator.collect_static_meta(
                 task_info=task_info,
@@ -193,6 +196,8 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(meta.gpu_mem_total_bytes, 987654321)
         self.assertEqual(meta.cpu_power_source, "rapl")
         self.assertEqual(meta.vcpu_power_method, "rapl_cgroup_cpu_share")
+        self.assertEqual(meta.cpu_governor, "performance")
+        self.assertEqual(meta.cpu_boost, "on")
 
     def test_static_meta_cpu_power_fields_are_trailing(self) -> None:
         self.assertIn("gpu_mem_total_bytes", STATIC_META_FIELDS)
@@ -201,9 +206,39 @@ class DetectEnvironmentTests(unittest.TestCase):
             STATIC_META_FIELDS.index("environment"),
         )
         self.assertEqual(
-            STATIC_META_FIELDS[-3:],
-            ["environment", "cpu_power_source", "vcpu_power_method"],
+            STATIC_META_FIELDS[-5:],
+            [
+                "environment",
+                "cpu_power_source",
+                "vcpu_power_method",
+                "cpu_governor",
+                "cpu_boost",
+            ],
         )
+
+    def test_cpu_frequency_policy_metadata_reads_governor_and_boost(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cpu0_cpufreq = os.path.join(tmp, "cpu0", "cpufreq")
+            cpu1_cpufreq = os.path.join(tmp, "cpu1", "cpufreq")
+            cpufreq = os.path.join(tmp, "cpufreq")
+            os.makedirs(cpu0_cpufreq)
+            os.makedirs(cpu1_cpufreq)
+            os.makedirs(cpufreq)
+
+            for path in (
+                os.path.join(cpu0_cpufreq, "scaling_governor"),
+                os.path.join(cpu1_cpufreq, "scaling_governor"),
+            ):
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("performance\n")
+            with open(os.path.join(cpufreq, "boost"), "w", encoding="utf-8") as f:
+                f.write("1\n")
+
+            with patch("orchestrator.CPU_SYSFS_ROOT", tmp):
+                self.assertEqual(
+                    orchestrator._cpu_frequency_policy_metadata(),
+                    ("performance", "on"),
+                )
 
     def test_manual_nlp_scales_write_effective_scale_plan(self) -> None:
         task_info = TaskInfo(

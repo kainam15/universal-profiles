@@ -58,6 +58,8 @@ class StaticMeta:
     environment: str
     cpu_power_source: str
     vcpu_power_method: str
+    cpu_governor: str
+    cpu_boost: str
 
 
 @dataclass
@@ -91,6 +93,7 @@ class EnergyProfilingError(RuntimeError):
 
 
 IDLE_POWER_RELATIVE_RANGE_THRESHOLD = 0.05
+CPU_SYSFS_ROOT = "/sys/devices/system/cpu"
 AUTO_INPUT_SCALE_COUNT = 6
 DEFAULT_NLP_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu128"
 CUDA124_NLP_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu124"
@@ -499,6 +502,77 @@ def _cpu_power_metadata() -> Tuple[str, str]:
         return "unavailable", "unavailable"
 
 
+def _read_sysfs_first_line(path: str) -> Optional[str]:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            value = f.readline().strip()
+    except OSError:
+        return None
+    return value or None
+
+
+def _summarize_cpu_policy_values(values: List[str]) -> str:
+    if not values:
+        return "unavailable"
+
+    counts: Dict[str, int] = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+
+    if len(counts) == 1:
+        return values[0]
+
+    return "mixed:" + ",".join(
+        f"{value}={counts[value]}" for value in sorted(counts)
+    )
+
+
+def _detect_cpu_governor() -> str:
+    try:
+        entries = os.listdir(CPU_SYSFS_ROOT)
+    except OSError:
+        return "unavailable"
+
+    governors: List[str] = []
+    for entry in entries:
+        if not re.fullmatch(r"cpu\d+", entry):
+            continue
+        governor = _read_sysfs_first_line(
+            os.path.join(CPU_SYSFS_ROOT, entry, "cpufreq", "scaling_governor")
+        )
+        if governor:
+            governors.append(governor)
+
+    return _summarize_cpu_policy_values(governors)
+
+
+def _map_boost_flag(value: Optional[str]) -> str:
+    if value == "1":
+        return "on"
+    if value == "0":
+        return "off"
+    return value or "unavailable"
+
+
+def _detect_cpu_boost() -> str:
+    boost = _read_sysfs_first_line(os.path.join(CPU_SYSFS_ROOT, "cpufreq", "boost"))
+    if boost is not None:
+        return _map_boost_flag(boost)
+
+    no_turbo = _read_sysfs_first_line(
+        os.path.join(CPU_SYSFS_ROOT, "intel_pstate", "no_turbo")
+    )
+    if no_turbo == "1":
+        return "off"
+    if no_turbo == "0":
+        return "on"
+    return "unavailable"
+
+
+def _cpu_frequency_policy_metadata() -> Tuple[str, str]:
+    return _detect_cpu_governor(), _detect_cpu_boost()
+
+
 def _linux_environment_label() -> str:
     try:
         os_release = platform.freedesktop_os_release()
@@ -894,6 +968,7 @@ def collect_static_meta(
 ) -> StaticMeta:
     """Collect static metadata for the current model/image pair."""
     cpu_power_source, vcpu_power_method = _cpu_power_metadata()
+    cpu_governor, cpu_boost = _cpu_frequency_policy_metadata()
     return StaticMeta(
         model_name=task_info.model_id,
         model_revision=task_info.model_revision,
@@ -911,6 +986,8 @@ def collect_static_meta(
         environment=_detect_environment(),
         cpu_power_source=cpu_power_source,
         vcpu_power_method=vcpu_power_method,
+        cpu_governor=cpu_governor,
+        cpu_boost=cpu_boost,
     )
 
 

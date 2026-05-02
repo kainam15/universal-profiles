@@ -214,6 +214,8 @@ STATIC_META_FIELDS = [
     "environment",
     "cpu_power_source",
     "vcpu_power_method",
+    "cpu_governor",
+    "cpu_boost",
 ]
 
 # ─────────────────────────────────────────────
