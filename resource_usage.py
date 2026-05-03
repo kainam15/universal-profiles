@@ -189,6 +189,7 @@ def _result_from_samples(
     samples: List[ResourceUsageSample],
     cpu_cores: float,
     mem_limit_bytes: float,
+    min_cpu_interval_s: float = 0.0,
 ) -> ResourceUsageResult:
     if not samples:
         return _nan_result(0)
@@ -212,14 +213,16 @@ def _result_from_samples(
             delta = float(curr_cpu) - float(prev_cpu)
             if dt <= 0 or delta < 0:
                 continue
-            util = (delta / (dt * cpu_cores)) * 100.0
-            cpu_interval_utils.append(util)
             cpu_elapsed_s += dt
             cpu_delta_s += delta
+            if dt >= min_cpu_interval_s:
+                util = (delta / (dt * cpu_cores)) * 100.0
+                cpu_interval_utils.append(util)
 
     if cpu_elapsed_s > 0:
         result.container_cpu_util_avg_pct = (cpu_delta_s / (cpu_elapsed_s * cpu_cores)) * 100.0
-        result.container_cpu_util_peak_pct = max(cpu_interval_utils)
+        if cpu_interval_utils:
+            result.container_cpu_util_peak_pct = max(cpu_interval_utils)
 
     mem_values = [
         float(sample.container_mem_usage_bytes)
@@ -373,7 +376,12 @@ class ResourceUsageMonitor:
         samples.sort(key=lambda item: item.timestamp)
         self.samples = samples
         return (
-            _result_from_samples(samples, self.cpu_cores, self.mem_limit_bytes),
+            _result_from_samples(
+                samples,
+                self.cpu_cores,
+                self.mem_limit_bytes,
+                min_cpu_interval_s=0.5 * self.dt,
+            ),
             self._error_message(),
             samples,
         )
@@ -395,15 +403,17 @@ class ResourceUsageMonitor:
         return "; ".join(errors)
 
     def _sample_loop(self) -> None:
-        next_t = time.perf_counter()
+        next_t = (self._t_start if self._t_start is not None else time.perf_counter()) + self.dt
         while not self._stop_event.is_set():
+            sleep_s = next_t - time.perf_counter()
+            if sleep_s > 0 and self._stop_event.wait(sleep_s):
+                break
+            if self._stop_event.is_set():
+                break
             t = time.perf_counter()
             if self._t_start is not None and t >= self._t_start:
                 self._append_sample(t)
             next_t += self.dt
-            sleep_s = next_t - time.perf_counter()
-            if sleep_s > 0:
-                time.sleep(sleep_s)
 
     def _read_sample(self, timestamp: float) -> ResourceUsageSample:
         container_cpu_s = None

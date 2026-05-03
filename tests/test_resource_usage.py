@@ -38,6 +38,24 @@ class ResourceUsageMonitorTests(unittest.TestCase):
         self.assertAlmostEqual(result.gpu_mem_util_peak_pct, 75.0)
         self.assertAlmostEqual(result.gpu_mem_total_bytes, 4 * gib)
 
+    def test_peak_cpu_util_ignores_too_short_intervals(self) -> None:
+        samples = [
+            resource_usage.ResourceUsageSample(0.0, 0.0, None, None, None, None),
+            resource_usage.ResourceUsageSample(0.001, 0.02, None, None, None, None),
+            resource_usage.ResourceUsageSample(0.101, 0.12, None, None, None, None),
+            resource_usage.ResourceUsageSample(0.201, 0.22, None, None, None, None),
+        ]
+
+        result = resource_usage._result_from_samples(
+            samples,
+            cpu_cores=1.0,
+            mem_limit_bytes=0.0,
+            min_cpu_interval_s=0.05,
+        )
+
+        self.assertAlmostEqual(result.container_cpu_util_avg_pct, (0.22 / 0.201) * 100.0)
+        self.assertAlmostEqual(result.container_cpu_util_peak_pct, 100.0)
+
     def test_resolves_cgroup_v2_cpu_and_memory_readers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             proc_root = os.path.join(tmp, "proc")

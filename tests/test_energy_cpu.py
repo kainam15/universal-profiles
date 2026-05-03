@@ -161,6 +161,28 @@ class CPUEnergyMonitorTests(unittest.TestCase):
         self.assertAlmostEqual(result.vcpu_cpu_share, 2.0 / 6.0)
         self.assertAlmostEqual(result.vcpu_energy_total_j, 17.5e-6)
 
+    def test_peak_power_ignores_too_short_intervals(self) -> None:
+        domain = energy_cpu.RaplDomain("intel-rapl:0", "unused", 10_000_000_000)
+        samples = [
+            energy_cpu.CPUSample(0.0, [0], 0.0, 0.0),
+            energy_cpu.CPUSample(0.001, [500_000], 0.001, 0.001),
+            energy_cpu.CPUSample(0.101, [600_000], 0.101, 0.101),
+            energy_cpu.CPUSample(0.201, [700_000], 0.201, 0.201),
+        ]
+
+        result = energy_cpu._result_from_samples(
+            samples,
+            idle_power_w=0.0,
+            domains=[domain],
+            min_power_interval_s=0.05,
+        )
+
+        self.assertAlmostEqual(result.cpu_avg_power_total_w, 0.7 / 0.201)
+        self.assertAlmostEqual(result.cpu_peak_power_total_w, 1.0)
+        self.assertAlmostEqual(result.cpu_peak_power_eff_w, 1.0)
+        self.assertAlmostEqual(result.vcpu_peak_power_total_w, 1.0)
+        self.assertAlmostEqual(result.vcpu_peak_power_eff_w, 1.0)
+
     def test_no_rapl_returns_nan_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             monitor = energy_cpu.CPUEnergyMonitor(powercap_root=tmp, idle_seconds=0.0)

@@ -440,6 +440,7 @@ def _result_from_samples(
     samples: List[CPUSample],
     idle_power_w: float,
     domains: List[RaplDomain],
+    min_power_interval_s: float = 0.0,
 ) -> CPUEnergyResult:
     if len(samples) < 2 or not domains:
         return _nan_result(len(samples), idle_power_w)
@@ -455,10 +456,12 @@ def _result_from_samples(
     total_host_active_s = 0.0
     vcpu_energy_total_j = 0.0
     vcpu_energy_eff_j = 0.0
-    total_powers: List[float] = []
-    eff_powers: List[float] = []
-    vcpu_total_powers: List[float] = []
-    vcpu_eff_powers: List[float] = []
+    total_power_peaks: List[float] = []
+    eff_power_peaks: List[float] = []
+    vcpu_total_power_peaks: List[float] = []
+    vcpu_eff_power_peaks: List[float] = []
+    has_total_interval = False
+    has_eff_interval = False
 
     for idx in range(1, len(samples)):
         prev = samples[idx - 1]
@@ -472,10 +475,15 @@ def _result_from_samples(
         eff_power_w = power_w - idle_power_w if idle_power_w == idle_power_w else float("nan")
 
         total_energy_j += energy_j
-        total_powers.append(power_w)
+        has_total_interval = True
         if eff_power_w == eff_power_w:
             energy_eff_j += eff_power_w * dt
-            eff_powers.append(eff_power_w)
+            has_eff_interval = True
+        use_peak_interval = dt >= min_power_interval_s
+        if use_peak_interval:
+            total_power_peaks.append(power_w)
+            if eff_power_w == eff_power_w:
+                eff_power_peaks.append(eff_power_w)
 
         if prev.container_cpu_s is None or curr.container_cpu_s is None:
             continue
@@ -491,26 +499,32 @@ def _result_from_samples(
 
         vcpu_power_w = power_w * share
         vcpu_energy_total_j += energy_j * share
-        vcpu_total_powers.append(vcpu_power_w)
+        if use_peak_interval:
+            vcpu_total_power_peaks.append(vcpu_power_w)
         if eff_power_w == eff_power_w:
             vcpu_eff_power_w = eff_power_w * share
             vcpu_energy_eff_j += eff_power_w * dt * share
-            vcpu_eff_powers.append(vcpu_eff_power_w)
+            if use_peak_interval:
+                vcpu_eff_power_peaks.append(vcpu_eff_power_w)
 
-    if not total_powers:
+    if not has_total_interval:
         return _nan_result(len(samples), idle_power_w)
 
     avg_power_total = total_energy_j / duration_s
-    peak_power_total = max(total_powers)
-    avg_power_eff = energy_eff_j / duration_s if eff_powers else float("nan")
-    peak_power_eff = max(eff_powers) if eff_powers else float("nan")
+    peak_power_total = max(total_power_peaks) if total_power_peaks else float("nan")
+    avg_power_eff = energy_eff_j / duration_s if has_eff_interval else float("nan")
+    peak_power_eff = max(eff_power_peaks) if eff_power_peaks else float("nan")
 
-    if total_host_active_s > 0 and vcpu_total_powers:
+    if total_host_active_s > 0:
         vcpu_share = min(1.0, max(0.0, total_container_cpu_s / total_host_active_s))
         vcpu_avg_power_total = vcpu_energy_total_j / duration_s
-        vcpu_peak_power_total = max(vcpu_total_powers)
-        vcpu_avg_power_eff = vcpu_energy_eff_j / duration_s if vcpu_eff_powers else float("nan")
-        vcpu_peak_power_eff = max(vcpu_eff_powers) if vcpu_eff_powers else float("nan")
+        vcpu_peak_power_total = (
+            max(vcpu_total_power_peaks) if vcpu_total_power_peaks else float("nan")
+        )
+        vcpu_avg_power_eff = vcpu_energy_eff_j / duration_s if has_eff_interval else float("nan")
+        vcpu_peak_power_eff = (
+            max(vcpu_eff_power_peaks) if vcpu_eff_power_peaks else float("nan")
+        )
     else:
         vcpu_share = float("nan")
         total_container_cpu_s = float("nan")
@@ -529,7 +543,7 @@ def _result_from_samples(
         total_energy_j,
         avg_power_eff,
         peak_power_eff,
-        energy_eff_j if eff_powers else float("nan"),
+        energy_eff_j if has_eff_interval else float("nan"),
         vcpu_share,
         total_container_cpu_s,
         vcpu_avg_power_total,
@@ -700,22 +714,33 @@ class CPUEnergyMonitor:
         ]
         samples.sort(key=lambda item: item.timestamp)
         self.samples = samples
-        return _result_from_samples(samples, self.idle_power_w, self.domains), self._runtime_error, samples
+        return (
+            _result_from_samples(
+                samples,
+                self.idle_power_w,
+                self.domains,
+                min_power_interval_s=0.5 * self.dt,
+            ),
+            self._runtime_error,
+            samples,
+        )
 
     def close(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             self.stop()
 
     def _sample_loop(self) -> None:
-        next_t = time.perf_counter()
+        next_t = (self._t_start if self._t_start is not None else time.perf_counter()) + self.dt
         while not self._stop_event.is_set():
+            sleep_s = next_t - time.perf_counter()
+            if sleep_s > 0 and self._stop_event.wait(sleep_s):
+                break
+            if self._stop_event.is_set():
+                break
             t = time.perf_counter()
             if self._t_start is not None and t >= self._t_start:
                 self._append_sample(t)
             next_t += self.dt
-            sleep_s = next_t - time.perf_counter()
-            if sleep_s > 0:
-                time.sleep(sleep_s)
 
     def _read_sample(self, timestamp: float) -> CPUSample:
         energy_uj = [_read_int(domain.energy_path) for domain in self.domains]
