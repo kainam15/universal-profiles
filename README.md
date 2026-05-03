@@ -161,8 +161,8 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 
 - `latency_vs_scale.png`
 - `latency_app_vs_scale.png`
-- `avg_power_vs_scale.png`
-- `energy_vs_scale.png`
+- `gpu_avg_power_vs_scale.png`
+- `gpu_energy_vs_scale.png`
 - `cpu_avg_power_vs_scale.png`
 - `cpu_energy_vs_scale.png`
 - `vcpu_avg_power_vs_scale.png`

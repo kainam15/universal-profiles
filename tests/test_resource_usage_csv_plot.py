@@ -1,7 +1,9 @@
 import csv
 import os
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import plot
 from config import CSV_FIELDS
@@ -159,6 +161,50 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
 
         self.assertEqual(float(df["gpu_avg_power_eff_w"].iloc[0]), 2.5)
         self.assertEqual(float(df["gpu_energy_eff_j"].iloc[0]), 0.25)
+
+    def test_main_names_gpu_power_and_energy_plots_with_gpu_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = os.path.join(tmp, "result_all.csv")
+            with open(csv_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=[
+                        "cpu_cores",
+                        "mem_cap_gb",
+                        "gpu_mode",
+                        "input_scale",
+                        "warmup",
+                        "status",
+                        "gpu_avg_power_eff_w",
+                        "gpu_energy_eff_j",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerow({
+                    "cpu_cores": "1",
+                    "mem_cap_gb": "4",
+                    "gpu_mode": "on",
+                    "input_scale": "64",
+                    "warmup": "0",
+                    "status": "ok",
+                    "gpu_avg_power_eff_w": "2.5",
+                    "gpu_energy_eff_j": "0.25",
+                })
+
+            out_pngs = []
+
+            def capture_plot_metric(*_args, **kwargs):
+                out_pngs.append(os.path.basename(kwargs["out_png"]))
+
+            with patch.object(sys, "argv", ["plot.py", csv_path]), patch.object(
+                plot, "plot_metric", side_effect=capture_plot_metric
+            ), patch.object(plot, "plot_cold_start_bar"):
+                plot.main()
+
+        self.assertIn("gpu_avg_power_vs_scale.png", out_pngs)
+        self.assertIn("gpu_energy_vs_scale.png", out_pngs)
+        self.assertNotIn("avg_power_vs_scale.png", out_pngs)
+        self.assertNotIn("energy_vs_scale.png", out_pngs)
 
 
 if __name__ == "__main__":

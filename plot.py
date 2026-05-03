@@ -370,16 +370,16 @@ def main():
 
     plot_metric(
         df, metric="gpu_avg_power_eff_w",
-        title="Average Effective Power vs. Input Scale",
+        title="GPU Average Effective Power vs. Input Scale",
         ylabel="Power (W)", xlabel=xlabel,
-        out_png=os.path.join(output_dir, "avg_power_vs_scale.png") if SAVE_PNG else None,
+        out_png=os.path.join(output_dir, "gpu_avg_power_vs_scale.png") if SAVE_PNG else None,
     )
 
     plot_metric(
         df, metric="gpu_energy_eff_j",
-        title="Effective Energy vs. Input Scale",
+        title="GPU Effective Energy vs. Input Scale",
         ylabel="Energy (J)", xlabel=xlabel,
-        out_png=os.path.join(output_dir, "energy_vs_scale.png") if SAVE_PNG else None,
+        out_png=os.path.join(output_dir, "gpu_energy_vs_scale.png") if SAVE_PNG else None,
     )
 
     plot_metric(
