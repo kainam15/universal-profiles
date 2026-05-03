@@ -46,6 +46,37 @@ class GPUEnergyMonitorStartStopTests(unittest.TestCase):
         self.assertEqual(idle_power_w, 20.0)
         self.assertEqual(monitor.idle_power_w, 20.0)
 
+    def test_measure_idle_records_power_trace_when_requested(self) -> None:
+        with patch("energy_nvml.pynvml.nvmlInit"), patch(
+            "energy_nvml.pynvml.nvmlDeviceGetHandleByIndex",
+            return_value="handle",
+        ), patch(
+            "energy_nvml.pynvml.nvmlDeviceGetName",
+            return_value=b"Test GPU",
+        ), patch(
+            "energy_nvml.pynvml.nvmlDeviceGetPowerUsage",
+            side_effect=[30000, 10000],
+        ), patch(
+            "energy_nvml.time.perf_counter",
+            side_effect=[0.0, 0.0, 0.1, 0.2],
+        ), patch("energy_nvml.time.sleep"):
+            monitor = energy_nvml.GPUEnergyMonitor(sample_hz=10.0, idle_seconds=0.2)
+            idle_power_w = monitor.measure_idle(trace=True)
+
+        self.assertEqual(idle_power_w, 20.0)
+        self.assertEqual(monitor.idle_trace["gpu_idle_trace_schema"], "nvml_gpu_idle_v1")
+        self.assertEqual(monitor.idle_trace["gpu_idle_sample_count"], 2)
+        self.assertEqual(monitor.idle_trace["gpu_idle_power_min_w"], 10.0)
+        self.assertEqual(monitor.idle_trace["gpu_idle_power_max_w"], 30.0)
+        self.assertEqual(monitor.idle_trace["gpu_idle_power_p50_w"], 20.0)
+        self.assertEqual(
+            monitor.idle_trace["gpu_idle_power_samples"],
+            [
+                {"t_s": 0.0, "power_w": 30.0},
+                {"t_s": 0.1, "power_w": 10.0},
+            ],
+        )
+
     def test_start_stop_samples_and_calculates_energy(self) -> None:
         FakeThread.instances = []
         with patch("energy_nvml.pynvml.nvmlInit"), patch(

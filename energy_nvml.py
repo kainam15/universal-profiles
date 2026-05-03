@@ -1,7 +1,7 @@
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pynvml
 
@@ -97,6 +97,7 @@ class GPUEnergyMonitor:
         self.handle = None
         self.gpu_name = "unknown"
         self.idle_power_w = float("nan")
+        self.idle_trace: Dict[str, Any] = {}
         self.samples: List[Tuple[float, float]] = []
 
         self._thread: Optional[threading.Thread] = None
@@ -119,21 +120,78 @@ class GPUEnergyMonitor:
             self.handle = None
             self.gpu_name = "unknown"
 
-    def measure_idle(self) -> float:
+    def measure_idle(self, trace: bool = False) -> float:
+        self.idle_trace = {}
         if self._init_error or self.handle is None:
+            if trace:
+                self.idle_trace = {
+                    "gpu_idle_trace_schema": "nvml_gpu_idle_v1",
+                    "gpu_idle_error": self._init_error or "NVML handle is unavailable",
+                }
             return float("nan")
 
-        idle_samples = []
-        t_idle_end = time.perf_counter() + self.idle_seconds
+        idle_samples: List[Tuple[float, float]] = []
+        t_start = time.perf_counter()
+        t_idle_end = t_start + self.idle_seconds
+        t_last = t_start
         try:
-            while time.perf_counter() < t_idle_end:
-                idle_samples.append(_get_total_power_w(self.handle))
+            while True:
+                now = time.perf_counter()
+                t_last = now
+                if now >= t_idle_end:
+                    break
+                idle_samples.append((now, _get_total_power_w(self.handle)))
                 time.sleep(self.dt)
         except Exception as exc:
             self._runtime_error = str(exc)
 
-        self.idle_power_w = _median(idle_samples)
+        powers = [power for _, power in idle_samples]
+        self.idle_power_w = _median(powers)
+        if trace:
+            self.idle_trace = self._build_idle_trace(
+                idle_samples=idle_samples,
+                t_start=t_start,
+                t_end=t_last,
+            )
         return self.idle_power_w
+
+    def _build_idle_trace(
+        self,
+        *,
+        idle_samples: List[Tuple[float, float]],
+        t_start: float,
+        t_end: float,
+    ) -> Dict[str, Any]:
+        powers = [power for _, power in idle_samples]
+        trace: Dict[str, Any] = {
+            "gpu_idle_trace_schema": "nvml_gpu_idle_v1",
+            "gpu_idle_requested_duration_s": self.idle_seconds,
+            "gpu_idle_actual_duration_s": max(0.0, t_end - t_start),
+            "gpu_idle_sample_hz": self.sample_hz,
+            "gpu_idle_sample_count": len(idle_samples),
+            "gpu_idle_power_w": self.idle_power_w,
+            "gpu_idle_power_samples": [
+                {"t_s": timestamp - t_start, "power_w": power}
+                for timestamp, power in idle_samples
+            ],
+        }
+        if powers:
+            trace.update({
+                "gpu_idle_power_min_w": min(powers),
+                "gpu_idle_power_max_w": max(powers),
+                "gpu_idle_power_mean_w": sum(powers) / len(powers),
+                "gpu_idle_power_p50_w": _median(powers),
+            })
+        else:
+            trace.update({
+                "gpu_idle_power_min_w": float("nan"),
+                "gpu_idle_power_max_w": float("nan"),
+                "gpu_idle_power_mean_w": float("nan"),
+                "gpu_idle_power_p50_w": float("nan"),
+            })
+        if self._runtime_error:
+            trace["gpu_idle_error"] = self._runtime_error
+        return trace
 
     def start(self) -> None:
         if self._init_error or self.handle is None:

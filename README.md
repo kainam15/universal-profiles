@@ -194,7 +194,7 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `--repeat-window-seconds` | `10.0` | `--repeat-in-window 0` 时的目标 workload window 秒数。 |
 | `--sample-hz` | `20.0` | GPU power sampling rate，单位 Hz；CPU workload 期间也用它控制采样间隔以估计 peak power 和 vCPU share。CPU idle baseline 不使用该 20Hz 小区间 median。 |
 | `--idle-seconds` | `3.0` | 每个 workload window 前的 idle baseline 测量时长。CPU idle baseline 用整段 RAPL `energy_uj` 差值 / 实际 duration；`gpu_mode=on` 时 GPU idle baseline 仍来自 NVML power samples。case 结束后会复查该 case CSV 中所有有效 `cpu_idle_power_w` 的相对极差；`gpu_mode=on` 时也会复查 `gpu_idle_power_w`。达到或超过 5% 会退出实验并提示增大该值或稳定主机/GPU 环境。 |
-| `--idle-debug` | false | 开启 CPU idle baseline 调试输出。主 CSV 会填充 `idle_measured_at` 和 `cpu_idle_rel_range_so_far`，并写出 `result_case_*.csv.idle_diag.jsonl`。诊断文件会记录 idle window 内 0.1s RAPL 子窗口、start/end `/proc` CPU delta、container CPU delta，以及测完后的 loadavg、top CPU processes、Docker 容器和 `docker stats` 快照。 |
+| `--idle-debug` | false | 开启 idle baseline 调试输出。主 CSV 会填充 GPU 的 `gpu_idle_measured_at` / `gpu_idle_rel_range_so_far` 和 CPU 的 `cpu_idle_measured_at` / `cpu_idle_rel_range_so_far`，并写出 `result_case_*.csv.idle_diag.jsonl`。诊断文件会记录 GPU idle 期间的 NVML power sample trace、`nvidia-smi` GPU/process 快照、CPU idle window 内 0.1s RAPL 子窗口、start/end `/proc` CPU delta、container CPU delta，以及测完后的 loadavg、top CPU processes、Docker 容器和 `docker stats` 快照。 |
 | `--input-scales` | auto | 手动覆盖 input scale 列表。未提供时自动规划 6 档。 |
 | `--no-compute-profile` | false | 禁用 MFLOPS compute profiling。 |
 | `--compute-profile-tool` | `auto` | `auto` 下 CPU 使用 PyTorch profiler、GPU 使用 ncu；`torch` 全部使用 PyTorch profiler；`vendor` 使用 Intel Advisor / ncu。 |
@@ -238,7 +238,7 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `static_meta.csv` | 一行静态元数据。记录模型、镜像、batch、input scale 语义、GPU、环境和大小信息。 |
 | `input_scale_plan.json` | 自动 input scale 规划文件。手动 `--input-scales` 时可能不存在。 |
 | `compute_profile_plan.json` | per-scale FLOP profiling 结果。默认 CPU 来自 PyTorch profiler、GPU 来自 ncu；显式 `--compute-profile-tool torch` 时全部来自 PyTorch profiler，显式 `vendor` 时来自 Intel Advisor / ncu。失败时也会写入错误信息，供 `result_all.csv` compute 字段引用。 |
-| `result_case_*.csv.idle_diag.jsonl` | 仅 `--idle-debug` 时生成。每行对应一个 workload window 的 CPU idle 诊断记录，包含 idle window 内 RAPL 子窗口功率、host/container CPU delta、top proc CPU delta，以及 after-idle 快照，用于定位 `cpu_idle_power_w` case 内波动来源。 |
+| `result_case_*.csv.idle_diag.jsonl` | 仅 `--idle-debug` 时生成。每行对应一个 workload window 的 idle 诊断记录，包含 GPU NVML idle power trace、`nvidia-smi` GPU/process 快照、CPU idle window 内 RAPL 子窗口功率、host/container CPU delta、top proc CPU delta，以及 after-idle 快照，用于定位 `gpu_idle_power_w` / `cpu_idle_power_w` case 内波动来源。 |
 | `*.png` | `plot.py` 生成的图表。 |
 
 中间文件 `result_case_*.csv`、`result_case_*.csv.sniff_groups.jsonl`、`lat_case_*.json`、`sniff_case_*.pcap` 会在 `result_all.csv` 成功 merge 后自动清理。若运行被中断，这些中间文件可能保留。
@@ -266,6 +266,8 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `compute_mflops` | 默认等于 `compute_mflops_app`；如果 `latency_s` 成功 merge，则用 packet-level `latency_s` 重算。 |
 | `compute_profile_error` | compute profiling 的诊断信息。正常为空；工具缺失、性能计数器受限、报告解析失败时记录原因。 |
 | `gpu_idle_power_w` | GPU idle baseline power，单位 W。仅 `gpu_mode=on` 且 NVML 可用时有值；由 NVML power samples 取中位数得到。 |
+| `gpu_idle_measured_at` | `--idle-debug` 开启且 `gpu_mode=on` 时，GPU idle baseline 测量完成时的本地 ISO-8601 时间戳；未开启或 GPU 不可用时为 `nan`。GPU idle 先于 CPU idle 测量，因此该时间戳与 `cpu_idle_measured_at` 分开记录。 |
+| `gpu_idle_rel_range_so_far` | `--idle-debug` 开启时，截至本行为止当前 case 内有效 `gpu_idle_power_w` 的相对极差，公式为 `(max - min) / mean`；`0.05` 表示 5%。未开启时为 `nan`。 |
 | `gpu_energy_iters` | GPU energy measurement 内部采样窗口中的 iteration 数。 |
 | `gpu_avg_power_total_w` | 测量窗口内 GPU total average power，单位 W。 |
 | `gpu_peak_power_total_w` | 测量窗口内 GPU total peak power，单位 W。 |
@@ -274,7 +276,7 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `gpu_peak_power_eff_w` | 扣除 idle baseline 后的 effective peak power，单位 W。 |
 | `gpu_energy_eff_j` | 本行平均到单 request 的 effective GPU energy，单位 J。 |
 | `cpu_idle_power_w` | CPU package idle baseline power，单位 W。仅 Linux/WSL 暴露 RAPL `/sys/class/powercap/*/energy_uj` 时有值；由整段 idle window 的 RAPL 能耗差 / 实际 duration 得到。 |
-| `idle_measured_at` | `--idle-debug` 开启时，CPU idle baseline 测量完成时的本地 ISO-8601 时间戳；未开启时为 `nan`。 |
+| `cpu_idle_measured_at` | `--idle-debug` 开启时，CPU idle baseline 测量完成时的本地 ISO-8601 时间戳；未开启时为 `nan`。 |
 | `cpu_idle_rel_range_so_far` | `--idle-debug` 开启时，截至本行为止当前 case 内有效 `cpu_idle_power_w` 的相对极差，公式为 `(max - min) / mean`；`0.05` 表示 5%。未开启时为 `nan`。 |
 | `cpu_energy_iters` | CPU package energy measurement 采样窗口中的 sample 数。 |
 | `cpu_avg_power_total_w` | 测量窗口内 host CPU package total average power，单位 W。 |
@@ -382,6 +384,11 @@ CPU idle baseline 波动导致实验退出：
 - `cpu_idle_power_w` 的 case 级相对极差达到或超过 5% 时，实验会退出并提示稳定主机环境。常见原因是 host 后台进程、IDE/远程桌面、Docker 其他容器、系统索引或 CPU 温度/频率策略变化。
 - 可先增大 `--idle-seconds`，关闭非必要后台进程，并检查 `static_meta.csv` 中的 `cpu_governor` / `cpu_boost` 是否符合实验设置。
 - 需要定位具体时间点和进程时，加 `--idle-debug` 重跑；优先查看 `result_case_*.csv.idle_diag.jsonl` 中同一 row 的 `rapl_trace.top_power_windows`、`idle_proc_cpu_top`、`idle_container_cpu_delta_s`，再结合 `snapshot_scope=after_idle` 的 loadavg、top CPU processes 和 Docker 快照。
+
+GPU idle baseline 波动导致实验退出：
+
+- `gpu_idle_power_w` 的 case 级相对极差达到或超过 5% 时，实验会退出并提示稳定 GPU 环境。常见原因是桌面显示栈、其他 GPU 进程、P-state/clock 调整、温度或电源管理状态变化。
+- 需要定位具体时间点和进程时，加 `--idle-debug` 重跑；优先查看同一 row 的 `gpu_idle_power_samples`、`nvidia_smi_gpu`、`nvidia_smi_pmon` 和 `nvidia_smi_compute_apps`。
 
 资源占用率字段全是 `nan`：
 

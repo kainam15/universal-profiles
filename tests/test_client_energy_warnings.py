@@ -16,13 +16,19 @@ from config import CSV_FIELDS
 class EffectiveEnergyWarningTests(unittest.TestCase):
     def test_csv_schema_uses_gpu_idle_power_w_field(self) -> None:
         self.assertIn("gpu_idle_power_w", CSV_FIELDS)
+        self.assertIn("gpu_idle_measured_at", CSV_FIELDS)
+        self.assertIn("gpu_idle_rel_range_so_far", CSV_FIELDS)
         self.assertNotIn("idle_power_w", CSV_FIELDS)
+        gpu_idle_index = CSV_FIELDS.index("gpu_idle_power_w")
+        self.assertEqual(CSV_FIELDS[gpu_idle_index + 1], "gpu_idle_measured_at")
+        self.assertEqual(CSV_FIELDS[gpu_idle_index + 2], "gpu_idle_rel_range_so_far")
 
     def test_csv_schema_includes_idle_debug_fields_after_cpu_idle_power(self) -> None:
-        self.assertIn("idle_measured_at", CSV_FIELDS)
+        self.assertIn("cpu_idle_measured_at", CSV_FIELDS)
         self.assertIn("cpu_idle_rel_range_so_far", CSV_FIELDS)
+        self.assertNotIn("idle_measured_at", CSV_FIELDS)
         cpu_idle_index = CSV_FIELDS.index("cpu_idle_power_w")
-        self.assertEqual(CSV_FIELDS[cpu_idle_index + 1], "idle_measured_at")
+        self.assertEqual(CSV_FIELDS[cpu_idle_index + 1], "cpu_idle_measured_at")
         self.assertEqual(CSV_FIELDS[cpu_idle_index + 2], "cpu_idle_rel_range_so_far")
 
     def test_csv_schema_prefixes_gpu_energy_fields(self) -> None:
@@ -518,13 +524,18 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                 with open(diag_path, "r", encoding="utf-8") as f:
                     diag_rows = [json.loads(line) for line in f if line.strip()]
 
-        self.assertEqual(rows[0]["idle_measured_at"], "2026-05-02T10:00:00+08:00")
+        self.assertEqual(rows[0]["cpu_idle_measured_at"], "2026-05-02T10:00:00+08:00")
+        self.assertEqual(rows[0]["gpu_idle_measured_at"], "nan")
+        self.assertEqual(rows[0]["gpu_idle_rel_range_so_far"], "nan")
         self.assertEqual(rows[0]["cpu_idle_rel_range_so_far"], "0.000000")
-        self.assertEqual(rows[1]["idle_measured_at"], "2026-05-02T10:00:01+08:00")
+        self.assertEqual(rows[1]["cpu_idle_measured_at"], "2026-05-02T10:00:01+08:00")
+        self.assertEqual(rows[1]["gpu_idle_measured_at"], "nan")
+        self.assertEqual(rows[1]["gpu_idle_rel_range_so_far"], "nan")
         self.assertEqual(rows[1]["cpu_idle_rel_range_so_far"], "0.095238")
         self.assertEqual(FakeCPUMonitor.trace_intervals, [0.1, 0.1])
         self.assertEqual(len(diag_rows), 2)
         self.assertEqual(diag_rows[1]["sniff_group_id"], "case_seq1_r1")
+        self.assertEqual(diag_rows[1]["cpu_idle_measured_at"], "2026-05-02T10:00:01+08:00")
         self.assertEqual(diag_rows[1]["idle_trace_schema"], "cpu_rapl_idle_v1")
         self.assertEqual(diag_rows[1]["actual_idle_duration_s"], 3.0)
         self.assertEqual(diag_rows[1]["rapl_trace"]["interval_s"], 0.1)
@@ -537,6 +548,126 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(diag_rows[1]["top_cpu_processes"][0]["comm"], "python")
         self.assertEqual(diag_rows[1]["docker_containers"][0]["name"], "case")
         self.assertEqual(diag_rows[1]["docker_stats"][0]["cpu_perc"], "0.1%")
+
+    def test_idle_debug_writes_gpu_idle_fields_and_diagnostics(self) -> None:
+        class FakeGpuMonitor:
+            idle_values = iter([10.0, 11.0])
+            trace_args = []
+
+            def __init__(self, **kwargs):
+                self.idle_power_w = float("nan")
+                self.idle_trace = {}
+
+            def measure_idle(self, trace=False):
+                type(self).trace_args.append(trace)
+                self.idle_power_w = next(type(self).idle_values)
+                self.idle_trace = {
+                    "gpu_idle_trace_schema": "nvml_gpu_idle_v1",
+                    "gpu_idle_sample_count": 2,
+                    "gpu_idle_power_samples": [{"t_s": 0.0, "power_w": self.idle_power_w}],
+                }
+                return self.idle_power_w
+
+            def start(self):
+                return None
+
+            def stop(self):
+                return SimpleNamespace(
+                    energy_iters=2,
+                    idle_power_w=self.idle_power_w,
+                    avg_power_total_w=self.idle_power_w + 1.0,
+                    peak_power_total_w=self.idle_power_w + 2.0,
+                    energy_total_j=1.0,
+                    avg_power_eff_w=1.0,
+                    peak_power_eff_w=2.0,
+                    energy_eff_j=0.5,
+                ), "Fake GPU", "", []
+
+            def close(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_csv = f"{tmp_dir}/result.csv"
+            diag_path = f"{out_csv}.idle_diag.jsonl"
+            with patch.object(
+                client, "OUT_CSV", out_csv
+            ), patch.object(
+                client, "CASE_NAME", "case"
+            ), patch.object(
+                client, "WARMUP", 0
+            ), patch.object(
+                client, "REPEAT", 2
+            ), patch.object(
+                client, "REPEAT_IN_WINDOW", 1
+            ), patch.object(
+                client, "USE_ENERGY", True
+            ), patch.object(
+                client, "IDLE_DEBUG", True, create=True
+            ), patch.object(
+                client, "IDLE_DIAG_PATH", diag_path, create=True
+            ), patch.object(
+                client,
+                "energy_mod",
+                SimpleNamespace(GPUEnergyMonitor=lambda **kwargs: FakeGpuMonitor(**kwargs)),
+            ), patch.object(
+                client,
+                "cpu_energy_mod",
+                None,
+            ), patch.object(
+                client,
+                "resource_usage_mod",
+                None,
+            ), patch.object(
+                client,
+                "input_scale_entries",
+                [{"input_scale": 1.0, "scale_label": "seq1", "payload": {}}],
+            ), patch.object(
+                client.requests,
+                "get",
+                return_value=SimpleNamespace(status_code=200, text="ok"),
+            ), patch.object(
+                client,
+                "_one_request",
+                return_value={"latency_app_s": 0.5, "effective_input_scale": 1.0},
+            ), patch.object(
+                client,
+                "_collect_gpu_idle_debug_snapshot",
+                return_value={
+                    "gpu_snapshot_scope": "after_gpu_idle",
+                    "nvidia_smi_gpu": {"pstate": "P0", "clocks_sm_mhz": 1200.0},
+                    "nvidia_smi_pmon": [{"pid": 123, "type": "G", "command": "Xorg"}],
+                },
+                create=True,
+            ), patch.object(
+                client,
+                "_now_iso",
+                side_effect=[
+                    "2026-05-02T10:00:00+08:00",
+                    "2026-05-02T10:00:01+08:00",
+                ],
+                create=True,
+            ):
+                client.main()
+                with open(out_csv, "r", encoding="utf-8", newline="") as f:
+                    rows = list(csv.DictReader(f))
+                with open(diag_path, "r", encoding="utf-8") as f:
+                    diag_rows = [json.loads(line) for line in f if line.strip()]
+
+        self.assertEqual(FakeGpuMonitor.trace_args, [True, True])
+        self.assertEqual(rows[0]["gpu_idle_measured_at"], "2026-05-02T10:00:00+08:00")
+        self.assertEqual(rows[0]["gpu_idle_rel_range_so_far"], "0.000000")
+        self.assertEqual(rows[1]["gpu_idle_measured_at"], "2026-05-02T10:00:01+08:00")
+        self.assertEqual(rows[1]["gpu_idle_rel_range_so_far"], "0.095238")
+        self.assertEqual(rows[1]["cpu_idle_measured_at"], "nan")
+        self.assertEqual(rows[1]["cpu_idle_rel_range_so_far"], "nan")
+        self.assertEqual(diag_rows[1]["gpu_idle_trace_schema"], "nvml_gpu_idle_v1")
+        self.assertEqual(diag_rows[1]["cpu_idle_measured_at"], "nan")
+        self.assertEqual(diag_rows[1]["gpu_idle_sample_count"], 2)
+        self.assertEqual(diag_rows[1]["gpu_idle_valid_count"], 2)
+        self.assertEqual(diag_rows[1]["gpu_idle_mean_w"], 10.5)
+        self.assertEqual(diag_rows[1]["gpu_snapshot_scope"], "after_gpu_idle")
+        self.assertEqual(diag_rows[1]["nvidia_smi_gpu"]["pstate"], "P0")
+        self.assertEqual(diag_rows[1]["nvidia_smi_pmon"][0]["command"], "Xorg")
 
     def test_idle_debug_disabled_fills_nan_and_does_not_write_diag_jsonl(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -583,7 +714,9 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                 with open(out_csv, "r", encoding="utf-8", newline="") as f:
                     rows = list(csv.DictReader(f))
 
-        self.assertEqual(rows[0]["idle_measured_at"], "nan")
+        self.assertEqual(rows[0]["cpu_idle_measured_at"], "nan")
+        self.assertEqual(rows[0]["gpu_idle_measured_at"], "nan")
+        self.assertEqual(rows[0]["gpu_idle_rel_range_so_far"], "nan")
         self.assertEqual(rows[0]["cpu_idle_rel_range_so_far"], "nan")
         self.assertFalse(os.path.exists(diag_path))
 

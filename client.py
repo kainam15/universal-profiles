@@ -559,14 +559,14 @@ def _append_sniff_group(sidecar_f, sniff_group_id: str) -> None:
     os.fsync(sidecar_f.fileno())
 
 
-def _idle_debug_stats(values: List[float]) -> Dict[str, float]:
+def _idle_power_debug_stats(values: List[float], prefix: str) -> Dict[str, float]:
     if not values:
         return {
-            "cpu_idle_valid_count": 0,
-            "cpu_idle_min_w": float("nan"),
-            "cpu_idle_max_w": float("nan"),
-            "cpu_idle_mean_w": float("nan"),
-            "cpu_idle_rel_range_so_far": float("nan"),
+            f"{prefix}_idle_valid_count": 0,
+            f"{prefix}_idle_min_w": float("nan"),
+            f"{prefix}_idle_max_w": float("nan"),
+            f"{prefix}_idle_mean_w": float("nan"),
+            f"{prefix}_idle_rel_range_so_far": float("nan"),
         }
 
     mean_idle = sum(values) / len(values)
@@ -576,12 +576,16 @@ def _idle_debug_stats(values: List[float]) -> Dict[str, float]:
         else float("nan")
     )
     return {
-        "cpu_idle_valid_count": len(values),
-        "cpu_idle_min_w": min(values),
-        "cpu_idle_max_w": max(values),
-        "cpu_idle_mean_w": mean_idle,
-        "cpu_idle_rel_range_so_far": relative_range,
+        f"{prefix}_idle_valid_count": len(values),
+        f"{prefix}_idle_min_w": min(values),
+        f"{prefix}_idle_max_w": max(values),
+        f"{prefix}_idle_mean_w": mean_idle,
+        f"{prefix}_idle_rel_range_so_far": relative_range,
     }
+
+
+def _idle_debug_stats(values: List[float]) -> Dict[str, float]:
+    return _idle_power_debug_stats(values, "cpu")
 
 
 def _json_safe(value: Any) -> Any:
@@ -650,6 +654,148 @@ def _collect_top_cpu_processes(limit: int = 10) -> List[Dict[str, Any]]:
         if len(processes) >= limit:
             break
     return processes
+
+
+def _run_text(cmd: List[str], timeout: float = 2.0) -> str:
+    result = subprocess.run(
+        cmd,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "").strip())
+    return result.stdout
+
+
+def _float_or_none(value: str) -> Optional[float]:
+    number = _to_float_or_nan(value.strip())
+    return number if math.isfinite(number) else None
+
+
+def _int_or_none(value: str) -> Optional[int]:
+    try:
+        return int(value.strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _collect_nvidia_smi_gpu_snapshot(device_index: int = 0) -> Dict[str, Any]:
+    query_fields = [
+        "index",
+        "name",
+        "pstate",
+        "power.draw",
+        "power.limit",
+        "clocks.sm",
+        "clocks.mem",
+        "clocks.gr",
+        "clocks.video",
+        "temperature.gpu",
+        "utilization.gpu",
+        "utilization.memory",
+        "memory.used",
+        "memory.total",
+    ]
+    output = _run_text([
+        "nvidia-smi",
+        f"--id={device_index}",
+        f"--query-gpu={','.join(query_fields)}",
+        "--format=csv,noheader,nounits",
+    ])
+    line = next((row.strip() for row in output.splitlines() if row.strip()), "")
+    values = [part.strip() for part in line.split(",")]
+    if len(values) != len(query_fields):
+        raise RuntimeError(f"unexpected nvidia-smi gpu row: {line!r}")
+
+    return {
+        "index": _int_or_none(values[0]),
+        "name": values[1],
+        "pstate": values[2],
+        "power_draw_w": _float_or_none(values[3]),
+        "power_limit_w": _float_or_none(values[4]),
+        "clocks_sm_mhz": _float_or_none(values[5]),
+        "clocks_mem_mhz": _float_or_none(values[6]),
+        "clocks_gr_mhz": _float_or_none(values[7]),
+        "clocks_video_mhz": _float_or_none(values[8]),
+        "temperature_gpu_c": _float_or_none(values[9]),
+        "utilization_gpu_pct": _float_or_none(values[10]),
+        "utilization_memory_pct": _float_or_none(values[11]),
+        "memory_used_mib": _float_or_none(values[12]),
+        "memory_total_mib": _float_or_none(values[13]),
+    }
+
+
+def _collect_nvidia_smi_compute_apps(device_index: int = 0) -> List[Dict[str, Any]]:
+    output = _run_text([
+        "nvidia-smi",
+        f"--id={device_index}",
+        "--query-compute-apps=pid,process_name,used_memory",
+        "--format=csv,noheader,nounits",
+    ])
+    apps: List[Dict[str, Any]] = []
+    for line in output.splitlines():
+        line = line.strip()
+        if not line or "No running processes found" in line:
+            continue
+        parts = [part.strip() for part in line.split(",", 2)]
+        if len(parts) != 3:
+            continue
+        apps.append({
+            "pid": _int_or_none(parts[0]),
+            "process_name": parts[1],
+            "used_memory_mib": _float_or_none(parts[2]),
+        })
+    return apps
+
+
+def _collect_nvidia_smi_pmon(device_index: int = 0) -> List[Dict[str, Any]]:
+    output = _run_text(["nvidia-smi", "pmon", "-c", "1", "-i", str(device_index)])
+    rows: List[Dict[str, Any]] = []
+    for line in output.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 10:
+            continue
+        gpu, pid, proc_type, sm, mem, enc, dec, jpg, ofa, *command = parts
+        rows.append({
+            "gpu": _int_or_none(gpu),
+            "pid": _int_or_none(pid),
+            "type": proc_type,
+            "sm_pct": _float_or_none(sm),
+            "mem_pct": _float_or_none(mem),
+            "enc_pct": _float_or_none(enc),
+            "dec_pct": _float_or_none(dec),
+            "jpg_pct": _float_or_none(jpg),
+            "ofa_pct": _float_or_none(ofa),
+            "command": " ".join(command),
+        })
+    return rows
+
+
+def _collect_gpu_idle_debug_snapshot(device_index: int = DEVICE_INDEX) -> Dict[str, Any]:
+    snapshot: Dict[str, Any] = {"gpu_snapshot_scope": "after_gpu_idle"}
+    try:
+        snapshot["nvidia_smi_gpu"] = _collect_nvidia_smi_gpu_snapshot(device_index)
+    except Exception as exc:
+        snapshot["nvidia_smi_gpu_error"] = repr(exc)
+
+    try:
+        snapshot["nvidia_smi_pmon"] = _collect_nvidia_smi_pmon(device_index)
+    except Exception as exc:
+        snapshot["nvidia_smi_pmon_error"] = repr(exc)
+
+    try:
+        snapshot["nvidia_smi_compute_apps"] = _collect_nvidia_smi_compute_apps(device_index)
+    except Exception as exc:
+        snapshot["nvidia_smi_compute_apps_error"] = repr(exc)
+
+    return snapshot
 
 
 def _collect_idle_debug_snapshot() -> Dict[str, Any]:
@@ -761,6 +907,7 @@ def main() -> None:
             return
 
         cpu_idle_values_so_far: List[float] = []
+        gpu_idle_values_so_far: List[float] = []
         for scale_entry in input_scale_entries:
             scale_val = float(scale_entry["input_scale"])
             payload_override = scale_entry.get("payload")
@@ -784,9 +931,12 @@ def main() -> None:
                 cpu_metrics = _nan_metrics(CPU_METRIC_FIELDS)
                 resource_usage_metrics = _nan_metrics(RESOURCE_USAGE_METRIC_FIELDS)
                 effective_input_scale: Optional[float] = None
-                idle_measured_at = "nan"
+                cpu_idle_measured_at = "nan"
+                gpu_idle_measured_at = "nan"
                 idle_debug_snapshot: Optional[Dict[str, Any]] = None
+                gpu_idle_debug_snapshot: Optional[Dict[str, Any]] = None
                 idle_trace: Dict[str, Any] = {}
+                gpu_idle_trace: Dict[str, Any] = {}
 
                 try:
                     gpu_monitor = None
@@ -804,7 +954,13 @@ def main() -> None:
                                 idle_seconds=IDLE_SECONDS,
                                 device_index=DEVICE_INDEX,
                             )
-                            gpu_monitor.measure_idle()
+                            if IDLE_DEBUG:
+                                gpu_monitor.measure_idle(trace=True)
+                                gpu_idle_measured_at = _now_iso()
+                                gpu_idle_trace = dict(getattr(gpu_monitor, "idle_trace", {}) or {})
+                                gpu_idle_debug_snapshot = _collect_gpu_idle_debug_snapshot()
+                            else:
+                                gpu_monitor.measure_idle()
 
                         if cpu_energy_mod is not None:
                             cpu_monitor = cpu_energy_mod.CPUEnergyMonitor(
@@ -814,7 +970,7 @@ def main() -> None:
                             )
                             if IDLE_DEBUG:
                                 cpu_monitor.measure_idle(trace_interval_s=IDLE_DEBUG_TRACE_INTERVAL_S)
-                                idle_measured_at = _now_iso()
+                                cpu_idle_measured_at = _now_iso()
                                 idle_trace = dict(getattr(cpu_monitor, "idle_trace", {}) or {})
                                 idle_debug_snapshot = _collect_idle_debug_snapshot()
                             else:
@@ -910,6 +1066,11 @@ def main() -> None:
                     err_msg = repr(e)
                     throughput = float("nan")
 
+                gpu_idle_stats = _idle_power_debug_stats(gpu_idle_values_so_far, "gpu")
+                if IDLE_DEBUG and _finite_positive(gpu_metrics["gpu_idle_power_w"]):
+                    gpu_idle_values_so_far.append(_to_float_or_nan(gpu_metrics["gpu_idle_power_w"]))
+                    gpu_idle_stats = _idle_power_debug_stats(gpu_idle_values_so_far, "gpu")
+
                 idle_stats = _idle_debug_stats(cpu_idle_values_so_far)
                 if IDLE_DEBUG and _finite_positive(cpu_metrics["cpu_idle_power_w"]):
                     cpu_idle_values_so_far.append(_to_float_or_nan(cpu_metrics["cpu_idle_power_w"]))
@@ -930,8 +1091,14 @@ def main() -> None:
                     "latency_app_s": _fmt_float(latency_app_s),
                     "throughput_samples_per_s": _fmt_float(throughput),
                     **{field: _fmt_float(gpu_metrics[field]) for field in GPU_METRIC_FIELDS},
+                    "gpu_idle_measured_at": gpu_idle_measured_at if IDLE_DEBUG else "nan",
+                    "gpu_idle_rel_range_so_far": (
+                        _fmt_float(gpu_idle_stats["gpu_idle_rel_range_so_far"])
+                        if IDLE_DEBUG
+                        else "nan"
+                    ),
                     **{field: _fmt_float(cpu_metrics[field]) for field in CPU_METRIC_FIELDS},
-                    "idle_measured_at": idle_measured_at if IDLE_DEBUG else "nan",
+                    "cpu_idle_measured_at": cpu_idle_measured_at if IDLE_DEBUG else "nan",
                     "cpu_idle_rel_range_so_far": (
                         _fmt_float(idle_stats["cpu_idle_rel_range_so_far"])
                         if IDLE_DEBUG
@@ -976,7 +1143,12 @@ def main() -> None:
                         "repeat_idx": row["repeat_idx"],
                         "repeat_in_window": row["repeat_in_window"],
                         "sniff_group_id": sniff_group_id,
-                        "idle_measured_at": row["idle_measured_at"],
+                        "gpu_idle_measured_at": row["gpu_idle_measured_at"],
+                        "gpu_idle_power_w": _to_float_or_nan(row["gpu_idle_power_w"]),
+                        **gpu_idle_stats,
+                        **gpu_idle_trace,
+                        **(gpu_idle_debug_snapshot or {}),
+                        "cpu_idle_measured_at": row["cpu_idle_measured_at"],
                         "cpu_idle_power_w": _to_float_or_nan(row["cpu_idle_power_w"]),
                         **idle_stats,
                         **idle_trace,
