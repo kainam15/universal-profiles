@@ -80,6 +80,8 @@ def prepare_df(csv_path: str) -> pd.DataFrame:
         "vcpu_cpu_share", "vcpu_cpu_time_s",
         "resource_usage_iters",
         "container_cpu_util_avg_pct", "container_cpu_util_peak_pct",
+        "cpu_freq_avg_hz", "cpu_freq_peak_hz",
+        "cpu_cycles_est_app", "cpu_cycles_est_packet",
         "container_mem_usage_avg_bytes", "container_mem_usage_peak_bytes",
         "container_mem_util_avg_pct", "container_mem_util_peak_pct",
         "gpu_util_avg_pct", "gpu_util_peak_pct",

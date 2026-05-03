@@ -38,6 +38,67 @@ class ResourceUsageMonitorTests(unittest.TestCase):
         self.assertAlmostEqual(result.gpu_mem_util_peak_pct, 75.0)
         self.assertAlmostEqual(result.gpu_mem_total_bytes, 4 * gib)
 
+    def test_result_calculates_cpu_frequency_metrics(self) -> None:
+        samples = [
+            resource_usage.ResourceUsageSample(
+                0.0,
+                0.0,
+                None,
+                None,
+                None,
+                None,
+                cpu_freq_avg_hz=2_000_000_000.0,
+                cpu_freq_peak_hz=2_200_000_000.0,
+            ),
+            resource_usage.ResourceUsageSample(
+                1.0,
+                1.0,
+                None,
+                None,
+                None,
+                None,
+                cpu_freq_avg_hz=3_000_000_000.0,
+                cpu_freq_peak_hz=3_200_000_000.0,
+            ),
+        ]
+
+        result = resource_usage._result_from_samples(
+            samples,
+            cpu_cores=1.0,
+            mem_limit_bytes=0.0,
+        )
+
+        self.assertAlmostEqual(result.cpu_freq_avg_hz, 2_500_000_000.0)
+        self.assertAlmostEqual(result.cpu_freq_peak_hz, 3_200_000_000.0)
+
+    def test_reads_cpu_frequency_from_sysfs_khz(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cpu_root = os.path.join(tmp, "cpu")
+            os.makedirs(os.path.join(cpu_root, "cpu0", "cpufreq"))
+            os.makedirs(os.path.join(cpu_root, "cpu1", "cpufreq"))
+            with open(os.path.join(cpu_root, "online"), "w", encoding="utf-8") as f:
+                f.write("0-1\n")
+            with open(
+                os.path.join(cpu_root, "cpu0", "cpufreq", "scaling_cur_freq"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write("2200000\n")
+            with open(
+                os.path.join(cpu_root, "cpu1", "cpufreq", "scaling_cur_freq"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write("1800000\n")
+
+            avg_hz, peak_hz = resource_usage._read_cpu_frequency_hz(
+                cpu_sysfs_root=cpu_root,
+                proc_cpuinfo_path=os.path.join(tmp, "missing_cpuinfo"),
+            )
+
+        self.assertAlmostEqual(avg_hz, 2_000_000_000.0)
+        self.assertAlmostEqual(peak_hz, 2_200_000_000.0)
+
     def test_peak_cpu_util_ignores_too_short_intervals(self) -> None:
         samples = [
             resource_usage.ResourceUsageSample(0.0, 0.0, None, None, None, None),

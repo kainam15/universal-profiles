@@ -15,6 +15,10 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             "resource_usage_iters",
             "container_cpu_util_avg_pct",
             "container_cpu_util_peak_pct",
+            "cpu_freq_avg_hz",
+            "cpu_freq_peak_hz",
+            "cpu_cycles_est_app",
+            "cpu_cycles_est_packet",
             "container_mem_usage_avg_bytes",
             "container_mem_usage_peak_bytes",
             "container_mem_util_avg_pct",
@@ -44,6 +48,8 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 "warmup",
                 "status",
                 "container_cpu_util_avg_pct",
+                "cpu_freq_avg_hz",
+                "cpu_cycles_est_app",
                 "container_mem_usage_avg_bytes",
                 "gpu_mem_used_avg_bytes",
             ]
@@ -58,6 +64,8 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                     "warmup": "0",
                     "status": "ok",
                     "container_cpu_util_avg_pct": "25.5",
+                    "cpu_freq_avg_hz": "3000000000",
+                    "cpu_cycles_est_app": "765000000",
                     "container_mem_usage_avg_bytes": str(2 * 1024 ** 3),
                     "gpu_mem_used_avg_bytes": str(3 * 1024 ** 3),
                 })
@@ -70,6 +78,8 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             df = plot.prepare_df(csv_path)
 
         self.assertEqual(float(df["container_cpu_util_avg_pct"].iloc[0]), 25.5)
+        self.assertEqual(float(df["cpu_freq_avg_hz"].iloc[0]), 3_000_000_000.0)
+        self.assertEqual(float(df["cpu_cycles_est_app"].iloc[0]), 765_000_000.0)
         self.assertEqual(float(df["container_mem_usage_avg_gib"].iloc[0]), 2.0)
         self.assertEqual(float(df["gpu_mem_used_avg_gib"].iloc[0]), 3.0)
         self.assertEqual(float(df["gpu_mem_total_gib"].iloc[0]), 8.0)

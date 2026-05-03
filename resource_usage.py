@@ -25,6 +25,8 @@ class ResourceUsageSample:
     gpu_util_pct: Optional[float]
     gpu_mem_used_bytes: Optional[int]
     gpu_mem_total_bytes: Optional[int]
+    cpu_freq_avg_hz: Optional[float] = None
+    cpu_freq_peak_hz: Optional[float] = None
 
 
 @dataclass
@@ -32,6 +34,8 @@ class ResourceUsageResult:
     resource_usage_iters: int
     container_cpu_util_avg_pct: float
     container_cpu_util_peak_pct: float
+    cpu_freq_avg_hz: float
+    cpu_freq_peak_hz: float
     container_mem_usage_avg_bytes: float
     container_mem_usage_peak_bytes: float
     container_mem_util_avg_pct: float
@@ -49,6 +53,8 @@ def _nan_result(resource_usage_iters: int = 0) -> ResourceUsageResult:
     nan = float("nan")
     return ResourceUsageResult(
         resource_usage_iters,
+        nan,
+        nan,
         nan,
         nan,
         nan,
@@ -81,6 +87,90 @@ def _read_cpu_stat_usage_s(path: str) -> float:
             if key == "usage_usec":
                 return float(value) / 1_000_000.0
     raise RuntimeError(f"usage_usec missing from {path}")
+
+
+def _parse_online_cpu_ids(text: str) -> List[int]:
+    cpu_ids: List[int] = []
+    for raw_part in text.replace("\n", ",").split(","):
+        part = raw_part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start_raw, end_raw = part.split("-", 1)
+            start = int(start_raw)
+            end = int(end_raw)
+            if end >= start:
+                cpu_ids.extend(range(start, end + 1))
+        else:
+            cpu_ids.append(int(part))
+    return sorted(set(cpu_ids))
+
+
+def _discover_cpu_ids(cpu_sysfs_root: str) -> List[int]:
+    online_path = os.path.join(cpu_sysfs_root, "online")
+    if os.path.exists(online_path):
+        try:
+            with open(online_path, "r", encoding="utf-8") as f:
+                cpu_ids = _parse_online_cpu_ids(f.read())
+            if cpu_ids:
+                return cpu_ids
+        except Exception:
+            pass
+
+    cpu_ids = []
+    try:
+        for entry in os.scandir(cpu_sysfs_root):
+            if not entry.is_dir():
+                continue
+            name = entry.name
+            if name.startswith("cpu") and name[3:].isdigit():
+                cpu_ids.append(int(name[3:]))
+    except Exception:
+        return []
+    return sorted(set(cpu_ids))
+
+
+def _read_proc_cpuinfo_freqs_hz(proc_cpuinfo_path: str) -> List[float]:
+    freqs: List[float] = []
+    try:
+        with open(proc_cpuinfo_path, "r", encoding="utf-8") as f:
+            for line in f:
+                key, sep, value = line.partition(":")
+                if sep and key.strip().lower() == "cpu mhz":
+                    mhz = float(value.strip())
+                    if mhz > 0:
+                        freqs.append(mhz * 1_000_000.0)
+    except Exception:
+        return []
+    return freqs
+
+
+def _read_cpu_frequency_hz(
+    cpu_sysfs_root: str = "/sys/devices/system/cpu",
+    proc_cpuinfo_path: str = "/proc/cpuinfo",
+) -> Tuple[Optional[float], Optional[float]]:
+    freqs: List[float] = []
+    for cpu_id in _discover_cpu_ids(cpu_sysfs_root):
+        cpufreq_root = os.path.join(cpu_sysfs_root, f"cpu{cpu_id}", "cpufreq")
+        for leaf in ("scaling_cur_freq", "cpuinfo_cur_freq"):
+            freq_path = os.path.join(cpufreq_root, leaf)
+            if not os.path.exists(freq_path):
+                continue
+            try:
+                with open(freq_path, "r", encoding="utf-8") as f:
+                    khz = float(f.read().strip())
+            except Exception:
+                continue
+            if khz > 0:
+                freqs.append(khz * 1_000.0)
+                break
+
+    if not freqs:
+        freqs = _read_proc_cpuinfo_freqs_hz(proc_cpuinfo_path)
+
+    if not freqs:
+        return None, None
+    return _mean(freqs), max(freqs)
 
 
 def _docker_container_pid(container_name: str) -> int:
@@ -224,6 +314,21 @@ def _result_from_samples(
         if cpu_interval_utils:
             result.container_cpu_util_peak_pct = max(cpu_interval_utils)
 
+    cpu_freq_avgs = [
+        float(sample.cpu_freq_avg_hz)
+        for sample in samples
+        if sample.cpu_freq_avg_hz is not None
+    ]
+    cpu_freq_peaks = [
+        float(sample.cpu_freq_peak_hz)
+        for sample in samples
+        if sample.cpu_freq_peak_hz is not None
+    ]
+    if cpu_freq_avgs:
+        result.cpu_freq_avg_hz = _mean(cpu_freq_avgs)
+    if cpu_freq_peaks:
+        result.cpu_freq_peak_hz = max(cpu_freq_peaks)
+
     mem_values = [
         float(sample.container_mem_usage_bytes)
         for sample in samples
@@ -290,6 +395,8 @@ class ResourceUsageMonitor:
         device_index: int = 0,
         cgroup_root: str = "/sys/fs/cgroup",
         proc_root: str = "/proc",
+        cpu_sysfs_root: str = "/sys/devices/system/cpu",
+        proc_cpuinfo_path: str = "/proc/cpuinfo",
     ) -> None:
         self.sample_hz = float(sample_hz)
         self.container_name = container_name
@@ -298,6 +405,8 @@ class ResourceUsageMonitor:
         self.use_gpu = bool(use_gpu)
         self.device_index = int(device_index)
         self.dt = 1.0 / self.sample_hz
+        self.cpu_sysfs_root = cpu_sysfs_root
+        self.proc_cpuinfo_path = proc_cpuinfo_path
 
         self.samples: List[ResourceUsageSample] = []
         self._cpu_reader: Optional[Callable[[], float]] = None
@@ -421,6 +530,8 @@ class ResourceUsageMonitor:
         gpu_util_pct = None
         gpu_mem_used_bytes = None
         gpu_mem_total_bytes = None
+        cpu_freq_avg_hz = None
+        cpu_freq_peak_hz = None
 
         if self._cpu_reader is not None:
             try:
@@ -433,6 +544,14 @@ class ResourceUsageMonitor:
                 container_mem_usage_bytes = self._mem_reader()
             except Exception as exc:
                 self._runtime_error = str(exc)
+
+        try:
+            cpu_freq_avg_hz, cpu_freq_peak_hz = _read_cpu_frequency_hz(
+                cpu_sysfs_root=self.cpu_sysfs_root,
+                proc_cpuinfo_path=self.proc_cpuinfo_path,
+            )
+        except Exception as exc:
+            self._runtime_error = str(exc)
 
         if self._gpu_handle is not None and pynvml is not None:
             try:
@@ -451,6 +570,8 @@ class ResourceUsageMonitor:
             gpu_util_pct,
             gpu_mem_used_bytes,
             gpu_mem_total_bytes,
+            cpu_freq_avg_hz,
+            cpu_freq_peak_hz,
         )
 
     def _append_sample(self, timestamp: float) -> None:
@@ -465,6 +586,8 @@ def measure_usage_threaded(
     mem_cap_gb: float = 1.0,
     use_gpu: bool = False,
     device_index: int = 0,
+    cpu_sysfs_root: str = "/sys/devices/system/cpu",
+    proc_cpuinfo_path: str = "/proc/cpuinfo",
 ) -> Tuple[ResourceUsageResult, str, List[ResourceUsageSample]]:
     monitor = ResourceUsageMonitor(
         sample_hz=sample_hz,
@@ -473,6 +596,8 @@ def measure_usage_threaded(
         mem_cap_gb=mem_cap_gb,
         use_gpu=use_gpu,
         device_index=device_index,
+        cpu_sysfs_root=cpu_sysfs_root,
+        proc_cpuinfo_path=proc_cpuinfo_path,
     )
     try:
         monitor.start()

@@ -32,6 +32,31 @@ def _read_static_batch_size(csv_path: str) -> float:
 static_batch_size = _read_static_batch_size(in_csv)
 
 
+def _to_float(value: object) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float("nan")
+
+
+def _estimate_cpu_cycles(row: dict, latency_s: float) -> float:
+    freq_hz = _to_float(row.get("cpu_freq_avg_hz", "nan"))
+    cpu_cores = _to_float(row.get("cpu_cores", "nan"))
+    cpu_util_pct = _to_float(row.get("container_cpu_util_avg_pct", "nan"))
+    if (
+        latency_s == latency_s
+        and freq_hz == freq_hz
+        and cpu_cores == cpu_cores
+        and cpu_util_pct == cpu_util_pct
+        and latency_s > 0.0
+        and freq_hz > 0.0
+        and cpu_cores > 0.0
+        and cpu_util_pct >= 0.0
+    ):
+        return latency_s * freq_hz * cpu_cores * (cpu_util_pct / 100.0)
+    return float("nan")
+
+
 def _read_sidecar_groups(csv_path: str) -> list[str]:
     sidecar_path = f"{csv_path}.sniff_groups.jsonl"
     if not os.path.exists(sidecar_path):
@@ -89,6 +114,13 @@ for idx, r in enumerate(rows):
             model_mflop_per_request = float(r.get("model_mflop_per_request", "nan"))
             if lat > 0 and model_mflop_per_request == model_mflop_per_request:
                 r["compute_mflops"] = f"{(model_mflop_per_request / lat):.6f}"
+        except Exception:
+            pass
+        try:
+            lat = float(r["latency_s"])
+            cpu_cycles_est_packet = _estimate_cpu_cycles(r, lat)
+            if cpu_cycles_est_packet == cpu_cycles_est_packet:
+                r["cpu_cycles_est_packet"] = f"{cpu_cycles_est_packet:.6f}"
         except Exception:
             pass
     else:

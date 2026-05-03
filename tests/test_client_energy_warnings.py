@@ -733,6 +733,8 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                     resource_usage_iters=2,
                     container_cpu_util_avg_pct=25.0,
                     container_cpu_util_peak_pct=50.0,
+                    cpu_freq_avg_hz=3_000_000_000.0,
+                    cpu_freq_peak_hz=3_200_000_000.0,
                     container_mem_usage_avg_bytes=1024.0,
                     container_mem_usage_peak_bytes=2048.0,
                     container_mem_util_avg_pct=1.0,
@@ -753,6 +755,8 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
             out_csv = f"{tmp_dir}/result.csv"
             with patch.object(
                 client, "OUT_CSV", out_csv
+            ), patch.object(
+                client, "CPU_CORES", "1"
             ), patch.object(
                 client, "WARMUP", 0
             ), patch.object(
@@ -792,6 +796,10 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(rows[0]["status"], "ok")
         self.assertEqual(rows[0]["resource_usage_iters"], "2.000000")
         self.assertEqual(rows[0]["container_cpu_util_avg_pct"], "25.000000")
+        self.assertEqual(rows[0]["cpu_freq_avg_hz"], "3000000000.000000")
+        self.assertEqual(rows[0]["cpu_freq_peak_hz"], "3200000000.000000")
+        self.assertEqual(rows[0]["cpu_cycles_est_app"], "375000000.000000")
+        self.assertEqual(rows[0]["cpu_cycles_est_packet"], "nan")
         self.assertNotIn("gpu_mem_total_bytes", rows[0])
 
     def test_resource_usage_unavailable_keeps_successful_row_ok(self) -> None:
@@ -804,6 +812,8 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                     resource_usage_iters=0,
                     container_cpu_util_avg_pct=float("nan"),
                     container_cpu_util_peak_pct=float("nan"),
+                    cpu_freq_avg_hz=float("nan"),
+                    cpu_freq_peak_hz=float("nan"),
                     container_mem_usage_avg_bytes=float("nan"),
                     container_mem_usage_peak_bytes=float("nan"),
                     container_mem_util_avg_pct=float("nan"),

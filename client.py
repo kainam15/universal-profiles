@@ -272,6 +272,30 @@ def _compute_mflops(model_mflop_per_request: float, latency_s: float) -> float:
     return float("nan")
 
 
+def _estimate_cpu_cycles(
+    latency_s: float,
+    cpu_freq_avg_hz: float,
+    cpu_cores: float,
+    container_cpu_util_avg_pct: float,
+) -> float:
+    latency = _to_float_or_nan(latency_s)
+    freq = _to_float_or_nan(cpu_freq_avg_hz)
+    cores = _to_float_or_nan(cpu_cores)
+    cpu_util_pct = _to_float_or_nan(container_cpu_util_avg_pct)
+    if (
+        latency == latency
+        and freq == freq
+        and cores == cores
+        and cpu_util_pct == cpu_util_pct
+        and latency > 0.0
+        and freq > 0.0
+        and cores > 0.0
+        and cpu_util_pct >= 0.0
+    ):
+        return latency * freq * cores * (cpu_util_pct / 100.0)
+    return float("nan")
+
+
 def _calibrate_repeat_in_window(
     scale_value: float,
     scale_label: str,
@@ -477,6 +501,8 @@ RESOURCE_USAGE_METRIC_FIELDS = [
     "resource_usage_iters",
     "container_cpu_util_avg_pct",
     "container_cpu_util_peak_pct",
+    "cpu_freq_avg_hz",
+    "cpu_freq_peak_hz",
     "container_mem_usage_avg_bytes",
     "container_mem_usage_peak_bytes",
     "container_mem_util_avg_pct",
@@ -540,6 +566,12 @@ def _resource_usage_metrics_from_result(result: Any) -> Dict[str, float]:
         "resource_usage_iters": float(result.resource_usage_iters),
         "container_cpu_util_avg_pct": _to_float_or_nan(result.container_cpu_util_avg_pct),
         "container_cpu_util_peak_pct": _to_float_or_nan(result.container_cpu_util_peak_pct),
+        "cpu_freq_avg_hz": _to_float_or_nan(
+            getattr(result, "cpu_freq_avg_hz", float("nan"))
+        ),
+        "cpu_freq_peak_hz": _to_float_or_nan(
+            getattr(result, "cpu_freq_peak_hz", float("nan"))
+        ),
         "container_mem_usage_avg_bytes": _to_float_or_nan(result.container_mem_usage_avg_bytes),
         "container_mem_usage_peak_bytes": _to_float_or_nan(result.container_mem_usage_peak_bytes),
         "container_mem_util_avg_pct": _to_float_or_nan(result.container_mem_util_avg_pct),
@@ -1076,6 +1108,13 @@ def main() -> None:
                     cpu_idle_values_so_far.append(_to_float_or_nan(cpu_metrics["cpu_idle_power_w"]))
                     idle_stats = _idle_debug_stats(cpu_idle_values_so_far)
 
+                cpu_cycles_est_app = _estimate_cpu_cycles(
+                    latency_app_s,
+                    resource_usage_metrics["cpu_freq_avg_hz"],
+                    _to_float_or_nan(CPU_CORES),
+                    resource_usage_metrics["container_cpu_util_avg_pct"],
+                )
+
                 row = {
                     "cpu_cores": CPU_CORES,
                     "mem_cap_gb": MEM_CAP_GB,
@@ -1105,6 +1144,8 @@ def main() -> None:
                         else "nan"
                     ),
                     **{field: _fmt_float(resource_usage_metrics[field]) for field in RESOURCE_USAGE_METRIC_FIELDS},
+                    "cpu_cycles_est_app": _fmt_float(cpu_cycles_est_app),
+                    "cpu_cycles_est_packet": "nan",
                     "cold_start_s": COLD_START_S if COLD_START_S else "nan",
                     "status": status,
                     "error": err_msg,
