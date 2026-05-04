@@ -358,7 +358,7 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `cpu_governor` | Host CPU frequency governor 汇总值，例如 `performance`、`powersave`、`schedutil`；如果各 CPU policy 不一致，会写成 `mixed:<governor>=<count>,...`；无法读取时为 `unavailable`。 |
 | `cpu_boost` | Host CPU boost / turbo 状态。`on` 表示 boost 可用，`off` 表示关闭；无法读取时为 `unavailable`。 |
 
-## 10. 结果行数估算
+## 10. 结果行数和时间成本估算
 
 `result_all.csv` 行数大致为：
 
@@ -377,6 +377,67 @@ repeat_in_window
 ```text
 len(cpus) * len(mems) * len(gpus) * len(input_scales) * (warmup + repeat) * repeat_in_window
 ```
+
+每一行 CSV 对应一个 workload window。窗口 wall time 可以按下式粗估：
+
+```text
+row_window_s ~= active_workload_s
+              + cpu_idle_baseline_s
+              + gpu_idle_baseline_s
+              + gpu_cooldown_s
+              + monitor_stop_overhead_s
+```
+
+其中：
+
+- `active_workload_s`：正式连续发送 `/predict` 的时间。`--repeat-in-window 0` 时约等于 `--repeat-window-seconds`，默认约 `10s`；固定 `--repeat-in-window N` 时约等于 `N * mean_latency_app_s`。已生成 CSV 后，也可以用 `latency_app_s * repeat_in_window` 反推该行的实际 active window。
+- `cpu_idle_baseline_s`：CPU RAPL 可用时约等于 `--idle-seconds`，默认 `3s`；RAPL 不可用时约为 `0s`。
+- `gpu_idle_baseline_s`：`gpu_mode=on` 且 NVML 可用时约等于 `--idle-seconds`，默认 `3s`；`gpu_mode=off` 时为 `0s`。
+- `gpu_cooldown_s`：`gpu_mode=on` 且 NVML 可用时每行前固定约 `3s`，用于保留已有 GPU cooldown 行为。
+- `monitor_stop_overhead_s`：停止 `perf`、energy/resource monitor、写 CSV 等小额开销，通常按秒级以内预留；慢机器或 `perf`/权限异常时可能更高。
+
+因此在默认 `--repeat-in-window 0 --repeat-window-seconds 10 --idle-seconds 3` 下，单行主采集窗口通常可按以下方式估算：
+
+```text
+gpu_mode=off 且 CPU RAPL 可用: 约 10 + 3 = 13s / row
+gpu_mode=on  且 CPU RAPL 和 NVML 可用: 约 10 + 3 + 3 + 3 = 19s / row
+```
+
+自动 `repeat-in-window` 还会在每个 resource case / input scale 前做一次校准；这部分不写入 CSV 行数，但会占用时间：
+
+```text
+auto_calibration_s_per_case_scale ~= 5 * mean_latency_app_s
+                                  + max(9 * mean_latency_app_s, repeat_window_seconds)
+```
+
+如果显式指定 `--repeat-in-window N`，这段自动校准成本为 `0`。
+
+整体主采集时间可以按 resource case 累加：
+
+```text
+main_collection_s ~= sum_over_cases(
+  cold_start_s
+  + sum_over_scales(auto_calibration_s_per_case_scale)
+  + sum_over_scales((warmup + repeat) * row_window_s)
+  + sniff_parse_merge_overhead_s
+)
+```
+
+如果把 build 和 compute profiling 也算入端到端 wall time，可再外加：
+
+```text
+total_wall_s ~= docker_build_s + model_detection_s + compute_profile_s + main_collection_s
+```
+
+默认完整矩阵是 `4 CPU * 4 MEM * 2 GPU * 6 scales * (2 warmup + 5 repeat) = 1344` 行。若 CPU RAPL 和 NVML 都可用、模型 latency 足够低使 auto window 接近 `10s`，仅主采集窗口就大约是：
+
+```text
+gpu off 行: 16 cases * 6 scales * 7 rows * 13s ~= 2.4h
+gpu on  行: 16 cases * 6 scales * 7 rows * 19s ~= 3.5h
+auto calibration: 32 cases * 6 scales * 约 10s ~= 0.5h
+```
+
+也就是说，默认主矩阵通常至少按 `6.5h+` 预留；最终 wall time 还要额外加上 Docker build、模型检测、每个 case 的 cold start、tcpdump/tshark parse/merge、container cleanup，以及默认启用的 compute profiling。`--no-compute-profile` 可以去掉 compute profiling 成本；否则 compute profiling 约按 `len(input_scales) * (CPU probe + GPU probe)` 追加，`ncu` / Advisor 在部分模型上可能从数分钟增加到更久。
 
 ## 11. 常见判断
 
