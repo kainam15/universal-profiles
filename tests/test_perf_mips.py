@@ -19,6 +19,24 @@ class PerfMIPSTests(unittest.TestCase):
         self.assertEqual(parsed.instructions_total, 123_456_789)
         self.assertAlmostEqual(parsed.perf_elapsed_s, 1.25)
 
+    def test_preflight_accepts_modern_perf_csv_without_elapsed_line(self) -> None:
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["perf", "stat"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="",
+                    stderr="1000,,instructions,633068,100.00,,\n",
+                )
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with patch("perf_mips.shutil.which", return_value="/usr/bin/perf"), patch(
+            "perf_mips.subprocess.run",
+            side_effect=fake_run,
+        ):
+            prefix = perf_mips.resolve_perf_command_prefix()
+
+        self.assertEqual(prefix, ["perf"])
+
     def test_monitor_uses_direct_perf_when_preflight_allows_it(self) -> None:
         popen_cmds = []
 
@@ -63,6 +81,38 @@ class PerfMIPSTests(unittest.TestCase):
         self.assertEqual(result.instructions_total, 500_000)
         self.assertEqual(result.instructions_per_request, 250_000.0)
         self.assertAlmostEqual(result.cpu_mips_app, 2.0)
+
+    def test_monitor_uses_wall_elapsed_when_perf_omits_elapsed_line(self) -> None:
+        class FakeProcess:
+            returncode = 0
+
+            def poll(self):
+                return None
+
+            def send_signal(self, sig):
+                self.signal = sig
+
+            def communicate(self, timeout=None):
+                self.returncode = 0
+                return "", "500000,,instructions,633068,100.00,,\n"
+
+            def kill(self):
+                self.returncode = -9
+
+        fake_pid = SimpleNamespace(returncode=0, stdout="1234\n", stderr="")
+        with patch("perf_mips.subprocess.run", return_value=fake_pid), patch(
+            "perf_mips.subprocess.Popen",
+            side_effect=lambda cmd, **kwargs: FakeProcess(),
+        ), patch("perf_mips.time.perf_counter", side_effect=[10.0, 10.25]):
+            monitor = perf_mips.PerfMIPSMonitor(
+                container_name="case_container",
+                command_prefix=["perf"],
+            )
+            monitor.start()
+            result = monitor.stop(repeat_in_window=2, latency_app_s=0.125)
+
+        self.assertEqual(result.instructions_total, 500_000)
+        self.assertAlmostEqual(result.perf_elapsed_s, 0.25)
 
     def test_monitor_writes_sudo_password_without_breaking_stop(self) -> None:
         popen_stdin_closed = []

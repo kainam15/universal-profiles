@@ -70,7 +70,12 @@ def _parse_elapsed_s(text: str) -> float:
     return float("nan")
 
 
-def parse_perf_stat_output(text: str) -> PerfStatParsed:
+def parse_perf_stat_output(
+    text: str,
+    *,
+    fallback_elapsed_s: Optional[float] = None,
+    require_elapsed: bool = True,
+) -> PerfStatParsed:
     instructions = float("nan")
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -84,13 +89,24 @@ def parse_perf_stat_output(text: str) -> PerfStatParsed:
             break
 
     elapsed_s = _parse_elapsed_s(text)
+    if not math.isfinite(elapsed_s) or elapsed_s <= 0:
+        fallback_elapsed = (
+            _to_float(fallback_elapsed_s)
+            if fallback_elapsed_s is not None
+            else float("nan")
+        )
+        if math.isfinite(fallback_elapsed) and fallback_elapsed > 0:
+            elapsed_s = fallback_elapsed
+
     if not math.isfinite(instructions) or instructions < 0:
         raise MIPSProfilingError(
             "perf did not report a valid retired-instructions count for event "
             f"{PERF_EVENT!r}."
         )
     if not math.isfinite(elapsed_s) or elapsed_s <= 0:
-        raise MIPSProfilingError("perf did not report a valid elapsed time.")
+        if require_elapsed:
+            raise MIPSProfilingError("perf did not report a valid elapsed time.")
+        elapsed_s = float("nan")
     return PerfStatParsed(int(instructions), elapsed_s)
 
 
@@ -135,7 +151,10 @@ def _probe_succeeded(result: subprocess.CompletedProcess) -> bool:
     if result.returncode != 0:
         return False
     try:
-        parse_perf_stat_output((result.stderr or "") + "\n" + (result.stdout or ""))
+        parse_perf_stat_output(
+            (result.stderr or "") + "\n" + (result.stdout or ""),
+            require_elapsed=False,
+        )
     except Exception:
         return False
     return True
@@ -311,8 +330,13 @@ class PerfMIPSMonitor:
             raise MIPSProfilingError("perf did not stop after workload window") from exc
 
         output = (stderr or "") + "\n" + (stdout or "")
+        wall_elapsed_s = (
+            time.perf_counter() - self._t_start
+            if self._t_start is not None
+            else None
+        )
         try:
-            parsed = parse_perf_stat_output(output)
+            parsed = parse_perf_stat_output(output, fallback_elapsed_s=wall_elapsed_s)
         except MIPSProfilingError as exc:
             detail = output.strip() or str(exc)
             raise MIPSProfilingError(_friendly_mips_error(detail)) from exc
