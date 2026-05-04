@@ -62,7 +62,8 @@ WARMUP = int(os.getenv("WARMUP", "2"))
 REPEAT = int(os.getenv("REPEAT", "5"))
 REPEAT_IN_WINDOW = int(os.getenv("REPEAT_IN_WINDOW", str(DEFAULT_REPEAT_IN_WINDOW)))
 REPEAT_WINDOW_SECONDS = float(os.getenv("REPEAT_WINDOW_SECONDS", str(DEFAULT_REPEAT_WINDOW_SECONDS)))
-CALIBRATION_REQUESTS = 3
+CALIBRATION_WARMUP_REQUESTS = int(os.getenv("CALIBRATION_WARMUP_REQUESTS", "5"))
+CALIBRATION_REQUESTS = int(os.getenv("CALIBRATION_REQUESTS", "9"))
 
 COLD_START_S = os.getenv("COLD_START_S", "nan")
 OUT_CSV = os.getenv("OUT_CSV", "result.csv")
@@ -307,6 +308,19 @@ def _calibrate_repeat_in_window(
         raise EnergyAbort(
             f"invalid REPEAT_WINDOW_SECONDS={REPEAT_WINDOW_SECONDS!r}; expected a positive value"
         )
+    if CALIBRATION_WARMUP_REQUESTS < 0:
+        raise EnergyAbort(
+            "invalid CALIBRATION_WARMUP_REQUESTS="
+            f"{CALIBRATION_WARMUP_REQUESTS!r}; expected >= 0"
+        )
+    if CALIBRATION_REQUESTS <= 0:
+        raise EnergyAbort(
+            f"invalid CALIBRATION_REQUESTS={CALIBRATION_REQUESTS!r}; expected > 0"
+        )
+
+    for idx in range(CALIBRATION_WARMUP_REQUESTS):
+        req_id = f"{CASE_NAME}_{scale_label}_calib_warmup{idx}"
+        _one_request(scale_value, req_id=req_id, payload_override=payload_override)
 
     latencies: List[float] = []
     for idx in range(CALIBRATION_REQUESTS):

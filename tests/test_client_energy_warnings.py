@@ -57,8 +57,14 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
             self.assertNotIn(field, CSV_FIELDS)
 
     def test_auto_repeat_in_window_calibrates_per_input_scale(self) -> None:
+        calibration_req_ids = []
+
         def fake_one_request(scale_value, req_id, payload_override=None):
             if "_calib" in req_id:
+                calibration_req_ids.append(req_id)
+            if "_calib_warmup" in req_id:
+                latency = 100.0
+            elif "_calib" in req_id:
                 latency = 0.01 if float(scale_value) == 1.0 else 0.02
             else:
                 latency = 0.5
@@ -81,6 +87,10 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                 client, "REPEAT_IN_WINDOW", 0
             ), patch.object(
                 client, "REPEAT_WINDOW_SECONDS", 10.0, create=True
+            ), patch.object(
+                client, "CALIBRATION_WARMUP_REQUESTS", 2, create=True
+            ), patch.object(
+                client, "CALIBRATION_REQUESTS", 5
             ), patch.object(
                 client, "USE_ENERGY", False
             ), patch.object(
@@ -114,7 +124,26 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                     rows = list(csv.DictReader(f))
 
         self.assertEqual([row["repeat_in_window"] for row in rows], ["1000", "500"])
-        self.assertEqual(one_request.call_count, 3 + 1000 + 3 + 500)
+        self.assertEqual(
+            calibration_req_ids,
+            [
+                "case_seq1_calib_warmup0",
+                "case_seq1_calib_warmup1",
+                "case_seq1_calib0",
+                "case_seq1_calib1",
+                "case_seq1_calib2",
+                "case_seq1_calib3",
+                "case_seq1_calib4",
+                "case_seq2_calib_warmup0",
+                "case_seq2_calib_warmup1",
+                "case_seq2_calib0",
+                "case_seq2_calib1",
+                "case_seq2_calib2",
+                "case_seq2_calib3",
+                "case_seq2_calib4",
+            ],
+        )
+        self.assertEqual(one_request.call_count, 2 + 5 + 1000 + 2 + 5 + 500)
 
     def test_manual_repeat_in_window_skips_calibration(self) -> None:
         def fake_one_request(scale_value, req_id, payload_override=None):

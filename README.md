@@ -361,7 +361,7 @@ len(cpus) * len(mems) * len(gpus) * len(input_scales) * (warmup + repeat)
 repeat_in_window
 ```
 
-个 `/predict` request。默认 `repeat_in_window=0` 会先对每个 resource case / input scale 发 3 个校准请求，并按 `--repeat-window-seconds` 计算实际 request 数；因此默认完整 run 的 request 数取决于模型单次推理延迟。手动指定固定窗口时，请按下式估算：
+个 `/predict` request。默认 `repeat_in_window=0` 会先对每个 resource case / input scale 发 5 个 calibration warmup 请求（不计入统计），再发 9 个校准请求取 median，并按 `--repeat-window-seconds` 计算实际 request 数；因此默认完整 run 的 request 数取决于模型单次推理延迟。手动指定固定窗口时，请按下式估算：
 
 ```text
 len(cpus) * len(mems) * len(gpus) * len(input_scales) * (warmup + repeat) * repeat_in_window
