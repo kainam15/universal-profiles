@@ -23,9 +23,11 @@ from config import (
 from env_utils import bootstrap_project_env
 from orchestrator import (
     EnergyProfilingError,
+    MIPSProfilingError,
     PacketLatencyError,
     require_packet_latency_prerequisites,
 )
+from perf_mips import require_mips_prerequisites
 
 PROJECT_DIR = str(Path(__file__).resolve().parent)
 
@@ -319,6 +321,7 @@ Examples:
         sys.exit(1)
 
     require_cpu_energy_prerequisites()
+    require_mips_prerequisites()
 
     # ── Step 1: Detect task ──
     print("=" * 60)
@@ -472,6 +475,9 @@ Examples:
         sys.exit(1)
     except EnergyProfilingError as exc:
         print(f"\n[energy][ERROR] {exc}", file=sys.stderr)
+        sys.exit(1)
+    except MIPSProfilingError as exc:
+        print(f"\n[mips][ERROR] {exc}", file=sys.stderr)
         sys.exit(1)
 
     # ── Step 5: Merge all CSVs ──

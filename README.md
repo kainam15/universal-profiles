@@ -1,6 +1,6 @@
 # AC-Prof Universal Profiler
 
-AC-Prof 是一个面向 containerized HuggingFace inference service 的运行时 profiling 工具。它会把模型权重 bake 进 Docker image，在不同 CPU / Memory / GPU 资源限制和不同 input scale 下运行推理 workload，并输出 latency、throughput、cold start、GPU / CPU power 与 energy、container CPU / memory usage、CPU frequency、estimated CPU cycles、packet-level latency 等指标。
+AC-Prof 是一个面向 containerized HuggingFace inference service 的运行时 profiling 工具。它会把模型权重 bake 进 Docker image，在不同 CPU / Memory / GPU 资源限制和不同 input scale 下运行推理 workload，并输出 latency、throughput、cold start、GPU / CPU power 与 energy、container CPU / memory usage、CPU frequency、estimated CPU cycles、perf retired-instruction MIPS、packet-level latency 等指标。
 
 本项目是 loose Python modules 结构，没有 `pyproject.toml` / `setup.py`。入口是 [run.py](run.py)，绘图入口是 [plot.py](plot.py)。
 
@@ -19,6 +19,7 @@ AC-Prof 是一个面向 containerized HuggingFace inference service 的运行时
 - Linux RAPL powercap（`/sys/class/powercap/*/energy_uj`）：用于 CPU package power / energy 和 estimated vCPU energy metrics。
 - Docker cgroup CPU / memory files：用于 container CPU utilization、vCPU CPU time/share、memory footprint metrics，以及 estimated CPU cycles 的 CPU utilization 输入。
 - Linux CPU frequency sysfs 或 `/proc/cpuinfo`：用于 `cpu_freq_*` 和 estimated CPU cycles。优先读取 `/sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq` / `cpuinfo_cur_freq`，不可用时回退到 `/proc/cpuinfo` 的 `cpu MHz`。
+- Linux `perf` + hardware event `instructions`：必需，用于真实 retired-instruction MIPS。`run.py` 启动时会先做 preflight；如果 `perf_event_paranoid`、sudo 或 PMU 权限不足，会直接退出并给出修复命令。
 - `tcpdump` + `tshark`：必需，用于填充 `result_all.csv` 的 `latency_s` packet-level latency。`run.py` 启动时会先做 preflight；不满足条件会直接退出并给出恢复提示。
 - Intel Advisor：仅在显式 `--compute-profile-tool vendor` 时用于 `gpu_mode=off` 行的 CPU FLOP / MFLOPS profiling。通过 `--advisor-root` 挂载到临时 profiler container。
 - NVIDIA Nsight Compute CLI (`ncu`)：默认用于 `gpu_mode=on` 行的 GPU FLOP / MFLOPS profiling。通过 `--ncu-root` 挂载到临时 profiler container；不可用、不兼容当前 CUDA/driver、或性能计数器被限制时 compute 字段为 `nan`。Ubuntu multiverse 的 `nsight-compute` 可能过旧，推荐使用 NVIDIA CUDA apt 源里的版本化包，例如 `/opt/nvidia/nsight-compute/<version>/ncu`。
@@ -28,9 +29,11 @@ Hugging Face token 可以放在项目根目录 `.env.local`：
 
 ```env
 HF_TOKEN=hf_xxx
+# 可选：当 perf/tcpdump 需要 sudo 且 sudo -n 不可用时使用
+ACPROF_SUDO_PASSWORD=your_sudo_password
 ```
 
-`run.py` 会自动读取 `.env` 和 `.env.local`，并把 `HF_TOKEN` / `HUGGING_FACE_HUB_TOKEN` 传给 Docker build 和 runtime。
+`run.py` 会自动读取 `.env` 和 `.env.local`，并把 `HF_TOKEN` / `HUGGING_FACE_HUB_TOKEN` 传给 Docker build 和 runtime。`ACPROF_SUDO_PASSWORD` 只在 host 侧用于 `sudo -S perf` / `setcap tcpdump` 这类 preflight，不会传入被测容器。
 
 ## 2. 安装
 
@@ -194,7 +197,7 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `--repeat` | `5` | 每个资源配置、每个 input scale 的正式测量行数。 |
 | `--repeat-in-window` | `0` | 每一行内部连续发送的 `/predict` request 数量。`0` 表示按单次推理时间自动校准。 |
 | `--repeat-window-seconds` | `10.0` | `--repeat-in-window 0` 时的目标 workload window 秒数。 |
-| `--sample-hz` | `20.0` | GPU power sampling rate，单位 Hz；CPU workload 期间也用它控制 RAPL、container cgroup、CPU frequency 和 GPU/resource usage 的采样间隔，以估计 peak power、vCPU share、CPU utilization 和 CPU cycles。CPU idle baseline 不使用该 20Hz 小区间 median。 |
+| `--sample-hz` | `20.0` | GPU power sampling rate，单位 Hz；CPU workload 期间也用它控制 RAPL、container cgroup、CPU frequency 和 GPU/resource usage 的采样间隔，以估计 peak power、vCPU share、CPU utilization 和 CPU cycles。perf MIPS 使用独立的 `perf stat` 窗口，不受该采样率影响。CPU idle baseline 不使用该 20Hz 小区间 median。 |
 | `--idle-seconds` | `3.0` | 每个 workload window 前的 idle baseline 测量时长。CPU idle baseline 用整段 RAPL `energy_uj` 差值 / 实际 duration；`gpu_mode=on` 时 GPU idle baseline 仍来自 NVML power samples。case 结束后会复查该 case CSV 中所有有效 `cpu_idle_power_w` 的相对极差；`gpu_mode=on` 时也会复查 `gpu_idle_power_w`。达到或超过 5% 会退出实验并提示增大该值或稳定主机/GPU 环境。 |
 | `--idle-debug` | false | 开启 idle baseline 调试输出。主 CSV 会填充 GPU 的 `gpu_idle_measured_at` / `gpu_idle_rel_range_so_far` 和 CPU 的 `cpu_idle_measured_at` / `cpu_idle_rel_range_so_far`，并写出 `result_case_*.csv.idle_diag.jsonl`。诊断文件会记录 GPU idle 期间的 NVML power sample trace、`nvidia-smi` GPU/process 快照、CPU idle window 内 0.1s RAPL 子窗口、start/end `/proc` CPU delta、container CPU delta，以及测完后的 loadavg、top CPU processes、Docker 容器和 `docker stats` 快照。 |
 | `--input-scales` | auto | 手动覆盖 input scale 列表。未提供时自动规划 6 档。 |
@@ -302,6 +305,10 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `cpu_freq_peak_hz` | 测量窗口内 host online CPU 当前频率的峰值，单位 Hz。每个 sample 取 online CPU 的最高当前频率，最终再取窗口内最大值。 |
 | `cpu_cycles_est_app` | 基于 application latency 的 estimated CPU cycles，公式为 `latency_app_s * cpu_freq_avg_hz * cpu_cores * container_cpu_util_avg_pct / 100`。这是利用率与频率推导值，不是硬件 PMU retired instructions / cycles 计数。 |
 | `cpu_cycles_est_packet` | 基于 packet-level `latency_s` 的 estimated CPU cycles，公式同 `cpu_cycles_est_app`，但在 `merge_packet_latency.py` 成功回填 `latency_s` 后才会更新；merge 前或 packet latency 缺失时为 `nan`。 |
+| `cpu_instructions_per_request` | Linux `perf stat -e instructions` 采集到的 retired instructions，按本行 `repeat_in_window` 平均到单 request。MIPS 采集失败会中止实验而不是写入静默 `nan`。 |
+| `cpu_mips_app` | 基于 `latency_app_s` 的真实 retired-instruction MIPS，公式为 `cpu_instructions_per_request / latency_app_s / 1e6`。 |
+| `cpu_mips_packet` | 基于 packet-level `latency_s` 的真实 retired-instruction MIPS，在 `merge_packet_latency.py` 成功回填 `latency_s` 后更新；merge 前或 packet latency 缺失时为 `nan`。 |
+| `cpu_perf_elapsed_s` | perf 统计窗口报告的 elapsed time，单位秒，用于诊断 perf 窗口是否覆盖本行 workload。 |
 | `container_mem_usage_avg_bytes` | 当前 Docker container 在测量窗口内的平均 memory usage，单位 bytes，来自 cgroup memory 文件。 |
 | `container_mem_usage_peak_bytes` | 当前 Docker container 在测量窗口内的峰值 memory usage，单位 bytes。 |
 | `container_mem_util_avg_pct` | 当前 Docker container 平均 memory usage / `mem_cap_gb` 的百分比。 |
@@ -402,6 +409,12 @@ GPU idle baseline 波动导致实验退出：
 - `cpu_freq_*` 字段依赖 Linux cpufreq sysfs 或 `/proc/cpuinfo`。如果当前内核、虚拟化环境或权限不暴露当前频率，会保持 `nan`。
 - `cpu_cycles_est_app` 依赖 `latency_app_s`、`cpu_freq_avg_hz`、`cpu_cores` 和 `container_cpu_util_avg_pct` 都有效；`cpu_cycles_est_packet` 还额外依赖 packet latency merge 成功回填 `latency_s`。
 - `gpu_*` utilization / VRAM 字段仅在 `gpu_mode=on` 且 NVML 可用时采集；口径是 NVML device-level，可能包含同一 GPU 上其他进程的占用。
+
+MIPS preflight 或采集失败：
+
+- `cpu_mips_*` 字段来自 Linux `perf` 的 `instructions` 硬件事件，不是 CPU frequency 推导值。`run.py` 会在 task detection 前检查 `perf` 权限，失败时打印 `[mips][ERROR]`、当前 `perf_event_paranoid`、sudo 状态和恢复步骤。
+- 常见临时修复：`echo 0 | sudo tee /proc/sys/kernel/perf_event_paranoid`。如果不想手动调整，也可以在 `.env.local` 设置 `ACPROF_SUDO_PASSWORD`，让 AC-Prof 使用 `sudo -S perf`。
+- 不建议用 `sudo python run.py ...`，这会让结果文件可能变成 root 所有；修复 perf 权限后用普通用户重跑。
 
 CPU / vCPU peak power 看起来异常：
 

@@ -57,6 +57,18 @@ def _estimate_cpu_cycles(row: dict, latency_s: float) -> float:
     return float("nan")
 
 
+def _compute_cpu_mips(row: dict, latency_s: float) -> float:
+    instructions_per_request = _to_float(row.get("cpu_instructions_per_request", "nan"))
+    if (
+        latency_s == latency_s
+        and instructions_per_request == instructions_per_request
+        and latency_s > 0.0
+        and instructions_per_request >= 0.0
+    ):
+        return instructions_per_request / latency_s / 1_000_000.0
+    return float("nan")
+
+
 def _read_sidecar_groups(csv_path: str) -> list[str]:
     sidecar_path = f"{csv_path}.sniff_groups.jsonl"
     if not os.path.exists(sidecar_path):
@@ -121,6 +133,13 @@ for idx, r in enumerate(rows):
             cpu_cycles_est_packet = _estimate_cpu_cycles(r, lat)
             if cpu_cycles_est_packet == cpu_cycles_est_packet:
                 r["cpu_cycles_est_packet"] = f"{cpu_cycles_est_packet:.6f}"
+        except Exception:
+            pass
+        try:
+            lat = float(r["latency_s"])
+            cpu_mips_packet = _compute_cpu_mips(r, lat)
+            if cpu_mips_packet == cpu_mips_packet:
+                r["cpu_mips_packet"] = f"{cpu_mips_packet:.6f}"
         except Exception:
             pass
     else:

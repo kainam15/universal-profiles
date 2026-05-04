@@ -33,6 +33,7 @@ from config import (
     STATIC_META_FIELDS,
 )
 from detect import TaskInfo
+from perf_mips import MIPS_EXIT_CODE
 
 
 @dataclass
@@ -90,6 +91,10 @@ class PacketLatencyError(RuntimeError):
 
 class EnergyProfilingError(RuntimeError):
     """Raised when energy profiling cannot continue reliably."""
+
+
+class MIPSProfilingError(RuntimeError):
+    """Raised when required MIPS profiling cannot continue reliably."""
 
 
 IDLE_POWER_RELATIVE_RANGE_THRESHOLD = 0.05
@@ -1869,6 +1874,7 @@ def _run_single_case_legacy(
         "OUT_CSV": out_csv,
         "CASE_NAME": case_name,
         "CONTAINER_NAME": container_name,
+        "USE_MIPS": "1",
         "SAMPLE_HZ": str(sample_hz),
         "IDLE_SECONDS": str(idle_seconds),
         "DEVICE_INDEX": "0",
@@ -1883,6 +1889,11 @@ def _run_single_case_legacy(
     )
 
     if client_result.returncode != 0:
+        if client_result.returncode == MIPS_EXIT_CODE:
+            raise MIPSProfilingError(
+                "client.py exited because MIPS profiling failed; review the "
+                "[mips][ERROR] output above for the perf remediation steps."
+            )
         print(f"[case] Client exited with code {client_result.returncode}")
 
     # ── Stop tcpdump and parse ──
@@ -2046,6 +2057,7 @@ def run_single_case(
             "OUT_CSV": out_csv,
             "CASE_NAME": case_name,
             "CONTAINER_NAME": container_name,
+            "USE_MIPS": "1",
             "SAMPLE_HZ": str(sample_hz),
             "IDLE_SECONDS": str(idle_seconds),
             "IDLE_DEBUG": "1" if idle_debug else "0",
@@ -2064,6 +2076,11 @@ def run_single_case(
         )
 
         if client_result.returncode != 0:
+            if client_result.returncode == MIPS_EXIT_CODE:
+                raise MIPSProfilingError(
+                    "client.py exited because MIPS profiling failed; review the "
+                    "[mips][ERROR] output above for the perf remediation steps."
+                )
             raise EnergyProfilingError(
                 "client.py exited with code "
                 f"{client_result.returncode}; aborting profiling matrix. "

@@ -30,6 +30,8 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
                 "container_cpu_util_avg_pct",
                 "cpu_freq_avg_hz",
                 "cpu_cycles_est_packet",
+                "cpu_instructions_per_request",
+                "cpu_mips_packet",
             ]
             with open(in_csv, "w", encoding="utf-8", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -44,6 +46,8 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
                     "container_cpu_util_avg_pct": "50.0",
                     "cpu_freq_avg_hz": "3000000000",
                     "cpu_cycles_est_packet": "nan",
+                    "cpu_instructions_per_request": "500000",
+                    "cpu_mips_packet": "nan",
                 })
 
             with open(lat_json, "w", encoding="utf-8") as f:
@@ -64,6 +68,7 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
         self.assertEqual(rows[0]["throughput_samples_per_s"], "4.000000")
         self.assertEqual(rows[0]["compute_mflops"], "800.000000")
         self.assertEqual(rows[0]["cpu_cycles_est_packet"], "750000000.000000")
+        self.assertEqual(rows[0]["cpu_mips_packet"], "2.000000")
         self.assertNotIn("sniff_group_id", fieldnames)
 
     def test_merges_packet_latency_with_sidecar_when_csv_omits_sniff_group_id(self) -> None:

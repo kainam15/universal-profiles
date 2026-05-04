@@ -73,6 +73,7 @@ SNIFF_GROUPS_PATH = os.getenv("SNIFF_GROUPS_PATH", "").strip()
 IDLE_DEBUG = os.getenv("IDLE_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 IDLE_DIAG_PATH = os.getenv("IDLE_DIAG_PATH", "").strip()
 IDLE_DEBUG_TRACE_INTERVAL_S = float(os.getenv("IDLE_DEBUG_TRACE_INTERVAL_S", "0.1"))
+USE_MIPS = os.getenv("USE_MIPS", "").strip().lower() in {"1", "true", "yes", "on"}
 
 SAMPLE_HZ = float(os.getenv("SAMPLE_HZ", "20"))
 IDLE_SECONDS = float(os.getenv("IDLE_SECONDS", "3"))
@@ -134,6 +135,10 @@ def _finite_positive(value: Any) -> bool:
 
 class EnergyAbort(RuntimeError):
     """Raised when energy measurement prerequisites are not stable enough."""
+
+
+class MIPSAbort(RuntimeError):
+    """Raised when perf MIPS profiling cannot continue."""
 
 
 def _median(xs: List[float]) -> float:
@@ -480,6 +485,15 @@ except Exception as _e:
     print(f"[WARN] Resource usage monitoring unavailable: {_e.__class__.__name__}: {_e}",
           file=__import__('sys').stderr)
 
+perf_mips_mod = None
+try:
+    import perf_mips as perf_mips_mod
+except Exception as _e:
+    perf_mips_mod = None
+    if USE_MIPS:
+        print(f"[WARN] MIPS monitoring unavailable: {_e.__class__.__name__}: {_e}",
+              file=__import__('sys').stderr)
+
 
 GPU_METRIC_FIELDS = [
     "gpu_idle_power_w",
@@ -527,6 +541,13 @@ RESOURCE_USAGE_METRIC_FIELDS = [
     "gpu_mem_used_peak_bytes",
     "gpu_mem_util_avg_pct",
     "gpu_mem_util_peak_pct",
+]
+
+MIPS_METRIC_FIELDS = [
+    "cpu_instructions_per_request",
+    "cpu_mips_app",
+    "cpu_mips_packet",
+    "cpu_perf_elapsed_s",
 ]
 
 
@@ -597,6 +618,26 @@ def _resource_usage_metrics_from_result(result: Any) -> Dict[str, float]:
         "gpu_mem_util_avg_pct": _to_float_or_nan(result.gpu_mem_util_avg_pct),
         "gpu_mem_util_peak_pct": _to_float_or_nan(result.gpu_mem_util_peak_pct),
     }
+
+
+def _mips_metrics_from_result(result: Any) -> Dict[str, float]:
+    return {
+        "cpu_instructions_per_request": _to_float_or_nan(
+            result.instructions_per_request
+        ),
+        "cpu_mips_app": _to_float_or_nan(result.cpu_mips_app),
+        "cpu_mips_packet": float("nan"),
+        "cpu_perf_elapsed_s": _to_float_or_nan(result.perf_elapsed_s),
+    }
+
+
+def _is_mips_error(exc: Exception) -> bool:
+    if isinstance(exc, MIPSAbort):
+        return True
+    if perf_mips_mod is None:
+        return False
+    mips_error_cls = getattr(perf_mips_mod, "MIPSProfilingError", None)
+    return bool(mips_error_cls is not None and isinstance(exc, mips_error_cls))
 
 
 def _append_sniff_group(sidecar_f, sniff_group_id: str) -> None:
@@ -910,6 +951,10 @@ def main() -> None:
             "GPU energy monitoring is required for gpu_mode=on but NVML/pynvml is unavailable. "
             "Install pynvml, verify NVIDIA driver access, or rerun with --gpus off."
         )
+    if USE_MIPS and perf_mips_mod is None:
+        raise MIPSAbort(
+            "MIPS profiling is enabled but perf_mips.py could not be imported."
+        )
 
     compute_profile_plan = _load_compute_profile_plan(COMPUTE_PROFILE_PLAN_FILE)
     need_header = _is_file_empty(OUT_CSV)
@@ -976,6 +1021,7 @@ def main() -> None:
                 gpu_metrics = _nan_metrics(GPU_METRIC_FIELDS)
                 cpu_metrics = _nan_metrics(CPU_METRIC_FIELDS)
                 resource_usage_metrics = _nan_metrics(RESOURCE_USAGE_METRIC_FIELDS)
+                mips_metrics = _nan_metrics(MIPS_METRIC_FIELDS)
                 effective_input_scale: Optional[float] = None
                 cpu_idle_measured_at = "nan"
                 gpu_idle_measured_at = "nan"
@@ -988,9 +1034,13 @@ def main() -> None:
                     gpu_monitor = None
                     cpu_monitor = None
                     resource_usage_monitor = None
+                    mips_monitor = None
                     gpu_result = None
                     cpu_result = None
                     resource_usage_result = None
+                    mips_result = None
+                    lat_sum = 0.0
+                    mips_monitor_started = False
                     try:
                         if USE_ENERGY and (energy_mod is not None):
                             # Preserve the existing GPU cooldown behavior.
@@ -1032,14 +1082,19 @@ def main() -> None:
                                 device_index=DEVICE_INDEX,
                             )
 
+                        if USE_MIPS:
+                            mips_monitor = perf_mips_mod.PerfMIPSMonitor(CONTAINER_NAME)
+
                         if gpu_monitor is not None:
                             gpu_monitor.start()
                         if cpu_monitor is not None:
                             cpu_monitor.start()
                         if resource_usage_monitor is not None:
                             resource_usage_monitor.start()
+                        if mips_monitor is not None:
+                            mips_monitor.start()
+                            mips_monitor_started = True
 
-                        lat_sum = 0.0
                         for k in range(actual_repeat_in_window):
                             req_id = f"{sniff_group_id}:{k}"
                             out = _one_request(scale_val, req_id=req_id, payload_override=payload_override)
@@ -1050,6 +1105,20 @@ def main() -> None:
                                 scale_val,
                             )
                     finally:
+                        mips_stop_error = None
+                        if mips_monitor is not None and mips_monitor_started:
+                            try:
+                                mips_latency_app_s = (
+                                    lat_sum / float(actual_repeat_in_window)
+                                    if actual_repeat_in_window > 0
+                                    else float("nan")
+                                )
+                                mips_result = mips_monitor.stop(
+                                    actual_repeat_in_window,
+                                    mips_latency_app_s,
+                                )
+                            except Exception as exc:
+                                mips_stop_error = exc
                         if resource_usage_monitor is not None:
                             resource_usage_result, _resource_usage_err, _resource_usage_samples = (
                                 resource_usage_monitor.stop()
@@ -1066,6 +1135,10 @@ def main() -> None:
                                 cpu_monitor.close()
                         if resource_usage_monitor is not None:
                             resource_usage_monitor.close()
+                        if mips_monitor is not None:
+                            mips_monitor.close()
+                        if mips_stop_error is not None:
+                            raise mips_stop_error
 
                     latency_app_s = lat_sum / float(actual_repeat_in_window)
 
@@ -1081,6 +1154,8 @@ def main() -> None:
                         )
                     if resource_usage_result is not None:
                         resource_usage_metrics = _resource_usage_metrics_from_result(resource_usage_result)
+                    if mips_result is not None:
+                        mips_metrics = _mips_metrics_from_result(mips_result)
 
                     warnings = []
                     warnings.extend(_eff_negative_warnings(
@@ -1107,7 +1182,11 @@ def main() -> None:
 
                 except EnergyAbort:
                     raise
+                except MIPSAbort:
+                    raise
                 except Exception as e:
+                    if _is_mips_error(e):
+                        raise MIPSAbort(str(e)) from None
                     status = "error"
                     err_msg = repr(e)
                     throughput = float("nan")
@@ -1160,6 +1239,7 @@ def main() -> None:
                     **{field: _fmt_float(resource_usage_metrics[field]) for field in RESOURCE_USAGE_METRIC_FIELDS},
                     "cpu_cycles_est_app": _fmt_float(cpu_cycles_est_app),
                     "cpu_cycles_est_packet": "nan",
+                    **{field: _fmt_float(mips_metrics[field]) for field in MIPS_METRIC_FIELDS},
                     "cold_start_s": COLD_START_S if COLD_START_S else "nan",
                     "status": status,
                     "error": err_msg,
@@ -1226,6 +1306,14 @@ def run_cli() -> None:
     except EnergyAbort as exc:
         print(f"[energy][ERROR] {exc}", file=sys.stderr)
         raise SystemExit(1) from None
+    except MIPSAbort as exc:
+        message = str(exc)
+        if message.startswith("[mips][ERROR]"):
+            print(message, file=sys.stderr)
+        else:
+            print(f"[mips][ERROR] {message}", file=sys.stderr)
+        exit_code = getattr(perf_mips_mod, "MIPS_EXIT_CODE", 8) if perf_mips_mod else 8
+        raise SystemExit(exit_code) from None
 
 
 if __name__ == "__main__":

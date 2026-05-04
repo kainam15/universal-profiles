@@ -341,6 +341,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             captured_env["CONTAINER_NAME"],
             "case_google-bert--bert-base-uncased_1c_4g_off",
         )
+        self.assertEqual(captured_env["USE_MIPS"], "1")
 
     def test_run_single_case_passes_compute_profile_plan_to_client(self) -> None:
         task_info = TaskInfo(

@@ -831,6 +831,74 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(rows[0]["cpu_cycles_est_packet"], "nan")
         self.assertNotIn("gpu_mem_total_bytes", rows[0])
 
+    def test_mips_metrics_are_written_to_successful_row(self) -> None:
+        class FakeMIPSMonitor:
+            def start(self):
+                return None
+
+            def stop(self, repeat_in_window: int, latency_app_s: float):
+                return SimpleNamespace(
+                    instructions_total=1_000_000.0,
+                    instructions_per_request=500_000.0,
+                    perf_elapsed_s=0.25,
+                    cpu_mips_app=1.0,
+                )
+
+            def close(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_csv = f"{tmp_dir}/result.csv"
+            with patch.object(
+                client, "OUT_CSV", out_csv
+            ), patch.object(
+                client, "WARMUP", 0
+            ), patch.object(
+                client, "REPEAT", 1
+            ), patch.object(
+                client, "REPEAT_IN_WINDOW", 2
+            ), patch.object(
+                client, "USE_ENERGY", False
+            ), patch.object(
+                client, "USE_MIPS", True, create=True
+            ), patch.object(
+                client, "energy_mod", None
+            ), patch.object(
+                client,
+                "cpu_energy_mod",
+                None,
+            ), patch.object(
+                client,
+                "resource_usage_mod",
+                None,
+            ), patch.object(
+                client,
+                "perf_mips_mod",
+                SimpleNamespace(PerfMIPSMonitor=lambda container_name: FakeMIPSMonitor()),
+                create=True,
+            ), patch.object(
+                client,
+                "input_scale_entries",
+                [{"input_scale": 1.0, "scale_label": "1", "payload": {}}],
+            ), patch.object(
+                client.requests,
+                "get",
+                return_value=SimpleNamespace(status_code=200, text="ok"),
+            ), patch.object(
+                client,
+                "_one_request",
+                return_value={"latency_app_s": 0.25, "effective_input_scale": 1.0},
+            ):
+                client.main()
+                with open(out_csv, "r", encoding="utf-8", newline="") as f:
+                    rows = list(csv.DictReader(f))
+
+        self.assertEqual(rows[0]["status"], "ok")
+        self.assertEqual(rows[0]["cpu_instructions_per_request"], "500000.000000")
+        self.assertEqual(rows[0]["cpu_mips_app"], "1.000000")
+        self.assertEqual(rows[0]["cpu_mips_packet"], "nan")
+        self.assertEqual(rows[0]["cpu_perf_elapsed_s"], "0.250000")
+
     def test_resource_usage_unavailable_keeps_successful_row_ok(self) -> None:
         class FakeUnavailableResourceUsageMonitor:
             def start(self):

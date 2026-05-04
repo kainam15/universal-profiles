@@ -46,6 +46,8 @@ class NativeDockerGuardTests(unittest.TestCase):
             "run.require_cpu_energy_prerequisites",
             side_effect=SystemExit(3),
         ) as preflight, patch(
+            "run.require_mips_prerequisites",
+        ), patch(
             "detect.detect_task",
             side_effect=AssertionError("detect_task should not run before CPU energy preflight"),
         ):
@@ -53,6 +55,27 @@ class NativeDockerGuardTests(unittest.TestCase):
                 run.main()
 
         self.assertEqual(raised.exception.code, 3)
+        preflight.assert_called_once_with()
+
+    def test_main_runs_mips_preflight_before_task_detection(self) -> None:
+        with patch.object(sys, "argv", ["run.py", "--model", "dummy-model"]), patch(
+            "run.bootstrap_project_env",
+            return_value=None,
+        ), patch("run.require_native_docker"), patch(
+            "run.require_packet_latency_prerequisites",
+        ), patch(
+            "run.require_cpu_energy_prerequisites",
+        ), patch(
+            "run.require_mips_prerequisites",
+            side_effect=SystemExit(4),
+        ) as preflight, patch(
+            "detect.detect_task",
+            side_effect=AssertionError("detect_task should not run before MIPS preflight"),
+        ):
+            with self.assertRaises(SystemExit) as raised:
+                run.main()
+
+        self.assertEqual(raised.exception.code, 4)
         preflight.assert_called_once_with()
 
     def test_docker_desktop_context_exits_before_docker_info(self) -> None:
@@ -179,6 +202,8 @@ class NativeDockerGuardTests(unittest.TestCase):
         ), patch(
             "run.require_cpu_energy_prerequisites"
         ), patch(
+            "run.require_mips_prerequisites"
+        ), patch(
             "detect.detect_task",
             return_value=task_info,
         ), patch(
@@ -242,6 +267,8 @@ class NativeDockerGuardTests(unittest.TestCase):
             "run.require_packet_latency_prerequisites"
         ), patch(
             "run.require_cpu_energy_prerequisites"
+        ), patch(
+            "run.require_mips_prerequisites"
         ), patch(
             "detect.detect_task",
             return_value=task_info,
