@@ -82,6 +82,89 @@ class PerfMIPSTests(unittest.TestCase):
         self.assertEqual(result.instructions_per_request, 250_000.0)
         self.assertAlmostEqual(result.cpu_mips_app, 2.0)
 
+    def test_monitor_uses_password_sudo_when_pid_attach_needs_privilege(self) -> None:
+        popen_cmds = []
+        run_calls = []
+
+        class FakeStdin:
+            def write(self, text):
+                self.text = text
+
+            def flush(self):
+                return None
+
+            def close(self):
+                return None
+
+        class FakeProcess:
+            returncode = 0
+
+            def __init__(self, cmd, **kwargs):
+                popen_cmds.append(cmd)
+                self.stdin = FakeStdin()
+
+            def send_signal(self, sig):
+                self.signal = sig
+
+            def poll(self):
+                return None
+
+            def communicate(self, timeout=None):
+                self.returncode = 0
+                return "", (
+                    "500000,,instructions,100.00,,\n"
+                    "0.250000000 seconds time elapsed\n"
+                )
+
+            def kill(self):
+                self.returncode = -9
+
+        def fake_run(cmd, **kwargs):
+            run_calls.append((cmd, kwargs))
+            if cmd[:2] == ["docker", "inspect"]:
+                return SimpleNamespace(returncode=0, stdout="1234\n", stderr="")
+            if cmd[:2] == ["perf", "stat"] and "-p" not in cmd:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="",
+                    stderr="1000,,instructions,633068,100.00,,\n",
+                )
+            if cmd[:2] == ["perf", "stat"] and "-p" in cmd:
+                return SimpleNamespace(
+                    returncode=255,
+                    stdout="",
+                    stderr="Access to performance monitoring and observability operations is limited.",
+                )
+            if cmd[:3] == ["sudo", "-n", "perf"]:
+                return SimpleNamespace(returncode=1, stdout="", stderr="sudo password required")
+            if cmd[:4] == ["sudo", "-S", "-p", ""]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="",
+                    stderr="<not counted>,,instructions,0,100.00,,\n",
+                )
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with patch.dict("perf_mips.os.environ", {"ACPROF_SUDO_PASSWORD": "secret"}), patch(
+            "perf_mips.subprocess.run",
+            side_effect=fake_run,
+        ), patch(
+            "perf_mips.subprocess.Popen",
+            side_effect=lambda cmd, **kwargs: FakeProcess(cmd, **kwargs),
+        ):
+            monitor = perf_mips.PerfMIPSMonitor(container_name="case_container")
+            monitor.start()
+            result = monitor.stop(repeat_in_window=2, latency_app_s=0.125)
+
+        self.assertEqual(popen_cmds[0][:5], ["sudo", "-S", "-p", "", "perf"])
+        self.assertEqual(result.instructions_per_request, 250_000.0)
+        sudo_attach_probe = [
+            kwargs.get("input")
+            for cmd, kwargs in run_calls
+            if cmd[:4] == ["sudo", "-S", "-p", ""]
+        ]
+        self.assertEqual(sudo_attach_probe, ["secret\n"])
+
     def test_monitor_uses_wall_elapsed_when_perf_omits_elapsed_line(self) -> None:
         class FakeProcess:
             returncode = 0

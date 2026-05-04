@@ -133,6 +133,23 @@ def _perf_probe_command(prefix: List[str]) -> List[str]:
     ]
 
 
+def _perf_attach_probe_command(prefix: List[str], pid: int) -> List[str]:
+    return [
+        *prefix,
+        "stat",
+        "--no-big-num",
+        "-x",
+        ",",
+        "-e",
+        PERF_EVENT,
+        "-p",
+        str(pid),
+        "--",
+        "sleep",
+        "0.01",
+    ]
+
+
 def _run_perf_probe(prefix: List[str], password: str = "") -> subprocess.CompletedProcess:
     kwargs = {
         "capture_output": True,
@@ -147,6 +164,24 @@ def _run_perf_probe(prefix: List[str], password: str = "") -> subprocess.Complet
     return subprocess.run(_perf_probe_command(prefix), **kwargs)
 
 
+def _run_perf_attach_probe(
+    prefix: List[str],
+    pid: int,
+    password: str = "",
+) -> subprocess.CompletedProcess:
+    kwargs = {
+        "capture_output": True,
+        "text": True,
+        "check": False,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "timeout": PERF_PROBE_TIMEOUT_S,
+    }
+    if password:
+        kwargs["input"] = f"{password}\n"
+    return subprocess.run(_perf_attach_probe_command(prefix, pid), **kwargs)
+
+
 def _probe_succeeded(result: subprocess.CompletedProcess) -> bool:
     if result.returncode != 0:
         return False
@@ -158,6 +193,10 @@ def _probe_succeeded(result: subprocess.CompletedProcess) -> bool:
     except Exception:
         return False
     return True
+
+
+def _attach_probe_succeeded(result: subprocess.CompletedProcess) -> bool:
+    return result.returncode == 0
 
 
 def resolve_perf_command_prefix() -> List[str]:
@@ -199,6 +238,39 @@ def get_perf_command_prefix() -> List[str]:
     return list(_RESOLVED_COMMAND_PREFIX)
 
 
+def resolve_perf_command_prefix_for_pid(pid: int) -> List[str]:
+    perf_path = shutil.which("perf")
+    if not perf_path:
+        raise MIPSProfilingError("Linux perf command was not found.")
+
+    direct = _run_perf_attach_probe(["perf"], pid)
+    if _attach_probe_succeeded(direct):
+        return ["perf"]
+
+    sudo_noninteractive = _run_perf_attach_probe(["sudo", "-n", "perf"], pid)
+    if _attach_probe_succeeded(sudo_noninteractive):
+        return ["sudo", "-n", "perf"]
+
+    sudo_with_password: Optional[subprocess.CompletedProcess] = None
+    sudo_password = os.environ.get("ACPROF_SUDO_PASSWORD", "").strip()
+    if sudo_password:
+        sudo_with_password = _run_perf_attach_probe(
+            ["sudo", "-S", "-p", "", "perf"],
+            pid,
+            password=sudo_password,
+        )
+        if _attach_probe_succeeded(sudo_with_password):
+            return ["sudo", "-S", "-p", "", "perf"]
+
+    last_error_result = sudo_with_password or sudo_noninteractive or direct
+    last_error = (
+        last_error_result.stderr
+        or last_error_result.stdout
+        or "perf attach probe failed"
+    ).strip()
+    raise MIPSProfilingError(last_error)
+
+
 def _friendly_mips_error(detail: str) -> str:
     perf_path = shutil.which("perf") or "not found"
     paranoid = read_perf_event_paranoid()
@@ -216,6 +288,8 @@ def _friendly_mips_error(detail: str) -> str:
         "  2. Temporary permission fix for this boot:\n"
         "     echo 0 | sudo tee /proc/sys/kernel/perf_event_paranoid\n"
         "  3. Or set ACPROF_SUDO_PASSWORD in .env.local so AC-Prof can run sudo -S perf.\n\n"
+        "Note: profiling Docker container PIDs may still require sudo perf even when "
+        "perf_event_paranoid=0, because those processes are often owned by root.\n\n"
         "After fixing permissions, rerun AC-Prof as your normal user. Avoid "
         "`sudo python run.py ...` because it can leave result files owned by root."
     )
@@ -274,7 +348,7 @@ class PerfMIPSMonitor:
             raise MIPSProfilingError("CONTAINER_NAME is required for MIPS profiling")
 
         pid = _docker_container_pid(self.container_name)
-        prefix = list(self.command_prefix or get_perf_command_prefix())
+        prefix = list(self.command_prefix or resolve_perf_command_prefix_for_pid(pid))
         password = ""
         if _prefix_uses_password(prefix):
             password = os.environ.get("ACPROF_SUDO_PASSWORD", "").strip()
