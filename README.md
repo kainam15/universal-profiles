@@ -263,7 +263,11 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `warmup` | `1` 表示 warmup 行，`0` 表示正式测量行。`plot.py` 默认排除 warmup 行。 |
 | `repeat_in_window` | 本行内部连续发送的 request 数量。`latency_app_s` 和 `latency_s` 都是该 window 内 request 的平均值。 |
 | `latency_s` | packet-level latency，来自 `tcpdump` PCAP + `tshark` 解析 + `merge_packet_latency.py` merge。当前默认要求该字段完整；抓包不可用、PCAP 为空、解析为空或 merge 后仍有缺失时，程序会退出并给出恢复提示。 |
+| `latency_p50_s` / `latency_p90_s` / `latency_p95_s` | packet-level latency 在本行 request window 内的 empirical nearest-rank 分位数，由 merge 阶段从同一组 packet latency 明细计算。 |
+| `latency_slow_ratio` | packet-level latency 中超过 `SLOW_LATENCY_THRESHOLD_S` 的 request 比例，默认阈值为 `0.06` 秒，用于观察尾延迟或双峰分布。 |
 | `latency_app_s` | host-side application latency。`client.py` 用 `requests.post()` 外层 `time.perf_counter()` 测得，通常比 `latency_s` 更容易稳定产出。 |
+| `latency_app_p50_s` / `latency_app_p90_s` / `latency_app_p95_s` | host-side application latency 在本行 request window 内的 empirical nearest-rank 分位数。 |
+| `latency_app_slow_ratio` | host-side application latency 中超过 `SLOW_LATENCY_THRESHOLD_S` 的 request 比例，默认阈值为 `0.06` 秒。 |
 | `throughput_samples_per_s` | 吞吐量，约等于 `batch_size / latency`。如果 `latency_s` 成功 merge，会优先按 `latency_s` 更新；否则按 `latency_app_s` 计算。 |
 | `compute_profile_tool` | FLOP profiling 工具。默认 CPU 行为 `torch_profiler`、GPU 行为 `ncu`；显式 `--compute-profile-tool torch` 时全部为 `torch_profiler`；显式 `vendor` 时 CPU-only 行为 `intel_advisor`、GPU 行为 `ncu`；未采集时为 `nan`。 |
 | `model_mflop_per_request` | profiler 采集到的单 request 模型计算量，单位 MFLOP。默认 CPU 根据 PyTorch profiler operator shapes 统计，GPU 来自 ncu FLOP / tensor operation counters；vendor 模式下 CPU 来自 Intel Advisor `Self GFLOP`。 |
@@ -368,7 +372,7 @@ len(cpus) * len(mems) * len(gpus) * len(input_scales) * (warmup + repeat)
 repeat_in_window
 ```
 
-个 `/predict` request。默认 `repeat_in_window=0` 会先对每个 resource case / input scale 发 5 个 calibration warmup 请求（不计入统计），再发 9 个校准请求取 median，并按 `--repeat-window-seconds` 计算实际 request 数；因此默认完整 run 的 request 数取决于模型单次推理延迟。手动指定固定窗口时，请按下式估算：
+个 `/predict` request。默认 `repeat_in_window=0` 会先对每个 resource case / input scale 发 5 个 calibration warmup 请求（不计入统计），再连续发送校准请求直到至少完成 9 个请求且累计 application latency 达到 `--repeat-window-seconds`，用 sustained mean latency 计算实际 request 数；因此默认完整 run 的 request 数取决于模型在持续请求窗口中的平均延迟。手动指定固定窗口时，请按下式估算：
 
 ```text
 len(cpus) * len(mems) * len(gpus) * len(input_scales) * (warmup + repeat) * repeat_in_window

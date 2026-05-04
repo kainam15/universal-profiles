@@ -86,7 +86,7 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
             ), patch.object(
                 client, "REPEAT_IN_WINDOW", 0
             ), patch.object(
-                client, "REPEAT_WINDOW_SECONDS", 10.0, create=True
+                client, "REPEAT_WINDOW_SECONDS", 0.05, create=True
             ), patch.object(
                 client, "CALIBRATION_WARMUP_REQUESTS", 2, create=True
             ), patch.object(
@@ -123,7 +123,7 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                 with open(out_csv, "r", encoding="utf-8", newline="") as f:
                     rows = list(csv.DictReader(f))
 
-        self.assertEqual([row["repeat_in_window"] for row in rows], ["1000", "500"])
+        self.assertEqual([row["repeat_in_window"] for row in rows], ["5", "3"])
         self.assertEqual(
             calibration_req_ids,
             [
@@ -143,7 +143,127 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                 "case_seq2_calib4",
             ],
         )
-        self.assertEqual(one_request.call_count, 2 + 5 + 1000 + 2 + 5 + 500)
+        self.assertEqual(one_request.call_count, 2 + 5 + 5 + 2 + 5 + 3)
+
+    def test_auto_repeat_in_window_uses_sustained_mean_instead_of_median(self) -> None:
+        calibration_latencies = iter([0.01, 0.01, 0.09])
+
+        def fake_one_request(scale_value, req_id, payload_override=None):
+            if "_calib" in req_id:
+                latency = next(calibration_latencies)
+            else:
+                latency = 0.5
+            return {
+                "latency_app_s": latency,
+                "effective_input_scale": float(scale_value),
+            }
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_csv = f"{tmp_dir}/result.csv"
+            with patch.object(
+                client, "OUT_CSV", out_csv
+            ), patch.object(
+                client, "CASE_NAME", "case"
+            ), patch.object(
+                client, "WARMUP", 0
+            ), patch.object(
+                client, "REPEAT", 1
+            ), patch.object(
+                client, "REPEAT_IN_WINDOW", 0
+            ), patch.object(
+                client, "REPEAT_WINDOW_SECONDS", 0.1, create=True
+            ), patch.object(
+                client, "CALIBRATION_WARMUP_REQUESTS", 0, create=True
+            ), patch.object(
+                client, "CALIBRATION_REQUESTS", 3
+            ), patch.object(
+                client, "USE_ENERGY", False
+            ), patch.object(
+                client, "energy_mod", None
+            ), patch.object(
+                client,
+                "cpu_energy_mod",
+                None,
+            ), patch.object(
+                client,
+                "resource_usage_mod",
+                None,
+            ), patch.object(
+                client,
+                "input_scale_entries",
+                [{"input_scale": 1.0, "scale_label": "seq1", "payload": {}}],
+            ), patch.object(
+                client.requests,
+                "get",
+                return_value=SimpleNamespace(status_code=200, text="ok"),
+            ), patch.object(
+                client,
+                "_one_request",
+                side_effect=fake_one_request,
+            ):
+                client.main()
+                with open(out_csv, "r", encoding="utf-8", newline="") as f:
+                    rows = list(csv.DictReader(f))
+
+        self.assertEqual(rows[0]["repeat_in_window"], "3")
+
+    def test_latency_app_distribution_fields_are_written_per_window(self) -> None:
+        latencies = iter([0.01, 0.02, 0.10, 0.20, 0.30])
+
+        def fake_one_request(scale_value, req_id, payload_override=None):
+            return {
+                "latency_app_s": next(latencies),
+                "effective_input_scale": float(scale_value),
+            }
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_csv = f"{tmp_dir}/result.csv"
+            with patch.object(
+                client, "OUT_CSV", out_csv
+            ), patch.object(
+                client, "CASE_NAME", "case"
+            ), patch.object(
+                client, "WARMUP", 0
+            ), patch.object(
+                client, "REPEAT", 1
+            ), patch.object(
+                client, "REPEAT_IN_WINDOW", 5
+            ), patch.object(
+                client, "SLOW_LATENCY_THRESHOLD_S", 0.06, create=True
+            ), patch.object(
+                client, "USE_ENERGY", False
+            ), patch.object(
+                client, "energy_mod", None
+            ), patch.object(
+                client,
+                "cpu_energy_mod",
+                None,
+            ), patch.object(
+                client,
+                "resource_usage_mod",
+                None,
+            ), patch.object(
+                client,
+                "input_scale_entries",
+                [{"input_scale": 1.0, "scale_label": "seq1", "payload": {}}],
+            ), patch.object(
+                client.requests,
+                "get",
+                return_value=SimpleNamespace(status_code=200, text="ok"),
+            ), patch.object(
+                client,
+                "_one_request",
+                side_effect=fake_one_request,
+            ):
+                client.main()
+                with open(out_csv, "r", encoding="utf-8", newline="") as f:
+                    rows = list(csv.DictReader(f))
+
+        self.assertEqual(rows[0]["latency_app_s"], "0.126000")
+        self.assertEqual(rows[0]["latency_app_p50_s"], "0.100000")
+        self.assertEqual(rows[0]["latency_app_p90_s"], "0.300000")
+        self.assertEqual(rows[0]["latency_app_p95_s"], "0.300000")
+        self.assertEqual(rows[0]["latency_app_slow_ratio"], "0.600000")
 
     def test_manual_repeat_in_window_skips_calibration(self) -> None:
         def fake_one_request(scale_value, req_id, payload_override=None):

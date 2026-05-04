@@ -1,5 +1,6 @@
 import csv
 import json
+import math
 import os
 import sys
 from collections import defaultdict
@@ -10,6 +11,7 @@ out_csv = sys.argv[3]
 
 lat_map = json.load(open(lat_json, "r", encoding="utf-8"))
 SNIFF_GROUP_FIELD = "sniff_group_id"
+SLOW_LATENCY_THRESHOLD_S = float(os.getenv("SLOW_LATENCY_THRESHOLD_S", "0.06"))
 
 
 def _read_static_batch_size(csv_path: str) -> float:
@@ -37,6 +39,33 @@ def _to_float(value: object) -> float:
         return float(value)
     except Exception:
         return float("nan")
+
+
+def _mean(values: list[float]) -> float:
+    finite_values = [value for value in values if math.isfinite(value)]
+    return sum(finite_values) / len(finite_values) if finite_values else float("nan")
+
+
+def _percentile_nearest_rank(values: list[float], percentile: float) -> float:
+    finite_values = sorted(value for value in values if math.isfinite(value))
+    if not finite_values:
+        return float("nan")
+    rank = int(math.ceil((float(percentile) / 100.0) * len(finite_values)))
+    index = min(max(rank - 1, 0), len(finite_values) - 1)
+    return finite_values[index]
+
+
+def _slow_ratio(values: list[float]) -> float:
+    finite_values = [value for value in values if math.isfinite(value)]
+    if not finite_values:
+        return float("nan")
+    return sum(value > SLOW_LATENCY_THRESHOLD_S for value in finite_values) / float(len(finite_values))
+
+
+def _fmt_float(value: float) -> str:
+    if not math.isfinite(value):
+        return "nan"
+    return f"{value:.6f}"
 
 
 def _estimate_cpu_cycles(row: dict, latency_s: float) -> float:
@@ -110,7 +139,12 @@ for idx, r in enumerate(rows):
     if not gid and idx < len(sidecar_groups):
         gid = sidecar_groups[idx]
     if gid and gid in group_lats and group_lats[gid]:
-        r["latency_s"] = f"{(sum(group_lats[gid]) / len(group_lats[gid])):.6f}"
+        latencies = group_lats[gid]
+        r["latency_s"] = _fmt_float(_mean(latencies))
+        r["latency_p50_s"] = _fmt_float(_percentile_nearest_rank(latencies, 50.0))
+        r["latency_p90_s"] = _fmt_float(_percentile_nearest_rank(latencies, 90.0))
+        r["latency_p95_s"] = _fmt_float(_percentile_nearest_rank(latencies, 95.0))
+        r["latency_slow_ratio"] = _fmt_float(_slow_ratio(latencies))
         # 你也可以选择同时用 packet latency 更新 throughput
         try:
             bs = static_batch_size

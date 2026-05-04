@@ -71,7 +71,9 @@ def prepare_df(csv_path: str) -> pd.DataFrame:
             df[new_name] = df[old_name]
 
     num_cols = [
-        "input_scale", "latency_s", "latency_app_s",
+        "input_scale",
+        "latency_s", "latency_p50_s", "latency_p90_s", "latency_p95_s", "latency_slow_ratio",
+        "latency_app_s", "latency_app_p50_s", "latency_app_p90_s", "latency_app_p95_s", "latency_app_slow_ratio",
         "gpu_energy_iters",
         "gpu_avg_power_total_w", "gpu_peak_power_total_w", "gpu_energy_total_j",
         "gpu_avg_power_eff_w", "gpu_peak_power_eff_w", "gpu_energy_eff_j",

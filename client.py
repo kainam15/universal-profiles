@@ -64,6 +64,7 @@ REPEAT_IN_WINDOW = int(os.getenv("REPEAT_IN_WINDOW", str(DEFAULT_REPEAT_IN_WINDO
 REPEAT_WINDOW_SECONDS = float(os.getenv("REPEAT_WINDOW_SECONDS", str(DEFAULT_REPEAT_WINDOW_SECONDS)))
 CALIBRATION_WARMUP_REQUESTS = int(os.getenv("CALIBRATION_WARMUP_REQUESTS", "5"))
 CALIBRATION_REQUESTS = int(os.getenv("CALIBRATION_REQUESTS", "9"))
+SLOW_LATENCY_THRESHOLD_S = float(os.getenv("SLOW_LATENCY_THRESHOLD_S", "0.06"))
 
 COLD_START_S = os.getenv("COLD_START_S", "nan")
 OUT_CSV = os.getenv("OUT_CSV", "result.csv")
@@ -141,14 +142,41 @@ class MIPSAbort(RuntimeError):
     """Raised when perf MIPS profiling cannot continue."""
 
 
-def _median(xs: List[float]) -> float:
-    if not xs:
+def _mean(xs: List[float]) -> float:
+    return sum(xs) / len(xs) if xs else float("nan")
+
+
+def _percentile_nearest_rank(xs: List[float], percentile: float) -> float:
+    values = sorted(
+        value
+        for value in (_to_float_or_nan(item) for item in xs)
+        if math.isfinite(value)
+    )
+    if not values:
         return float("nan")
-    values = sorted(xs)
-    n = len(values)
-    if n % 2:
-        return values[n // 2]
-    return 0.5 * (values[n // 2 - 1] + values[n // 2])
+    rank = int(math.ceil((float(percentile) / 100.0) * len(values)))
+    index = min(max(rank - 1, 0), len(values) - 1)
+    return values[index]
+
+
+def _slow_ratio(xs: List[float]) -> float:
+    values = [
+        value
+        for value in (_to_float_or_nan(item) for item in xs)
+        if math.isfinite(value)
+    ]
+    if not values:
+        return float("nan")
+    return sum(value > SLOW_LATENCY_THRESHOLD_S for value in values) / float(len(values))
+
+
+def _latency_distribution_metrics(prefix: str, latencies: List[float]) -> Dict[str, float]:
+    return {
+        f"{prefix}_p50_s": _percentile_nearest_rank(latencies, 50.0),
+        f"{prefix}_p90_s": _percentile_nearest_rank(latencies, 90.0),
+        f"{prefix}_p95_s": _percentile_nearest_rank(latencies, 95.0),
+        f"{prefix}_slow_ratio": _slow_ratio(latencies),
+    }
 
 
 def _eff_negative_warnings(
@@ -328,7 +356,9 @@ def _calibrate_repeat_in_window(
         _one_request(scale_value, req_id=req_id, payload_override=payload_override)
 
     latencies: List[float] = []
-    for idx in range(CALIBRATION_REQUESTS):
+    calibration_elapsed_s = 0.0
+    idx = 0
+    while len(latencies) < CALIBRATION_REQUESTS or calibration_elapsed_s < REPEAT_WINDOW_SECONDS:
         req_id = f"{CASE_NAME}_{scale_label}_calib{idx}"
         out = _one_request(scale_value, req_id=req_id, payload_override=payload_override)
         latency = _to_float_or_nan(out.get("latency_app_s"))
@@ -338,12 +368,16 @@ def _calibrate_repeat_in_window(
                 f"invalid latency_app_s={latency!r} for input_scale={scale_value:g}"
             )
         latencies.append(latency)
+        calibration_elapsed_s += latency
+        idx += 1
 
-    median_latency = _median(latencies)
-    repeat_in_window = max(1, int(math.ceil(REPEAT_WINDOW_SECONDS / median_latency)))
+    mean_latency = _mean(latencies)
+    repeat_in_window = max(1, int(math.ceil(REPEAT_WINDOW_SECONDS / mean_latency)))
     print(
         "[client] auto repeat-in-window "
-        f"scale={scale_value:g} median_latency_s={median_latency:.6f} "
+        f"scale={scale_value:g} sustained_mean_latency_s={mean_latency:.6f} "
+        f"calibration_window_s={calibration_elapsed_s:.3f} "
+        f"calibration_requests={len(latencies)} "
         f"target_window_s={REPEAT_WINDOW_SECONDS:.3f} repeat_in_window={repeat_in_window}",
         flush=True,
     )
@@ -541,6 +575,20 @@ RESOURCE_USAGE_METRIC_FIELDS = [
     "gpu_mem_used_peak_bytes",
     "gpu_mem_util_avg_pct",
     "gpu_mem_util_peak_pct",
+]
+
+LATENCY_PACKET_DISTRIBUTION_FIELDS = [
+    "latency_p50_s",
+    "latency_p90_s",
+    "latency_p95_s",
+    "latency_slow_ratio",
+]
+
+LATENCY_APP_DISTRIBUTION_FIELDS = [
+    "latency_app_p50_s",
+    "latency_app_p90_s",
+    "latency_app_p95_s",
+    "latency_app_slow_ratio",
 ]
 
 MIPS_METRIC_FIELDS = [
@@ -1022,6 +1070,8 @@ def main() -> None:
                 cpu_metrics = _nan_metrics(CPU_METRIC_FIELDS)
                 resource_usage_metrics = _nan_metrics(RESOURCE_USAGE_METRIC_FIELDS)
                 mips_metrics = _nan_metrics(MIPS_METRIC_FIELDS)
+                latency_packet_distribution_metrics = _nan_metrics(LATENCY_PACKET_DISTRIBUTION_FIELDS)
+                latency_app_distribution_metrics = _nan_metrics(LATENCY_APP_DISTRIBUTION_FIELDS)
                 effective_input_scale: Optional[float] = None
                 cpu_idle_measured_at = "nan"
                 gpu_idle_measured_at = "nan"
@@ -1040,6 +1090,7 @@ def main() -> None:
                     resource_usage_result = None
                     mips_result = None
                     lat_sum = 0.0
+                    latency_app_values: List[float] = []
                     mips_monitor_started = False
                     try:
                         if USE_ENERGY and (energy_mod is not None):
@@ -1098,7 +1149,9 @@ def main() -> None:
                         for k in range(actual_repeat_in_window):
                             req_id = f"{sniff_group_id}:{k}"
                             out = _one_request(scale_val, req_id=req_id, payload_override=payload_override)
-                            lat_sum += float(out["latency_app_s"])
+                            request_latency_app_s = float(out["latency_app_s"])
+                            lat_sum += request_latency_app_s
+                            latency_app_values.append(request_latency_app_s)
                             effective_input_scale = _merge_effective_input_scale(
                                 effective_input_scale,
                                 out.get("effective_input_scale"),
@@ -1140,7 +1193,11 @@ def main() -> None:
                         if mips_stop_error is not None:
                             raise mips_stop_error
 
-                    latency_app_s = lat_sum / float(actual_repeat_in_window)
+                    latency_app_s = _mean(latency_app_values)
+                    latency_app_distribution_metrics = _latency_distribution_metrics(
+                        "latency_app",
+                        latency_app_values,
+                    )
 
                     if gpu_result is not None:
                         gpu_metrics = _gpu_metrics_from_result(
@@ -1220,7 +1277,9 @@ def main() -> None:
                     "warmup": str(warmup_flag),
                     "repeat_in_window": str(actual_repeat_in_window),
                     "latency_s": "nan",  # Placeholder: filled by merge_packet_latency
+                    **{field: _fmt_float(latency_packet_distribution_metrics[field]) for field in LATENCY_PACKET_DISTRIBUTION_FIELDS},
                     "latency_app_s": _fmt_float(latency_app_s),
+                    **{field: _fmt_float(latency_app_distribution_metrics[field]) for field in LATENCY_APP_DISTRIBUTION_FIELDS},
                     "throughput_samples_per_s": _fmt_float(throughput),
                     **{field: _fmt_float(gpu_metrics[field]) for field in GPU_METRIC_FIELDS},
                     "gpu_idle_measured_at": gpu_idle_measured_at if IDLE_DEBUG else "nan",
