@@ -226,6 +226,51 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
         self.assertNotIn("avg_power_vs_scale.png", out_pngs)
         self.assertNotIn("energy_vs_scale.png", out_pngs)
 
+    def test_main_plots_packet_cpu_metrics_vs_input_scale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = os.path.join(tmp, "result_all.csv")
+            with open(csv_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=[
+                        "cpu_cores",
+                        "mem_cap_gb",
+                        "gpu_mode",
+                        "input_scale",
+                        "warmup",
+                        "status",
+                        "cpu_mips_packet",
+                        "cpu_instructions_per_request",
+                        "cpu_cycles_est_packet",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerow({
+                    "cpu_cores": "1",
+                    "mem_cap_gb": "4",
+                    "gpu_mode": "off",
+                    "input_scale": "64",
+                    "warmup": "0",
+                    "status": "ok",
+                    "cpu_mips_packet": "2.5",
+                    "cpu_instructions_per_request": "500000",
+                    "cpu_cycles_est_packet": "750000000",
+                })
+
+            out_pngs = []
+
+            def capture_plot_metric(*_args, **kwargs):
+                out_pngs.append(os.path.basename(kwargs["out_png"]))
+
+            with patch.object(sys, "argv", ["plot.py", csv_path]), patch.object(
+                plot, "plot_metric", side_effect=capture_plot_metric
+            ), patch.object(plot, "plot_cold_start_bar"):
+                plot.main()
+
+        self.assertIn("cpu_mips_packet_vs_scale.png", out_pngs)
+        self.assertIn("cpu_instructions_per_request_vs_scale.png", out_pngs)
+        self.assertIn("cpu_cycles_est_packet_vs_scale.png", out_pngs)
+
 
 if __name__ == "__main__":
     unittest.main()

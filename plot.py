@@ -33,6 +33,122 @@ GPU_METRIC_ALIASES = {
     "peak_power_eff_w": "gpu_peak_power_eff_w",
     "energy_eff_j": "gpu_energy_eff_j",
 }
+PLOT_METRICS = [
+    (
+        "latency_s",
+        "Latency vs. Input Scale",
+        "Latency (s)",
+        "latency_vs_scale.png",
+    ),
+    (
+        "latency_app_s",
+        "App-Level Latency vs. Input Scale",
+        "Latency (s)",
+        "latency_app_vs_scale.png",
+    ),
+    (
+        "gpu_avg_power_eff_w",
+        "GPU Average Effective Power vs. Input Scale",
+        "Power (W)",
+        "gpu_avg_power_vs_scale.png",
+    ),
+    (
+        "gpu_energy_eff_j",
+        "GPU Effective Energy vs. Input Scale",
+        "Energy (J)",
+        "gpu_energy_vs_scale.png",
+    ),
+    (
+        "cpu_avg_power_eff_w",
+        "CPU Package Average Effective Power vs. Input Scale",
+        "Power (W)",
+        "cpu_avg_power_vs_scale.png",
+    ),
+    (
+        "cpu_energy_eff_j",
+        "CPU Package Effective Energy vs. Input Scale",
+        "Energy (J)",
+        "cpu_energy_vs_scale.png",
+    ),
+    (
+        "vcpu_avg_power_eff_w",
+        "Estimated vCPU Average Effective Power vs. Input Scale",
+        "Power (W)",
+        "vcpu_avg_power_vs_scale.png",
+    ),
+    (
+        "vcpu_energy_eff_j",
+        "Estimated vCPU Effective Energy vs. Input Scale",
+        "Energy (J)",
+        "vcpu_energy_vs_scale.png",
+    ),
+    (
+        "throughput_samples_per_s",
+        "Throughput vs. Input Scale",
+        "Samples/s",
+        "throughput_vs_scale.png",
+    ),
+    (
+        "compute_mflops",
+        "Compute Throughput vs. Input Scale",
+        "MFLOPS",
+        "compute_mflops_vs_scale.png",
+    ),
+    (
+        "container_cpu_util_avg_pct",
+        "Container CPU Utilization vs. Input Scale",
+        "CPU Utilization (%)",
+        "container_cpu_util_vs_scale.png",
+    ),
+    (
+        "cpu_mips_packet",
+        "Packet-Latency CPU MIPS vs. Input Scale",
+        "MIPS",
+        "cpu_mips_packet_vs_scale.png",
+    ),
+    (
+        "cpu_instructions_per_request",
+        "CPU Instructions per Request vs. Input Scale",
+        "Instructions/request",
+        "cpu_instructions_per_request_vs_scale.png",
+    ),
+    (
+        "cpu_cycles_est_packet",
+        "Packet-Latency Estimated CPU Cycles vs. Input Scale",
+        "Estimated CPU cycles/request",
+        "cpu_cycles_est_packet_vs_scale.png",
+    ),
+    (
+        "container_mem_util_avg_pct",
+        "Container Memory Utilization vs. Input Scale",
+        "Memory Utilization (%)",
+        "container_mem_util_vs_scale.png",
+    ),
+    (
+        "container_mem_usage_avg_gib",
+        "Container Memory Usage vs. Input Scale",
+        "Memory Usage (GiB)",
+        "container_mem_usage_vs_scale.png",
+    ),
+    (
+        "gpu_util_avg_pct",
+        "GPU Utilization vs. Input Scale",
+        "GPU Utilization (%)",
+        "gpu_util_vs_scale.png",
+    ),
+    (
+        "gpu_mem_util_avg_pct",
+        "GPU Memory Utilization vs. Input Scale",
+        "GPU Memory Utilization (%)",
+        "gpu_mem_util_vs_scale.png",
+    ),
+    (
+        "gpu_mem_used_avg_gib",
+        "GPU Memory Used vs. Input Scale",
+        "GPU Memory Used (GiB)",
+        "gpu_mem_used_vs_scale.png",
+    ),
+]
 
 
 def make_config_label(row) -> str:
@@ -360,117 +476,13 @@ def main():
 
     output_dir = os.path.dirname(csv_path) or "."
 
-    plot_metric(
-        df, metric="latency_s",
-        title="Latency vs. Input Scale",
-        ylabel="Latency (s)", xlabel=xlabel,
-        out_png=os.path.join(output_dir, "latency_vs_scale.png") if SAVE_PNG else None,
-    )
-
-    plot_metric(
-        df, metric="latency_app_s",
-        title="App-Level Latency vs. Input Scale",
-        ylabel="Latency (s)", xlabel=xlabel,
-        out_png=os.path.join(output_dir, "latency_app_vs_scale.png") if SAVE_PNG else None,
-    )
-
-    plot_metric(
-        df, metric="gpu_avg_power_eff_w",
-        title="GPU Average Effective Power vs. Input Scale",
-        ylabel="Power (W)", xlabel=xlabel,
-        out_png=os.path.join(output_dir, "gpu_avg_power_vs_scale.png") if SAVE_PNG else None,
-    )
-
-    plot_metric(
-        df, metric="gpu_energy_eff_j",
-        title="GPU Effective Energy vs. Input Scale",
-        ylabel="Energy (J)", xlabel=xlabel,
-        out_png=os.path.join(output_dir, "gpu_energy_vs_scale.png") if SAVE_PNG else None,
-    )
-
-    plot_metric(
-        df, metric="cpu_avg_power_eff_w",
-        title="CPU Package Average Effective Power vs. Input Scale",
-        ylabel="Power (W)", xlabel=xlabel,
-        out_png=os.path.join(output_dir, "cpu_avg_power_vs_scale.png") if SAVE_PNG else None,
-    )
-
-    plot_metric(
-        df, metric="cpu_energy_eff_j",
-        title="CPU Package Effective Energy vs. Input Scale",
-        ylabel="Energy (J)", xlabel=xlabel,
-        out_png=os.path.join(output_dir, "cpu_energy_vs_scale.png") if SAVE_PNG else None,
-    )
-
-    plot_metric(
-        df, metric="vcpu_avg_power_eff_w",
-        title="Estimated vCPU Average Effective Power vs. Input Scale",
-        ylabel="Power (W)", xlabel=xlabel,
-        out_png=os.path.join(output_dir, "vcpu_avg_power_vs_scale.png") if SAVE_PNG else None,
-    )
-
-    plot_metric(
-        df, metric="vcpu_energy_eff_j",
-        title="Estimated vCPU Effective Energy vs. Input Scale",
-        ylabel="Energy (J)", xlabel=xlabel,
-        out_png=os.path.join(output_dir, "vcpu_energy_vs_scale.png") if SAVE_PNG else None,
-    )
-
-    plot_metric(
-        df, metric="throughput_samples_per_s",
-        title="Throughput vs. Input Scale",
-        ylabel="Samples/s", xlabel=xlabel,
-        out_png=os.path.join(output_dir, "throughput_vs_scale.png") if SAVE_PNG else None,
-    )
-
-    plot_metric(
-        df, metric="compute_mflops",
-        title="Compute Throughput vs. Input Scale",
-        ylabel="MFLOPS", xlabel=xlabel,
-        out_png=os.path.join(output_dir, "compute_mflops_vs_scale.png") if SAVE_PNG else None,
-    )
-
-    plot_metric(
-        df, metric="container_cpu_util_avg_pct",
-        title="Container CPU Utilization vs. Input Scale",
-        ylabel="CPU Utilization (%)", xlabel=xlabel,
-        out_png=os.path.join(output_dir, "container_cpu_util_vs_scale.png") if SAVE_PNG else None,
-    )
-
-    plot_metric(
-        df, metric="container_mem_util_avg_pct",
-        title="Container Memory Utilization vs. Input Scale",
-        ylabel="Memory Utilization (%)", xlabel=xlabel,
-        out_png=os.path.join(output_dir, "container_mem_util_vs_scale.png") if SAVE_PNG else None,
-    )
-
-    plot_metric(
-        df, metric="container_mem_usage_avg_gib",
-        title="Container Memory Usage vs. Input Scale",
-        ylabel="Memory Usage (GiB)", xlabel=xlabel,
-        out_png=os.path.join(output_dir, "container_mem_usage_vs_scale.png") if SAVE_PNG else None,
-    )
-
-    plot_metric(
-        df, metric="gpu_util_avg_pct",
-        title="GPU Utilization vs. Input Scale",
-        ylabel="GPU Utilization (%)", xlabel=xlabel,
-        out_png=os.path.join(output_dir, "gpu_util_vs_scale.png") if SAVE_PNG else None,
-    )
-
-    plot_metric(
-        df, metric="gpu_mem_util_avg_pct",
-        title="GPU Memory Utilization vs. Input Scale",
-        ylabel="GPU Memory Utilization (%)", xlabel=xlabel,
-        out_png=os.path.join(output_dir, "gpu_mem_util_vs_scale.png") if SAVE_PNG else None,
-    )
-
-    plot_metric(
-        df, metric="gpu_mem_used_avg_gib",
-        title="GPU Memory Used vs. Input Scale",
-        ylabel="GPU Memory Used (GiB)", xlabel=xlabel,
-        out_png=os.path.join(output_dir, "gpu_mem_used_vs_scale.png") if SAVE_PNG else None,
-    )
+    for metric, title, ylabel, filename in PLOT_METRICS:
+        plot_metric(
+            df, metric=metric,
+            title=title,
+            ylabel=ylabel, xlabel=xlabel,
+            out_png=os.path.join(output_dir, filename) if SAVE_PNG else None,
+        )
 
     plot_cold_start_bar(
         df,
