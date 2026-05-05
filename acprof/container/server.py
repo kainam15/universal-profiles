@@ -24,7 +24,7 @@ device = "cuda" if USE_GPU and torch.cuda.is_available() else "cpu"
 # ─────────────────────────────────────────────
 # Load handler and model
 # ─────────────────────────────────────────────
-from handlers import HandlerRegistry  # noqa: E402
+from acprof.container.handlers import HandlerRegistry  # noqa: E402
 
 handler = HandlerRegistry.get(TASK_FAMILY, RUNTIME_BACKEND)
 

@@ -8,9 +8,9 @@ from contextlib import redirect_stderr
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import client
-import energy_cpu
-from config import CSV_FIELDS
+from acprof.host import client
+from acprof.monitors import energy_cpu
+from acprof.config import CSV_FIELDS
 
 
 class EffectiveEnergyWarningTests(unittest.TestCase):

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import detect
+from acprof.host import detect
 
 
 class DetectTaskTests(unittest.TestCase):

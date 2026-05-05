@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List
 
-from workloads import WorkloadGenerator, register_generator
+from acprof.workloads import WorkloadGenerator, register_generator
 
 BASE_SEED = 12345
 SAMPLE_RATE = 16000  # 16kHz standard for speech models

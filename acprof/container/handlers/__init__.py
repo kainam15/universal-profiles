@@ -59,19 +59,19 @@ class HandlerRegistry:
 def _auto_register():
     """Import all handler modules to trigger registration."""
     try:
-        from handlers import nlp  # noqa: F401
+        from acprof.container.handlers import nlp  # noqa: F401
     except ImportError:
         pass
     try:
-        from handlers import cv  # noqa: F401
+        from acprof.container.handlers import cv  # noqa: F401
     except ImportError:
         pass
     try:
-        from handlers import audio  # noqa: F401
+        from acprof.container.handlers import audio  # noqa: F401
     except ImportError:
         pass
     try:
-        from handlers import timeseries  # noqa: F401
+        from acprof.container.handlers import timeseries  # noqa: F401
     except ImportError:
         pass
 

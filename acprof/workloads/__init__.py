@@ -52,19 +52,19 @@ def get_generator(task_family: str, model_id: str, task_type: str, batch_size: i
 # Auto-import all generator modules
 def _auto_register():
     try:
-        from workloads import nlp  # noqa: F401
+        from acprof.workloads import nlp  # noqa: F401
     except ImportError:
         pass
     try:
-        from workloads import cv  # noqa: F401
+        from acprof.workloads import cv  # noqa: F401
     except ImportError:
         pass
     try:
-        from workloads import audio  # noqa: F401
+        from acprof.workloads import audio  # noqa: F401
     except ImportError:
         pass
     try:
-        from workloads import timeseries  # noqa: F401
+        from acprof.workloads import timeseries  # noqa: F401
     except ImportError:
         pass
 

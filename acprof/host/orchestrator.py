@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from config import (
+from acprof.config import (
     DEFAULT_REPEAT_IN_WINDOW,
     DEFAULT_REPEAT_WINDOW_SECONDS,
     DOCKER_IMAGE_PREFIX,
@@ -32,8 +32,8 @@ from config import (
     READY_TIMEOUT_S,
     STATIC_META_FIELDS,
 )
-from detect import TaskInfo
-from perf_mips import MIPS_EXIT_CODE
+from acprof.host.detect import TaskInfo
+from acprof.monitors.perf_mips import MIPS_EXIT_CODE
 
 
 @dataclass
@@ -497,7 +497,7 @@ def _select_nlp_torch_spec(torch_index_url: Optional[str] = None) -> str:
 
 def _cpu_power_metadata() -> Tuple[str, str]:
     try:
-        import energy_cpu
+        from acprof.monitors import energy_cpu
 
         return (
             energy_cpu.detect_cpu_power_source(),
@@ -810,8 +810,6 @@ def _resolve_packet_latency_runtime(
     pcap_file: str,
     sniff_iface: str,
 ) -> Optional[PacketLatencyRuntime]:
-    sniff_script = os.path.join(project_dir, "sniff_parse_pcap.py")
-
     local_tcpdump = shutil.which("tcpdump")
     local_tshark = shutil.which("tshark")
     if local_tcpdump and local_tshark:
@@ -835,7 +833,13 @@ def _resolve_packet_latency_runtime(
                 "port",
                 str(SERVER_PORT),
             ],
-            parse_cmd=[sys.executable, sniff_script, pcap_file, str(SERVER_PORT)],
+            parse_cmd=[
+                sys.executable,
+                "-m",
+                "acprof.packet.sniff_parse_pcap",
+                pcap_file,
+                str(SERVER_PORT),
+            ],
         )
 
     launcher = _wsl_launcher()
@@ -845,7 +849,12 @@ def _resolve_packet_latency_runtime(
         and all(_wsl_has_command(cmd) for cmd in ("python3", "tcpdump", "tshark"))
     ):
         wsl_pcap = _windows_path_to_wsl(pcap_file)
-        wsl_sniff_script = _windows_path_to_wsl(sniff_script)
+        wsl_project_dir = _windows_path_to_wsl(project_dir)
+        parse_shell = (
+            f"cd {shlex.quote(wsl_project_dir)} && "
+            "python3 -m acprof.packet.sniff_parse_pcap "
+            f"{shlex.quote(wsl_pcap)} {shlex.quote(str(SERVER_PORT))}"
+        )
         return PacketLatencyRuntime(
             mode="wsl",
             tcpdump_cmd=[
@@ -866,7 +875,7 @@ def _resolve_packet_latency_runtime(
                 "port",
                 str(SERVER_PORT),
             ],
-            parse_cmd=[launcher, "-e", "python3", wsl_sniff_script, wsl_pcap, str(SERVER_PORT)],
+            parse_cmd=[launcher, "-e", "sh", "-lc", parse_shell],
         )
 
     return None
@@ -1355,7 +1364,7 @@ def _assert_manual_timeseries_scales_legal(
     scales: List[float],
     batch_size: int,
 ) -> List[float]:
-    from workloads import get_generator
+    from acprof.workloads import get_generator
 
     workload_gen = get_generator(task_info.task_family, task_info.model_id, task_info.pipeline_tag, batch_size)
     invalid: Dict[float, str] = {}
@@ -1389,7 +1398,7 @@ def _assert_manual_nlp_scales_legal(
     scales: List[float],
     batch_size: int,
 ) -> List[float]:
-    from workloads import get_generator
+    from acprof.workloads import get_generator
 
     session: Optional[RunningContainer] = None
     try:
@@ -1437,7 +1446,7 @@ def _plan_manual_nlp_scales(
     batch_size: int,
     output_dir: str,
 ) -> PlannedInputScales:
-    from workloads import get_generator
+    from acprof.workloads import get_generator
 
     session: Optional[RunningContainer] = None
     try:
@@ -1503,7 +1512,7 @@ def _plan_nlp_auto_scales(
     batch_size: int,
     output_dir: str,
 ) -> PlannedInputScales:
-    from workloads import get_generator
+    from acprof.workloads import get_generator
 
     session: Optional[RunningContainer] = None
     try:
@@ -1627,7 +1636,7 @@ def _plan_nlp_auto_scales(
 
 def _default_family_max_scale(task_info: TaskInfo, batch_size: int) -> float:
     if task_info.task_family == "timeseries":
-        from workloads import get_generator
+        from acprof.workloads import get_generator
 
         workload_gen = get_generator(task_info.task_family, task_info.model_id, task_info.pipeline_tag, batch_size)
         if hasattr(workload_gen, "max_input_scale"):
@@ -1882,7 +1891,7 @@ def _run_single_case_legacy(
     }
 
     client_result = _run(
-        [sys.executable, os.path.join(project_dir, "client.py")],
+        [sys.executable, "-m", "acprof.host.client"],
         check=False,
         capture=False,
         env=client_env,
@@ -1923,10 +1932,16 @@ def _run_single_case_legacy(
             # Merge packet latency into CSV
             if os.path.exists(lat_json) and os.path.exists(out_csv):
                 print("[sniff] Merging packet latency into CSV...")
-                merge_script = os.path.join(project_dir, "merge_packet_latency.py")
                 merged_csv = out_csv + ".merged"
                 _run(
-                    [sys.executable, merge_script, out_csv, lat_json, merged_csv],
+                    [
+                        sys.executable,
+                        "-m",
+                        "acprof.packet.merge_packet_latency",
+                        out_csv,
+                        lat_json,
+                        merged_csv,
+                    ],
                     check=False,
                 )
                 if os.path.exists(merged_csv):
@@ -2069,7 +2084,7 @@ def run_single_case(
         }
 
         client_result = _run(
-            [sys.executable, os.path.join(project_dir, "client.py")],
+            [sys.executable, "-m", "acprof.host.client"],
             check=False,
             capture=False,
             env=client_env,
@@ -2133,10 +2148,16 @@ def run_single_case(
                     )
 
                 print("[sniff] Merging packet latency into CSV...")
-                merge_script = os.path.join(project_dir, "merge_packet_latency.py")
                 merged_csv = out_csv + ".merged"
                 merge_result = _run(
-                    [sys.executable, merge_script, out_csv, lat_json, merged_csv],
+                    [
+                        sys.executable,
+                        "-m",
+                        "acprof.packet.merge_packet_latency",
+                        out_csv,
+                        lat_json,
+                        merged_csv,
+                    ],
                     check=False,
                 )
                 if merge_result.returncode != 0:
@@ -2234,7 +2255,7 @@ def run_matrix(
 def merge_all_csvs(csv_paths: List[str], output_path: str) -> None:
     """Merge all per-case CSVs into one final CSV."""
     import csv
-    from config import CSV_FIELDS
+    from acprof.config import CSV_FIELDS
 
     if not csv_paths:
         print("[merge] No CSV files to merge.")

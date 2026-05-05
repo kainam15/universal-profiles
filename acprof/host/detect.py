@@ -13,7 +13,7 @@ import sys
 from dataclasses import dataclass
 from typing import Optional
 
-from config import (
+from acprof.config import (
     ARCHITECTURE_TO_TASK,
     DEFAULT_BACKEND,
     LIBRARY_TO_BACKEND,

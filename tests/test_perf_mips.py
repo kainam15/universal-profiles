@@ -4,7 +4,7 @@ from contextlib import redirect_stderr
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import perf_mips
+from acprof.monitors import perf_mips
 
 
 class PerfMIPSTests(unittest.TestCase):
@@ -29,8 +29,8 @@ class PerfMIPSTests(unittest.TestCase):
                 )
             raise AssertionError(f"unexpected command: {cmd}")
 
-        with patch("perf_mips.shutil.which", return_value="/usr/bin/perf"), patch(
-            "perf_mips.subprocess.run",
+        with patch("acprof.monitors.perf_mips.shutil.which", return_value="/usr/bin/perf"), patch(
+            "acprof.monitors.perf_mips.subprocess.run",
             side_effect=fake_run,
         ):
             prefix = perf_mips.resolve_perf_command_prefix()
@@ -64,8 +64,8 @@ class PerfMIPSTests(unittest.TestCase):
                 self.returncode = -9
 
         fake_pid = SimpleNamespace(returncode=0, stdout="1234\n", stderr="")
-        with patch("perf_mips.subprocess.run", return_value=fake_pid), patch(
-            "perf_mips.subprocess.Popen",
+        with patch("acprof.monitors.perf_mips.subprocess.run", return_value=fake_pid), patch(
+            "acprof.monitors.perf_mips.subprocess.Popen",
             side_effect=lambda cmd, **kwargs: FakeProcess(cmd, **kwargs),
         ):
             monitor = perf_mips.PerfMIPSMonitor(
@@ -145,11 +145,11 @@ class PerfMIPSTests(unittest.TestCase):
                 )
             raise AssertionError(f"unexpected command: {cmd}")
 
-        with patch.dict("perf_mips.os.environ", {"ACPROF_SUDO_PASSWORD": "secret"}), patch(
-            "perf_mips.subprocess.run",
+        with patch.dict("acprof.monitors.perf_mips.os.environ", {"ACPROF_SUDO_PASSWORD": "secret"}), patch(
+            "acprof.monitors.perf_mips.subprocess.run",
             side_effect=fake_run,
         ), patch(
-            "perf_mips.subprocess.Popen",
+            "acprof.monitors.perf_mips.subprocess.Popen",
             side_effect=lambda cmd, **kwargs: FakeProcess(cmd, **kwargs),
         ):
             monitor = perf_mips.PerfMIPSMonitor(container_name="case_container")
@@ -183,10 +183,10 @@ class PerfMIPSTests(unittest.TestCase):
                 self.returncode = -9
 
         fake_pid = SimpleNamespace(returncode=0, stdout="1234\n", stderr="")
-        with patch("perf_mips.subprocess.run", return_value=fake_pid), patch(
-            "perf_mips.subprocess.Popen",
+        with patch("acprof.monitors.perf_mips.subprocess.run", return_value=fake_pid), patch(
+            "acprof.monitors.perf_mips.subprocess.Popen",
             side_effect=lambda cmd, **kwargs: FakeProcess(),
-        ), patch("perf_mips.time.perf_counter", side_effect=[10.0, 10.25]):
+        ), patch("acprof.monitors.perf_mips.time.perf_counter", side_effect=[10.0, 10.25]):
             monitor = perf_mips.PerfMIPSMonitor(
                 container_name="case_container",
                 command_prefix=["perf"],
@@ -233,11 +233,11 @@ class PerfMIPSTests(unittest.TestCase):
                 self.returncode = -9
 
         fake_pid = SimpleNamespace(returncode=0, stdout="1234\n", stderr="")
-        with patch.dict("perf_mips.os.environ", {"ACPROF_SUDO_PASSWORD": "secret"}), patch(
-            "perf_mips.subprocess.run",
+        with patch.dict("acprof.monitors.perf_mips.os.environ", {"ACPROF_SUDO_PASSWORD": "secret"}), patch(
+            "acprof.monitors.perf_mips.subprocess.run",
             return_value=fake_pid,
         ), patch(
-            "perf_mips.subprocess.Popen",
+            "acprof.monitors.perf_mips.subprocess.Popen",
             side_effect=lambda cmd, **kwargs: FakeProcess(cmd, **kwargs),
         ):
             monitor = perf_mips.PerfMIPSMonitor(
@@ -267,10 +267,10 @@ class PerfMIPSTests(unittest.TestCase):
                 )
             raise AssertionError(f"unexpected command: {cmd}")
 
-        with patch.dict("perf_mips.os.environ", {"ACPROF_SUDO_PASSWORD": "secret"}), patch(
-            "perf_mips.shutil.which",
+        with patch.dict("acprof.monitors.perf_mips.os.environ", {"ACPROF_SUDO_PASSWORD": "secret"}), patch(
+            "acprof.monitors.perf_mips.shutil.which",
             return_value="/usr/bin/perf",
-        ), patch("perf_mips.subprocess.run", side_effect=fake_run):
+        ), patch("acprof.monitors.perf_mips.subprocess.run", side_effect=fake_run):
             prefix = perf_mips.resolve_perf_command_prefix()
 
         self.assertEqual(prefix, ["sudo", "-S", "-p", "", "perf"])
@@ -282,10 +282,10 @@ class PerfMIPSTests(unittest.TestCase):
         def fake_run(cmd, **kwargs):
             return SimpleNamespace(returncode=255, stdout="", stderr="perf_event_paranoid setting is 4")
 
-        with patch("perf_mips.shutil.which", return_value="/usr/bin/perf"), patch(
-            "perf_mips.subprocess.run",
+        with patch("acprof.monitors.perf_mips.shutil.which", return_value="/usr/bin/perf"), patch(
+            "acprof.monitors.perf_mips.subprocess.run",
             side_effect=fake_run,
-        ), patch("perf_mips.read_perf_event_paranoid", return_value="4"), self.assertRaises(
+        ), patch("acprof.monitors.perf_mips.read_perf_event_paranoid", return_value="4"), self.assertRaises(
             SystemExit
         ) as raised, redirect_stderr(stderr):
             perf_mips.require_mips_prerequisites()

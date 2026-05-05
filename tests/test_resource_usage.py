@@ -5,7 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import resource_usage
+from acprof.monitors import resource_usage
 
 
 class ResourceUsageMonitorTests(unittest.TestCase):
@@ -132,7 +132,7 @@ class ResourceUsageMonitorTests(unittest.TestCase):
                 f.write("12345\n")
 
             fake_completed = SimpleNamespace(returncode=0, stdout="123\n", stderr="")
-            with patch("resource_usage.subprocess.run", return_value=fake_completed):
+            with patch("acprof.monitors.resource_usage.subprocess.run", return_value=fake_completed):
                 cpu_reader, mem_reader = resource_usage._resolve_container_readers(
                     "case_container",
                     cgroup_root=cgroup_root,
@@ -171,7 +171,7 @@ class ResourceUsageMonitorTests(unittest.TestCase):
                 f.write("67890\n")
 
             fake_completed = SimpleNamespace(returncode=0, stdout="123\n", stderr="")
-            with patch("resource_usage.subprocess.run", return_value=fake_completed):
+            with patch("acprof.monitors.resource_usage.subprocess.run", return_value=fake_completed):
                 cpu_reader, mem_reader = resource_usage._resolve_container_readers(
                     "case_container",
                     cgroup_root=cgroup_root,
@@ -211,7 +211,7 @@ class ResourceUsageMonitorTests(unittest.TestCase):
 
     def test_unavailable_container_keeps_nan_result_without_raising(self) -> None:
         fake_completed = SimpleNamespace(returncode=1, stdout="", stderr="missing")
-        with patch("resource_usage.subprocess.run", return_value=fake_completed):
+        with patch("acprof.monitors.resource_usage.subprocess.run", return_value=fake_completed):
             monitor = resource_usage.ResourceUsageMonitor(
                 sample_hz=10.0,
                 container_name="missing_container",

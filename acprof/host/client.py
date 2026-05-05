@@ -31,7 +31,7 @@ _ensure_local_proxy_bypass()
 
 import requests
 
-from config import (
+from acprof.config import (
     CSV_FIELDS,
     DEFAULT_REPEAT_IN_WINDOW,
     DEFAULT_REPEAT_WINDOW_SECONDS,
@@ -413,7 +413,7 @@ print(f"[client] PIPELINE_TAG={PIPELINE_TAG}, task_param={task_param!r}", flush=
 # ─────────────────────────────────────────────
 # Workload generator
 # ─────────────────────────────────────────────
-from workloads import get_generator  # noqa: E402
+from acprof.workloads import get_generator  # noqa: E402
 
 workload_gen = get_generator(TASK_FAMILY, MODEL_ID, PIPELINE_TAG, BATCH_SIZE)
 
@@ -496,7 +496,7 @@ USE_ENERGY = (GPU_MODE == "on")
 energy_mod = None
 if USE_ENERGY:
     try:
-        import energy_nvml as energy_mod
+        from acprof.monitors import energy_nvml as energy_mod
     except Exception as _e:
         energy_mod = None
         print(f"[WARN] GPU energy monitoring unavailable: {_e.__class__.__name__}: {_e}",
@@ -505,7 +505,7 @@ if USE_ENERGY:
 
 cpu_energy_mod = None
 try:
-    import energy_cpu as cpu_energy_mod
+    from acprof.monitors import energy_cpu as cpu_energy_mod
 except Exception as _e:
     cpu_energy_mod = None
     print(f"[WARN] CPU energy monitoring unavailable: {_e.__class__.__name__}: {_e}",
@@ -513,7 +513,7 @@ except Exception as _e:
 
 resource_usage_mod = None
 try:
-    import resource_usage as resource_usage_mod
+    from acprof.monitors import resource_usage as resource_usage_mod
 except Exception as _e:
     resource_usage_mod = None
     print(f"[WARN] Resource usage monitoring unavailable: {_e.__class__.__name__}: {_e}",
@@ -521,7 +521,7 @@ except Exception as _e:
 
 perf_mips_mod = None
 try:
-    import perf_mips as perf_mips_mod
+    from acprof.monitors import perf_mips as perf_mips_mod
 except Exception as _e:
     perf_mips_mod = None
     if USE_MIPS:

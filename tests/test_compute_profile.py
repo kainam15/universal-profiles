@@ -6,9 +6,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from detect import TaskInfo
+from acprof.host.detect import TaskInfo
 
-import compute_profile
+from acprof.host import compute_profile
 
 
 class ComputeProfileTests(unittest.TestCase):
@@ -150,7 +150,7 @@ class ComputeProfileTests(unittest.TestCase):
                 stderr="",
             )
 
-        with patch("compute_profile._run", side_effect=fake_run):
+        with patch("acprof.host.compute_profile._run", side_effect=fake_run):
             metrics, error = compute_profile._resolve_ncu_metrics("/opt/ncu")
 
         self.assertEqual(metrics, list(compute_profile.NCU_SASS_FLOP_WEIGHTS))
@@ -169,10 +169,10 @@ class ComputeProfileTests(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as tmp, patch(
-            "compute_profile._find_executable",
+            "acprof.host.compute_profile._find_executable",
             return_value=None,
         ), patch(
-            "compute_profile._run",
+            "acprof.host.compute_profile._run",
             return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
         ):
             plan_path = compute_profile.collect_compute_profile_plan(
@@ -258,16 +258,16 @@ class ComputeProfileTests(unittest.TestCase):
             }
 
         with tempfile.TemporaryDirectory() as tmp, patch(
-            "compute_profile._find_executable",
+            "acprof.host.compute_profile._find_executable",
             side_effect=fake_find_executable,
         ), patch(
-            "compute_profile._profile_torch_entries",
+            "acprof.host.compute_profile._profile_torch_entries",
             side_effect=fake_torch_profile,
         ), patch(
-            "compute_profile._profile_cpu_entries",
+            "acprof.host.compute_profile._profile_cpu_entries",
             side_effect=AssertionError("vendor CPU profiler should not run by default"),
         ), patch(
-            "compute_profile._profile_gpu_entries",
+            "acprof.host.compute_profile._profile_gpu_entries",
             side_effect=fake_gpu_profile,
         ):
             plan_path = compute_profile.collect_compute_profile_plan(
@@ -353,16 +353,16 @@ class ComputeProfileTests(unittest.TestCase):
             }
 
         with tempfile.TemporaryDirectory() as tmp, patch(
-            "compute_profile._find_executable",
+            "acprof.host.compute_profile._find_executable",
             side_effect=fake_find_executable,
         ), patch(
-            "compute_profile._profile_torch_entries",
+            "acprof.host.compute_profile._profile_torch_entries",
             side_effect=fake_torch_profile,
         ), patch(
-            "compute_profile._profile_cpu_entries",
+            "acprof.host.compute_profile._profile_cpu_entries",
             side_effect=AssertionError("vendor CPU profiler should not run in auto mode"),
         ), patch(
-            "compute_profile._profile_gpu_entries",
+            "acprof.host.compute_profile._profile_gpu_entries",
             side_effect=fake_gpu_profile,
         ):
             plan_path = compute_profile.collect_compute_profile_plan(
@@ -417,10 +417,10 @@ class ComputeProfileTests(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as tmp, patch(
-            "compute_profile._find_executable",
+            "acprof.host.compute_profile._find_executable",
             return_value=None,
         ), patch(
-            "compute_profile._run",
+            "acprof.host.compute_profile._run",
             return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
         ):
             plan_path = compute_profile.collect_compute_profile_plan(
@@ -468,13 +468,13 @@ class ComputeProfileTests(unittest.TestCase):
             return {"tool": "ncu", "repeat": 1, "error": "", "entries": []}
 
         with tempfile.TemporaryDirectory() as tmp, patch(
-            "compute_profile._find_executable",
+            "acprof.host.compute_profile._find_executable",
             return_value="/usr/bin/tool",
         ), patch(
-            "compute_profile._profile_cpu_entries",
+            "acprof.host.compute_profile._profile_cpu_entries",
             side_effect=fake_cpu_profile,
         ), patch(
-            "compute_profile._profile_gpu_entries",
+            "acprof.host.compute_profile._profile_gpu_entries",
             side_effect=fake_gpu_profile,
         ):
             compute_profile.collect_compute_profile_plan(
@@ -516,16 +516,16 @@ class ComputeProfileTests(unittest.TestCase):
             return {"tool": "intel_advisor", "repeat": 1, "error": "", "entries": []}
 
         with tempfile.TemporaryDirectory() as tmp, patch(
-            "compute_profile._find_executable",
+            "acprof.host.compute_profile._find_executable",
             return_value="/usr/bin/tool",
         ), patch(
-            "compute_profile._host_logical_cpus",
+            "acprof.host.compute_profile._host_logical_cpus",
             return_value=12,
         ), patch(
-            "compute_profile._host_memory_gb_fraction",
+            "acprof.host.compute_profile._host_memory_gb_fraction",
             return_value=48,
         ), patch(
-            "compute_profile._profile_cpu_entries",
+            "acprof.host.compute_profile._profile_cpu_entries",
             side_effect=fake_cpu_profile,
         ):
             compute_profile.collect_compute_profile_plan(

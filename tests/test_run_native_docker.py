@@ -6,17 +6,17 @@ from contextlib import redirect_stderr
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import orchestrator
-import run
-from detect import TaskInfo
+from acprof.host import orchestrator
+from acprof.cli import run
+from acprof.host.detect import TaskInfo
 
 
 class NativeDockerGuardTests(unittest.TestCase):
     def test_cpu_energy_preflight_exits_with_remediation_when_unavailable(self) -> None:
         stderr = io.StringIO()
 
-        with patch("energy_cpu.detect_cpu_power_source", return_value="unavailable"), patch(
-            "energy_cpu.detect_vcpu_power_method",
+        with patch("acprof.monitors.energy_cpu.detect_cpu_power_source", return_value="unavailable"), patch(
+            "acprof.monitors.energy_cpu.detect_vcpu_power_method",
             return_value="unavailable",
         ), self.assertRaises(SystemExit) as raised, redirect_stderr(stderr):
             run.require_cpu_energy_prerequisites()
@@ -30,25 +30,25 @@ class NativeDockerGuardTests(unittest.TestCase):
         self.assertIn("/etc/tmpfiles.d/acprof-rapl.conf", message)
 
     def test_cpu_energy_preflight_allows_rapl_cgroup_share(self) -> None:
-        with patch("energy_cpu.detect_cpu_power_source", return_value="rapl"), patch(
-            "energy_cpu.detect_vcpu_power_method",
+        with patch("acprof.monitors.energy_cpu.detect_cpu_power_source", return_value="rapl"), patch(
+            "acprof.monitors.energy_cpu.detect_vcpu_power_method",
             return_value="rapl_cgroup_cpu_share",
         ):
             run.require_cpu_energy_prerequisites()
 
     def test_main_runs_cpu_energy_preflight_before_task_detection(self) -> None:
-        with patch.object(sys, "argv", ["run.py", "--model", "dummy-model"]), patch(
-            "run.bootstrap_project_env",
+        with patch.object(sys, "argv", ["acprof.cli.run.py", "--model", "dummy-model"]), patch(
+            "acprof.cli.run.bootstrap_project_env",
             return_value=None,
-        ), patch("run.require_native_docker"), patch(
-            "run.require_packet_latency_prerequisites",
+        ), patch("acprof.cli.run.require_native_docker"), patch(
+            "acprof.cli.run.require_packet_latency_prerequisites",
         ), patch(
-            "run.require_cpu_energy_prerequisites",
+            "acprof.cli.run.require_cpu_energy_prerequisites",
             side_effect=SystemExit(3),
         ) as preflight, patch(
-            "run.require_mips_prerequisites",
+            "acprof.cli.run.require_mips_prerequisites",
         ), patch(
-            "detect.detect_task",
+            "acprof.host.detect.detect_task",
             side_effect=AssertionError("detect_task should not run before CPU energy preflight"),
         ):
             with self.assertRaises(SystemExit) as raised:
@@ -58,18 +58,18 @@ class NativeDockerGuardTests(unittest.TestCase):
         preflight.assert_called_once_with()
 
     def test_main_runs_mips_preflight_before_task_detection(self) -> None:
-        with patch.object(sys, "argv", ["run.py", "--model", "dummy-model"]), patch(
-            "run.bootstrap_project_env",
+        with patch.object(sys, "argv", ["acprof.cli.run.py", "--model", "dummy-model"]), patch(
+            "acprof.cli.run.bootstrap_project_env",
             return_value=None,
-        ), patch("run.require_native_docker"), patch(
-            "run.require_packet_latency_prerequisites",
+        ), patch("acprof.cli.run.require_native_docker"), patch(
+            "acprof.cli.run.require_packet_latency_prerequisites",
         ), patch(
-            "run.require_cpu_energy_prerequisites",
+            "acprof.cli.run.require_cpu_energy_prerequisites",
         ), patch(
-            "run.require_mips_prerequisites",
+            "acprof.cli.run.require_mips_prerequisites",
             side_effect=SystemExit(4),
         ) as preflight, patch(
-            "detect.detect_task",
+            "acprof.host.detect.detect_task",
             side_effect=AssertionError("detect_task should not run before MIPS preflight"),
         ):
             with self.assertRaises(SystemExit) as raised:
@@ -81,7 +81,7 @@ class NativeDockerGuardTests(unittest.TestCase):
     def test_docker_desktop_context_exits_before_docker_info(self) -> None:
         context = SimpleNamespace(returncode=0, stdout="desktop-linux\n", stderr="")
 
-        with patch("run.subprocess.run", return_value=context) as mock_run, patch(
+        with patch("acprof.cli.run.subprocess.run", return_value=context) as mock_run, patch(
             "builtins.print"
         ) as mock_print:
             with self.assertRaises(SystemExit) as raised:
@@ -105,7 +105,7 @@ class NativeDockerGuardTests(unittest.TestCase):
             stderr="",
         )
 
-        with patch("run.subprocess.run", side_effect=[context, completed]), patch(
+        with patch("acprof.cli.run.subprocess.run", side_effect=[context, completed]), patch(
             "builtins.print"
         ) as mock_print:
             with self.assertRaises(SystemExit) as raised:
@@ -129,28 +129,28 @@ class NativeDockerGuardTests(unittest.TestCase):
             stderr="",
         )
 
-        with patch("run.subprocess.run", side_effect=[context, completed]):
+        with patch("acprof.cli.run.subprocess.run", side_effect=[context, completed]):
             run.require_native_docker()
 
     def test_main_invokes_native_docker_guard_after_parsing_args(self) -> None:
-        with patch.object(sys, "argv", ["run.py", "--model", "dummy-model"]), patch(
-            "run.require_native_docker",
+        with patch.object(sys, "argv", ["acprof.cli.run.py", "--model", "dummy-model"]), patch(
+            "acprof.cli.run.require_native_docker",
             side_effect=RuntimeError("guard called"),
         ):
             with self.assertRaisesRegex(RuntimeError, "guard called"):
                 run.main()
 
     def test_main_runs_packet_latency_preflight_before_task_detection(self) -> None:
-        with patch.object(sys, "argv", ["run.py", "--model", "dummy-model"]), patch(
-            "run.bootstrap_project_env",
+        with patch.object(sys, "argv", ["acprof.cli.run.py", "--model", "dummy-model"]), patch(
+            "acprof.cli.run.bootstrap_project_env",
             return_value=None,
-        ), patch("run.require_native_docker"), patch(
-            "run.require_packet_latency_prerequisites",
+        ), patch("acprof.cli.run.require_native_docker"), patch(
+            "acprof.cli.run.require_packet_latency_prerequisites",
             side_effect=SystemExit(2),
         ) as preflight, patch(
-            "run.require_cpu_energy_prerequisites",
+            "acprof.cli.run.require_cpu_energy_prerequisites",
         ), patch(
-            "detect.detect_task",
+            "acprof.host.detect.detect_task",
             side_effect=AssertionError("detect_task should not run before preflight"),
         ):
             with self.assertRaises(SystemExit) as raised:
@@ -178,7 +178,7 @@ class NativeDockerGuardTests(unittest.TestCase):
             sys,
             "argv",
             [
-                "run.py",
+                "acprof.cli.run.py",
                 "--model",
                 "dummy-model",
                 "--skip-build",
@@ -193,33 +193,33 @@ class NativeDockerGuardTests(unittest.TestCase):
                 tmp_dir,
             ],
         ), patch(
-            "run.bootstrap_project_env",
+            "acprof.cli.run.bootstrap_project_env",
             return_value=None,
         ), patch(
-            "run.require_native_docker"
+            "acprof.cli.run.require_native_docker"
         ), patch(
-            "run.require_packet_latency_prerequisites"
+            "acprof.cli.run.require_packet_latency_prerequisites"
         ), patch(
-            "run.require_cpu_energy_prerequisites"
+            "acprof.cli.run.require_cpu_energy_prerequisites"
         ), patch(
-            "run.require_mips_prerequisites"
+            "acprof.cli.run.require_mips_prerequisites"
         ), patch(
-            "detect.detect_task",
+            "acprof.host.detect.detect_task",
             return_value=task_info,
         ), patch(
-            "orchestrator.collect_static_meta",
+            "acprof.host.orchestrator.collect_static_meta",
             return_value=SimpleNamespace(),
         ), patch(
-            "orchestrator.write_static_meta_csv"
+            "acprof.host.orchestrator.write_static_meta_csv"
         ), patch(
-            "orchestrator.plan_input_scales",
+            "acprof.host.orchestrator.plan_input_scales",
             return_value=orchestrator.PlannedInputScales(
                 scales=[1.0],
                 source="unit",
                 plan_file=None,
             ),
         ), patch(
-            "orchestrator.run_matrix",
+            "acprof.host.orchestrator.run_matrix",
             side_effect=orchestrator.EnergyProfilingError("gpu_idle_power_w unstable"),
         ) as run_matrix, self.assertRaises(SystemExit) as raised, redirect_stderr(stderr):
             run.main()
@@ -245,7 +245,7 @@ class NativeDockerGuardTests(unittest.TestCase):
             sys,
             "argv",
             [
-                "run.py",
+                "acprof.cli.run.py",
                 "--model",
                 "dummy-model",
                 "--skip-build",
@@ -259,36 +259,36 @@ class NativeDockerGuardTests(unittest.TestCase):
                 tmp_dir,
             ],
         ), patch(
-            "run.bootstrap_project_env",
+            "acprof.cli.run.bootstrap_project_env",
             return_value=None,
         ), patch(
-            "run.require_native_docker"
+            "acprof.cli.run.require_native_docker"
         ), patch(
-            "run.require_packet_latency_prerequisites"
+            "acprof.cli.run.require_packet_latency_prerequisites"
         ), patch(
-            "run.require_cpu_energy_prerequisites"
+            "acprof.cli.run.require_cpu_energy_prerequisites"
         ), patch(
-            "run.require_mips_prerequisites"
+            "acprof.cli.run.require_mips_prerequisites"
         ), patch(
-            "detect.detect_task",
+            "acprof.host.detect.detect_task",
             return_value=task_info,
         ), patch(
-            "orchestrator.collect_static_meta",
+            "acprof.host.orchestrator.collect_static_meta",
             return_value=SimpleNamespace(),
         ), patch(
-            "orchestrator.write_static_meta_csv"
+            "acprof.host.orchestrator.write_static_meta_csv"
         ), patch(
-            "orchestrator.plan_input_scales",
+            "acprof.host.orchestrator.plan_input_scales",
             return_value=orchestrator.PlannedInputScales(
                 scales=[1.0],
                 source="unit",
                 plan_file=None,
             ),
         ), patch(
-            "compute_profile.collect_compute_profile_plan",
+            "acprof.host.compute_profile.collect_compute_profile_plan",
             return_value=f"{tmp_dir}/compute_profile_plan.json",
         ) as collect_compute_profile_plan, patch(
-            "orchestrator.run_matrix",
+            "acprof.host.orchestrator.run_matrix",
             return_value=[],
         ):
             run.main()

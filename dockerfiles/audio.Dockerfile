@@ -15,6 +15,6 @@ RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple \
 ARG MODEL_ID
 ARG HF_TOKEN
 ENV MODEL_ID=${MODEL_ID}
-RUN HF_TOKEN="${HF_TOKEN}" python download_model.py
+RUN HF_TOKEN="${HF_TOKEN}" python -m acprof.container.download_model
 
-CMD ["python", "server.py"]
+CMD ["python", "-m", "acprof.container.server"]

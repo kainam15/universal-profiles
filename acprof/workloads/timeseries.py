@@ -5,7 +5,7 @@ from __future__ import annotations
 import random
 from typing import Any, Dict
 
-from workloads import WorkloadGenerator, register_generator
+from acprof.workloads import WorkloadGenerator, register_generator
 
 BASE_SEED = 12345
 MAX_CONTEXT_LENGTH = 2048

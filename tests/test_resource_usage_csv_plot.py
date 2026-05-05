@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import plot
-from config import CSV_FIELDS
+from acprof.cli import plot
+from acprof.config import CSV_FIELDS
 
 
 class ResourceUsageCsvPlotTests(unittest.TestCase):

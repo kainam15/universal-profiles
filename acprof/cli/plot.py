@@ -459,8 +459,18 @@ def plot_cold_start_bar(df: pd.DataFrame, title: str, ylabel: str, out_png: str 
     plt.close()
 
 
-def main():
-    csv_path = sys.argv[1] if len(sys.argv) > 1 else CSV_PATH
+def main(argv=None):
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] in {"-h", "--help"}:
+        print("usage: plot.py [result_csv]")
+        print()
+        print("Plot AC-Prof result CSV files.")
+        print()
+        print("positional arguments:")
+        print("  result_csv  CSV path (default: result_all.csv)")
+        return
+
+    csv_path = args[0] if args else CSV_PATH
     df = prepare_df(csv_path)
     static_meta = read_static_meta(csv_path)
 

@@ -11,8 +11,8 @@ import shutil
 import subprocess
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from config import SCALING_DIMENSIONS
-from detect import TaskInfo
+from acprof.config import SCALING_DIMENSIONS
+from acprof.host.detect import TaskInfo
 
 
 COMPUTE_PROFILE_PLAN_NAME = "compute_profile_plan.json"
@@ -389,7 +389,7 @@ def _load_payload_entries(
                 if isinstance(entry, dict) and isinstance(entry.get("payload"), dict)
             ]
 
-    from workloads import get_generator
+    from acprof.workloads import get_generator
 
     scales = _parse_float_list(input_scales) if input_scales else _default_scales(task_info)
     workload_gen = get_generator(
@@ -432,7 +432,9 @@ def _base_docker_cmd(
     profile_root: str,
     tool_mount_roots: Sequence[str],
 ) -> List[str]:
-    runner_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "compute_profile_runner.py")
+    package_root = os.path.abspath(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir)
+    )
     cmd = [
         "docker", "run", "--rm",
         f"--cpus={cpu}",
@@ -457,8 +459,8 @@ def _base_docker_cmd(
         "-e", f"NUMEXPR_NUM_THREADS={max(1, int(cpu))}",
         "-e", f"TORCH_NUM_THREADS={max(1, int(cpu))}",
     ]
-    if os.path.exists(runner_path):
-        cmd.extend(["-v", f"{runner_path}:/app/compute_profile_runner.py:ro"])
+    if os.path.isdir(package_root):
+        cmd.extend(["-v", f"{package_root}:/app/acprof:ro"])
     for tool_mount_root in tool_mount_roots:
         abs_root = os.path.abspath(tool_mount_root)
         cmd.extend(["-v", f"{abs_root}:{abs_root}:ro"])
@@ -475,7 +477,7 @@ def _base_docker_cmd(
 
 def _runner_args(entry: Dict[str, Any], repeat: int, mode: str) -> List[str]:
     return [
-        "python", "/app/compute_profile_runner.py",
+        "python", "-m", "acprof.container.compute_profile_runner",
         "--payload-file", f"/payloads/{COMPUTE_PROFILE_PAYLOADS_NAME}",
         "--input-scale", _format_scale_value(float(entry["input_scale"])),
         "--repeat", str(max(1, int(repeat))),

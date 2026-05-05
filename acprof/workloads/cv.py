@@ -7,7 +7,7 @@ import io
 import random
 from typing import Any, Dict
 
-from workloads import WorkloadGenerator, register_generator
+from acprof.workloads import WorkloadGenerator, register_generator
 
 BASE_SEED = 12345
 BASE_RESOLUTION = 224  # Default base resolution for most vision models

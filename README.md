@@ -2,7 +2,26 @@
 
 AC-Prof 是一个面向 containerized HuggingFace inference service 的运行时 profiling 工具。它会把模型权重 bake 进 Docker image，在不同 CPU / Memory / GPU 资源限制和不同 input scale 下运行推理 workload，并输出 latency、throughput、cold start、GPU / CPU power 与 energy、container CPU / memory usage、CPU frequency、estimated CPU cycles、perf retired-instruction MIPS、packet-level latency 等指标。
 
-本项目是 loose Python modules 结构，没有 `pyproject.toml` / `setup.py`。入口是 [run.py](run.py)，绘图入口是 [plot.py](plot.py)。
+本项目采用保守包化结构：核心代码位于 `acprof/`，根目录的 [run.py](run.py)、[plot.py](plot.py)、[client.py](client.py) 等文件是兼容旧命令的薄入口。当前不引入 `pyproject.toml` / `setup.py`，仍通过 `.venv` + `requirements.txt` 运行。
+
+常用验证命令：
+
+```bash
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m compileall -q acprof run.py plot.py client.py server.py compute_profile_runner.py sniff_parse_pcap.py merge_packet_latency.py
+```
+
+核心目录：
+
+```text
+acprof/
+  cli/          # run / plot CLI 实现
+  host/         # host 侧检测、编排、client、compute profile
+  container/    # 容器内 server、模型下载、compute runner、handlers
+  workloads/    # host 侧任务族 workload generator
+  monitors/     # GPU/CPU/resource/perf side-channel monitors
+  packet/       # packet latency parse / merge 工具
+```
 
 ## 1. 环境要求
 
@@ -499,11 +518,11 @@ MFLOPS / compute profiling 字段全是 `nan`：
 
 ## 12. 扩展新模型或任务族
 
-通常不需要为新 Hugging Face model 写代码。`detect.py` 会尽量自动识别任务和 backend。
+通常不需要为新 Hugging Face model 写代码。`acprof/host/detect.py` 会尽量自动识别任务和 backend。
 
 新增 task family 时，需要同时补齐：
 
-- `handlers/`：容器内 model load / preprocess / predict / postprocess。
-- `workloads/`：host 侧 workload generator。
+- `acprof/container/handlers/`：容器内 model load / preprocess / predict / postprocess。
+- `acprof/workloads/`：host 侧 workload generator。
 - `dockerfiles/`：对应 task family 的 Dockerfile。
-- `config.py`：`PIPELINE_TAG_TO_FAMILY` 和 `SCALING_DIMENSIONS`。
+- `acprof/config.py`：`PIPELINE_TAG_TO_FAMILY` 和 `SCALING_DIMENSIONS`。

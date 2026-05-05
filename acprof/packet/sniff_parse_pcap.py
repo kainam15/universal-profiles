@@ -2,6 +2,7 @@
 import json
 import subprocess
 import sys
+from typing import Sequence
 
 
 # 用法：
@@ -10,9 +11,6 @@ import sys
 # 输出 JSON:
 #   {"<sniff_group_id>:<req_frame>": latency_s, ...}
 
-
-pcap = sys.argv[1]
-port = sys.argv[2] if len(sys.argv) > 2 else "8002"
 
 def run(cmd):
     p = subprocess.run(cmd, capture_output=True, text=True)
@@ -43,75 +41,86 @@ def extract_group_id_from_request_lines(req_lines: str) -> str:
     return "group"
 
 
-# 1) request: /predict 的 request frame -> time + group_id
-req_cmd = [
-    "tshark", "-r", pcap,
-    "-o", "tcp.desegment_tcp_streams:TRUE",
-    "-o", "http.desegment_body:TRUE",
-    "-d", f"tcp.port=={port},http",
-    "-Y", f"tcp.port=={port} && http.request && http.request.uri==\"/predict\"",
-    "-T", "fields", "-E", "separator=\t",
-    "-e", "frame.number",
-    "-e", "frame.time_epoch",
-    "-e", "http.request.line",
-]
+def main(argv: Sequence[str] | None = None) -> None:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args:
+        raise SystemExit("usage: sniff_parse_pcap.py <pcap> <port>")
 
-req_time = {}   # req_frame -> time
-req_gid = {}    # req_frame -> sniff_group_id
-for line in run(req_cmd).splitlines():
-    if not line.strip():
-        continue
-    parts = line.split("\t")
-    if len(parts) < 2:
-        continue
+    pcap = args[0]
+    port = args[1] if len(args) > 1 else "8002"
 
-    fn = parts[0].strip()
-    t = parts[1].strip()
-    req_lines = parts[2] if len(parts) >= 3 else ""
+    # 1) request: /predict 的 request frame -> time + group_id
+    req_cmd = [
+        "tshark", "-r", pcap,
+        "-o", "tcp.desegment_tcp_streams:TRUE",
+        "-o", "http.desegment_body:TRUE",
+        "-d", f"tcp.port=={port},http",
+        "-Y", f"tcp.port=={port} && http.request && http.request.uri==\"/predict\"",
+        "-T", "fields", "-E", "separator=\t",
+        "-e", "frame.number",
+        "-e", "frame.time_epoch",
+        "-e", "http.request.line",
+    ]
 
-    if not fn.isdigit():
-        continue
-    try:
-        req_fn = int(fn)
-        req_time[req_fn] = float(t)
-        req_gid[req_fn] = extract_group_id_from_request_lines(req_lines)
-    except Exception:
-        pass
-
-
-# 2) response: http.request_in 指回对应 request frame -> response time
-resp_cmd = [
-    "tshark", "-r", pcap,
-    "-o", "tcp.desegment_tcp_streams:TRUE",
-    "-o", "http.desegment_body:TRUE",
-    "-d", f"tcp.port=={port},http",
-    "-Y", f"tcp.port=={port} && http.response",
-    "-T", "fields", "-E", "separator=\t",
-    "-e", "http.request_in",
-    "-e", "frame.time_epoch",
-    "-e", "http.response.code",
-]
-
-out = {}
-for line in run(resp_cmd).splitlines():
-    if not line.strip():
-        continue
-    parts = line.split("\t")
-    if len(parts) < 2:
-        continue
-
-    req_in, t = parts[0].strip(), parts[1].strip()
-    if not req_in.isdigit():
-        continue
-
-    req_fn = int(req_in)
-    if req_fn in req_time:
-        try:
-            dt = float(t) - float(req_time[req_fn])
-        except Exception:
+    req_time = {}
+    req_gid = {}
+    for line in run(req_cmd).splitlines():
+        if not line.strip():
             continue
-        if dt >= 0:
-            gid = req_gid.get(req_fn, "group")
-            out[f"{gid}:{req_fn}"] = dt
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
 
-print(json.dumps(out, indent=2, sort_keys=True))
+        fn = parts[0].strip()
+        t = parts[1].strip()
+        req_lines = parts[2] if len(parts) >= 3 else ""
+
+        if not fn.isdigit():
+            continue
+        try:
+            req_fn = int(fn)
+            req_time[req_fn] = float(t)
+            req_gid[req_fn] = extract_group_id_from_request_lines(req_lines)
+        except Exception:
+            pass
+
+    # 2) response: http.request_in 指回对应 request frame -> response time
+    resp_cmd = [
+        "tshark", "-r", pcap,
+        "-o", "tcp.desegment_tcp_streams:TRUE",
+        "-o", "http.desegment_body:TRUE",
+        "-d", f"tcp.port=={port},http",
+        "-Y", f"tcp.port=={port} && http.response",
+        "-T", "fields", "-E", "separator=\t",
+        "-e", "http.request_in",
+        "-e", "frame.time_epoch",
+        "-e", "http.response.code",
+    ]
+
+    out = {}
+    for line in run(resp_cmd).splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+
+        req_in, t = parts[0].strip(), parts[1].strip()
+        if not req_in.isdigit():
+            continue
+
+        req_fn = int(req_in)
+        if req_fn in req_time:
+            try:
+                dt = float(t) - float(req_time[req_fn])
+            except Exception:
+                continue
+            if dt >= 0:
+                gid = req_gid.get(req_fn, "group")
+                out[f"{gid}:{req_fn}"] = dt
+
+    print(json.dumps(out, indent=2, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()

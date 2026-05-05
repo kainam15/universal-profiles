@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Iterable
 from urllib.parse import urlparse
 
-from config import HF_MIRROR_ENDPOINT
+from acprof.config import HF_MIRROR_ENDPOINT
 
 
 def _iter_env_files(project_dir: str | os.PathLike[str]) -> Iterable[Path]:

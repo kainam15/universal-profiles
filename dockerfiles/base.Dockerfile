@@ -26,10 +26,7 @@ RUN pip install --no-cache-dir -i ${PYPI_INDEX_URL} \
     'huggingface_hub>=0.23.0' \
     'numpy>=1.26'
 
-# Copy shared code
-COPY download_model.py .
-COPY server.py .
-COPY compute_profile_runner.py .
-COPY handlers/ handlers/
+# Copy shared code package
+COPY acprof/ acprof/
 
 EXPOSE 8002

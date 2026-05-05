@@ -9,10 +9,12 @@ import inspect
 import os
 import time
 
+from typing import Sequence
+
 from huggingface_hub import snapshot_download
 
-MODEL_ID = os.getenv("MODEL_ID", "").strip()
-CACHE_DIR = os.getenv("HF_HOME", os.getenv("MODEL_CACHE_DIR", "/models/hf"))
+MODEL_ID = ""
+CACHE_DIR = "/models/hf"
 DEFAULT_ENDPOINT = "https://huggingface.co"
 DEFAULT_WORKERS = "8,2,1"
 DEFAULT_BACKOFF_S = 5.0
@@ -92,32 +94,47 @@ def _download_once(endpoint: str, max_workers: int) -> str:
     return snapshot_download(**kwargs)
 
 
-if not MODEL_ID:
-    raise SystemExit("MODEL_ID environment variable is required")
+def main(argv: Sequence[str] | None = None) -> None:
+    del argv
+    global MODEL_ID, CACHE_DIR
 
-os.makedirs(CACHE_DIR, exist_ok=True)
+    MODEL_ID = os.getenv("MODEL_ID", "").strip()
+    CACHE_DIR = os.getenv("HF_HOME", os.getenv("MODEL_CACHE_DIR", "/models/hf"))
 
-attempts = [(endpoint, workers) for endpoint in _candidate_endpoints() for workers in _worker_plan()]
-backoff_s = float(os.getenv("HF_DOWNLOAD_RETRY_BACKOFF", str(DEFAULT_BACKOFF_S)))
-last_error: Exception | None = None
+    if not MODEL_ID:
+        raise SystemExit("MODEL_ID environment variable is required")
 
-for idx, (endpoint, workers) in enumerate(attempts, start=1):
-    try:
-        target_dir = _download_once(endpoint, workers)
-        print(f"[download] Completed: {target_dir}", flush=True)
-        break
-    except Exception as exc:
-        last_error = exc
-        print(
-            f"[download] Attempt {idx}/{len(attempts)} failed: "
-            f"{type(exc).__name__}: {exc}",
-            flush=True,
+    os.makedirs(CACHE_DIR, exist_ok=True)
+
+    attempts = [
+        (endpoint, workers)
+        for endpoint in _candidate_endpoints()
+        for workers in _worker_plan()
+    ]
+    backoff_s = float(os.getenv("HF_DOWNLOAD_RETRY_BACKOFF", str(DEFAULT_BACKOFF_S)))
+    last_error: Exception | None = None
+
+    for idx, (endpoint, workers) in enumerate(attempts, start=1):
+        try:
+            target_dir = _download_once(endpoint, workers)
+            print(f"[download] Completed: {target_dir}", flush=True)
+            break
+        except Exception as exc:
+            last_error = exc
+            print(
+                f"[download] Attempt {idx}/{len(attempts)} failed: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            if idx < len(attempts):
+                sleep_s = backoff_s * idx
+                print(f"[download] Backing off for {sleep_s:.1f}s before retry.", flush=True)
+                time.sleep(sleep_s)
+    else:
+        raise SystemExit(
+            f"Failed to download model '{MODEL_ID}' after {len(attempts)} attempts: {last_error}"
         )
-        if idx < len(attempts):
-            sleep_s = backoff_s * idx
-            print(f"[download] Backing off for {sleep_s:.1f}s before retry.", flush=True)
-            time.sleep(sleep_s)
-else:
-    raise SystemExit(
-        f"Failed to download model '{MODEL_ID}' after {len(attempts)} attempts: {last_error}"
-    )
+
+
+if __name__ == "__main__":
+    main()

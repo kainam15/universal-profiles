@@ -1,12 +1,12 @@
-workloads\__pycache__
-__pycache__
-.claude
+__pycache__/
+*.py[cod]
+
+.venv/
+.claude/
 .env
 .env.local
-results
 
-AGENTS
-CLAUDE
-result-past
+results/
+result-past/
 *.csv
-docs
+docs/*.png

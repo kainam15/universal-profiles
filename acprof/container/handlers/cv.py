@@ -6,7 +6,7 @@ import base64
 import io
 from typing import Any, Dict
 
-from handlers import BaseHandler, HandlerRegistry
+from acprof.container.handlers import BaseHandler, HandlerRegistry
 
 
 class CVHandler(BaseHandler):

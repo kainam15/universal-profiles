@@ -6,9 +6,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import orchestrator
-from config import CSV_FIELDS, STATIC_META_FIELDS
-from detect import TaskInfo
+from acprof.host import orchestrator
+from acprof.config import CSV_FIELDS, STATIC_META_FIELDS
+from acprof.host.detect import TaskInfo
 
 
 def _write_gpu_case_csv(
@@ -55,8 +55,8 @@ def _write_cpu_case_csv(path: str, idle_power_values: list[float], gpu_mode: str
 
 class DetectEnvironmentTests(unittest.TestCase):
     def test_select_nlp_torch_index_url_uses_cu124_for_cuda_12_4_driver(self) -> None:
-        with patch("orchestrator.shutil.which", return_value="/usr/bin/nvidia-smi"), patch(
-            "orchestrator._run",
+        with patch("acprof.host.orchestrator.shutil.which", return_value="/usr/bin/nvidia-smi"), patch(
+            "acprof.host.orchestrator._run",
             return_value=SimpleNamespace(
                 returncode=0,
                 stdout="Driver Version: 550.78    CUDA Version: 12.4\n",
@@ -70,7 +70,7 @@ class DetectEnvironmentTests(unittest.TestCase):
 
     def test_select_nlp_torch_index_url_respects_explicit_override(self) -> None:
         with patch.dict(
-            "orchestrator.os.environ",
+            "acprof.host.orchestrator.os.environ",
             {"ACPROF_NLP_TORCH_INDEX_URL": "https://example.invalid/torch"},
             clear=True,
         ):
@@ -95,7 +95,7 @@ class DetectEnvironmentTests(unittest.TestCase):
 
     def test_select_nlp_torch_spec_respects_explicit_override(self) -> None:
         with patch.dict(
-            "orchestrator.os.environ",
+            "acprof.host.orchestrator.os.environ",
             {"ACPROF_NLP_TORCH_SPEC": "torch==9.9.9"},
             clear=True,
         ):
@@ -121,10 +121,10 @@ class DetectEnvironmentTests(unittest.TestCase):
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with patch(
-            "orchestrator._select_nlp_torch_index_url",
+            "acprof.host.orchestrator._select_nlp_torch_index_url",
             return_value=orchestrator.CUDA124_NLP_TORCH_INDEX_URL,
-        ), patch("orchestrator.os.path.exists", return_value=True), patch(
-            "orchestrator._run",
+        ), patch("acprof.host.orchestrator.os.path.exists", return_value=True), patch(
+            "acprof.host.orchestrator._run",
             side_effect=fake_run,
         ):
             orchestrator.build_image(task_info, ".")
@@ -139,10 +139,10 @@ class DetectEnvironmentTests(unittest.TestCase):
         )
 
     def test_detect_environment_windows_11_with_wsl_kernel(self) -> None:
-        with patch("orchestrator.platform.system", return_value="Windows"), patch(
-            "orchestrator.platform.release", return_value="11"
-        ), patch.dict("orchestrator.os.environ", {}, clear=True), patch(
-            "orchestrator._run",
+        with patch("acprof.host.orchestrator.platform.system", return_value="Windows"), patch(
+            "acprof.host.orchestrator.platform.release", return_value="11"
+        ), patch.dict("acprof.host.orchestrator.os.environ", {}, clear=True), patch(
+            "acprof.host.orchestrator._run",
             return_value=SimpleNamespace(
                 returncode=0,
                 stdout="6.6.87.2-microsoft-standard-WSL2\n",
@@ -152,11 +152,11 @@ class DetectEnvironmentTests(unittest.TestCase):
             self.assertEqual(orchestrator._detect_environment(), "windows11+wsl")
 
     def test_detect_environment_linux_ubuntu_without_wsl(self) -> None:
-        with patch("orchestrator.platform.system", return_value="Linux"), patch(
-            "orchestrator.platform.freedesktop_os_release",
+        with patch("acprof.host.orchestrator.platform.system", return_value="Linux"), patch(
+            "acprof.host.orchestrator.platform.freedesktop_os_release",
             return_value={"ID": "ubuntu", "VERSION_ID": "24.04"},
-        ), patch.dict("orchestrator.os.environ", {}, clear=True), patch(
-            "orchestrator._run",
+        ), patch.dict("acprof.host.orchestrator.os.environ", {}, clear=True), patch(
+            "acprof.host.orchestrator._run",
             return_value=SimpleNamespace(returncode=1, stdout="", stderr="docker unavailable"),
         ):
             self.assertEqual(orchestrator._detect_environment(), "ubuntu24.04")
@@ -172,17 +172,17 @@ class DetectEnvironmentTests(unittest.TestCase):
             detection_method="hub_api",
         )
 
-        with patch("orchestrator._detect_environment", return_value="windows11+wsl"), patch(
-            "orchestrator._get_gpu_name", return_value="Test GPU"
+        with patch("acprof.host.orchestrator._detect_environment", return_value="windows11+wsl"), patch(
+            "acprof.host.orchestrator._get_gpu_name", return_value="Test GPU"
         ), patch(
-            "orchestrator._get_gpu_mem_total_bytes", return_value=987654321
+            "acprof.host.orchestrator._get_gpu_mem_total_bytes", return_value=987654321
         ), patch(
-            "orchestrator._docker_model_weight_bytes", return_value=123
-        ), patch("orchestrator._docker_image_size_bytes", return_value=456), patch(
-            "orchestrator._cpu_power_metadata",
+            "acprof.host.orchestrator._docker_model_weight_bytes", return_value=123
+        ), patch("acprof.host.orchestrator._docker_image_size_bytes", return_value=456), patch(
+            "acprof.host.orchestrator._cpu_power_metadata",
             return_value=("rapl", "rapl_cgroup_cpu_share"),
         ), patch(
-            "orchestrator._cpu_frequency_policy_metadata",
+            "acprof.host.orchestrator._cpu_frequency_policy_metadata",
             return_value=("performance", "on"),
         ):
             meta = orchestrator.collect_static_meta(
@@ -234,7 +234,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             with open(os.path.join(cpufreq, "boost"), "w", encoding="utf-8") as f:
                 f.write("1\n")
 
-            with patch("orchestrator.CPU_SYSFS_ROOT", tmp):
+            with patch("acprof.host.orchestrator.CPU_SYSFS_ROOT", tmp):
                 self.assertEqual(
                     orchestrator._cpu_frequency_policy_metadata(),
                     ("performance", "on"),
@@ -258,12 +258,12 @@ class DetectEnvironmentTests(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as tmp, patch(
-            "orchestrator._start_probe_session",
+            "acprof.host.orchestrator._start_probe_session",
             return_value=session,
         ), patch(
-            "orchestrator._stop_container_session",
+            "acprof.host.orchestrator._stop_container_session",
         ), patch(
-            "orchestrator._post_probe_payload",
+            "acprof.host.orchestrator._post_probe_payload",
             return_value={
                 "effective_input_scale": 254.0,
                 "truncated_by_limit": False,
@@ -306,22 +306,22 @@ class DetectEnvironmentTests(unittest.TestCase):
         captured_env = {}
 
         def fake_run(cmd, check=True, capture=True, **kwargs):
-            if cmd and str(cmd[-1]).endswith("client.py"):
+            if cmd and cmd[-2:] == ["-m", "acprof.host.client"]:
                 captured_env.update(kwargs.get("env", {}))
                 _write_cpu_case_csv(captured_env["OUT_CSV"], [5.0])
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with patch(
-            "orchestrator._start_container_session",
+            "acprof.host.orchestrator._start_container_session",
             return_value=orchestrator.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_off",
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
                 cold_start_s=1.0,
             ),
-        ), patch("orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
-            "orchestrator._stop_container_session"
-        ), patch("orchestrator._run", side_effect=fake_run):
+        ), patch("acprof.host.orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
+            "acprof.host.orchestrator._stop_container_session"
+        ), patch("acprof.host.orchestrator._run", side_effect=fake_run):
             orchestrator.run_single_case(
                 task_info=task_info,
                 cpu=1,
@@ -356,22 +356,22 @@ class DetectEnvironmentTests(unittest.TestCase):
         captured_env = {}
 
         def fake_run(cmd, check=True, capture=True, **kwargs):
-            if cmd and str(cmd[-1]).endswith("client.py"):
+            if cmd and cmd[-2:] == ["-m", "acprof.host.client"]:
                 captured_env.update(kwargs.get("env", {}))
                 _write_cpu_case_csv(captured_env["OUT_CSV"], [5.0])
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with patch(
-            "orchestrator._start_container_session",
+            "acprof.host.orchestrator._start_container_session",
             return_value=orchestrator.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_off",
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
                 cold_start_s=1.0,
             ),
-        ), patch("orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
-            "orchestrator._stop_container_session"
-        ), patch("orchestrator._run", side_effect=fake_run):
+        ), patch("acprof.host.orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
+            "acprof.host.orchestrator._stop_container_session"
+        ), patch("acprof.host.orchestrator._run", side_effect=fake_run):
             orchestrator.run_single_case(
                 task_info=task_info,
                 cpu=1,
@@ -406,22 +406,22 @@ class DetectEnvironmentTests(unittest.TestCase):
         captured_env = {}
 
         def fake_run(cmd, check=True, capture=True, **kwargs):
-            if cmd and str(cmd[-1]).endswith("client.py"):
+            if cmd and cmd[-2:] == ["-m", "acprof.host.client"]:
                 captured_env.update(kwargs.get("env", {}))
                 _write_cpu_case_csv(captured_env["OUT_CSV"], [5.0])
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with patch(
-            "orchestrator._start_container_session",
+            "acprof.host.orchestrator._start_container_session",
             return_value=orchestrator.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_off",
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
                 cold_start_s=1.0,
             ),
-        ), patch("orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
-            "orchestrator._stop_container_session"
-        ), patch("orchestrator._run", side_effect=fake_run):
+        ), patch("acprof.host.orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
+            "acprof.host.orchestrator._stop_container_session"
+        ), patch("acprof.host.orchestrator._run", side_effect=fake_run):
             orchestrator.run_single_case(
                 task_info=task_info,
                 cpu=1,
@@ -454,22 +454,22 @@ class DetectEnvironmentTests(unittest.TestCase):
         captured_env = {}
 
         def fake_run(cmd, check=True, capture=True, **kwargs):
-            if cmd and str(cmd[-1]).endswith("client.py"):
+            if cmd and cmd[-2:] == ["-m", "acprof.host.client"]:
                 captured_env.update(kwargs.get("env", {}))
                 _write_gpu_case_csv(captured_env["OUT_CSV"], [10.0])
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with patch(
-            "orchestrator._start_container_session",
+            "acprof.host.orchestrator._start_container_session",
             return_value=orchestrator.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_on",
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
                 cold_start_s=1.0,
             ),
-        ), patch("orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
-            "orchestrator._stop_container_session"
-        ), patch("orchestrator._run", side_effect=fake_run):
+        ), patch("acprof.host.orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
+            "acprof.host.orchestrator._stop_container_session"
+        ), patch("acprof.host.orchestrator._run", side_effect=fake_run):
             orchestrator.run_single_case(
                 task_info=task_info,
                 cpu=1,
@@ -502,22 +502,22 @@ class DetectEnvironmentTests(unittest.TestCase):
         captured_env = {}
 
         def fake_run(cmd, check=True, capture=True, **kwargs):
-            if cmd and str(cmd[-1]).endswith("client.py"):
+            if cmd and cmd[-2:] == ["-m", "acprof.host.client"]:
                 captured_env.update(kwargs.get("env", {}))
                 _write_gpu_case_csv(captured_env["OUT_CSV"], [10.0])
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with patch(
-            "orchestrator._start_container_session",
+            "acprof.host.orchestrator._start_container_session",
             return_value=orchestrator.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_on",
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
                 cold_start_s=1.0,
             ),
-        ), patch("orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
-            "orchestrator._stop_container_session"
-        ), patch("orchestrator._run", side_effect=fake_run):
+        ), patch("acprof.host.orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
+            "acprof.host.orchestrator._stop_container_session"
+        ), patch("acprof.host.orchestrator._run", side_effect=fake_run):
             orchestrator.run_single_case(
                 task_info=task_info,
                 cpu=1,
@@ -549,21 +549,21 @@ class DetectEnvironmentTests(unittest.TestCase):
         )
 
         def fake_run(cmd, check=True, capture=True, **kwargs):
-            if cmd and str(cmd[-1]).endswith("client.py"):
+            if cmd and cmd[-2:] == ["-m", "acprof.host.client"]:
                 return SimpleNamespace(returncode=7, stdout="", stderr="idle unstable")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with patch(
-            "orchestrator._start_container_session",
+            "acprof.host.orchestrator._start_container_session",
             return_value=orchestrator.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_on",
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
                 cold_start_s=1.0,
             ),
-        ), patch("orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
-            "orchestrator._stop_container_session"
-        ), patch("orchestrator._run", side_effect=fake_run):
+        ), patch("acprof.host.orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
+            "acprof.host.orchestrator._stop_container_session"
+        ), patch("acprof.host.orchestrator._run", side_effect=fake_run):
             with self.assertRaises(orchestrator.EnergyProfilingError) as raised:
                 orchestrator.run_single_case(
                     task_info=task_info,
@@ -594,21 +594,21 @@ class DetectEnvironmentTests(unittest.TestCase):
         )
 
         def fake_run(cmd, check=True, capture=True, **kwargs):
-            if cmd and str(cmd[-1]).endswith("client.py"):
+            if cmd and cmd[-2:] == ["-m", "acprof.host.client"]:
                 _write_gpu_case_csv(kwargs["env"]["OUT_CSV"], [10.0, 10.2, 10.1])
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with tempfile.TemporaryDirectory() as tmp_dir, patch(
-            "orchestrator._start_container_session",
+            "acprof.host.orchestrator._start_container_session",
             return_value=orchestrator.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_on",
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
                 cold_start_s=1.0,
             ),
-        ), patch("orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
-            "orchestrator._stop_container_session"
-        ), patch("orchestrator._run", side_effect=fake_run):
+        ), patch("acprof.host.orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
+            "acprof.host.orchestrator._stop_container_session"
+        ), patch("acprof.host.orchestrator._run", side_effect=fake_run):
             csv_path = orchestrator.run_single_case(
                 task_info=task_info,
                 cpu=1,
@@ -638,21 +638,21 @@ class DetectEnvironmentTests(unittest.TestCase):
         )
 
         def fake_run(cmd, check=True, capture=True, **kwargs):
-            if cmd and str(cmd[-1]).endswith("client.py"):
+            if cmd and cmd[-2:] == ["-m", "acprof.host.client"]:
                 _write_gpu_case_csv(kwargs["env"]["OUT_CSV"], [10.0, 10.7, 10.2])
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with tempfile.TemporaryDirectory() as tmp_dir, patch(
-            "orchestrator._start_container_session",
+            "acprof.host.orchestrator._start_container_session",
             return_value=orchestrator.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_on",
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
                 cold_start_s=1.0,
             ),
-        ), patch("orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
-            "orchestrator._stop_container_session"
-        ), patch("orchestrator._run", side_effect=fake_run):
+        ), patch("acprof.host.orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
+            "acprof.host.orchestrator._stop_container_session"
+        ), patch("acprof.host.orchestrator._run", side_effect=fake_run):
             with self.assertRaises(orchestrator.EnergyProfilingError) as raised:
                 orchestrator.run_single_case(
                     task_info=task_info,
@@ -688,21 +688,21 @@ class DetectEnvironmentTests(unittest.TestCase):
         )
 
         def fake_run(cmd, check=True, capture=True, **kwargs):
-            if cmd and str(cmd[-1]).endswith("client.py"):
+            if cmd and cmd[-2:] == ["-m", "acprof.host.client"]:
                 _write_cpu_case_csv(kwargs["env"]["OUT_CSV"], [5.0, 5.4, 5.1])
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with tempfile.TemporaryDirectory() as tmp_dir, patch(
-            "orchestrator._start_container_session",
+            "acprof.host.orchestrator._start_container_session",
             return_value=orchestrator.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_off",
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
                 cold_start_s=1.0,
             ),
-        ), patch("orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
-            "orchestrator._stop_container_session"
-        ), patch("orchestrator._run", side_effect=fake_run):
+        ), patch("acprof.host.orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
+            "acprof.host.orchestrator._stop_container_session"
+        ), patch("acprof.host.orchestrator._run", side_effect=fake_run):
             with self.assertRaises(orchestrator.EnergyProfilingError) as raised:
                 orchestrator.run_single_case(
                     task_info=task_info,
@@ -735,11 +735,11 @@ class DetectEnvironmentTests(unittest.TestCase):
                 return r"C:\Windows\System32\wsl.exe"
             return None
 
-        with patch("orchestrator._detect_environment", return_value="windows11+wsl"), patch(
-            "orchestrator.shutil.which",
+        with patch("acprof.host.orchestrator._detect_environment", return_value="windows11+wsl"), patch(
+            "acprof.host.orchestrator.shutil.which",
             side_effect=fake_which,
         ), patch(
-            "orchestrator._wsl_has_command",
+            "acprof.host.orchestrator._wsl_has_command",
             return_value=True,
         ):
             runtime = orchestrator._resolve_packet_latency_runtime(
@@ -754,8 +754,9 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(runtime.tcpdump_cmd[:3], ["wsl.exe", "-e", "sudo"])
         self.assertIn("tcpdump", runtime.tcpdump_cmd)
         self.assertIn("/mnt/d/DOR/universal-profiles/results/test/sniff_case.pcap", runtime.tcpdump_cmd)
-        self.assertEqual(runtime.parse_cmd[:3], ["wsl.exe", "-e", "python3"])
-        self.assertIn("/mnt/d/DOR/universal-profiles/sniff_parse_pcap.py", runtime.parse_cmd)
+        self.assertEqual(runtime.parse_cmd[:4], ["wsl.exe", "-e", "sh", "-lc"])
+        self.assertIn("python3 -m acprof.packet.sniff_parse_pcap", runtime.parse_cmd[-1])
+        self.assertIn("/mnt/d/DOR/universal-profiles/results/test/sniff_case.pcap", runtime.parse_cmd[-1])
 
     def test_resolve_packet_latency_runtime_uses_tcpdump_without_sudo_when_capable(self) -> None:
         def fake_which(name: str) -> str | None:
@@ -773,8 +774,8 @@ class DetectEnvironmentTests(unittest.TestCase):
                 )
             return SimpleNamespace(returncode=1, stdout="", stderr="")
 
-        with patch("orchestrator.shutil.which", side_effect=fake_which), patch(
-            "orchestrator._run",
+        with patch("acprof.host.orchestrator.shutil.which", side_effect=fake_which), patch(
+            "acprof.host.orchestrator._run",
             side_effect=fake_run,
         ):
             runtime = orchestrator._resolve_packet_latency_runtime(
@@ -815,15 +816,15 @@ class DetectEnvironmentTests(unittest.TestCase):
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
             return SimpleNamespace(returncode=1, stdout="", stderr="")
 
-        with patch("orchestrator.shutil.which", side_effect=fake_which), patch(
-            "orchestrator.os.geteuid",
+        with patch("acprof.host.orchestrator.shutil.which", side_effect=fake_which), patch(
+            "acprof.host.orchestrator.os.geteuid",
             return_value=1000,
         ), patch.dict(
-            "orchestrator.os.environ",
+            "acprof.host.orchestrator.os.environ",
             {"ACPROF_SUDO_PASSWORD": "secret"},
             clear=True,
         ), patch(
-            "orchestrator._run",
+            "acprof.host.orchestrator._run",
             side_effect=fake_run,
         ):
             runtime = orchestrator._resolve_packet_latency_runtime(
@@ -852,15 +853,15 @@ class DetectEnvironmentTests(unittest.TestCase):
         )
 
         with patch(
-            "orchestrator._start_container_session",
+            "acprof.host.orchestrator._start_container_session",
             return_value=orchestrator.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_off",
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
                 cold_start_s=1.0,
             ),
-        ), patch("orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
-            "orchestrator._stop_container_session"
+        ), patch("acprof.host.orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
+            "acprof.host.orchestrator._stop_container_session"
         ):
             with self.assertRaises(orchestrator.PacketLatencyError) as raised:
                 orchestrator.run_single_case(

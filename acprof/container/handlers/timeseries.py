@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from handlers import BaseHandler, HandlerRegistry
+from acprof.container.handlers import BaseHandler, HandlerRegistry
 
 
 class ChronosHandler(BaseHandler):

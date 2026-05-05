@@ -15,21 +15,21 @@ import sys
 import time
 from pathlib import Path
 
-from config import (
+from acprof.config import (
     DEFAULT_REPEAT_IN_WINDOW,
     DEFAULT_REPEAT_WINDOW_SECONDS,
     SCALING_DIMENSIONS,
 )
-from env_utils import bootstrap_project_env
-from orchestrator import (
+from acprof.host.env_utils import bootstrap_project_env
+from acprof.host.orchestrator import (
     EnergyProfilingError,
     MIPSProfilingError,
     PacketLatencyError,
     require_packet_latency_prerequisites,
 )
-from perf_mips import require_mips_prerequisites
+from acprof.monitors.perf_mips import require_mips_prerequisites
 
-PROJECT_DIR = str(Path(__file__).resolve().parent)
+PROJECT_DIR = str(Path(__file__).resolve().parents[2])
 
 
 def _parse_int_list(s: str) -> list:
@@ -140,7 +140,7 @@ def require_native_docker() -> None:
 def require_cpu_energy_prerequisites() -> None:
     """Exit early when CPU/vCPU energy profiling cannot be collected."""
     try:
-        import energy_cpu
+        from acprof.monitors import energy_cpu
 
         cpu_power_source = energy_cpu.detect_cpu_power_source()
         vcpu_power_method = energy_cpu.detect_vcpu_power_method()
@@ -328,7 +328,7 @@ Examples:
     print("AC-Prof Universal Profiler")
     print("=" * 60)
 
-    from detect import detect_task
+    from acprof.host.detect import detect_task
 
     task_info = detect_task(
         model_id=args.model,
@@ -345,7 +345,7 @@ Examples:
     print(f"  Detected: {task_info.detection_method}")
 
     # ── Step 2: Build Docker image ──
-    from orchestrator import (
+    from acprof.host.orchestrator import (
         build_image,
         collect_static_meta,
         merge_all_csvs,
@@ -356,7 +356,7 @@ Examples:
     )
 
     if args.skip_build:
-        from orchestrator import ImageInfo
+        from acprof.host.orchestrator import ImageInfo
         model_tag = task_info.model_id.replace("/", "--").replace(".", "_").lower()
         tag = f"acprof-{task_info.task_family}-{model_tag}:latest"
         image_info = ImageInfo(tag=tag)
@@ -406,7 +406,7 @@ Examples:
         print("[compute] Compute profiling disabled by --no-compute-profile")
     else:
         try:
-            from compute_profile import collect_compute_profile_plan
+            from acprof.host.compute_profile import collect_compute_profile_plan
 
             compute_profile_plan_file = collect_compute_profile_plan(
                 task_info=task_info,

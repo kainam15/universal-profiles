@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
-from handlers import BaseHandler, HandlerRegistry
+from acprof.container.handlers import BaseHandler, HandlerRegistry
 
 # Tasks that generate text output
 _GENERATIVE_TASKS = {

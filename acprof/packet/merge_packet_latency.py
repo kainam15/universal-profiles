@@ -4,12 +4,8 @@ import math
 import os
 import sys
 from collections import defaultdict
+from typing import Sequence
 
-in_csv = sys.argv[1]
-lat_json = sys.argv[2]
-out_csv = sys.argv[3]
-
-lat_map = json.load(open(lat_json, "r", encoding="utf-8"))
 SNIFF_GROUP_FIELD = "sniff_group_id"
 SLOW_LATENCY_THRESHOLD_S = float(os.getenv("SLOW_LATENCY_THRESHOLD_S", "0.06"))
 
@@ -29,9 +25,6 @@ def _read_static_batch_size(csv_path: str) -> float:
         return float(row.get("batch_size", "nan"))
     except Exception:
         return float("nan")
-
-
-static_batch_size = _read_static_batch_size(in_csv)
 
 
 def _to_float(value: object) -> float:
@@ -118,78 +111,88 @@ def _read_sidecar_groups(csv_path: str) -> list[str]:
             groups.append(str(payload.get(SNIFF_GROUP_FIELD, "") or ""))
     return groups
 
-# group_id -> list of latencies
-group_lats = defaultdict(list)
-for req_id, lat in lat_map.items():
-    group_id = req_id.split(":", 1)[0]
-    group_lats[group_id].append(float(lat))
 
-with open(in_csv, "r", encoding="utf-8", newline="") as f:
-    reader = csv.DictReader(f)
-    fields = reader.fieldnames
-    rows = list(reader)
+def main(argv: Sequence[str] | None = None) -> None:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if len(args) != 3:
+        raise SystemExit("usage: merge_packet_latency.py <in_csv> <lat_json> <out_csv>")
 
-if fields is None:
-    raise SystemExit("empty csv")
+    in_csv, lat_json, out_csv = args
+    with open(lat_json, "r", encoding="utf-8") as f:
+        lat_map = json.load(f)
+    static_batch_size = _read_static_batch_size(in_csv)
 
-sidecar_groups = _read_sidecar_groups(in_csv)
+    group_lats = defaultdict(list)
+    for req_id, lat in lat_map.items():
+        group_id = req_id.split(":", 1)[0]
+        group_lats[group_id].append(float(lat))
 
-for idx, r in enumerate(rows):
-    gid = r.get(SNIFF_GROUP_FIELD, "")
-    if not gid and idx < len(sidecar_groups):
-        gid = sidecar_groups[idx]
-    if gid and gid in group_lats and group_lats[gid]:
-        latencies = group_lats[gid]
-        r["latency_s"] = _fmt_float(_mean(latencies))
-        r["latency_p50_s"] = _fmt_float(_percentile_nearest_rank(latencies, 50.0))
-        r["latency_p90_s"] = _fmt_float(_percentile_nearest_rank(latencies, 90.0))
-        r["latency_p95_s"] = _fmt_float(_percentile_nearest_rank(latencies, 95.0))
-        r["latency_slow_ratio"] = _fmt_float(_slow_ratio(latencies))
-        # 你也可以选择同时用 packet latency 更新 throughput
-        try:
-            bs = static_batch_size
-            if bs != bs:
-                bs = float(r.get("batch_size", "nan"))
-            lat = float(r["latency_s"])
-            if lat > 0:
-                r["throughput_samples_per_s"] = f"{(bs/lat):.6f}"
-        except Exception:
-            pass
-        try:
-            lat = float(r["latency_s"])
-            model_mflop_per_request = float(r.get("model_mflop_per_request", "nan"))
-            if lat > 0 and model_mflop_per_request == model_mflop_per_request:
-                r["compute_mflops"] = f"{(model_mflop_per_request / lat):.6f}"
-        except Exception:
-            pass
-        try:
-            lat = float(r["latency_s"])
-            cpu_cycles_est_packet = _estimate_cpu_cycles(r, lat)
-            if cpu_cycles_est_packet == cpu_cycles_est_packet:
-                r["cpu_cycles_est_packet"] = f"{cpu_cycles_est_packet:.6f}"
-        except Exception:
-            pass
-        try:
-            lat = float(r["latency_s"])
-            cpu_mips_packet = _compute_cpu_mips(r, lat)
-            if cpu_mips_packet == cpu_mips_packet:
-                r["cpu_mips_packet"] = f"{cpu_mips_packet:.6f}"
-        except Exception:
-            pass
-    else:
-        # 没匹配到就保持 nan，方便你发现抓包/解析问题
-        pass
+    with open(in_csv, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        fields = reader.fieldnames
+        rows = list(reader)
 
-fields = [field for field in fields if field != SNIFF_GROUP_FIELD]
-for r in rows:
-    r.pop(SNIFF_GROUP_FIELD, None)
+    if fields is None:
+        raise SystemExit("empty csv")
 
-with open(out_csv, "w", encoding="utf-8", newline="") as f:
-    w = csv.DictWriter(
-        f,
-        fieldnames=fields,
-        quoting=csv.QUOTE_MINIMAL,
-        extrasaction="ignore",
-    )
-    w.writeheader()
-    w.writerows(rows)
+    sidecar_groups = _read_sidecar_groups(in_csv)
+
+    for idx, r in enumerate(rows):
+        gid = r.get(SNIFF_GROUP_FIELD, "")
+        if not gid and idx < len(sidecar_groups):
+            gid = sidecar_groups[idx]
+        if gid and gid in group_lats and group_lats[gid]:
+            latencies = group_lats[gid]
+            r["latency_s"] = _fmt_float(_mean(latencies))
+            r["latency_p50_s"] = _fmt_float(_percentile_nearest_rank(latencies, 50.0))
+            r["latency_p90_s"] = _fmt_float(_percentile_nearest_rank(latencies, 90.0))
+            r["latency_p95_s"] = _fmt_float(_percentile_nearest_rank(latencies, 95.0))
+            r["latency_slow_ratio"] = _fmt_float(_slow_ratio(latencies))
+            try:
+                bs = static_batch_size
+                if bs != bs:
+                    bs = float(r.get("batch_size", "nan"))
+                lat = float(r["latency_s"])
+                if lat > 0:
+                    r["throughput_samples_per_s"] = f"{(bs / lat):.6f}"
+            except Exception:
+                pass
+            try:
+                lat = float(r["latency_s"])
+                model_mflop_per_request = float(r.get("model_mflop_per_request", "nan"))
+                if lat > 0 and model_mflop_per_request == model_mflop_per_request:
+                    r["compute_mflops"] = f"{(model_mflop_per_request / lat):.6f}"
+            except Exception:
+                pass
+            try:
+                lat = float(r["latency_s"])
+                cpu_cycles_est_packet = _estimate_cpu_cycles(r, lat)
+                if cpu_cycles_est_packet == cpu_cycles_est_packet:
+                    r["cpu_cycles_est_packet"] = f"{cpu_cycles_est_packet:.6f}"
+            except Exception:
+                pass
+            try:
+                lat = float(r["latency_s"])
+                cpu_mips_packet = _compute_cpu_mips(r, lat)
+                if cpu_mips_packet == cpu_mips_packet:
+                    r["cpu_mips_packet"] = f"{cpu_mips_packet:.6f}"
+            except Exception:
+                pass
+
+    fields = [field for field in fields if field != SNIFF_GROUP_FIELD]
+    for r in rows:
+        r.pop(SNIFF_GROUP_FIELD, None)
+
+    with open(out_csv, "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(
+            f,
+            fieldnames=fields,
+            quoting=csv.QUOTE_MINIMAL,
+            extrasaction="ignore",
+        )
+        w.writeheader()
+        w.writerows(rows)
+
+
+if __name__ == "__main__":
+    main()

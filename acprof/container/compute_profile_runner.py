@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional
 
 import torch
 
-from handlers import HandlerRegistry
+from acprof.container.handlers import HandlerRegistry
 
 
 def _find_payload(payload_file: str, input_scale: float) -> Dict[str, Any]:

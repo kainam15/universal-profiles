@@ -5,7 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import energy_cpu
+from acprof.monitors import energy_cpu
 
 
 def _write_rapl_domain(
@@ -68,8 +68,8 @@ class CPUEnergyMonitorTests(unittest.TestCase):
                     None,
                 )
 
-            with patch("energy_cpu.time.perf_counter", side_effect=fake_perf_counter):
-                with patch("energy_cpu.time.sleep", side_effect=fake_sleep):
+            with patch("acprof.monitors.energy_cpu.time.perf_counter", side_effect=fake_perf_counter):
+                with patch("acprof.monitors.energy_cpu.time.sleep", side_effect=fake_sleep):
                     with patch.object(monitor, "_read_sample", side_effect=fake_read_sample):
                         idle_power_w = monitor.measure_idle()
 
@@ -116,11 +116,11 @@ class CPUEnergyMonitorTests(unittest.TestCase):
                 22: SimpleNamespace(pid=22, ppid=1, comm="busy", cpu_s=4.25, cmdline="busy --loop"),
             }
 
-            with patch("energy_cpu.time.perf_counter", side_effect=fake_perf_counter):
-                with patch("energy_cpu.time.sleep", side_effect=fake_sleep):
+            with patch("acprof.monitors.energy_cpu.time.perf_counter", side_effect=fake_perf_counter):
+                with patch("acprof.monitors.energy_cpu.time.sleep", side_effect=fake_sleep):
                     with patch.object(monitor, "_read_sample", side_effect=fake_read_sample):
                         with patch(
-                            "energy_cpu._read_proc_cpu_snapshot",
+                            "acprof.monitors.energy_cpu._read_proc_cpu_snapshot",
                             side_effect=[proc_start, proc_end],
                             create=True,
                         ):
@@ -209,7 +209,7 @@ class CPUEnergyMonitorTests(unittest.TestCase):
                 f.write("usage_usec 1500000\n")
 
             fake_completed = SimpleNamespace(returncode=0, stdout="123\n", stderr="")
-            with patch("energy_cpu.subprocess.run", return_value=fake_completed):
+            with patch("acprof.monitors.energy_cpu.subprocess.run", return_value=fake_completed):
                 reader = energy_cpu._resolve_container_cpu_reader(
                     "case_container",
                     cgroup_root=cgroup_root,

@@ -23,12 +23,16 @@ class ComputeProfileRunnerITTTests(unittest.TestCase):
             inference_mode=lambda: None,
             set_num_threads=lambda *_args, **_kwargs: None,
         )
-        fake_handlers = types.SimpleNamespace(
-            HandlerRegistry=types.SimpleNamespace(get=lambda *_args, **_kwargs: None)
+        fake_handlers = types.ModuleType("acprof.container.handlers")
+        fake_handlers.HandlerRegistry = types.SimpleNamespace(
+            get=lambda *_args, **_kwargs: None
         )
-        sys.modules.pop("compute_profile_runner", None)
-        with patch.dict(sys.modules, {"torch": fake_torch, "handlers": fake_handlers}):
-            return importlib.import_module("compute_profile_runner")
+        sys.modules.pop("acprof.container.compute_profile_runner", None)
+        with patch.dict(
+            sys.modules,
+            {"torch": fake_torch, "acprof.container.handlers": fake_handlers},
+        ):
+            return importlib.import_module("acprof.container.compute_profile_runner")
 
     def test_itt_control_prefers_advisor_injected_collector_environment(self):
         runner = self._import_runner()
