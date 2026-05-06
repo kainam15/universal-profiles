@@ -296,6 +296,75 @@ class NativeDockerGuardTests(unittest.TestCase):
         _, kwargs = collect_compute_profile_plan.call_args
         self.assertEqual(kwargs["compute_profile_tool"], "auto")
 
+    def test_main_records_invocation_command_in_static_meta(self) -> None:
+        task_info = TaskInfo(
+            model_id="dummy-model",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="unit",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir, patch.object(
+            sys,
+            "argv",
+            [
+                "run.py",
+                "--model",
+                "dummy-model",
+                "--skip-build",
+                "--no-compute-profile",
+                "--cpus",
+                "1",
+                "--mems",
+                "2",
+                "--gpus",
+                "off",
+                "--output-dir",
+                tmp_dir,
+            ],
+        ), patch(
+            "acprof.cli.run.bootstrap_project_env",
+            return_value=None,
+        ), patch(
+            "acprof.cli.run.require_native_docker"
+        ), patch(
+            "acprof.cli.run.require_packet_latency_prerequisites"
+        ), patch(
+            "acprof.cli.run.require_cpu_energy_prerequisites"
+        ), patch(
+            "acprof.cli.run.require_mips_prerequisites"
+        ), patch(
+            "acprof.host.detect.detect_task",
+            return_value=task_info,
+        ), patch(
+            "acprof.host.orchestrator.collect_static_meta",
+            return_value=SimpleNamespace(),
+        ) as collect_static_meta, patch(
+            "acprof.host.orchestrator.write_static_meta_csv"
+        ), patch(
+            "acprof.host.orchestrator.plan_input_scales",
+            return_value=orchestrator.PlannedInputScales(
+                scales=[1.0],
+                source="unit",
+                plan_file=None,
+            ),
+        ), patch(
+            "acprof.host.orchestrator.run_matrix",
+            return_value=[],
+        ):
+            run.main()
+
+        _, kwargs = collect_static_meta.call_args
+        self.assertEqual(
+            kwargs["run_command"],
+            "python run.py --model dummy-model --skip-build --no-compute-profile "
+            "--cpus 1 --mems 2 --gpus off --output-dir "
+            + tmp_dir,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

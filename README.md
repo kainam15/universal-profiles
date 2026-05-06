@@ -366,6 +366,7 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `image_tag` | 本次使用的 Docker image tag。 |
 | `batch_size` | 本次 profiling 的 batch size。 |
 | `input_scale_type` | `result_all.csv/input_scale` 的语义名，例如 `seq_length`。 |
+| `run_command` | 启动本次 profiling 的 `python run.py ...` 命令，便于复现实验参数。 |
 | `model_download_url` | Hugging Face model page URL。 |
 | `gpu` | host device 0 的 GPU 名称；没有可见 NVIDIA GPU 时为 `unknown`。 |
 | `gpu_mem_total_bytes` | host device 0 的 total VRAM，单位 bytes；无法读取时为空。 |

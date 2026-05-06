@@ -226,6 +226,7 @@ STATIC_META_FIELDS = [
     "image_tag",
     "batch_size",
     "input_scale_type",
+    "run_command",
     "model_download_url",
     "gpu",
     "gpu_mem_total_bytes",

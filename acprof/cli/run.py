@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -50,6 +51,13 @@ def _format_elapsed(seconds: float) -> str:
     if minutes:
         return f"{minutes}m {secs}s"
     return f"{secs}s"
+
+
+def _format_run_command(argv: list[str]) -> str:
+    """Return a shell-safe command string matching the run.py invocation."""
+    if not argv:
+        return "python run.py"
+    return shlex.join(["python", *argv])
 
 
 def _docker_info_is_docker_desktop(info: str) -> bool:
@@ -304,6 +312,7 @@ Examples:
     parser.add_argument("--skip-build", action="store_true", help="Skip Docker image build (use existing)")
 
     args = parser.parse_args()
+    run_command = _format_run_command(sys.argv)
     if args.repeat_in_window < 0:
         parser.error("--repeat-in-window must be >= 0")
     if args.repeat_window_seconds <= 0.0:
@@ -381,6 +390,7 @@ Examples:
         image_info=image_info,
         batch_size=args.batch_size,
         input_scale_type=input_scale_type,
+        run_command=run_command,
     )
     write_static_meta_csv(static_meta, static_meta_csv)
 

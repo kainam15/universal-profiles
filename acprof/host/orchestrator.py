@@ -51,6 +51,7 @@ class StaticMeta:
     image_tag: str
     batch_size: int
     input_scale_type: str
+    run_command: str
     model_download_url: str
     gpu: str
     gpu_mem_total_bytes: Optional[int]
@@ -978,6 +979,7 @@ def collect_static_meta(
     image_info: ImageInfo,
     batch_size: int,
     input_scale_type: str,
+    run_command: str = "",
     device_index: int = 0,
 ) -> StaticMeta:
     """Collect static metadata for the current model/image pair."""
@@ -992,6 +994,7 @@ def collect_static_meta(
         image_tag=image_info.tag,
         batch_size=batch_size,
         input_scale_type=input_scale_type,
+        run_command=run_command,
         model_download_url=_build_model_download_url(task_info.model_id),
         gpu=_get_gpu_name(device_index=device_index),
         gpu_mem_total_bytes=_get_gpu_mem_total_bytes(device_index=device_index),

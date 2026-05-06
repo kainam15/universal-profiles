@@ -190,9 +190,14 @@ class DetectEnvironmentTests(unittest.TestCase):
                 image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
                 batch_size=1,
                 input_scale_type="seq_length",
+                run_command="python run.py --model google-bert/bert-base-uncased",
             )
 
         self.assertEqual(meta.environment, "windows11+wsl")
+        self.assertEqual(
+            meta.run_command,
+            "python run.py --model google-bert/bert-base-uncased",
+        )
         self.assertEqual(meta.gpu_mem_total_bytes, 987654321)
         self.assertEqual(meta.cpu_power_source, "rapl")
         self.assertEqual(meta.vcpu_power_method, "rapl_cgroup_cpu_share")
