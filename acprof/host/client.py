@@ -62,8 +62,7 @@ WARMUP = int(os.getenv("WARMUP", "2"))
 REPEAT = int(os.getenv("REPEAT", "5"))
 REPEAT_IN_WINDOW = int(os.getenv("REPEAT_IN_WINDOW", str(DEFAULT_REPEAT_IN_WINDOW)))
 REPEAT_WINDOW_SECONDS = float(os.getenv("REPEAT_WINDOW_SECONDS", str(DEFAULT_REPEAT_WINDOW_SECONDS)))
-CALIBRATION_WARMUP_REQUESTS = int(os.getenv("CALIBRATION_WARMUP_REQUESTS", "5"))
-CALIBRATION_REQUESTS = int(os.getenv("CALIBRATION_REQUESTS", "9"))
+AUTO_WARMUP_REQUESTS = int(os.getenv("AUTO_WARMUP_REQUESTS", "5"))
 SLOW_LATENCY_THRESHOLD_S = float(os.getenv("SLOW_LATENCY_THRESHOLD_S", "0.06"))
 
 COLD_START_S = os.getenv("COLD_START_S", "nan")
@@ -330,7 +329,7 @@ def _estimate_cpu_cycles(
     return float("nan")
 
 
-def _calibrate_repeat_in_window(
+def _prepare_repeat_window(
     scale_value: float,
     scale_label: str,
     payload_override: Optional[Dict[str, Any]],
@@ -341,47 +340,35 @@ def _calibrate_repeat_in_window(
         raise EnergyAbort(
             f"invalid REPEAT_WINDOW_SECONDS={REPEAT_WINDOW_SECONDS!r}; expected a positive value"
         )
-    if CALIBRATION_WARMUP_REQUESTS < 0:
+    if AUTO_WARMUP_REQUESTS < 0:
         raise EnergyAbort(
-            "invalid CALIBRATION_WARMUP_REQUESTS="
-            f"{CALIBRATION_WARMUP_REQUESTS!r}; expected >= 0"
-        )
-    if CALIBRATION_REQUESTS <= 0:
-        raise EnergyAbort(
-            f"invalid CALIBRATION_REQUESTS={CALIBRATION_REQUESTS!r}; expected > 0"
+            "invalid AUTO_WARMUP_REQUESTS="
+            f"{AUTO_WARMUP_REQUESTS!r}; expected >= 0"
         )
 
-    for idx in range(CALIBRATION_WARMUP_REQUESTS):
-        req_id = f"{CASE_NAME}_{scale_label}_calib_warmup{idx}"
+    for idx in range(AUTO_WARMUP_REQUESTS):
+        req_id = f"{CASE_NAME}_{scale_label}_auto_warmup{idx}"
         _one_request(scale_value, req_id=req_id, payload_override=payload_override)
 
-    latencies: List[float] = []
-    calibration_elapsed_s = 0.0
-    idx = 0
-    while len(latencies) < CALIBRATION_REQUESTS or calibration_elapsed_s < REPEAT_WINDOW_SECONDS:
-        req_id = f"{CASE_NAME}_{scale_label}_calib{idx}"
-        out = _one_request(scale_value, req_id=req_id, payload_override=payload_override)
-        latency = _to_float_or_nan(out.get("latency_app_s"))
-        if not math.isfinite(latency) or latency <= 0.0:
-            raise EnergyAbort(
-                "repeat-in-window auto calibration failed: calibration request returned "
-                f"invalid latency_app_s={latency!r} for input_scale={scale_value:g}"
-            )
-        latencies.append(latency)
-        calibration_elapsed_s += latency
-        idx += 1
-
-    mean_latency = _mean(latencies)
-    repeat_in_window = max(1, int(math.ceil(REPEAT_WINDOW_SECONDS / mean_latency)))
     print(
-        "[client] auto repeat-in-window "
-        f"scale={scale_value:g} sustained_mean_latency_s={mean_latency:.6f} "
-        f"calibration_window_s={calibration_elapsed_s:.3f} "
-        f"calibration_requests={len(latencies)} "
-        f"target_window_s={REPEAT_WINDOW_SECONDS:.3f} repeat_in_window={repeat_in_window}",
+        "[client] auto repeat-window "
+        f"scale={scale_value:g} warmup_requests={AUTO_WARMUP_REQUESTS} "
+        f"target_window_s={REPEAT_WINDOW_SECONDS:.3f}",
         flush=True,
     )
-    return repeat_in_window
+    return 1
+
+
+def _should_send_window_request(
+    completed_requests: int,
+    latency_sum_s: float,
+    repeat_request_limit: int,
+) -> bool:
+    if REPEAT_IN_WINDOW > 0:
+        return completed_requests < repeat_request_limit
+    if completed_requests <= 0:
+        return True
+    return latency_sum_s < REPEAT_WINDOW_SECONDS
 
 
 # ─────────────────────────────────────────────
@@ -1050,7 +1037,7 @@ def main() -> None:
         for scale_entry in input_scale_entries:
             scale_val = float(scale_entry["input_scale"])
             payload_override = scale_entry.get("payload")
-            actual_repeat_in_window = _calibrate_repeat_in_window(
+            repeat_request_limit = _prepare_repeat_window(
                 scale_val,
                 str(scale_entry["scale_label"]),
                 payload_override,
@@ -1089,6 +1076,7 @@ def main() -> None:
                     cpu_result = None
                     resource_usage_result = None
                     mips_result = None
+                    actual_repeat_in_window = 0
                     lat_sum = 0.0
                     latency_app_values: List[float] = []
                     mips_monitor_started = False
@@ -1146,12 +1134,17 @@ def main() -> None:
                             mips_monitor.start()
                             mips_monitor_started = True
 
-                        for k in range(actual_repeat_in_window):
-                            req_id = f"{sniff_group_id}:{k}"
+                        while _should_send_window_request(
+                            actual_repeat_in_window,
+                            lat_sum,
+                            repeat_request_limit,
+                        ):
+                            req_id = f"{sniff_group_id}:{actual_repeat_in_window}"
                             out = _one_request(scale_val, req_id=req_id, payload_override=payload_override)
                             request_latency_app_s = float(out["latency_app_s"])
                             lat_sum += request_latency_app_s
                             latency_app_values.append(request_latency_app_s)
+                            actual_repeat_in_window += 1
                             effective_input_scale = _merge_effective_input_scale(
                                 effective_input_scale,
                                 out.get("effective_input_scale"),

@@ -82,7 +82,7 @@ python run.py --model google-bert/bert-base-uncased
 - input scale: 自动规划 6 档
 - warmup: 2
 - repeat: 5
-- repeat-in-window: 自动按当前 case / input scale 的单次推理时间校准，默认目标约 10 秒 workload window
+- repeat-in-window: auto 模式下每行连续发送请求，直到本行累计 application latency 达到目标 workload window，默认约 10 秒
 
 默认完整矩阵较慢。开发和验证建议先跑小矩阵：
 
@@ -214,8 +214,8 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `--batch-size` | `1` | 每个 request 的 batch size。 |
 | `--warmup` | `2` | 每个资源配置、每个 input scale 的 warmup 行数。 |
 | `--repeat` | `5` | 每个资源配置、每个 input scale 的正式测量行数。 |
-| `--repeat-in-window` | `0` | 每一行内部连续发送的 `/predict` request 数量。`0` 表示按单次推理时间自动校准。 |
-| `--repeat-window-seconds` | `10.0` | `--repeat-in-window 0` 时的目标 workload window 秒数。 |
+| `--repeat-in-window` | `0` | 每一行内部连续发送的 `/predict` request 数量。`0` 表示 auto 模式：每行至少发送 1 个请求，并持续到累计 `latency_app_s` 达到 `--repeat-window-seconds`。 |
+| `--repeat-window-seconds` | `10.0` | `--repeat-in-window 0` 时的目标 workload window 秒数。auto 模式不再额外跑一个 10 秒校准窗口。 |
 | `--sample-hz` | `20.0` | GPU power sampling rate，单位 Hz；CPU workload 期间也用它控制 RAPL、container cgroup、CPU frequency 和 GPU/resource usage 的采样间隔，以估计 peak power、vCPU share、CPU utilization 和 CPU cycles。perf MIPS 使用独立的 `perf stat` 窗口，不受该采样率影响。CPU idle baseline 不使用该 20Hz 小区间 median。 |
 | `--idle-seconds` | `3.0` | 每个 workload window 前的 idle baseline 测量时长。CPU idle baseline 用整段 RAPL `energy_uj` 差值 / 实际 duration；`gpu_mode=on` 时 GPU idle baseline 仍来自 NVML power samples。case 结束后会复查该 case CSV 中所有有效 `cpu_idle_power_w` 的相对极差；`gpu_mode=on` 时也会复查 `gpu_idle_power_w`。达到或超过 5% 会退出实验并提示增大该值或稳定主机/GPU 环境。 |
 | `--idle-debug` | false | 开启 idle baseline 调试输出。主 CSV 会填充 GPU 的 `gpu_idle_measured_at` / `gpu_idle_rel_range_so_far` 和 CPU 的 `cpu_idle_measured_at` / `cpu_idle_rel_range_so_far`，并写出 `result_case_*.csv.idle_diag.jsonl`。诊断文件会记录 GPU idle 期间的 NVML power sample trace、`nvidia-smi` GPU/process 快照、CPU idle window 内 0.1s RAPL 子窗口、start/end `/proc` CPU delta、container CPU delta，以及测完后的 loadavg、top CPU processes、Docker 容器和 `docker stats` 快照。 |
@@ -392,7 +392,7 @@ len(cpus) * len(mems) * len(gpus) * len(input_scales) * (warmup + repeat)
 repeat_in_window
 ```
 
-个 `/predict` request。默认 `repeat_in_window=0` 会先对每个 resource case / input scale 发 5 个 calibration warmup 请求（不计入统计），再连续发送校准请求直到至少完成 9 个请求且累计 application latency 达到 `--repeat-window-seconds`，用 sustained mean latency 计算实际 request 数；因此默认完整 run 的 request 数取决于模型在持续请求窗口中的平均延迟。手动指定固定窗口时，请按下式估算：
+个 `/predict` request。显式指定 `--repeat-in-window N` 时，每行固定发送 `N` 个请求；默认 `--repeat-in-window 0` 时，每行会连续发送请求，直到本行累计 `latency_app_s` 达到 `--repeat-window-seconds`，并把本行实际完成的请求数写入 CSV 的 `repeat_in_window` 字段。因此 auto 模式下每行请求数会随 resource case、input scale 和当时 latency 波动而变化。手动指定固定窗口时，请按下式估算：
 
 ```text
 len(cpus) * len(mems) * len(gpus) * len(input_scales) * (warmup + repeat) * repeat_in_window
@@ -423,21 +423,20 @@ gpu_mode=off 且 CPU RAPL 可用: 约 10 + 3 = 13s / row
 gpu_mode=on  且 CPU RAPL 和 NVML 可用: 约 10 + 3 + 3 + 3 = 19s / row
 ```
 
-自动 `repeat-in-window` 还会在每个 resource case / input scale 前做一次校准；这部分不写入 CSV 行数，但会占用时间：
+auto 模式会在每个 resource case / input scale 前发送少量 auto warmup 请求；这部分不写入 CSV 行数，也不会再跑一个 `--repeat-window-seconds` 长度的校准窗口：
 
 ```text
-auto_calibration_s_per_case_scale ~= 5 * mean_latency_app_s
-                                  + max(9 * mean_latency_app_s, repeat_window_seconds)
+auto_warmup_s_per_case_scale ~= 5 * mean_latency_app_s
 ```
 
-如果显式指定 `--repeat-in-window N`，这段自动校准成本为 `0`。
+如果显式指定 `--repeat-in-window N`，这段 auto warmup 成本为 `0`。
 
 整体主采集时间可以按 resource case 累加：
 
 ```text
 main_collection_s ~= sum_over_cases(
   cold_start_s
-  + sum_over_scales(auto_calibration_s_per_case_scale)
+  + sum_over_scales(auto_warmup_s_per_case_scale)
   + sum_over_scales((warmup + repeat) * row_window_s)
   + sniff_parse_merge_overhead_s
 )
@@ -454,10 +453,10 @@ total_wall_s ~= docker_build_s + model_detection_s + compute_profile_s + main_co
 ```text
 gpu off 行: 16 cases * 6 scales * 7 rows * 13s ~= 2.4h
 gpu on  行: 16 cases * 6 scales * 7 rows * 19s ~= 3.5h
-auto calibration: 32 cases * 6 scales * 约 10s ~= 0.5h
+auto warmup: 32 cases * 6 scales * 5 requests，耗时取决于单 request latency
 ```
 
-也就是说，默认主矩阵通常至少按 `6.5h+` 预留；最终 wall time 还要额外加上 Docker build、模型检测、每个 case 的 cold start、tcpdump/tshark parse/merge、container cleanup，以及默认启用的 compute profiling。`--no-compute-profile` 可以去掉 compute profiling 成本；否则 compute profiling 约按 `len(input_scales) * (CPU probe + GPU probe)` 追加，`ncu` / Advisor 在部分模型上可能从数分钟增加到更久。
+也就是说，默认主矩阵通常至少按 `6h+` 预留；最终 wall time 还要额外加上 auto warmup、Docker build、模型检测、每个 case 的 cold start、tcpdump/tshark parse/merge、container cleanup，以及默认启用的 compute profiling。`--no-compute-profile` 可以去掉 compute profiling 成本；否则 compute profiling 约按 `len(input_scales) * (CPU probe + GPU probe)` 追加，`ncu` / Advisor 在部分模型上可能从数分钟增加到更久。
 
 ## 11. 常见判断
 
