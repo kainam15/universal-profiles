@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 from acprof.config import (
+    DEFAULT_IDLE_COOLDOWN_SECONDS,
     DEFAULT_REPEAT_IN_WINDOW,
     DEFAULT_REPEAT_WINDOW_SECONDS,
     SCALING_DIMENSIONS,
@@ -281,7 +282,13 @@ Examples:
         "--idle-seconds",
         type=float,
         default=3.0,
-        help="GPU idle baseline duration before each workload window",
+        help="Idle baseline measurement duration before each workload window",
+    )
+    parser.add_argument(
+        "--idle-cooldown-seconds",
+        type=float,
+        default=DEFAULT_IDLE_COOLDOWN_SECONDS,
+        help="Cooldown duration before collecting idle baselines for each workload window",
     )
     parser.add_argument(
         "--idle-debug",
@@ -474,6 +481,7 @@ Examples:
             repeat_window_seconds=args.repeat_window_seconds,
             sample_hz=args.sample_hz,
             idle_seconds=args.idle_seconds,
+            idle_cooldown_seconds=args.idle_cooldown_seconds,
             idle_debug=args.idle_debug,
             sniff_iface=args.sniff_iface,
             input_scales=input_scales_arg,

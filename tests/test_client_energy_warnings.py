@@ -278,6 +278,8 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(one_request.call_count, 20)
 
     def test_gpu_energy_uses_single_idle_measurement_per_workload_window(self) -> None:
+        sleep_calls = []
+
         class FakeGpuMonitor:
             measure_idle_calls = 0
 
@@ -338,8 +340,8 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                 SimpleNamespace(GPUEnergyMonitor=FakeGpuMonitor),
             ), patch.object(
                 client,
-                "COOLDOWN_SECONDS",
-                0,
+                "IDLE_COOLDOWN_SECONDS",
+                2.5,
             ), patch.object(
                 client,
                 "cpu_energy_mod",
@@ -352,6 +354,10 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                 client,
                 "input_scale_entries",
                 [{"input_scale": 1.0, "scale_label": "seq1", "payload": {}}],
+            ), patch.object(
+                client.time,
+                "sleep",
+                side_effect=lambda seconds: sleep_calls.append(seconds),
             ), patch.object(
                 client.requests,
                 "get",
@@ -368,6 +374,7 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                     rows = list(reader)
 
         self.assertEqual(FakeGpuMonitor.measure_idle_calls, 2)
+        self.assertEqual(sleep_calls, [2.5, 2.5])
         self.assertIn("gpu_idle_power_w", fieldnames)
         self.assertNotIn("idle_power_w", fieldnames)
         self.assertIn("gpu_energy_iters", fieldnames)
@@ -376,6 +383,105 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertNotIn("energy_eff_j", fieldnames)
         self.assertEqual(rows[0]["gpu_idle_power_w"], "10.000000")
         self.assertEqual(rows[0]["gpu_energy_eff_j"], "0.200000")
+
+    def test_idle_cooldown_applies_before_cpu_idle_without_gpu(self) -> None:
+        sleep_calls = []
+
+        class FakeCPUMonitor:
+            measure_idle_calls = 0
+
+            def __init__(self, **kwargs):
+                self.idle_power_w = float("nan")
+
+            def measure_idle(self, trace_interval_s=None):
+                type(self).measure_idle_calls += 1
+                self.idle_power_w = 5.0
+                return self.idle_power_w
+
+            def start(self):
+                pass
+
+            def stop(self):
+                return SimpleNamespace(
+                    cpu_energy_iters=2,
+                    cpu_idle_power_w=self.idle_power_w,
+                    cpu_avg_power_total_w=6.0,
+                    cpu_peak_power_total_w=7.0,
+                    cpu_energy_total_j=1.0,
+                    cpu_avg_power_eff_w=1.0,
+                    cpu_peak_power_eff_w=2.0,
+                    cpu_energy_eff_j=0.5,
+                    vcpu_cpu_share=0.5,
+                    vcpu_cpu_time_s=0.1,
+                    vcpu_avg_power_total_w=3.0,
+                    vcpu_peak_power_total_w=4.0,
+                    vcpu_energy_total_j=0.3,
+                    vcpu_avg_power_eff_w=0.4,
+                    vcpu_peak_power_eff_w=0.5,
+                    vcpu_energy_eff_j=0.2,
+                ), "", []
+
+            def close(self):
+                pass
+
+        def fake_one_request(scale_value, req_id, payload_override=None):
+            return {
+                "latency_app_s": 0.5,
+                "effective_input_scale": float(scale_value),
+            }
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_csv = f"{tmp_dir}/result.csv"
+            with patch.object(
+                client, "OUT_CSV", out_csv
+            ), patch.object(
+                client, "CASE_NAME", "case"
+            ), patch.object(
+                client, "WARMUP", 0
+            ), patch.object(
+                client, "REPEAT", 2
+            ), patch.object(
+                client, "REPEAT_IN_WINDOW", 1
+            ), patch.object(
+                client, "USE_ENERGY", False
+            ), patch.object(
+                client,
+                "IDLE_COOLDOWN_SECONDS",
+                2.5,
+                create=True,
+            ), patch.object(
+                client,
+                "energy_mod",
+                None,
+            ), patch.object(
+                client,
+                "cpu_energy_mod",
+                SimpleNamespace(CPUEnergyMonitor=lambda **kwargs: FakeCPUMonitor(**kwargs)),
+            ), patch.object(
+                client,
+                "resource_usage_mod",
+                None,
+            ), patch.object(
+                client,
+                "input_scale_entries",
+                [{"input_scale": 1.0, "scale_label": "seq1", "payload": {}}],
+            ), patch.object(
+                client.time,
+                "sleep",
+                side_effect=lambda seconds: sleep_calls.append(seconds),
+            ), patch.object(
+                client.requests,
+                "get",
+                return_value=SimpleNamespace(status_code=200, text="ok"),
+            ), patch.object(
+                client,
+                "_one_request",
+                side_effect=fake_one_request,
+            ):
+                client.main()
+
+        self.assertEqual(FakeCPUMonitor.measure_idle_calls, 2)
+        self.assertEqual(sleep_calls, [2.5, 2.5])
 
     def test_client_entrypoint_prints_friendly_energy_abort_without_traceback(self) -> None:
         stderr = io.StringIO()

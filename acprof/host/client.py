@@ -33,6 +33,7 @@ import requests
 
 from acprof.config import (
     CSV_FIELDS,
+    DEFAULT_IDLE_COOLDOWN_SECONDS,
     DEFAULT_REPEAT_IN_WINDOW,
     DEFAULT_REPEAT_WINDOW_SECONDS,
     DEFAULT_TASK_PARAMS,
@@ -78,7 +79,9 @@ USE_MIPS = os.getenv("USE_MIPS", "").strip().lower() in {"1", "true", "yes", "on
 SAMPLE_HZ = float(os.getenv("SAMPLE_HZ", "20"))
 IDLE_SECONDS = float(os.getenv("IDLE_SECONDS", "3"))
 DEVICE_INDEX = int(os.getenv("DEVICE_INDEX", "0"))
-COOLDOWN_SECONDS = 3
+IDLE_COOLDOWN_SECONDS = float(
+    os.getenv("IDLE_COOLDOWN_SECONDS", str(DEFAULT_IDLE_COOLDOWN_SECONDS))
+)
 
 # Input scales from task family config
 INPUT_SCALES_STR = os.getenv("INPUT_SCALES", "")
@@ -710,6 +713,11 @@ def _idle_debug_stats(values: List[float]) -> Dict[str, float]:
     return _idle_power_debug_stats(values, "cpu")
 
 
+def _sleep_before_idle_baseline() -> None:
+    if IDLE_COOLDOWN_SECONDS > 0.0:
+        time.sleep(IDLE_COOLDOWN_SECONDS)
+
+
 def _json_safe(value: Any) -> Any:
     if isinstance(value, float):
         return value if math.isfinite(value) else None
@@ -1081,9 +1089,10 @@ def main() -> None:
                     latency_app_values: List[float] = []
                     mips_monitor_started = False
                     try:
+                        if (USE_ENERGY and energy_mod is not None) or cpu_energy_mod is not None:
+                            _sleep_before_idle_baseline()
+
                         if USE_ENERGY and (energy_mod is not None):
-                            # Preserve the existing GPU cooldown behavior.
-                            time.sleep(COOLDOWN_SECONDS)
                             gpu_monitor = energy_mod.GPUEnergyMonitor(
                                 sample_hz=SAMPLE_HZ,
                                 idle_seconds=IDLE_SECONDS,

@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from acprof.config import (
+    DEFAULT_IDLE_COOLDOWN_SECONDS,
     DEFAULT_REPEAT_IN_WINDOW,
     DEFAULT_REPEAT_WINDOW_SECONDS,
     DOCKER_IMAGE_PREFIX,
@@ -1734,6 +1735,7 @@ def _run_single_case_legacy(
     repeat_window_seconds: float = DEFAULT_REPEAT_WINDOW_SECONDS,
     sample_hz: float = 20.0,
     idle_seconds: float = 3.0,
+    idle_cooldown_seconds: float = DEFAULT_IDLE_COOLDOWN_SECONDS,
     idle_debug: bool = False,
     sniff_iface: str = "docker0",
     input_scales: Optional[str] = None,
@@ -1889,6 +1891,7 @@ def _run_single_case_legacy(
         "USE_MIPS": "1",
         "SAMPLE_HZ": str(sample_hz),
         "IDLE_SECONDS": str(idle_seconds),
+        "IDLE_COOLDOWN_SECONDS": str(idle_cooldown_seconds),
         "DEVICE_INDEX": "0",
         "INPUT_SCALES": scales_str,
     }
@@ -1978,6 +1981,7 @@ def run_single_case(
     repeat_window_seconds: float = DEFAULT_REPEAT_WINDOW_SECONDS,
     sample_hz: float = 20.0,
     idle_seconds: float = 3.0,
+    idle_cooldown_seconds: float = DEFAULT_IDLE_COOLDOWN_SECONDS,
     idle_debug: bool = False,
     sniff_iface: str = "docker0",
     input_scales: Optional[str] = None,
@@ -2078,6 +2082,7 @@ def run_single_case(
             "USE_MIPS": "1",
             "SAMPLE_HZ": str(sample_hz),
             "IDLE_SECONDS": str(idle_seconds),
+            "IDLE_COOLDOWN_SECONDS": str(idle_cooldown_seconds),
             "IDLE_DEBUG": "1" if idle_debug else "0",
             "IDLE_DIAG_PATH": f"{out_csv}.idle_diag.jsonl" if idle_debug else "",
             "DEVICE_INDEX": "0",
@@ -2207,6 +2212,7 @@ def run_matrix(
     repeat_window_seconds: float = DEFAULT_REPEAT_WINDOW_SECONDS,
     sample_hz: float = 20.0,
     idle_seconds: float = 3.0,
+    idle_cooldown_seconds: float = DEFAULT_IDLE_COOLDOWN_SECONDS,
     idle_debug: bool = False,
     sniff_iface: str = "docker0",
     input_scales: Optional[str] = None,
@@ -2243,6 +2249,7 @@ def run_matrix(
                     repeat_window_seconds=repeat_window_seconds,
                     sample_hz=sample_hz,
                     idle_seconds=idle_seconds,
+                    idle_cooldown_seconds=idle_cooldown_seconds,
                     idle_debug=idle_debug,
                     sniff_iface=sniff_iface,
                     input_scales=input_scales,

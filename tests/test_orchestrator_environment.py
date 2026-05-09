@@ -439,11 +439,13 @@ class DetectEnvironmentTests(unittest.TestCase):
                 repeat=1,
                 repeat_in_window=1,
                 input_scales="64",
+                idle_cooldown_seconds=4.5,
                 idle_debug=True,
                 require_packet_latency=False,
             )
 
         self.assertEqual(captured_env["IDLE_DEBUG"], "1")
+        self.assertEqual(captured_env["IDLE_COOLDOWN_SECONDS"], "4.5")
         self.assertEqual(captured_env["IDLE_DIAG_PATH"], captured_env["OUT_CSV"] + ".idle_diag.jsonl")
 
     def test_run_single_case_passes_auto_repeat_window_settings_to_client(self) -> None:
