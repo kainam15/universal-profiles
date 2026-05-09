@@ -217,7 +217,7 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `--repeat-in-window` | `0` | 每一行内部连续发送的 `/predict` request 数量。`0` 表示 auto 模式：每行至少发送 1 个请求，并持续到累计 `latency_app_s` 达到 `--repeat-window-seconds`。 |
 | `--repeat-window-seconds` | `10.0` | `--repeat-in-window 0` 时的目标 workload window 秒数。auto 模式不再额外跑一个 10 秒校准窗口。 |
 | `--sample-hz` | `20.0` | GPU power sampling rate，单位 Hz；CPU workload 期间也用它控制 RAPL、container cgroup、CPU frequency 和 GPU/resource usage 的采样间隔，以估计 peak power、vCPU share、CPU utilization 和 CPU cycles。perf MIPS 使用独立的 `perf stat` 窗口，不受该采样率影响。CPU idle baseline 不使用该 20Hz 小区间 median。 |
-| `--idle-seconds` | `3.0` | 每个 workload window 前的 idle baseline 测量时长。CPU idle baseline 用整段 RAPL `energy_uj` 差值 / 实际 duration；`gpu_mode=on` 时 GPU idle baseline 仍来自 NVML power samples。case 结束后会复查该 case CSV 中所有有效 `cpu_idle_power_w` 的相对极差；`gpu_mode=on` 时也会复查 `gpu_idle_power_w`。达到或超过 5% 会退出实验并提示增大该值或稳定主机/GPU 环境。 |
+| `--idle-seconds` | `3.0` | 每个 workload window 前的 idle baseline 测量时长。CPU idle baseline 用整段 RAPL `energy_uj` 差值 / 实际 duration；`gpu_mode=on` 时 GPU idle baseline 仍来自 NVML power samples。case 结束后会复查该 case CSV 中所有有效 `cpu_idle_power_w` 的相对极差；`gpu_mode=on` 时也会复查 `gpu_idle_power_w`。达到或超过 5% 会在该 case 结束时输出 warning，实验继续运行。 |
 | `--idle-cooldown-seconds` | `3.0` | 每个 workload window 采集 idle baseline 前的统一冷却等待时间。CPU-only 和 GPU+CPU case 都使用同一个值，避免上一轮推理刚结束后的短时热状态、Docker/server 收尾或 GPU clock/power 瞬态直接进入 idle baseline。 |
 | `--idle-debug` | false | 开启 idle baseline 调试输出。主 CSV 会填充 GPU 的 `gpu_idle_measured_at` / `gpu_idle_rel_range_so_far` 和 CPU 的 `cpu_idle_measured_at` / `cpu_idle_rel_range_so_far`，并写出 `result_case_*.csv.idle_diag.jsonl`。诊断文件会记录 GPU idle 期间的 NVML power sample trace、`nvidia-smi` GPU/process 快照、CPU idle window 内 0.1s RAPL 子窗口、start/end `/proc` CPU delta、container CPU delta，以及测完后的 loadavg、top CPU processes、Docker 容器和 `docker stats` 快照。 |
 | `--input-scales` | auto | 手动覆盖 input scale 列表。未提供时自动规划 6 档。 |
@@ -477,15 +477,15 @@ CPU / vCPU energy 字段全是 `nan`：
 - `cpu_*` 字段是 host CPU package/root domain 的真实 RAPL 测量值，不累加 `intel-rapl:*:*` 这类 core 子 domain；`vcpu_*` 字段是在同一窗口内按 container cgroup CPU share 分摊出来的估计值。
 - 本项目不会用 TDP 或 CPU utilization 造功耗值；没有 RAPL 时保持 `nan`。
 
-CPU idle baseline 波动导致实验退出：
+CPU idle baseline 波动 warning：
 
-- `cpu_idle_power_w` 的 case 级相对极差达到或超过 5% 时，实验会退出并提示稳定主机环境。常见原因是 host 后台进程、IDE/远程桌面、Docker 其他容器、系统索引或 CPU 温度/频率策略变化。
+- `cpu_idle_power_w` 的 case 级相对极差达到或超过 5% 时，case 结束后会输出 warning，实验继续运行。常见原因是 host 后台进程、IDE/远程桌面、Docker 其他容器、系统索引或 CPU 温度/频率策略变化。
 - 可先增大 `--idle-cooldown-seconds` 让上一轮 workload 的瞬态结束；如果单次 idle 窗口本身仍然抖动，再增大 `--idle-seconds`。同时关闭非必要后台进程，并检查 `static_meta.csv` 中的 `cpu_governor` / `cpu_boost` 是否符合实验设置。
 - 需要定位具体时间点和进程时，加 `--idle-debug` 重跑；优先查看 `result_case_*.csv.idle_diag.jsonl` 中同一 row 的 `rapl_trace.top_power_windows`、`idle_proc_cpu_top`、`idle_container_cpu_delta_s`，再结合 `snapshot_scope=after_idle` 的 loadavg、top CPU processes 和 Docker 快照。
 
-GPU idle baseline 波动导致实验退出：
+GPU idle baseline 波动 warning：
 
-- `gpu_idle_power_w` 的 case 级相对极差达到或超过 5% 时，实验会退出并提示稳定 GPU 环境。常见原因是桌面显示栈、其他 GPU 进程、P-state/clock 调整、温度或电源管理状态变化。
+- `gpu_idle_power_w` 的 case 级相对极差达到或超过 5% 时，case 结束后会输出 warning，实验继续运行。常见原因是桌面显示栈、其他 GPU 进程、P-state/clock 调整、温度或电源管理状态变化。
 - 可先增大 `--idle-cooldown-seconds`，等待上一轮 workload 后的 GPU clock/power 状态回落；如果 idle trace 内部仍抖动，再增大 `--idle-seconds`。
 - 需要定位具体时间点和进程时，加 `--idle-debug` 重跑；优先查看同一 row 的 `gpu_idle_power_samples`、`nvidia_smi_gpu`、`nvidia_smi_pmon` 和 `nvidia_smi_compute_apps`。
 

@@ -3,6 +3,8 @@ import json
 import os
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -633,7 +635,7 @@ class DetectEnvironmentTests(unittest.TestCase):
 
         self.assertTrue(csv_path.endswith(".csv"))
 
-    def test_run_single_case_aborts_when_case_idle_power_csv_is_unstable(self) -> None:
+    def test_run_single_case_warns_when_gpu_idle_power_csv_is_unstable(self) -> None:
         task_info = TaskInfo(
             model_id="google-bert/bert-base-uncased",
             pipeline_tag="fill-mask",
@@ -649,6 +651,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 _write_gpu_case_csv(kwargs["env"]["OUT_CSV"], [10.0, 10.7, 10.2])
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
+        stdout = StringIO()
         with tempfile.TemporaryDirectory() as tmp_dir, patch(
             "acprof.host.orchestrator._start_container_session",
             return_value=orchestrator.RunningContainer(
@@ -659,31 +662,32 @@ class DetectEnvironmentTests(unittest.TestCase):
             ),
         ), patch("acprof.host.orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
             "acprof.host.orchestrator._stop_container_session"
-        ), patch("acprof.host.orchestrator._run", side_effect=fake_run):
-            with self.assertRaises(orchestrator.EnergyProfilingError) as raised:
-                orchestrator.run_single_case(
-                    task_info=task_info,
-                    cpu=1,
-                    mem=4,
-                    gpu="on",
-                    image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
-                    output_dir=tmp_dir,
-                    project_dir=".",
-                    warmup=0,
-                    repeat=3,
-                    repeat_in_window=1,
-                    input_scales="64",
-                    require_packet_latency=False,
-                )
+        ), patch("acprof.host.orchestrator._run", side_effect=fake_run), redirect_stdout(stdout):
+            csv_path = orchestrator.run_single_case(
+                task_info=task_info,
+                cpu=1,
+                mem=4,
+                gpu="on",
+                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                output_dir=tmp_dir,
+                project_dir=".",
+                warmup=0,
+                repeat=3,
+                repeat_in_window=1,
+                input_scales="64",
+                require_packet_latency=False,
+            )
 
-        message = str(raised.exception)
+        message = stdout.getvalue()
+        self.assertTrue(csv_path.endswith(".csv"))
+        self.assertIn("[energy][WARN]", message)
         self.assertIn("gpu_idle_power_w", message)
         self.assertIn("6.8%", message)
         self.assertIn("5.0%", message)
         self.assertIn("--idle-seconds", message)
         self.assertIn("GPU processes", message)
 
-    def test_run_single_case_aborts_when_cpu_idle_power_csv_is_unstable(self) -> None:
+    def test_run_single_case_warns_when_cpu_idle_power_csv_is_unstable(self) -> None:
         task_info = TaskInfo(
             model_id="google-bert/bert-base-uncased",
             pipeline_tag="fill-mask",
@@ -699,6 +703,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 _write_cpu_case_csv(kwargs["env"]["OUT_CSV"], [5.0, 5.4, 5.1])
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
+        stdout = StringIO()
         with tempfile.TemporaryDirectory() as tmp_dir, patch(
             "acprof.host.orchestrator._start_container_session",
             return_value=orchestrator.RunningContainer(
@@ -709,24 +714,25 @@ class DetectEnvironmentTests(unittest.TestCase):
             ),
         ), patch("acprof.host.orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
             "acprof.host.orchestrator._stop_container_session"
-        ), patch("acprof.host.orchestrator._run", side_effect=fake_run):
-            with self.assertRaises(orchestrator.EnergyProfilingError) as raised:
-                orchestrator.run_single_case(
-                    task_info=task_info,
-                    cpu=1,
-                    mem=4,
-                    gpu="off",
-                    image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
-                    output_dir=tmp_dir,
-                    project_dir=".",
-                    warmup=0,
-                    repeat=3,
-                    repeat_in_window=1,
-                    input_scales="64",
-                    require_packet_latency=False,
-                )
+        ), patch("acprof.host.orchestrator._run", side_effect=fake_run), redirect_stdout(stdout):
+            csv_path = orchestrator.run_single_case(
+                task_info=task_info,
+                cpu=1,
+                mem=4,
+                gpu="off",
+                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                output_dir=tmp_dir,
+                project_dir=".",
+                warmup=0,
+                repeat=3,
+                repeat_in_window=1,
+                input_scales="64",
+                require_packet_latency=False,
+            )
 
-        message = str(raised.exception)
+        message = stdout.getvalue()
+        self.assertTrue(csv_path.endswith(".csv"))
+        self.assertIn("[energy][WARN]", message)
         self.assertIn("cpu_idle_power_w", message)
         self.assertIn("7.7%", message)
         self.assertIn("5.0%", message)

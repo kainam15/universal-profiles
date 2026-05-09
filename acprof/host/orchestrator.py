@@ -235,7 +235,7 @@ def _parse_csv_float(value: Any) -> float:
         return float("nan")
 
 
-def _assert_idle_power_values_stable(
+def _check_idle_power_values_stable(
     *,
     csv_path: str,
     metric_name: str,
@@ -264,14 +264,15 @@ def _assert_idle_power_values_stable(
 
     relative_range = (max(idle_values) - min(idle_values)) / mean_idle
     if relative_range >= threshold:
-        raise EnergyProfilingError(
-            f"{metric_name} case validation failed: "
+        print(
+            f"[energy][WARN] {metric_name} case check warning: "
             f"csv={csv_path}, {metric_name}={_format_watts(idle_values)} W, "
             f"min={min(idle_values):.3f} W, max={max(idle_values):.3f} W, "
             f"mean={mean_idle:.3f} W, relative_range={relative_range * 100.0:.1f}%, "
-            f"threshold={threshold * 100.0:.1f}%. This case's energy data is not "
-            f"reliable. {remediation}"
+            f"threshold={threshold * 100.0:.1f}%. This case's energy data may be "
+            f"noisy; experiment will continue. {remediation}"
         )
+        return
 
     print(
         f"[energy] {metric_name} case check passed: "
@@ -281,7 +282,7 @@ def _assert_idle_power_values_stable(
     )
 
 
-def _assert_case_gpu_idle_power_stable(
+def _check_case_gpu_idle_power_stable(
     csv_path: str,
     threshold: float = IDLE_POWER_RELATIVE_RANGE_THRESHOLD,
 ) -> None:
@@ -308,7 +309,7 @@ def _assert_case_gpu_idle_power_stable(
                 continue
             idle_values.append(gpu_idle_power_w)
 
-    _assert_idle_power_values_stable(
+    _check_idle_power_values_stable(
         csv_path=csv_path,
         metric_name="gpu_idle_power_w",
         idle_values=idle_values,
@@ -323,7 +324,7 @@ def _assert_case_gpu_idle_power_stable(
     )
 
 
-def _assert_case_cpu_idle_power_stable(
+def _check_case_cpu_idle_power_stable(
     csv_path: str,
     threshold: float = IDLE_POWER_RELATIVE_RANGE_THRESHOLD,
 ) -> None:
@@ -346,7 +347,7 @@ def _assert_case_cpu_idle_power_stable(
                 continue
             idle_values.append(cpu_idle_power_w)
 
-    _assert_idle_power_values_stable(
+    _check_idle_power_values_stable(
         csv_path=csv_path,
         metric_name="cpu_idle_power_w",
         idle_values=idle_values,
@@ -2181,9 +2182,9 @@ def run_single_case(
                 if require_packet_latency:
                     _assert_packet_latency_csv_complete(out_csv)
 
-        _assert_case_cpu_idle_power_stable(out_csv)
+        _check_case_cpu_idle_power_stable(out_csv)
         if _normalize_gpu_mode(gpu) == "on":
-            _assert_case_gpu_idle_power_stable(out_csv)
+            _check_case_gpu_idle_power_stable(out_csv)
     finally:
         if tcpdump_proc is not None and tcpdump_proc.poll() is None:
             tcpdump_proc.terminate()
