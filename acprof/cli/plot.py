@@ -24,6 +24,13 @@ CPU_FIXED_COLORS = {
     4: (0.84, 0.15, 0.16),
     8: (0.58, 0.40, 0.74),
 }
+MEM_FIXED_COLORS = {
+    2: (0.12, 0.47, 0.71),
+    4: (0.93, 0.69, 0.13),
+    8: (0.84, 0.15, 0.16),
+    16: (0.58, 0.40, 0.74),
+}
+MEM_COLORED_METRICS = {"container_mem_util_avg_pct"}
 GPU_METRIC_ALIASES = {
     "energy_iters": "gpu_energy_iters",
     "avg_power_total_w": "gpu_avg_power_total_w",
@@ -302,6 +309,14 @@ def build_gpu_mixed_colors(
     }
 
 
+def color_for_mem(mem: int, mem_rank: int) -> tuple[float, float, float]:
+    if mem in MEM_FIXED_COLORS:
+        return MEM_FIXED_COLORS[mem]
+
+    color_map = plt.get_cmap("tab10")
+    return color_map(mem_rank % color_map.N)[:3]
+
+
 def aggregate_metric(df: pd.DataFrame, metric: str) -> pd.DataFrame:
     group_cols = ["cpu_cores", "mem_cap_gb", "gpu_mode", "input_scale"]
     metric_df = df[group_cols + [metric]].copy()
@@ -350,6 +365,7 @@ def plot_metric(df: pd.DataFrame, metric: str, title: str, ylabel: str, xlabel: 
     mem_values = sorted(int(value) for value in agg_df["mem_cap_gb"].unique())
     cpu_colors = build_cpu_base_colors(cpu_values)
     mem_rank_map = {mem: index for index, mem in enumerate(mem_values)}
+    color_by_mem = metric in MEM_COLORED_METRICS
 
     configs = sorted(
         {
@@ -369,7 +385,9 @@ def plot_metric(df: pd.DataFrame, metric: str, title: str, ylabel: str, xlabel: 
             & (agg_df["gpu_on"] == gpu_on)
         ].sort_values("input_scale")
 
-        if gpu_on and has_cpu_series:
+        if color_by_mem:
+            color = color_for_mem(mem, mem_rank_map[mem])
+        elif gpu_on and has_cpu_series:
             color = gpu_mixed_colors[(cpu, mem, gpu_on)]
         else:
             color = shade_for_mem(cpu_colors[cpu], mem_rank_map[mem], len(mem_values))

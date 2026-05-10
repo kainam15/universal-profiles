@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import pandas as pd
+
 from acprof.cli import plot
 from acprof.config import CSV_FIELDS
 
@@ -39,6 +41,48 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
         self.assertEqual(
             CSV_FIELDS[cold_start_index - len(expected):cold_start_index],
             expected,
+        )
+
+    def test_container_mem_util_plot_uses_fixed_mem_colors(self) -> None:
+        df = pd.DataFrame(
+            [
+                {
+                    "cpu_cores": 1,
+                    "mem_cap_gb": mem,
+                    "gpu_mode": gpu_mode,
+                    "input_scale": 64,
+                    "container_mem_util_avg_pct": 10.0 + mem,
+                }
+                for mem, gpu_mode in [(2, "on"), (4, "off"), (8, "on"), (16, "off")]
+            ]
+        )
+        colors_by_mem = {}
+
+        def capture_plot(*_args, **kwargs):
+            label = kwargs["label"]
+            mem = int(label.rsplit("Mem", 1)[1])
+            colors_by_mem[mem] = kwargs["color"]
+
+        with patch.object(plot.plt, "plot", side_effect=capture_plot), patch.object(
+            plot.plt, "legend"
+        ):
+            plot.plot_metric(
+                df,
+                metric="container_mem_util_avg_pct",
+                title="Container Memory Utilization vs. Input Scale",
+                ylabel="Memory Utilization (%)",
+                xlabel="input_scale",
+                out_png=None,
+            )
+
+        self.assertEqual(
+            colors_by_mem,
+            {
+                2: (0.12, 0.47, 0.71),
+                4: (0.93, 0.69, 0.13),
+                8: (0.84, 0.15, 0.16),
+                16: (0.58, 0.40, 0.74),
+            },
         )
 
     def test_prepare_df_converts_resource_usage_fields_and_derives_gib_columns(self) -> None:
