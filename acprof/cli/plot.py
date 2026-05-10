@@ -2,6 +2,8 @@
 
 import csv
 import colorsys
+import json
+import math
 import os
 import sys
 
@@ -155,6 +157,15 @@ PLOT_METRICS = [
         "GPU Memory Used (GiB)",
         "gpu_mem_used_vs_scale.png",
     ),
+]
+LATENCY_MODEL_REPORT = "latency_model_report.json"
+LATENCY_MODEL_RESIDUALS = "latency_model_residuals.csv"
+LATENCY_MODEL_FEATURES = [
+    "intercept",
+    "input_scale",
+    "inverse_cpu_cores",
+    "mem_cap_gb",
+    "gpu_on",
 ]
 
 
@@ -477,6 +488,258 @@ def plot_cold_start_bar(df: pd.DataFrame, title: str, ylabel: str, out_png: str 
     plt.close()
 
 
+def _solve_linear_system(matrix: list[list[float]], vector: list[float]) -> list[float]:
+    size = len(vector)
+    augmented = [row[:] + [vector[idx]] for idx, row in enumerate(matrix)]
+
+    for col in range(size):
+        pivot = max(range(col, size), key=lambda row: abs(augmented[row][col]))
+        if abs(augmented[pivot][col]) < 1e-12:
+            raise ValueError("singular matrix")
+        if pivot != col:
+            augmented[col], augmented[pivot] = augmented[pivot], augmented[col]
+
+        pivot_value = augmented[col][col]
+        for idx in range(col, size + 1):
+            augmented[col][idx] /= pivot_value
+
+        for row in range(size):
+            if row == col:
+                continue
+            factor = augmented[row][col]
+            if factor == 0.0:
+                continue
+            for idx in range(col, size + 1):
+                augmented[row][idx] -= factor * augmented[col][idx]
+
+    return [augmented[row][size] for row in range(size)]
+
+
+def _model_features(row) -> list[float]:
+    cpu_cores = float(row.cpu_cores)
+    return [
+        1.0,
+        float(row.input_scale),
+        1.0 / cpu_cores,
+        float(row.mem_cap_gb),
+        1.0 if is_gpu_on(row.gpu_mode) else 0.0,
+    ]
+
+
+def _fit_linear_model(rows: list) -> list[float]:
+    feature_count = len(LATENCY_MODEL_FEATURES)
+    xtx = [[0.0 for _ in range(feature_count)] for _ in range(feature_count)]
+    xty = [0.0 for _ in range(feature_count)]
+
+    for row in rows:
+        features = _model_features(row)
+        target = float(row.latency_s)
+        for i in range(feature_count):
+            xty[i] += features[i] * target
+            for j in range(feature_count):
+                xtx[i][j] += features[i] * features[j]
+
+    return _solve_linear_system(xtx, xty)
+
+
+def _predict_latency(row, coefficients: list[float]) -> float:
+    return sum(
+        coefficient * feature
+        for coefficient, feature in zip(coefficients, _model_features(row))
+    )
+
+
+def _regression_metrics(actuals: list[float], predictions: list[float]) -> dict[str, float | None]:
+    if not actuals:
+        return {"r2": None, "mae": None, "rmse": None}
+
+    errors = [actual - predicted for actual, predicted in zip(actuals, predictions)]
+    mae = sum(abs(error) for error in errors) / len(errors)
+    rmse = math.sqrt(sum(error * error for error in errors) / len(errors))
+    mean_actual = sum(actuals) / len(actuals)
+    ss_tot = sum((actual - mean_actual) ** 2 for actual in actuals)
+    ss_res = sum(error * error for error in errors)
+    r2 = None if ss_tot <= 0.0 else 1.0 - (ss_res / ss_tot)
+    return {"r2": r2, "mae": mae, "rmse": rmse}
+
+
+def _clean_json_value(value):
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return None
+        return value
+    if isinstance(value, dict):
+        return {key: _clean_json_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_clean_json_value(item) for item in value]
+    return value
+
+
+def _latency_model_rows(df: pd.DataFrame) -> list:
+    required = {"cpu_cores", "mem_cap_gb", "gpu_mode", "input_scale", "latency_s"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"CSV missing required modeling columns: {sorted(missing)}")
+
+    model_df = df[list(required)].copy()
+    for col in ("cpu_cores", "mem_cap_gb", "input_scale", "latency_s"):
+        model_df[col] = pd.to_numeric(model_df[col], errors="coerce")
+    model_df = model_df[
+        model_df["cpu_cores"].notna()
+        & model_df["mem_cap_gb"].notna()
+        & model_df["input_scale"].notna()
+        & model_df["latency_s"].notna()
+        & (model_df["cpu_cores"] > 0)
+        & (model_df["mem_cap_gb"] > 0)
+        & (model_df["input_scale"] > 0)
+        & (model_df["latency_s"] > 0)
+    ].copy()
+    model_df["source_row"] = model_df.index
+    model_df["gpu_on_sort"] = model_df["gpu_mode"].map(is_gpu_on)
+    model_df = model_df.sort_values(
+        ["gpu_on_sort", "cpu_cores", "mem_cap_gb", "input_scale", "source_row"]
+    ).reset_index(drop=True)
+    return list(model_df.itertuples(index=False))
+
+
+def _split_latency_model_rows(rows: list) -> tuple[list, list]:
+    test_rows = [row for idx, row in enumerate(rows) if (idx + 1) % 5 == 0]
+    train_rows = [row for idx, row in enumerate(rows) if (idx + 1) % 5 != 0]
+
+    if not test_rows and len(rows) > len(LATENCY_MODEL_FEATURES):
+        test_rows = [rows[-1]]
+        train_rows = rows[:-1]
+
+    return train_rows, test_rows
+
+
+def _write_skipped_latency_model_report(
+    output_dir: str,
+    static_meta: dict[str, str],
+    reason: str,
+) -> None:
+    report_path = os.path.join(output_dir, LATENCY_MODEL_REPORT)
+    report = {
+        "status": "skipped",
+        "reason": reason,
+        "target_metric": "latency_s",
+        "model_name": static_meta.get("model_name", ""),
+        "task_family": static_meta.get("task_family", ""),
+    }
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=True, indent=2)
+        f.write("\n")
+    print(f"[saved] {report_path}")
+
+
+def write_latency_model_report(
+    df: pd.DataFrame,
+    static_meta: dict[str, str],
+    output_dir: str,
+) -> None:
+    """Fit a small latency model and write report/residual artifacts."""
+    if "latency_s" not in df.columns:
+        _write_skipped_latency_model_report(output_dir, static_meta, "latency_s column missing")
+        return
+
+    try:
+        rows = _latency_model_rows(df)
+    except ValueError as exc:
+        _write_skipped_latency_model_report(output_dir, static_meta, str(exc))
+        return
+
+    feature_count = len(LATENCY_MODEL_FEATURES)
+    if len(rows) < feature_count + 2:
+        _write_skipped_latency_model_report(
+            output_dir,
+            static_meta,
+            f"need at least {feature_count + 2} valid rows, got {len(rows)}",
+        )
+        return
+
+    train_rows, test_rows = _split_latency_model_rows(rows)
+    if len(train_rows) < feature_count:
+        _write_skipped_latency_model_report(
+            output_dir,
+            static_meta,
+            f"need at least {feature_count} train rows, got {len(train_rows)}",
+        )
+        return
+
+    try:
+        coefficients = _fit_linear_model(train_rows)
+    except ValueError as exc:
+        _write_skipped_latency_model_report(output_dir, static_meta, str(exc))
+        return
+
+    train_actual = [float(row.latency_s) for row in train_rows]
+    train_predictions = [_predict_latency(row, coefficients) for row in train_rows]
+    test_actual = [float(row.latency_s) for row in test_rows]
+    test_predictions = [_predict_latency(row, coefficients) for row in test_rows]
+
+    residuals_path = os.path.join(output_dir, LATENCY_MODEL_RESIDUALS)
+    split_by_source = {int(row.source_row): "train" for row in train_rows}
+    split_by_source.update({int(row.source_row): "test" for row in test_rows})
+    with open(residuals_path, "w", encoding="utf-8", newline="") as f:
+        fieldnames = [
+            "source_row",
+            "split",
+            "cpu_cores",
+            "mem_cap_gb",
+            "gpu_mode",
+            "input_scale",
+            "latency_s",
+            "predicted_latency_s",
+            "residual_s",
+        ]
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            predicted = _predict_latency(row, coefficients)
+            actual = float(row.latency_s)
+            writer.writerow({
+                "source_row": int(row.source_row),
+                "split": split_by_source[int(row.source_row)],
+                "cpu_cores": int(row.cpu_cores),
+                "mem_cap_gb": int(row.mem_cap_gb),
+                "gpu_mode": row.gpu_mode,
+                "input_scale": f"{float(row.input_scale):.6f}",
+                "latency_s": f"{actual:.9f}",
+                "predicted_latency_s": f"{predicted:.9f}",
+                "residual_s": f"{(actual - predicted):.9f}",
+            })
+
+    report = {
+        "status": "ok",
+        "target_metric": "latency_s",
+        "model_name": static_meta.get("model_name", ""),
+        "task_family": static_meta.get("task_family", ""),
+        "input_scale_type": static_meta.get("input_scale_type", "input_scale"),
+        "model_type": "ordinary_least_squares",
+        "formula": "latency_s = intercept + input_scale + inverse_cpu_cores + mem_cap_gb + gpu_on",
+        "feature_columns": LATENCY_MODEL_FEATURES,
+        "coefficients": {
+            name: value for name, value in zip(LATENCY_MODEL_FEATURES, coefficients)
+        },
+        "rows": len(rows),
+        "train_rows": len(train_rows),
+        "test_rows": len(test_rows),
+        "split_rule": "deterministic: every fifth sorted row is test",
+        "metrics": {
+            "train": _regression_metrics(train_actual, train_predictions),
+            "test": _regression_metrics(test_actual, test_predictions),
+        },
+        "residuals_csv": LATENCY_MODEL_RESIDUALS,
+    }
+    report_path = os.path.join(output_dir, LATENCY_MODEL_REPORT)
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(_clean_json_value(report), f, ensure_ascii=True, indent=2)
+        f.write("\n")
+
+    print(f"[saved] {report_path}")
+    print(f"[saved] {residuals_path}")
+
+
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     if args and args[0] in {"-h", "--help"}:
@@ -518,6 +781,7 @@ def main(argv=None):
         ylabel="Cold Start (s)",
         out_png=os.path.join(output_dir, "cold_start_bar.png") if SAVE_PNG else None,
     )
+    write_latency_model_report(df, static_meta, output_dir)
 
 
 if __name__ == "__main__":

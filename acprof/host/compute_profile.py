@@ -442,6 +442,7 @@ def _base_docker_cmd(
         "-v", f"{os.path.abspath(payload_file)}:/payloads/{COMPUTE_PROFILE_PAYLOADS_NAME}:ro",
         "-v", f"{os.path.abspath(profile_root)}:/profiles",
         "-e", f"MODEL_ID={task_info.model_id}",
+        "-e", f"MODEL_REVISION={task_info.model_revision or 'main'}",
         "-e", f"TASK_FAMILY={task_info.task_family}",
         "-e", f"TASK_TYPE={task_info.pipeline_tag}",
         "-e", f"RUNTIME_BACKEND={task_info.runtime_backend}",

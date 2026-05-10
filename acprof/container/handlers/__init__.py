@@ -10,7 +10,14 @@ class BaseHandler(ABC):
     """Standard four-phase handler interface for all task families."""
 
     @abstractmethod
-    def load(self, model_id: str, task_type: str, backend: str, device: str) -> Dict[str, Any]:
+    def load(
+        self,
+        model_id: str,
+        task_type: str,
+        backend: str,
+        device: str,
+        model_revision: str = "main",
+    ) -> Dict[str, Any]:
         """Load model, return model_ctx dict containing model, tokenizer, processor, device, etc."""
 
     @abstractmethod

@@ -135,7 +135,14 @@ class NLPHandler(BaseHandler):
             f"max_length={max_len},question_tokens={len(question_ids)},available={available})"
         )
 
-    def load(self, model_id: str, task_type: str, backend: str, device: str) -> Dict[str, Any]:
+    def load(
+        self,
+        model_id: str,
+        task_type: str,
+        backend: str,
+        device: str,
+        model_revision: str = "main",
+    ) -> Dict[str, Any]:
         import torch
         from transformers import pipeline as hf_pipeline
 
@@ -145,6 +152,7 @@ class NLPHandler(BaseHandler):
         pipe = hf_pipeline(
             task=task_type,
             model=model_id,
+            revision=model_revision or "main",
             device_map=device_map,
             torch_dtype=torch_dtype,
             trust_remote_code=True,
@@ -153,6 +161,7 @@ class NLPHandler(BaseHandler):
             "pipeline": pipe,
             "task_type": task_type,
             "device": device,
+            "model_revision": model_revision or "main",
         }
 
     def preprocess(self, model_ctx: Dict[str, Any], raw_input: Dict[str, Any]) -> Any:

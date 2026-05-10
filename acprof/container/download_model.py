@@ -14,6 +14,7 @@ from typing import Sequence
 from huggingface_hub import snapshot_download
 
 MODEL_ID = ""
+MODEL_REVISION = "main"
 CACHE_DIR = "/models/hf"
 DEFAULT_ENDPOINT = "https://huggingface.co"
 DEFAULT_WORKERS = "8,2,1"
@@ -68,6 +69,9 @@ def _build_snapshot_kwargs(endpoint: str, max_workers: int) -> dict:
         "repo_id": MODEL_ID,
         "cache_dir": CACHE_DIR,
     }
+    revision = os.getenv("MODEL_REVISION", MODEL_REVISION).strip()
+    if revision and "revision" in params:
+        kwargs["revision"] = revision
 
     if "etag_timeout" in params:
         kwargs["etag_timeout"] = float(
@@ -88,7 +92,8 @@ def _download_once(endpoint: str, max_workers: int) -> str:
     kwargs = _build_snapshot_kwargs(endpoint, max_workers)
     print(
         f"[download] repo={MODEL_ID} endpoint={endpoint} "
-        f"workers={max_workers} cache={CACHE_DIR}",
+        f"revision={kwargs.get('revision', 'default')} workers={max_workers} "
+        f"cache={CACHE_DIR}",
         flush=True,
     )
     return snapshot_download(**kwargs)
@@ -96,9 +101,10 @@ def _download_once(endpoint: str, max_workers: int) -> str:
 
 def main(argv: Sequence[str] | None = None) -> None:
     del argv
-    global MODEL_ID, CACHE_DIR
+    global MODEL_ID, MODEL_REVISION, CACHE_DIR
 
     MODEL_ID = os.getenv("MODEL_ID", "").strip()
+    MODEL_REVISION = os.getenv("MODEL_REVISION", "main").strip() or "main"
     CACHE_DIR = os.getenv("HF_HOME", os.getenv("MODEL_CACHE_DIR", "/models/hf"))
 
     if not MODEL_ID:

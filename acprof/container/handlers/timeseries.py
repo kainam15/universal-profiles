@@ -10,7 +10,14 @@ from acprof.container.handlers import BaseHandler, HandlerRegistry
 class ChronosHandler(BaseHandler):
     """Handler for Chronos / ChronosBolt time-series forecasting models."""
 
-    def load(self, model_id: str, task_type: str, backend: str, device: str) -> Dict[str, Any]:
+    def load(
+        self,
+        model_id: str,
+        task_type: str,
+        backend: str,
+        device: str,
+        model_revision: str = "main",
+    ) -> Dict[str, Any]:
         import torch
 
         # Try ChronosBolt first (faster), fall back to base Chronos
@@ -18,6 +25,7 @@ class ChronosHandler(BaseHandler):
             from chronos import ChronosBoltPipeline
             pipeline = ChronosBoltPipeline.from_pretrained(
                 model_id,
+                revision=model_revision or "main",
                 device_map=device,
                 local_files_only=True,
             )
@@ -26,6 +34,7 @@ class ChronosHandler(BaseHandler):
             from chronos import ChronosPipeline
             pipeline = ChronosPipeline.from_pretrained(
                 model_id,
+                revision=model_revision or "main",
                 device_map=device,
                 local_files_only=True,
             )
@@ -36,6 +45,7 @@ class ChronosHandler(BaseHandler):
             "pipeline_type": pipeline_type,
             "task_type": task_type,
             "device": device,
+            "model_revision": model_revision or "main",
         }
 
     def preprocess(self, model_ctx: Dict[str, Any], raw_input: Dict[str, Any]) -> Any:
@@ -72,7 +82,14 @@ class ChronosHandler(BaseHandler):
 class TimeseriesTransformersHandler(BaseHandler):
     """Fallback handler for time-series models using transformers backend."""
 
-    def load(self, model_id: str, task_type: str, backend: str, device: str) -> Dict[str, Any]:
+    def load(
+        self,
+        model_id: str,
+        task_type: str,
+        backend: str,
+        device: str,
+        model_revision: str = "main",
+    ) -> Dict[str, Any]:
         import torch
         from transformers import pipeline as hf_pipeline
 
@@ -80,6 +97,7 @@ class TimeseriesTransformersHandler(BaseHandler):
         pipe = hf_pipeline(
             task="time-series-forecasting",
             model=model_id,
+            revision=model_revision or "main",
             device_map=device_map,
             trust_remote_code=True,
         )
@@ -87,6 +105,7 @@ class TimeseriesTransformersHandler(BaseHandler):
             "pipeline": pipe,
             "task_type": task_type,
             "device": device,
+            "model_revision": model_revision or "main",
         }
 
     def preprocess(self, model_ctx: Dict[str, Any], raw_input: Dict[str, Any]) -> Any:

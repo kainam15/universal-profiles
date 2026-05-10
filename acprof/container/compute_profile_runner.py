@@ -146,6 +146,7 @@ def main() -> None:
     args = parser.parse_args()
 
     model_id = os.getenv("MODEL_ID", "")
+    model_revision = os.getenv("MODEL_REVISION", "main")
     task_family = os.getenv("TASK_FAMILY", "nlp")
     task_type = os.getenv("TASK_TYPE", os.getenv("PIPELINE_TAG", "text-generation"))
     runtime_backend = os.getenv("RUNTIME_BACKEND", "transformers_pipeline")
@@ -157,7 +158,7 @@ def main() -> None:
 
     handler = HandlerRegistry.get(task_family, runtime_backend)
     t_load = time.perf_counter()
-    model_ctx = handler.load(model_id, task_type, runtime_backend, device)
+    model_ctx = handler.load(model_id, task_type, runtime_backend, device, model_revision)
     payload = _find_payload(args.payload_file, args.input_scale)
     processed = handler.preprocess(model_ctx, payload)
 
@@ -173,6 +174,7 @@ def main() -> None:
             print(json.dumps({
                 "status": "ok",
                 "model_id": model_id,
+                "model_revision": model_revision,
                 "device": device,
                 "input_scale": args.input_scale,
                 "repeat": repeat,
@@ -205,6 +207,7 @@ def main() -> None:
     print(json.dumps({
         "status": "ok",
         "model_id": model_id,
+        "model_revision": model_revision,
         "device": device,
         "input_scale": args.input_scale,
         "repeat": max(1, int(args.repeat)),

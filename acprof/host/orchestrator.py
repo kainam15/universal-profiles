@@ -1082,6 +1082,7 @@ def build_image(task_info: TaskInfo, project_dir: str) -> ImageInfo:
     family_build_args = [
         "--build-arg", f"BASE_IMAGE={base_tag}",
         "--build-arg", f"MODEL_ID={task_info.model_id}",
+        "--build-arg", f"MODEL_REVISION={task_info.model_revision or 'main'}",
         "--build-arg", "HF_TOKEN",
     ]
     if task_info.task_family == "nlp":
@@ -1140,6 +1141,7 @@ def _start_container_session(
         f"--memory={mem}g",
         *gpu_flag,
         "-e", f"MODEL_ID={task_info.model_id}",
+        "-e", f"MODEL_REVISION={task_info.model_revision or 'main'}",
         "-e", f"TASK_FAMILY={task_info.task_family}",
         "-e", f"TASK_TYPE={task_info.pipeline_tag}",
         "-e", f"RUNTIME_BACKEND={task_info.runtime_backend}",
@@ -1774,6 +1776,7 @@ def _run_single_case_legacy(
         f"--memory={mem}g",
         *gpu_flag,
         "-e", f"MODEL_ID={task_info.model_id}",
+        "-e", f"MODEL_REVISION={task_info.model_revision or 'main'}",
         "-e", f"TASK_FAMILY={task_info.task_family}",
         "-e", f"TASK_TYPE={task_info.pipeline_tag}",
         "-e", f"RUNTIME_BACKEND={task_info.runtime_backend}",

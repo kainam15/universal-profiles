@@ -199,6 +199,16 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 - `gpu_mem_util_vs_scale.png`
 - `gpu_mem_used_vs_scale.png`
 - `cold_start_bar.png`
+- `latency_model_report.json`
+- `latency_model_residuals.csv`
+
+建模报告使用正式测量行的 `latency_s`，拟合一个轻量 OLS 模型：
+
+```text
+latency_s = intercept + input_scale + inverse_cpu_cores + mem_cap_gb + gpu_on
+```
+
+报告中包含 train/test 行数、R²、MAE、RMSE、系数和 residual CSV 路径。若有效行数不足或矩阵退化，`latency_model_report.json` 会写入 `status=skipped` 和原因，不会影响图表生成。
 
 ## 5. CLI 参数
 
@@ -263,6 +273,8 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 | `static_meta.csv` | 一行静态元数据。记录模型、镜像、batch、input scale 语义、GPU、环境和大小信息。 |
 | `input_scale_plan.json` | 自动 input scale 规划文件。手动 `--input-scales` 时可能不存在。 |
 | `compute_profile_plan.json` | per-scale FLOP profiling 结果。默认 CPU 来自 PyTorch profiler、GPU 来自 ncu；显式 `--compute-profile-tool torch` 时全部来自 PyTorch profiler，显式 `vendor` 时来自 Intel Advisor / ncu。失败时也会写入错误信息，供 `result_all.csv` compute 字段引用。 |
+| `latency_model_report.json` | `plot.py` 生成的 latency 拟合报告。包含 OLS 模型公式、系数、train/test goodness-of-fit 指标和 residual 文件名。 |
+| `latency_model_residuals.csv` | `plot.py` 生成的逐行 latency residual。包含原始行号、train/test split、实际 latency、预测 latency 和 residual。 |
 | `result_case_*.csv.idle_diag.jsonl` | 仅 `--idle-debug` 时生成。每行对应一个 workload window 的 idle 诊断记录，包含 GPU NVML idle power trace、`nvidia-smi` GPU/process 快照、CPU idle window 内 RAPL 子窗口功率、host/container CPU delta、top proc CPU delta，以及 after-idle 快照，用于定位 `gpu_idle_power_w` / `cpu_idle_power_w` case 内波动来源。 |
 | `*.png` | `plot.py` 生成的图表。 |
 

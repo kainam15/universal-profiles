@@ -14,6 +14,7 @@ app = Flask(__name__)
 # Environment-driven configuration
 # ─────────────────────────────────────────────
 MODEL_ID = os.getenv("MODEL_ID", "")
+MODEL_REVISION = os.getenv("MODEL_REVISION", "main")
 TASK_FAMILY = os.getenv("TASK_FAMILY", "nlp")
 TASK_TYPE = os.getenv("TASK_TYPE", "text-generation")
 RUNTIME_BACKEND = os.getenv("RUNTIME_BACKEND", "transformers_pipeline")
@@ -29,11 +30,12 @@ from acprof.container.handlers import HandlerRegistry  # noqa: E402
 handler = HandlerRegistry.get(TASK_FAMILY, RUNTIME_BACKEND)
 
 print(f"[server] Loading model: {MODEL_ID}")
+print(f"[server] Revision: {MODEL_REVISION}")
 print(f"[server] Task: {TASK_TYPE} (family={TASK_FAMILY}, backend={RUNTIME_BACKEND})")
 print(f"[server] Device: {device}")
 
 t_load_start = time.perf_counter()
-model_ctx = handler.load(MODEL_ID, TASK_TYPE, RUNTIME_BACKEND, device)
+model_ctx = handler.load(MODEL_ID, TASK_TYPE, RUNTIME_BACKEND, device, MODEL_REVISION)
 t_load_end = time.perf_counter()
 load_time_s = t_load_end - t_load_start
 
@@ -65,6 +67,7 @@ def ready():
     return jsonify({
         "status": "ok",
         "model_id": MODEL_ID,
+        "model_revision": MODEL_REVISION,
         "device": device,
         "load_time_s": round(load_time_s, 3),
     })
@@ -111,6 +114,7 @@ def scale_meta():
 def meta():
     return jsonify({
         "model_id": MODEL_ID,
+        "model_revision": MODEL_REVISION,
         "task_family": TASK_FAMILY,
         "task_type": TASK_TYPE,
         "runtime_backend": RUNTIME_BACKEND,
