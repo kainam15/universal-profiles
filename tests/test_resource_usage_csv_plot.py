@@ -1,4 +1,5 @@
 import csv
+import colorsys
 import os
 import sys
 import tempfile
@@ -84,6 +85,47 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 16: (0.58, 0.40, 0.74),
             },
         )
+
+    def test_container_mem_util_plot_gets_darker_as_cpu_cores_increase(self) -> None:
+        df = pd.DataFrame(
+            [
+                {
+                    "cpu_cores": cpu,
+                    "mem_cap_gb": 4,
+                    "gpu_mode": "on",
+                    "input_scale": 64,
+                    "container_mem_util_avg_pct": 20.0,
+                }
+                for cpu in (1, 2, 4, 8)
+            ]
+        )
+        colors_by_cpu = {}
+
+        def capture_plot(*_args, **kwargs):
+            label = kwargs["label"]
+            cpu = int(label.split("+CPU", 1)[1].split("+", 1)[0])
+            colors_by_cpu[cpu] = kwargs["color"]
+
+        with patch.object(plot.plt, "plot", side_effect=capture_plot), patch.object(
+            plot.plt, "legend"
+        ):
+            plot.plot_metric(
+                df,
+                metric="container_mem_util_avg_pct",
+                title="Container Memory Utilization vs. Input Scale",
+                ylabel="Memory Utilization (%)",
+                xlabel="input_scale",
+                out_png=None,
+            )
+
+        lightness_by_cpu = {
+            cpu: colorsys.rgb_to_hls(*color)[1]
+            for cpu, color in colors_by_cpu.items()
+        }
+        self.assertEqual(set(lightness_by_cpu), {1, 2, 4, 8})
+        self.assertGreater(lightness_by_cpu[1], lightness_by_cpu[2])
+        self.assertGreater(lightness_by_cpu[2], lightness_by_cpu[4])
+        self.assertGreater(lightness_by_cpu[4], lightness_by_cpu[8])
 
     def test_prepare_df_converts_resource_usage_fields_and_derives_gib_columns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -305,6 +305,17 @@ def shade_for_mem(
     return colorsys.hls_to_rgb(hue, target_lightness, saturation)
 
 
+def shade_for_cpu(
+    base_rgb: tuple[float, float, float],
+    cpu_rank: int,
+    cpu_count: int,
+) -> tuple[float, float, float]:
+    """Keep the base hue while making larger CPU configurations darker."""
+    if cpu_count <= 1:
+        return base_rgb
+    return shade_for_mem(base_rgb, cpu_rank, cpu_count)
+
+
 def build_gpu_mixed_colors(
     configs: list[tuple[int, int, bool]],
 ) -> dict[tuple[int, int, bool], tuple[float, float, float]]:
@@ -375,6 +386,7 @@ def plot_metric(df: pd.DataFrame, metric: str, title: str, ylabel: str, xlabel: 
     cpu_values = sorted(int(value) for value in agg_df["cpu_cores"].unique())
     mem_values = sorted(int(value) for value in agg_df["mem_cap_gb"].unique())
     cpu_colors = build_cpu_base_colors(cpu_values)
+    cpu_rank_map = {cpu: index for index, cpu in enumerate(cpu_values)}
     mem_rank_map = {mem: index for index, mem in enumerate(mem_values)}
     color_by_mem = metric in MEM_COLORED_METRICS
 
@@ -397,7 +409,8 @@ def plot_metric(df: pd.DataFrame, metric: str, title: str, ylabel: str, xlabel: 
         ].sort_values("input_scale")
 
         if color_by_mem:
-            color = color_for_mem(mem, mem_rank_map[mem])
+            base_color = color_for_mem(mem, mem_rank_map[mem])
+            color = shade_for_cpu(base_color, cpu_rank_map[cpu], len(cpu_values))
         elif gpu_on and has_cpu_series:
             color = gpu_mixed_colors[(cpu, mem, gpu_on)]
         else:
