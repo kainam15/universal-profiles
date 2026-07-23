@@ -12,6 +12,41 @@ from acprof.host import compute_profile
 
 
 class ComputeProfileTests(unittest.TestCase):
+    def test_compute_container_is_offline_and_does_not_receive_hf_token(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="0123456789abcdef",
+            detection_method="hub_api",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            payload_file = os.path.join(tmp_dir, "payloads.json")
+            profile_root = os.path.join(tmp_dir, "profiles")
+            os.makedirs(profile_root)
+            with open(payload_file, "w", encoding="utf-8") as f:
+                f.write("{}")
+
+            cmd = compute_profile._base_docker_cmd(
+                task_info=task_info,
+                image_tag="acprof-test:latest",
+                cpu=1,
+                mem=2,
+                use_gpu=False,
+                payload_file=payload_file,
+                profile_root=profile_root,
+                tool_mount_roots=(),
+            )
+
+        self.assertIn("HF_HUB_OFFLINE=1", cmd)
+        self.assertIn("TRANSFORMERS_OFFLINE=1", cmd)
+        self.assertIn("MODEL_LOCAL_PATH=/models/model-snapshot", cmd)
+        self.assertNotIn("HF_TOKEN", cmd)
+        self.assertNotIn("HUGGING_FACE_HUB_TOKEN", cmd)
+
     def test_parse_advisor_report_sums_self_gflop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             report_path = os.path.join(tmp, "advisor.csv")

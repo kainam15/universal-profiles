@@ -1,8 +1,11 @@
 import inspect
+import os
+import tempfile
 import unittest
 from unittest.mock import patch
 
 from acprof.container import download_model
+from acprof.container.handlers import model_revision_kwargs, resolve_model_source
 from acprof.host import orchestrator
 from acprof.host.detect import TaskInfo
 
@@ -42,6 +45,39 @@ class ModelRevisionTests(unittest.TestCase):
             )
 
         self.assertEqual(kwargs["revision"], revision)
+
+    def test_download_model_publishes_stable_local_snapshot_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target_dir = os.path.join(tmp_dir, "snapshots", "revision")
+            local_path = os.path.join(tmp_dir, "model-snapshot")
+            os.makedirs(target_dir)
+
+            download_model._publish_local_model_path(target_dir, local_path)
+
+            self.assertTrue(os.path.islink(local_path))
+            self.assertEqual(os.path.realpath(local_path), os.path.realpath(target_dir))
+
+    def test_local_snapshot_is_preferred_and_does_not_pass_hub_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as local_path:
+            source = resolve_model_source(
+                "google-bert/bert-base-uncased",
+                local_path,
+            )
+
+            self.assertEqual(source, local_path)
+            self.assertEqual(model_revision_kwargs(source, "deadbeef"), {})
+
+    def test_missing_local_snapshot_falls_back_to_model_id_and_revision(self) -> None:
+        source = resolve_model_source(
+            "google-bert/bert-base-uncased",
+            "/missing/model-snapshot",
+        )
+
+        self.assertEqual(source, "google-bert/bert-base-uncased")
+        self.assertEqual(
+            model_revision_kwargs(source, "deadbeef"),
+            {"revision": "deadbeef"},
+        )
 
     def test_build_image_passes_model_revision_build_arg(self) -> None:
         task_info = TaskInfo(

@@ -35,6 +35,7 @@ from acprof.config import (
     STATIC_META_FIELDS,
 )
 from acprof.host.detect import TaskInfo
+from acprof.host.env_utils import hf_offline_docker_env_args
 from acprof.monitors.perf_mips import MIPS_EXIT_CODE
 
 
@@ -1147,12 +1148,7 @@ def _start_container_session(
         "-e", f"TASK_TYPE={task_info.pipeline_tag}",
         "-e", f"RUNTIME_BACKEND={task_info.runtime_backend}",
         "-e", f"USE_GPU={use_gpu}",
-        "-e", "HF_TOKEN",
-        "-e", "HUGGING_FACE_HUB_TOKEN",
-        "-e", "HF_HUB_DISABLE_TELEMETRY=1",
-        "-e", "HF_HOME=/models/hf",
-        "-e", "HF_HUB_CACHE=/models/hf",
-        "-e", "TRANSFORMERS_CACHE=/models/hf",
+        *hf_offline_docker_env_args(),
         "-p", f"{host_port}:{SERVER_PORT}",
         image_info.tag,
     ]
@@ -1782,16 +1778,7 @@ def _run_single_case_legacy(
         "-e", f"TASK_TYPE={task_info.pipeline_tag}",
         "-e", f"RUNTIME_BACKEND={task_info.runtime_backend}",
         "-e", f"USE_GPU={use_gpu}",
-        "-e", "HF_TOKEN",
-        "-e", "HUGGING_FACE_HUB_TOKEN",
-        "-e", "HF_HUB_DISABLE_TELEMETRY=1",
-        "-e", "HF_HOME=/models/hf",
-        "-e", "HF_HUB_CACHE=/models/hf",
-        "-e", "TRANSFORMERS_CACHE=/models/hf",
-        # Note: removed HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE.
-        # Newer huggingface_hub (v1.x) has a bug where OFFLINE=1 prevents
-        # resolving cached files. Since model weights are baked into the image,
-        # no network access is needed at runtime.
+        *hf_offline_docker_env_args(),
         "-p", f"{host_port}:{SERVER_PORT}",
         image_info.tag,
     ]

@@ -27,6 +27,9 @@ class ComputeProfileRunnerITTTests(unittest.TestCase):
         fake_handlers.HandlerRegistry = types.SimpleNamespace(
             get=lambda *_args, **_kwargs: None
         )
+        fake_handlers.resolve_model_source = (
+            lambda model_id, model_path=None: model_path or model_id
+        )
         sys.modules.pop("acprof.container.compute_profile_runner", None)
         with patch.dict(
             sys.modules,

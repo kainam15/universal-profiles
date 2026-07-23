@@ -4,7 +4,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from acprof.host import env_utils
-from acprof.config import HF_MIRROR_ENDPOINT
+from acprof.config import (
+    CONTAINER_HF_HOME,
+    CONTAINER_MODEL_LOCAL_PATH,
+    HF_MIRROR_ENDPOINT,
+)
 
 
 class BootstrapProjectEnvTests(unittest.TestCase):
@@ -51,6 +55,21 @@ class BootstrapProjectEnvTests(unittest.TestCase):
 
             self.assertEqual(env_utils.os.environ["HF_ENDPOINT"], HF_MIRROR_ENDPOINT)
             self.assertEqual(env_utils.os.environ["HF_HUB_ENDPOINT"], HF_MIRROR_ENDPOINT)
+
+    def test_offline_docker_env_disables_hub_and_exposes_local_snapshot(self) -> None:
+        args = env_utils.hf_offline_docker_env_args()
+        env_values = {
+            args[index + 1]
+            for index, value in enumerate(args[:-1])
+            if value == "-e"
+        }
+
+        self.assertIn("HF_HUB_OFFLINE=1", env_values)
+        self.assertIn("TRANSFORMERS_OFFLINE=1", env_values)
+        self.assertIn(f"HF_HOME={CONTAINER_HF_HOME}", env_values)
+        self.assertIn(f"HF_HUB_CACHE={CONTAINER_HF_HOME}", env_values)
+        self.assertIn(f"TRANSFORMERS_CACHE={CONTAINER_HF_HOME}", env_values)
+        self.assertIn(f"MODEL_LOCAL_PATH={CONTAINER_MODEL_LOCAL_PATH}", env_values)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from acprof.config import SCALING_DIMENSIONS
 from acprof.host.detect import TaskInfo
+from acprof.host.env_utils import hf_offline_docker_env_args
 
 
 COMPUTE_PROFILE_PLAN_NAME = "compute_profile_plan.json"
@@ -447,12 +448,7 @@ def _base_docker_cmd(
         "-e", f"TASK_TYPE={task_info.pipeline_tag}",
         "-e", f"RUNTIME_BACKEND={task_info.runtime_backend}",
         "-e", f"USE_GPU={1 if use_gpu else 0}",
-        "-e", "HF_TOKEN",
-        "-e", "HUGGING_FACE_HUB_TOKEN",
-        "-e", "HF_HUB_DISABLE_TELEMETRY=1",
-        "-e", "HF_HOME=/models/hf",
-        "-e", "HF_HUB_CACHE=/models/hf",
-        "-e", "TRANSFORMERS_CACHE=/models/hf",
+        *hf_offline_docker_env_args(),
         "-e", "HOME=/tmp",
         "-e", f"OMP_NUM_THREADS={max(1, int(cpu))}",
         "-e", f"MKL_NUM_THREADS={max(1, int(cpu))}",

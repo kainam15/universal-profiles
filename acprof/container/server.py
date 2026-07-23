@@ -5,6 +5,10 @@ from __future__ import annotations
 import os
 import time
 
+# Inference containers must never resolve model artifacts over the network.
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
 import torch
 from flask import Flask, request, jsonify
 
@@ -25,17 +29,19 @@ device = "cuda" if USE_GPU and torch.cuda.is_available() else "cpu"
 # ─────────────────────────────────────────────
 # Load handler and model
 # ─────────────────────────────────────────────
-from acprof.container.handlers import HandlerRegistry  # noqa: E402
+from acprof.container.handlers import HandlerRegistry, resolve_model_source  # noqa: E402
 
 handler = HandlerRegistry.get(TASK_FAMILY, RUNTIME_BACKEND)
+MODEL_SOURCE = resolve_model_source(MODEL_ID, os.getenv("MODEL_LOCAL_PATH"))
 
 print(f"[server] Loading model: {MODEL_ID}")
 print(f"[server] Revision: {MODEL_REVISION}")
+print(f"[server] Source: {MODEL_SOURCE}")
 print(f"[server] Task: {TASK_TYPE} (family={TASK_FAMILY}, backend={RUNTIME_BACKEND})")
 print(f"[server] Device: {device}")
 
 t_load_start = time.perf_counter()
-model_ctx = handler.load(MODEL_ID, TASK_TYPE, RUNTIME_BACKEND, device, MODEL_REVISION)
+model_ctx = handler.load(MODEL_SOURCE, TASK_TYPE, RUNTIME_BACKEND, device, MODEL_REVISION)
 t_load_end = time.perf_counter()
 load_time_s = t_load_end - t_load_start
 

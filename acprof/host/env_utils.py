@@ -7,7 +7,11 @@ from pathlib import Path
 from typing import Iterable
 from urllib.parse import urlparse
 
-from acprof.config import HF_MIRROR_ENDPOINT
+from acprof.config import (
+    CONTAINER_HF_HOME,
+    CONTAINER_MODEL_LOCAL_PATH,
+    HF_MIRROR_ENDPOINT,
+)
 
 
 def _iter_env_files(project_dir: str | os.PathLike[str]) -> Iterable[Path]:
@@ -98,3 +102,16 @@ def bootstrap_project_env(project_dir: str | os.PathLike[str]) -> str | None:
     load_project_env(project_dir)
     configure_hf_network()
     return resolve_hf_token()
+
+
+def hf_offline_docker_env_args() -> list[str]:
+    """Return the shared Docker environment for network-free model loading."""
+    return [
+        "-e", "HF_HUB_DISABLE_TELEMETRY=1",
+        "-e", "HF_HUB_OFFLINE=1",
+        "-e", "TRANSFORMERS_OFFLINE=1",
+        "-e", f"HF_HOME={CONTAINER_HF_HOME}",
+        "-e", f"HF_HUB_CACHE={CONTAINER_HF_HOME}",
+        "-e", f"TRANSFORMERS_CACHE={CONTAINER_HF_HOME}",
+        "-e", f"MODEL_LOCAL_PATH={CONTAINER_MODEL_LOCAL_PATH}",
+    ]

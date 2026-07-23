@@ -29,7 +29,7 @@ acprof/
 
 - Python 3.10+
 - Docker
-- Hugging Face Hub 网络访问，或可用的 `HF_TOKEN`
+- Hugging Face Hub 网络访问，或可用的 `HF_TOKEN`（仅用于 host 检测和镜像构建）
 - `pip install -r requirements.txt`
 
 可选但会影响字段完整性：
@@ -52,7 +52,9 @@ HF_TOKEN=hf_xxx
 ACPROF_SUDO_PASSWORD=your_sudo_password
 ```
 
-`run.py` 会自动读取 `.env` 和 `.env.local`，并把 `HF_TOKEN` / `HUGGING_FACE_HUB_TOKEN` 传给 Docker build 和 runtime。`ACPROF_SUDO_PASSWORD` 只在 host 侧用于 `sudo -S perf` / `setcap tcpdump` 这类 preflight，不会传入被测容器。
+`run.py` 会自动读取 `.env` 和 `.env.local`，并把 `HF_TOKEN` / `HUGGING_FACE_HUB_TOKEN` 用于 host 检测和 Docker build。正式 inference、scale probe 和 compute profiling 容器不会接收 Hugging Face token。`ACPROF_SUDO_PASSWORD` 只在 host 侧用于 `sudo -S perf` / `setcap tcpdump` 这类 preflight，不会传入被测容器。
+
+模型 snapshot 会在镜像构建阶段下载并通过 `/models/model-snapshot` 暴露为稳定本地路径。正式 inference、scale probe 和 compute profiling 容器统一启用 `HF_HUB_OFFLINE=1` 与 `TRANSFORMERS_OFFLINE=1`，因此资源矩阵运行阶段不会向 Hugging Face Hub 或镜像站查询模型文件。使用 `--skip-build` 的旧镜像如果还没有稳定路径，会回退到镜像内 Hugging Face cache，但仍保持离线解析。
 
 ## 2. 安装
 

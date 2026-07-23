@@ -10,9 +10,13 @@ import os
 import time
 from typing import Any, Dict, Optional
 
+# Compute profiling must use the same offline model artifact as normal inference.
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
 import torch
 
-from acprof.container.handlers import HandlerRegistry
+from acprof.container.handlers import HandlerRegistry, resolve_model_source
 
 
 def _find_payload(payload_file: str, input_scale: float) -> Dict[str, Any]:
@@ -147,6 +151,7 @@ def main() -> None:
 
     model_id = os.getenv("MODEL_ID", "")
     model_revision = os.getenv("MODEL_REVISION", "main")
+    model_source = resolve_model_source(model_id, os.getenv("MODEL_LOCAL_PATH"))
     task_family = os.getenv("TASK_FAMILY", "nlp")
     task_type = os.getenv("TASK_TYPE", os.getenv("PIPELINE_TAG", "text-generation"))
     runtime_backend = os.getenv("RUNTIME_BACKEND", "transformers_pipeline")
@@ -158,7 +163,7 @@ def main() -> None:
 
     handler = HandlerRegistry.get(task_family, runtime_backend)
     t_load = time.perf_counter()
-    model_ctx = handler.load(model_id, task_type, runtime_backend, device, model_revision)
+    model_ctx = handler.load(model_source, task_type, runtime_backend, device, model_revision)
     payload = _find_payload(args.payload_file, args.input_scale)
     processed = handler.preprocess(model_ctx, payload)
 

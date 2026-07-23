@@ -140,6 +140,52 @@ class DetectEnvironmentTests(unittest.TestCase):
             commands[1],
         )
 
+    def test_runtime_container_is_offline_and_does_not_receive_hf_token(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="0123456789abcdef",
+            detection_method="hub_api",
+        )
+        commands = []
+        ready_response = SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {
+                "status": "ok",
+                "model_id": task_info.model_id,
+                "device": "cpu",
+                "load_time_s": 1.0,
+            },
+        )
+
+        with patch(
+            "acprof.host.orchestrator._run",
+            side_effect=lambda cmd, **_kwargs: (
+                commands.append(cmd)
+                or SimpleNamespace(returncode=0, stdout="", stderr="")
+            ),
+        ), patch("requests.get", return_value=ready_response):
+            orchestrator._start_container_session(
+                task_info=task_info,
+                cpu=1,
+                mem=2,
+                gpu="off",
+                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                container_name="offline-test",
+                log_prefix="[test]",
+            )
+
+        docker_run = next(cmd for cmd in commands if cmd[:3] == ["docker", "run", "-d"])
+        self.assertIn("HF_HUB_OFFLINE=1", docker_run)
+        self.assertIn("TRANSFORMERS_OFFLINE=1", docker_run)
+        self.assertIn("MODEL_LOCAL_PATH=/models/model-snapshot", docker_run)
+        self.assertNotIn("HF_TOKEN", docker_run)
+        self.assertNotIn("HUGGING_FACE_HUB_TOKEN", docker_run)
+
     def test_detect_environment_windows_11_with_wsl_kernel(self) -> None:
         with patch("acprof.host.orchestrator.platform.system", return_value="Windows"), patch(
             "acprof.host.orchestrator.platform.release", return_value="11"

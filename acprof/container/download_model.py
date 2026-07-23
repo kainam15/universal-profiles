@@ -16,6 +16,7 @@ from huggingface_hub import snapshot_download
 MODEL_ID = ""
 MODEL_REVISION = "main"
 CACHE_DIR = "/models/hf"
+DEFAULT_LOCAL_MODEL_PATH = "/models/model-snapshot"
 DEFAULT_ENDPOINT = "https://huggingface.co"
 DEFAULT_WORKERS = "8,2,1"
 DEFAULT_BACKOFF_S = 5.0
@@ -99,6 +100,25 @@ def _download_once(endpoint: str, max_workers: int) -> str:
     return snapshot_download(**kwargs)
 
 
+def _publish_local_model_path(target_dir: str, local_path: str) -> None:
+    """Expose the downloaded revision through one stable in-image path."""
+    target = os.path.abspath(target_dir)
+    link_path = os.path.abspath(local_path)
+    if not os.path.isdir(target):
+        raise RuntimeError(f"downloaded model snapshot is not a directory: {target}")
+
+    os.makedirs(os.path.dirname(link_path), exist_ok=True)
+    if os.path.lexists(link_path):
+        if os.path.islink(link_path) and os.path.realpath(link_path) == os.path.realpath(target):
+            return
+        raise RuntimeError(
+            f"local model path already exists and does not reference this snapshot: {link_path}"
+        )
+
+    os.symlink(target, link_path, target_is_directory=True)
+    print(f"[download] Local model path: {link_path} -> {target}", flush=True)
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     del argv
     global MODEL_ID, MODEL_REVISION, CACHE_DIR
@@ -119,6 +139,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     ]
     backoff_s = float(os.getenv("HF_DOWNLOAD_RETRY_BACKOFF", str(DEFAULT_BACKOFF_S)))
     last_error: Exception | None = None
+    target_dir: str | None = None
 
     for idx, (endpoint, workers) in enumerate(attempts, start=1):
         try:
@@ -140,6 +161,13 @@ def main(argv: Sequence[str] | None = None) -> None:
         raise SystemExit(
             f"Failed to download model '{MODEL_ID}' after {len(attempts)} attempts: {last_error}"
         )
+
+    assert target_dir is not None
+    local_path = (
+        os.getenv("MODEL_LOCAL_PATH", DEFAULT_LOCAL_MODEL_PATH).strip()
+        or DEFAULT_LOCAL_MODEL_PATH
+    )
+    _publish_local_model_path(target_dir, local_path)
 
 
 if __name__ == "__main__":

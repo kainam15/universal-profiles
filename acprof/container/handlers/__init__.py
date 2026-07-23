@@ -2,8 +2,27 @@
 
 from __future__ import annotations
 
+import os
 from abc import ABC, abstractmethod
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+
+
+def resolve_model_source(model_id: str, model_path: Optional[str] = None) -> str:
+    """Prefer a baked local snapshot while retaining model-ID cache compatibility."""
+    candidate = model_path
+    if candidate is None:
+        candidate = os.getenv("MODEL_LOCAL_PATH", "")
+    candidate = candidate.strip()
+    if candidate and os.path.isdir(candidate):
+        return candidate
+    return model_id
+
+
+def model_revision_kwargs(model_source: str, model_revision: str) -> Dict[str, str]:
+    """Only pass Hub revision metadata when loading by repository ID."""
+    if os.path.isdir(model_source):
+        return {}
+    return {"revision": model_revision or "main"}
 
 
 class BaseHandler(ABC):
@@ -12,7 +31,7 @@ class BaseHandler(ABC):
     @abstractmethod
     def load(
         self,
-        model_id: str,
+        model_source: str,
         task_type: str,
         backend: str,
         device: str,

@@ -6,14 +6,14 @@ from typing import Any, Dict
 
 import numpy as np
 
-from acprof.container.handlers import BaseHandler, HandlerRegistry
+from acprof.container.handlers import BaseHandler, HandlerRegistry, model_revision_kwargs
 
 
 class AudioHandler(BaseHandler):
 
     def load(
         self,
-        model_id: str,
+        model_source: str,
         task_type: str,
         backend: str,
         device: str,
@@ -27,8 +27,8 @@ class AudioHandler(BaseHandler):
 
         pipe = hf_pipeline(
             task=task_type,
-            model=model_id,
-            revision=model_revision or "main",
+            model=model_source,
+            **model_revision_kwargs(model_source, model_revision),
             device_map=device_map,
             torch_dtype=torch_dtype,
             trust_remote_code=True,

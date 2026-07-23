@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from acprof.container.handlers import BaseHandler, HandlerRegistry
+from acprof.container.handlers import BaseHandler, HandlerRegistry, model_revision_kwargs
 
 
 class ChronosHandler(BaseHandler):
@@ -12,7 +12,7 @@ class ChronosHandler(BaseHandler):
 
     def load(
         self,
-        model_id: str,
+        model_source: str,
         task_type: str,
         backend: str,
         device: str,
@@ -24,8 +24,8 @@ class ChronosHandler(BaseHandler):
         try:
             from chronos import ChronosBoltPipeline
             pipeline = ChronosBoltPipeline.from_pretrained(
-                model_id,
-                revision=model_revision or "main",
+                model_source,
+                **model_revision_kwargs(model_source, model_revision),
                 device_map=device,
                 local_files_only=True,
             )
@@ -33,8 +33,8 @@ class ChronosHandler(BaseHandler):
         except Exception:
             from chronos import ChronosPipeline
             pipeline = ChronosPipeline.from_pretrained(
-                model_id,
-                revision=model_revision or "main",
+                model_source,
+                **model_revision_kwargs(model_source, model_revision),
                 device_map=device,
                 local_files_only=True,
             )
@@ -84,7 +84,7 @@ class TimeseriesTransformersHandler(BaseHandler):
 
     def load(
         self,
-        model_id: str,
+        model_source: str,
         task_type: str,
         backend: str,
         device: str,
@@ -96,8 +96,8 @@ class TimeseriesTransformersHandler(BaseHandler):
         device_map = device if device == "cpu" else "auto"
         pipe = hf_pipeline(
             task="time-series-forecasting",
-            model=model_id,
-            revision=model_revision or "main",
+            model=model_source,
+            **model_revision_kwargs(model_source, model_revision),
             device_map=device_map,
             trust_remote_code=True,
         )
