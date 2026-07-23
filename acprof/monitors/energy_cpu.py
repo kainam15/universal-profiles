@@ -630,6 +630,35 @@ class CPUEnergyMonitor:
             self.idle_power_w = float("nan")
         return self.idle_power_w
 
+    def apply_control_baseline(
+        self,
+        result: CPUEnergyResult,
+        samples: List[CPUSample],
+        *,
+        trace: bool = False,
+    ) -> float:
+        """Use a monitor-matched blank window as the workload baseline."""
+        self.idle_power_w = float(result.cpu_avg_power_total_w)
+        self.idle_trace = {}
+        if trace and len(samples) >= 2:
+            self.idle_trace = _build_idle_trace(
+                samples,
+                self.domains,
+                self.dt,
+                {},
+                {},
+            )
+            self.idle_trace.update({
+                "idle_trace_schema": "cpu_rapl_control_v1",
+                "cpu_idle_baseline_method": "matched_control_energy_delta",
+                "idle_proc_cpu_top": [],
+                "idle_proc_cpu_note": (
+                    "per-process snapshots are collected after the matched control "
+                    "window so they do not perturb its RAPL baseline"
+                ),
+            })
+        return self.idle_power_w
+
     def _measure_idle_with_trace(self, trace_interval_s: float) -> Tuple[CPUSample, CPUSample, List[CPUSample]]:
         sleep_s = max(0.0, self.idle_seconds)
         interval_s = max(0.001, trace_interval_s)

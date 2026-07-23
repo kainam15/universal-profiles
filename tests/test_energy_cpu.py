@@ -27,6 +27,35 @@ def _write_rapl_domain(
 
 
 class CPUEnergyMonitorTests(unittest.TestCase):
+    def test_apply_control_baseline_uses_control_average_and_records_method(self) -> None:
+        monitor = object.__new__(energy_cpu.CPUEnergyMonitor)
+        monitor.idle_power_w = float("nan")
+        monitor.idle_trace = {}
+        monitor.dt = 0.5
+        monitor.domains = [energy_cpu.RaplDomain("intel-rapl:0", "", 0)]
+        samples = [
+            energy_cpu.CPUSample(0.0, [0], 0.0, 0.0),
+            energy_cpu.CPUSample(1.0, [4_000_000], 0.2, 0.01),
+        ]
+        result = energy_cpu._result_from_samples(
+            samples,
+            idle_power_w=float("nan"),
+            domains=monitor.domains,
+        )
+
+        idle_power_w = monitor.apply_control_baseline(result, samples, trace=True)
+
+        self.assertEqual(idle_power_w, 4.0)
+        self.assertEqual(
+            monitor.idle_trace["cpu_idle_baseline_method"],
+            "matched_control_energy_delta",
+        )
+        self.assertEqual(
+            monitor.idle_trace["idle_trace_schema"],
+            "cpu_rapl_control_v1",
+        )
+        self.assertEqual(monitor.idle_trace["idle_proc_cpu_top"], [])
+
     def test_discover_rapl_domains_uses_package_domains_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             _write_rapl_domain(tmp, "intel-rapl:0", "package-0")

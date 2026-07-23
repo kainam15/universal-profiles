@@ -30,6 +30,24 @@ def _median(xs):
     return s[n // 2] if n % 2 else 0.5 * (s[n // 2 - 1] + s[n // 2])
 
 
+def _time_weighted_average_power(samples: List[Tuple[float, float]]) -> float:
+    if not samples:
+        return float("nan")
+    if len(samples) == 1:
+        return float(samples[0][1])
+
+    energy_j = 0.0
+    for idx in range(1, len(samples)):
+        t0, p0 = samples[idx - 1]
+        t1, p1 = samples[idx]
+        dt = t1 - t0
+        if dt > 0.0:
+            energy_j += 0.5 * (p0 + p1) * dt
+
+    duration_s = samples[-1][0] - samples[0][0]
+    return energy_j / duration_s if duration_s > 0.0 else float("nan")
+
+
 def _nan_result(energy_iters: int = 0, idle_power_w: float = float("nan")) -> EnergyResult:
     return EnergyResult(
         energy_iters,
@@ -51,7 +69,6 @@ def _result_from_samples(
         return _nan_result(len(samples), idle_power_w)
 
     powers = [p for _, p in samples]
-    avg_power_total = sum(powers) / len(powers)
     peak_power_total = max(powers)
 
     energy_total = 0.0
@@ -59,9 +76,12 @@ def _result_from_samples(
         t0, p0 = samples[i - 1]
         t1, p1 = samples[i]
         energy_total += 0.5 * (p0 + p1) * (t1 - t0)
+    duration_s = samples[-1][0] - samples[0][0]
+    if duration_s <= 0.0:
+        return _nan_result(len(samples), idle_power_w)
+    avg_power_total = energy_total / duration_s
 
     powers_eff = [p - idle_power_w for p in powers]
-    avg_power_eff = sum(powers_eff) / len(powers_eff)
     peak_power_eff = max(powers_eff)
 
     energy_eff = 0.0
@@ -69,6 +89,7 @@ def _result_from_samples(
         t0, _ = samples[i - 1]
         t1, _ = samples[i]
         energy_eff += 0.5 * (powers_eff[i - 1] + powers_eff[i]) * (t1 - t0)
+    avg_power_eff = energy_eff / duration_s
 
     return EnergyResult(
         len(samples),
@@ -146,7 +167,7 @@ class GPUEnergyMonitor:
             self._runtime_error = str(exc)
 
         powers = [power for _, power in idle_samples]
-        self.idle_power_w = _median(powers)
+        self.idle_power_w = _time_weighted_average_power(idle_samples)
         if trace:
             self.idle_trace = self._build_idle_trace(
                 idle_samples=idle_samples,
@@ -165,6 +186,7 @@ class GPUEnergyMonitor:
         powers = [power for _, power in idle_samples]
         trace: Dict[str, Any] = {
             "gpu_idle_trace_schema": "nvml_gpu_idle_v1",
+            "gpu_idle_baseline_method": "time_weighted_mean",
             "gpu_idle_requested_duration_s": self.idle_seconds,
             "gpu_idle_actual_duration_s": max(0.0, t_end - t_start),
             "gpu_idle_sample_hz": self.sample_hz,
@@ -180,6 +202,9 @@ class GPUEnergyMonitor:
                 "gpu_idle_power_min_w": min(powers),
                 "gpu_idle_power_max_w": max(powers),
                 "gpu_idle_power_mean_w": sum(powers) / len(powers),
+                "gpu_idle_power_time_weighted_mean_w": (
+                    _time_weighted_average_power(idle_samples)
+                ),
                 "gpu_idle_power_p50_w": _median(powers),
             })
         else:
@@ -187,11 +212,34 @@ class GPUEnergyMonitor:
                 "gpu_idle_power_min_w": float("nan"),
                 "gpu_idle_power_max_w": float("nan"),
                 "gpu_idle_power_mean_w": float("nan"),
+                "gpu_idle_power_time_weighted_mean_w": float("nan"),
                 "gpu_idle_power_p50_w": float("nan"),
             })
         if self._runtime_error:
             trace["gpu_idle_error"] = self._runtime_error
         return trace
+
+    def apply_control_baseline(
+        self,
+        result: EnergyResult,
+        samples: List[Tuple[float, float]],
+        *,
+        trace: bool = False,
+    ) -> float:
+        """Use a monitor-matched blank window as the workload baseline."""
+        self.idle_power_w = float(result.avg_power_total_w)
+        self.idle_trace = {}
+        if trace and samples:
+            self.idle_trace = self._build_idle_trace(
+                idle_samples=samples,
+                t_start=samples[0][0],
+                t_end=samples[-1][0],
+            )
+            self.idle_trace.update({
+                "gpu_idle_trace_schema": "nvml_gpu_control_v1",
+                "gpu_idle_baseline_method": "matched_control_time_weighted_mean",
+            })
+        return self.idle_power_w
 
     def start(self) -> None:
         if self._init_error or self.handle is None:

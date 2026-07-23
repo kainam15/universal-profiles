@@ -14,6 +14,80 @@ from acprof.config import CSV_FIELDS
 
 
 class EffectiveEnergyWarningTests(unittest.TestCase):
+    def test_matched_control_starts_all_monitors_before_wait_and_applies_baselines(self) -> None:
+        events = []
+
+        class FakeEnergyMonitor:
+            def __init__(self, name, avg_field):
+                self.name = name
+                self.avg_field = avg_field
+                self.applied = None
+
+            def start(self):
+                events.append(f"start:{self.name}")
+
+            def stop(self):
+                events.append(f"stop:{self.name}")
+                result = SimpleNamespace(**{self.avg_field: 7.0})
+                if self.name == "gpu":
+                    return result, "GPU", "", [(0.0, 7.0), (1.0, 7.0)]
+                return result, "", [SimpleNamespace(timestamp=0.0), SimpleNamespace(timestamp=1.0)]
+
+            def apply_control_baseline(self, result, samples, trace=False):
+                events.append(f"apply:{self.name}:{trace}")
+                self.applied = (result, samples)
+
+        class FakeResourceMonitor:
+            def start(self):
+                events.append("start:resource")
+
+            def stop(self):
+                events.append("stop:resource")
+                return None, "", []
+
+        class FakeMIPSMonitor:
+            def start(self):
+                events.append("start:mips")
+
+            def stop(self, repeat_in_window, latency_app_s):
+                events.append(f"stop:mips:{repeat_in_window}:{latency_app_s}")
+
+        gpu_monitor = FakeEnergyMonitor("gpu", "avg_power_total_w")
+        cpu_monitor = FakeEnergyMonitor("cpu", "cpu_avg_power_total_w")
+
+        with patch.object(client, "IDLE_SECONDS", 2.0), patch.object(
+            client, "IDLE_DEBUG", True
+        ), patch.object(
+            client.time,
+            "sleep",
+            side_effect=lambda seconds: events.append(f"sleep:{seconds}"),
+        ):
+            client._run_matched_control_window(
+                gpu_monitor,
+                cpu_monitor,
+                FakeResourceMonitor(),
+                FakeMIPSMonitor(),
+            )
+
+        self.assertEqual(
+            events,
+            [
+                "start:gpu",
+                "start:cpu",
+                "start:resource",
+                "start:mips",
+                "sleep:2.0",
+                "stop:mips:1:2.0",
+                "stop:resource",
+                "stop:gpu",
+                "stop:cpu",
+                "apply:gpu:True",
+                "apply:cpu:True",
+            ],
+        )
+        self.assertIsNotNone(gpu_monitor.applied)
+        self.assertIsNotNone(cpu_monitor.applied)
+
     def test_csv_schema_uses_gpu_idle_power_w_field(self) -> None:
         self.assertIn("gpu_idle_power_w", CSV_FIELDS)
         self.assertIn("gpu_idle_measured_at", CSV_FIELDS)

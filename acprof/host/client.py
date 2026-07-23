@@ -718,6 +718,90 @@ def _sleep_before_idle_baseline() -> None:
         time.sleep(IDLE_COOLDOWN_SECONDS)
 
 
+def _supports_matched_control(*monitors: Any) -> bool:
+    active = [monitor for monitor in monitors if monitor is not None]
+    return bool(active) and all(
+        callable(getattr(monitor, "apply_control_baseline", None))
+        for monitor in active
+    )
+
+
+def _run_matched_control_window(
+    gpu_monitor: Any,
+    cpu_monitor: Any,
+    resource_usage_monitor: Any,
+    mips_monitor: Any,
+) -> None:
+    """Run a blank window with the same monitor lifecycle as the workload."""
+    gpu_started = False
+    cpu_started = False
+    resource_started = False
+    mips_started = False
+    gpu_result = None
+    gpu_samples = []
+    cpu_result = None
+    cpu_samples = []
+    primary_error: Optional[Exception] = None
+    stop_error: Optional[Exception] = None
+
+    try:
+        if gpu_monitor is not None:
+            gpu_monitor.start()
+            gpu_started = True
+        if cpu_monitor is not None:
+            cpu_monitor.start()
+            cpu_started = True
+        if resource_usage_monitor is not None:
+            resource_usage_monitor.start()
+            resource_started = True
+        if mips_monitor is not None:
+            mips_monitor.start()
+            mips_started = True
+        if IDLE_SECONDS > 0.0:
+            time.sleep(IDLE_SECONDS)
+    except Exception as exc:
+        primary_error = exc
+    finally:
+        if mips_started:
+            try:
+                mips_monitor.stop(1, max(IDLE_SECONDS, 1e-9))
+            except Exception as exc:
+                stop_error = stop_error or exc
+        if resource_started:
+            try:
+                resource_usage_monitor.stop()
+            except Exception as exc:
+                stop_error = stop_error or exc
+        if gpu_started:
+            try:
+                gpu_result, _gpu_name, _gpu_error, gpu_samples = gpu_monitor.stop()
+            except Exception as exc:
+                stop_error = stop_error or exc
+        if cpu_started:
+            try:
+                cpu_result, _cpu_error, cpu_samples = cpu_monitor.stop()
+            except Exception as exc:
+                stop_error = stop_error or exc
+
+    if primary_error is not None:
+        raise primary_error
+    if stop_error is not None:
+        raise stop_error
+
+    if gpu_monitor is not None and gpu_result is not None:
+        gpu_monitor.apply_control_baseline(
+            gpu_result,
+            gpu_samples,
+            trace=IDLE_DEBUG,
+        )
+    if cpu_monitor is not None and cpu_result is not None:
+        cpu_monitor.apply_control_baseline(
+            cpu_result,
+            cpu_samples,
+            trace=IDLE_DEBUG,
+        )
+
+
 def _json_safe(value: Any) -> Any:
     if isinstance(value, float):
         return value if math.isfinite(value) else None
@@ -1087,24 +1171,17 @@ def main() -> None:
                     actual_repeat_in_window = 0
                     lat_sum = 0.0
                     latency_app_values: List[float] = []
+                    gpu_monitor_started = False
+                    cpu_monitor_started = False
+                    resource_usage_monitor_started = False
                     mips_monitor_started = False
                     try:
-                        if (USE_ENERGY and energy_mod is not None) or cpu_energy_mod is not None:
-                            _sleep_before_idle_baseline()
-
                         if USE_ENERGY and (energy_mod is not None):
                             gpu_monitor = energy_mod.GPUEnergyMonitor(
                                 sample_hz=SAMPLE_HZ,
                                 idle_seconds=IDLE_SECONDS,
                                 device_index=DEVICE_INDEX,
                             )
-                            if IDLE_DEBUG:
-                                gpu_monitor.measure_idle(trace=True)
-                                gpu_idle_measured_at = _now_iso()
-                                gpu_idle_trace = dict(getattr(gpu_monitor, "idle_trace", {}) or {})
-                                gpu_idle_debug_snapshot = _collect_gpu_idle_debug_snapshot()
-                            else:
-                                gpu_monitor.measure_idle()
 
                         if cpu_energy_mod is not None:
                             cpu_monitor = cpu_energy_mod.CPUEnergyMonitor(
@@ -1112,13 +1189,6 @@ def main() -> None:
                                 idle_seconds=IDLE_SECONDS,
                                 container_name=CONTAINER_NAME,
                             )
-                            if IDLE_DEBUG:
-                                cpu_monitor.measure_idle(trace_interval_s=IDLE_DEBUG_TRACE_INTERVAL_S)
-                                cpu_idle_measured_at = _now_iso()
-                                idle_trace = dict(getattr(cpu_monitor, "idle_trace", {}) or {})
-                                idle_debug_snapshot = _collect_idle_debug_snapshot()
-                            else:
-                                cpu_monitor.measure_idle()
 
                         if resource_usage_mod is not None:
                             resource_usage_monitor = resource_usage_mod.ResourceUsageMonitor(
@@ -1133,12 +1203,64 @@ def main() -> None:
                         if USE_MIPS:
                             mips_monitor = perf_mips_mod.PerfMIPSMonitor(CONTAINER_NAME)
 
+                        if gpu_monitor is not None or cpu_monitor is not None:
+                            _sleep_before_idle_baseline()
+                            if _supports_matched_control(gpu_monitor, cpu_monitor):
+                                _run_matched_control_window(
+                                    gpu_monitor,
+                                    cpu_monitor,
+                                    resource_usage_monitor,
+                                    mips_monitor,
+                                )
+                                measured_at = _now_iso()
+                                if gpu_monitor is not None:
+                                    gpu_idle_measured_at = measured_at
+                                    gpu_idle_trace = dict(
+                                        getattr(gpu_monitor, "idle_trace", {}) or {}
+                                    )
+                                if cpu_monitor is not None:
+                                    cpu_idle_measured_at = measured_at
+                                    idle_trace = dict(
+                                        getattr(cpu_monitor, "idle_trace", {}) or {}
+                                    )
+                            else:
+                                # Compatibility path for third-party/legacy monitors.
+                                if gpu_monitor is not None:
+                                    if IDLE_DEBUG:
+                                        gpu_monitor.measure_idle(trace=True)
+                                    else:
+                                        gpu_monitor.measure_idle()
+                                    gpu_idle_measured_at = _now_iso()
+                                    gpu_idle_trace = dict(
+                                        getattr(gpu_monitor, "idle_trace", {}) or {}
+                                    )
+                                if cpu_monitor is not None:
+                                    if IDLE_DEBUG:
+                                        cpu_monitor.measure_idle(
+                                            trace_interval_s=IDLE_DEBUG_TRACE_INTERVAL_S
+                                        )
+                                    else:
+                                        cpu_monitor.measure_idle()
+                                    cpu_idle_measured_at = _now_iso()
+                                    idle_trace = dict(
+                                        getattr(cpu_monitor, "idle_trace", {}) or {}
+                                    )
+
+                            if IDLE_DEBUG:
+                                if gpu_monitor is not None:
+                                    gpu_idle_debug_snapshot = _collect_gpu_idle_debug_snapshot()
+                                if cpu_monitor is not None:
+                                    idle_debug_snapshot = _collect_idle_debug_snapshot()
+
                         if gpu_monitor is not None:
                             gpu_monitor.start()
+                            gpu_monitor_started = True
                         if cpu_monitor is not None:
                             cpu_monitor.start()
+                            cpu_monitor_started = True
                         if resource_usage_monitor is not None:
                             resource_usage_monitor.start()
+                            resource_usage_monitor_started = True
                         if mips_monitor is not None:
                             mips_monitor.start()
                             mips_monitor_started = True
@@ -1174,18 +1296,22 @@ def main() -> None:
                                 )
                             except Exception as exc:
                                 mips_stop_error = exc
-                        if resource_usage_monitor is not None:
+                        if resource_usage_monitor is not None and resource_usage_monitor_started:
                             resource_usage_result, _resource_usage_err, _resource_usage_samples = (
                                 resource_usage_monitor.stop()
                             )
                         if gpu_monitor is not None:
                             try:
-                                gpu_result, _gpu_name_ret, _gpu_err, _gpu_samples = gpu_monitor.stop()
+                                if gpu_monitor_started:
+                                    gpu_result, _gpu_name_ret, _gpu_err, _gpu_samples = (
+                                        gpu_monitor.stop()
+                                    )
                             finally:
                                 gpu_monitor.close()
                         if cpu_monitor is not None:
                             try:
-                                cpu_result, _cpu_err, _cpu_samples = cpu_monitor.stop()
+                                if cpu_monitor_started:
+                                    cpu_result, _cpu_err, _cpu_samples = cpu_monitor.stop()
                             finally:
                                 cpu_monitor.close()
                         if resource_usage_monitor is not None:
