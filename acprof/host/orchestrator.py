@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from acprof.config import (
+    CSV_FIELDS,
     DEFAULT_IDLE_COOLDOWN_SECONDS,
     DEFAULT_REPEAT_IN_WINDOW,
     DEFAULT_REPEAT_WINDOW_SECONDS,
@@ -2020,8 +2021,21 @@ def run_single_case(
             log_prefix="[case]",
         )
     except RuntimeError as exc:
-        print(f"[case] {exc}", file=sys.stderr)
-        return ""
+        error = f"container_start_failed: {exc}"
+        print(f"[case] {error}", file=sys.stderr)
+        _write_case_error_csv(
+            task_info=task_info,
+            out_csv=out_csv,
+            cpu=cpu,
+            mem=mem,
+            gpu=gpu,
+            warmup=warmup,
+            repeat=repeat,
+            repeat_in_window=repeat_in_window,
+            input_scales=input_scales,
+            error=error,
+        )
+        return out_csv
 
     base_url = session.base_url
     cold_start_s = session.cold_start_s
@@ -2199,6 +2213,55 @@ def run_single_case(
 
     print(f"[case] Done. Output: {out_csv}")
     return out_csv
+
+
+def _write_case_error_csv(
+    *,
+    task_info: TaskInfo,
+    out_csv: str,
+    cpu: int,
+    mem: int,
+    gpu: str,
+    warmup: int,
+    repeat: int,
+    repeat_in_window: int,
+    input_scales: Optional[str],
+    error: str,
+) -> None:
+    """Write placeholder rows when a whole resource case cannot run."""
+    os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
+    scales = resolve_input_scales(task_info.task_family, input_scales)
+
+    def make_row(scale: float, repeat_idx: int, is_warmup: bool) -> Dict[str, Any]:
+        row = {field: "nan" for field in CSV_FIELDS}
+        row.update({
+            "cpu_cores": str(cpu),
+            "mem_cap_gb": str(mem),
+            "gpu_mode": gpu,
+            "input_scale": _format_scale_value(scale),
+            "task_param": "",
+            "repeat_idx": str(repeat_idx),
+            "warmup": "1" if is_warmup else "0",
+            "repeat_in_window": str(repeat_in_window),
+            "compute_profile_error": "not_run",
+            "status": "error",
+            "error": error,
+        })
+        return row
+
+    rows = []
+    for scale in scales:
+        for idx in range(warmup):
+            rows.append(make_row(scale, idx, True))
+        for idx in range(repeat):
+            rows.append(make_row(scale, idx, False))
+
+    with open(out_csv, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print(f"[case] Wrote error rows: {out_csv} ({len(rows)} rows)")
 
 
 def run_matrix(

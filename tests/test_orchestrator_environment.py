@@ -591,6 +591,64 @@ class DetectEnvironmentTests(unittest.TestCase):
 
         self.assertIn("client.py exited with code 7", str(raised.exception))
 
+    def test_run_single_case_writes_error_rows_when_container_start_fails(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="unit",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir, patch(
+            "acprof.host.orchestrator._start_container_session",
+            side_effect=RuntimeError("server not ready after 180s"),
+        ):
+            csv_path = orchestrator.run_single_case(
+                task_info=task_info,
+                cpu=1,
+                mem=2,
+                gpu="on",
+                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                output_dir=tmp_dir,
+                project_dir=".",
+                warmup=1,
+                repeat=2,
+                input_scales="85,170",
+            )
+
+            with open(csv_path, "r", encoding="utf-8", newline="") as f:
+                rows = list(csv.DictReader(f))
+
+        self.assertEqual(len(rows), 6)
+        self.assertEqual({row["status"] for row in rows}, {"error"})
+        self.assertTrue(all(row["cpu_cores"] == "1" for row in rows))
+        self.assertTrue(all(row["mem_cap_gb"] == "2" for row in rows))
+        self.assertTrue(all(row["gpu_mode"] == "on" for row in rows))
+        self.assertEqual(
+            sorted({float(row["input_scale"]) for row in rows}),
+            [85.0, 170.0],
+        )
+        self.assertEqual(
+            sorted((row["warmup"], row["repeat_idx"]) for row in rows),
+            [
+                ("0", "0"),
+                ("0", "0"),
+                ("0", "1"),
+                ("0", "1"),
+                ("1", "0"),
+                ("1", "0"),
+            ],
+        )
+        self.assertTrue(
+            all(
+                "container_start_failed: server not ready after 180s" in row["error"]
+                for row in rows
+            )
+        )
+
     def test_run_single_case_accepts_stable_idle_power_case_csv(self) -> None:
         task_info = TaskInfo(
             model_id="google-bert/bert-base-uncased",
