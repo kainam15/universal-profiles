@@ -204,13 +204,26 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 - `latency_model_report.json`
 - `latency_model_residuals.csv`
 
-建模报告使用正式测量行的 `latency_s`，拟合一个轻量 OLS 模型：
+建模前会先按 `GPU mode × CPU × memory × input scale` 对正式测量重复取中位数，确保同一个 case 的重复不会被拆到训练与测试两侧。CPU-off 与 GPU-on 使用两套独立的 log-linear least-squares 模型：
 
 ```text
-latency_s = intercept + input_scale + inverse_cpu_cores + mem_cap_gb + gpu_on
+CPU: latency_s = exp(
+  intercept + log(input_scale) + log(cpu_cores) + log(mem_cap_gb)
+  + log(input_scale) × log(cpu_cores)
+)
+
+GPU: latency_s = exp(
+  intercept + log(input_scale) + 1/cpu_cores + log(mem_cap_gb)
+  + log(input_scale) × 1/cpu_cores
+)
 ```
 
-报告中包含 train/test 行数、R²、MAE、RMSE、系数和 residual CSV 路径。若有效行数不足或矩阵退化，`latency_model_report.json` 会写入 `status=skipped` 和原因，不会影响图表生成。
+指数链接保证预测为正；CPU/GPU 独立系数等价于在联合模型中加入 GPU 相关交互。报告分别执行两种组外验证：
+
+- resource configuration holdout：逐次完整留出一个 `(cpu_cores, mem_cap_gb)` 配置及其全部 input scale；
+- input scale holdout：仅使用较小尺度训练，完整留出最大 input scale，检验向前外推；至少需要 3 个尺度，保证留出最大值后训练侧仍有 2 个不同尺度。
+
+报告逐 CPU/GPU 模型给出 R²、MAE、RMSE、relative MAE、SMAPE、非正预测数、系数、数值秩和训练范围。只有两种验证都达到 `R² >= 0.80`、总体 `relative MAE <= 0.20`、任一留出资源配置的 `relative MAE <= 0.30`、任一最大尺度 case 的相对误差 `<= 0.30`，且预测有限为正时，顶层才写入 `status=ok` 和 `prediction_ready=true`；否则使用 `poor_fit`、`unvalidated` 或 `skipped`，不会把“求解成功”误报为“可用于预测”。
 
 ## 5. CLI 参数
 
@@ -275,8 +288,8 @@ latency_s = intercept + input_scale + inverse_cpu_cores + mem_cap_gb + gpu_on
 | `static_meta.csv` | 一行静态元数据。记录模型、镜像、batch、input scale 语义、GPU、环境和大小信息。 |
 | `input_scale_plan.json` | 自动 input scale 规划文件。手动 `--input-scales` 时可能不存在。 |
 | `compute_profile_plan.json` | per-scale FLOP profiling 结果。默认 CPU 来自 PyTorch profiler、GPU 来自 ncu；显式 `--compute-profile-tool torch` 时全部来自 PyTorch profiler，显式 `vendor` 时来自 Intel Advisor / ncu。失败时也会写入错误信息，供 `result_all.csv` compute 字段引用。 |
-| `latency_model_report.json` | `plot.py` 生成的 latency 拟合报告。包含 OLS 模型公式、系数、train/test goodness-of-fit 指标和 residual 文件名。 |
-| `latency_model_residuals.csv` | `plot.py` 生成的逐行 latency residual。包含原始行号、train/test split、实际 latency、预测 latency 和 residual。 |
+| `latency_model_report.json` | `plot.py` 生成的 latency 拟合报告。包含分 CPU/GPU 的正值模型、整配置留一与最大尺度外推指标、质量门槛、系数和训练范围。 |
+| `latency_model_residuals.csv` | `plot.py` 生成的 case-level residual。每个 `GPU mode × CPU × memory × input scale` 聚合 case 一行，包含重复数/离散度、full-fit、resource-config OOF 和最大尺度 holdout 预测。 |
 | `result_case_*.csv.idle_diag.jsonl` | 仅 `--idle-debug` 时生成。每行对应一个 workload window 的 idle 诊断记录，包含 GPU NVML idle power trace、`nvidia-smi` GPU/process 快照、CPU idle window 内 RAPL 子窗口功率、host/container CPU delta、top proc CPU delta，以及 after-idle 快照，用于定位 `gpu_idle_power_w` / `cpu_idle_power_w` case 内波动来源。 |
 | `*.png` | `plot.py` 生成的图表。 |
 

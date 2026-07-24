@@ -7,6 +7,7 @@ import math
 import os
 import sys
 
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
@@ -19,6 +20,8 @@ SAVE_PNG = True
 SHOW_PLOTS = False
 GPU_GREEN = (0.18, 0.62, 0.28)
 GPU_LIGHT_GREEN = (0.49, 0.78, 0.53)
+GPU_MODE_ON_VALUES = {"on", "1", "1.0", "true", "yes", "gpu"}
+GPU_MODE_OFF_VALUES = {"off", "0", "0.0", "false", "no", "cpu"}
 BYTES_PER_GIB = 1024 ** 3
 CPU_FIXED_COLORS = {
     1: (0.12, 0.47, 0.71),
@@ -160,27 +163,74 @@ PLOT_METRICS = [
 ]
 LATENCY_MODEL_REPORT = "latency_model_report.json"
 LATENCY_MODEL_RESIDUALS = "latency_model_residuals.csv"
-LATENCY_MODEL_FEATURES = [
-    "intercept",
-    "input_scale",
-    "inverse_cpu_cores",
+LATENCY_MODEL_FEATURES = {
+    "cpu": [
+        "intercept",
+        "log_input_scale",
+        "log_cpu_cores",
+        "log_mem_cap_gb",
+        "log_input_scale_x_log_cpu_cores",
+    ],
+    "gpu": [
+        "intercept",
+        "log_input_scale",
+        "inverse_cpu_cores",
+        "log_mem_cap_gb",
+        "log_input_scale_x_inverse_cpu_cores",
+    ],
+}
+LATENCY_MODEL_FORMULAS = {
+    "cpu": (
+        "latency_s = exp(intercept + log_input_scale "
+        "+ log_cpu_cores + log_mem_cap_gb "
+        "+ log_input_scale_x_log_cpu_cores)"
+    ),
+    "gpu": (
+        "latency_s = exp(intercept + log_input_scale "
+        "+ inverse_cpu_cores + log_mem_cap_gb "
+        "+ log_input_scale_x_inverse_cpu_cores)"
+    ),
+}
+LATENCY_MODEL_MIN_VALIDATION_R2 = 0.80
+LATENCY_MODEL_MAX_VALIDATION_RELATIVE_MAE = 0.20
+LATENCY_MODEL_MAX_CONFIGURATION_FOLD_RELATIVE_MAE = 0.30
+LATENCY_MODEL_MAX_SCALE_CASE_RELATIVE_ERROR = 0.30
+LATENCY_MODEL_MIN_VALIDATION_POINTS = 4
+LATENCY_MODEL_RESIDUAL_FIELDS = [
+    "report_schema_version",
+    "case_id",
+    "split",
+    "hardware_model",
+    "cpu_cores",
     "mem_cap_gb",
-    "gpu_on",
+    "gpu_mode",
+    "input_scale",
+    "repeat_count",
+    "latency_s",
+    "latency_mean_s",
+    "latency_std_s",
+    "predicted_latency_s",
+    "residual_s",
+    "fitted_predicted_latency_s",
+    "fitted_residual_s",
+    "resource_config_oof_predicted_latency_s",
+    "resource_config_oof_residual_s",
+    "max_scale_holdout_predicted_latency_s",
+    "max_scale_holdout_residual_s",
 ]
 
 
 def make_config_label(row) -> str:
-    gpu = str(row["gpu_mode"]).lower()
     cpu = int(row["cpu_cores"])
     mem = int(row["mem_cap_gb"])
-    if gpu in ("on", "1", "true", "yes", "gpu"):
+    if is_gpu_on(row["gpu_mode"]):
         return f"GPU+CPU{cpu}+Mem{mem}"
     else:
         return f"CPU+CPU{cpu}+Mem{mem}"
 
 
 def is_gpu_on(gpu_mode: object) -> bool:
-    return str(gpu_mode).lower() in {"on", "1", "true", "yes", "gpu"}
+    return str(gpu_mode).strip().lower() in GPU_MODE_ON_VALUES
 
 
 def prepare_df(csv_path: str) -> pd.DataFrame:
@@ -501,94 +551,236 @@ def plot_cold_start_bar(df: pd.DataFrame, title: str, ylabel: str, out_png: str 
     plt.close()
 
 
-def _solve_linear_system(matrix: list[list[float]], vector: list[float]) -> list[float]:
-    size = len(vector)
-    augmented = [row[:] + [vector[idx]] for idx, row in enumerate(matrix)]
-
-    for col in range(size):
-        pivot = max(range(col, size), key=lambda row: abs(augmented[row][col]))
-        if abs(augmented[pivot][col]) < 1e-12:
-            raise ValueError("singular matrix")
-        if pivot != col:
-            augmented[col], augmented[pivot] = augmented[pivot], augmented[col]
-
-        pivot_value = augmented[col][col]
-        for idx in range(col, size + 1):
-            augmented[col][idx] /= pivot_value
-
-        for row in range(size):
-            if row == col:
-                continue
-            factor = augmented[row][col]
-            if factor == 0.0:
-                continue
-            for idx in range(col, size + 1):
-                augmented[row][idx] -= factor * augmented[col][idx]
-
-    return [augmented[row][size] for row in range(size)]
+def _hardware_model_name(gpu_mode: object) -> str:
+    if pd.isna(gpu_mode):
+        raise ValueError("gpu_mode contains a missing value")
+    normalized = str(gpu_mode).strip().lower()
+    if normalized in GPU_MODE_ON_VALUES:
+        return "gpu"
+    if normalized in GPU_MODE_OFF_VALUES:
+        return "cpu"
+    raise ValueError(f"unsupported gpu_mode value: {gpu_mode!r}")
 
 
-def _model_features(row) -> list[float]:
+def _model_features(row, hardware_model: str) -> list[float]:
+    input_scale = float(row.input_scale)
     cpu_cores = float(row.cpu_cores)
-    return [
-        1.0,
-        float(row.input_scale),
-        1.0 / cpu_cores,
-        float(row.mem_cap_gb),
-        1.0 if is_gpu_on(row.gpu_mode) else 0.0,
-    ]
+    mem_cap_gb = float(row.mem_cap_gb)
+    log_input_scale = math.log(input_scale)
+    log_mem_cap_gb = math.log(mem_cap_gb)
+
+    if hardware_model == "cpu":
+        log_cpu_cores = math.log(cpu_cores)
+        return [
+            1.0,
+            log_input_scale,
+            log_cpu_cores,
+            log_mem_cap_gb,
+            log_input_scale * log_cpu_cores,
+        ]
+    if hardware_model == "gpu":
+        inverse_cpu_cores = 1.0 / cpu_cores
+        return [
+            1.0,
+            log_input_scale,
+            inverse_cpu_cores,
+            log_mem_cap_gb,
+            log_input_scale * inverse_cpu_cores,
+        ]
+    raise ValueError(f"unknown latency hardware model: {hardware_model}")
 
 
-def _fit_linear_model(rows: list) -> list[float]:
-    feature_count = len(LATENCY_MODEL_FEATURES)
-    xtx = [[0.0 for _ in range(feature_count)] for _ in range(feature_count)]
-    xty = [0.0 for _ in range(feature_count)]
+def _fit_log_latency_model(rows: list, hardware_model: str) -> dict:
+    """Fit log(latency) with rank-revealing least squares.
 
-    for row in rows:
-        features = _model_features(row)
-        target = float(row.latency_s)
-        for i in range(feature_count):
-            xty[i] += features[i] * target
-            for j in range(feature_count):
-                xtx[i][j] += features[i] * features[j]
+    Regressors are standardized before solving. Constant or linearly dependent
+    columns are removed so CPU-only, GPU-only, and reduced resource matrices do
+    not fail merely because a feature is constant.
+    """
+    if len(rows) < 3:
+        raise ValueError(f"need at least 3 case rows, got {len(rows)}")
 
-    return _solve_linear_system(xtx, xty)
+    feature_names = LATENCY_MODEL_FEATURES[hardware_model]
+    feature_matrix = np.asarray(
+        [_model_features(row, hardware_model) for row in rows],
+        dtype=float,
+    )
+    target = np.log(np.asarray([float(row.latency_s) for row in rows], dtype=float))
+    if not np.isfinite(feature_matrix).all() or not np.isfinite(target).all():
+        raise ValueError("model inputs contain non-finite values")
 
+    means = np.zeros(feature_matrix.shape[1], dtype=float)
+    scales = np.ones(feature_matrix.shape[1], dtype=float)
+    standardized = np.zeros_like(feature_matrix)
+    standardized[:, 0] = 1.0
+    for feature_idx in range(1, feature_matrix.shape[1]):
+        column = feature_matrix[:, feature_idx]
+        means[feature_idx] = float(column.mean())
+        scales[feature_idx] = float(column.std())
+        if scales[feature_idx] > 1e-12:
+            standardized[:, feature_idx] = (
+                column - means[feature_idx]
+            ) / scales[feature_idx]
 
-def _predict_latency(row, coefficients: list[float]) -> float:
-    return sum(
-        coefficient * feature
-        for coefficient, feature in zip(coefficients, _model_features(row))
+    selected_indices: list[int] = []
+    for feature_idx in range(standardized.shape[1]):
+        candidate_indices = selected_indices + [feature_idx]
+        candidate = standardized[:, candidate_indices]
+        if int(np.linalg.matrix_rank(candidate)) > len(selected_indices):
+            selected_indices.append(feature_idx)
+
+    if len(selected_indices) < 2:
+        raise ValueError("model matrix has no usable varying predictor")
+
+    selected_matrix = standardized[:, selected_indices]
+    standardized_coefficients, _, rank, singular_values = np.linalg.lstsq(
+        selected_matrix,
+        target,
+        rcond=None,
+    )
+    if int(rank) != len(selected_indices):
+        raise ValueError(
+            f"rank-deficient model matrix: rank={int(rank)}, "
+            f"features={len(selected_indices)}"
+        )
+
+    coefficients = np.zeros(feature_matrix.shape[1], dtype=float)
+    for position, feature_idx in enumerate(selected_indices):
+        if feature_idx == 0:
+            continue
+        coefficients[feature_idx] = (
+            standardized_coefficients[position] / scales[feature_idx]
+        )
+    intercept_position = selected_indices.index(0)
+    coefficients[0] = standardized_coefficients[intercept_position] - sum(
+        coefficients[feature_idx] * means[feature_idx]
+        for feature_idx in selected_indices
+        if feature_idx != 0
     )
 
+    smallest_singular = float(singular_values[-1])
+    condition_number = (
+        None
+        if smallest_singular <= 0.0
+        else float(singular_values[0] / smallest_singular)
+    )
+    return {
+        "hardware_model": hardware_model,
+        "feature_names": feature_names,
+        "selected_indices": selected_indices,
+        "selected_feature_names": [
+            feature_names[feature_idx] for feature_idx in selected_indices
+        ],
+        "dropped_feature_names": [
+            feature_names[feature_idx]
+            for feature_idx in range(len(feature_names))
+            if feature_idx not in selected_indices
+        ],
+        "coefficients": [float(value) for value in coefficients],
+        "rank": int(rank),
+        "condition_number": condition_number,
+        "fit_case_rows": len(rows),
+    }
 
-def _regression_metrics(actuals: list[float], predictions: list[float]) -> dict[str, float | None]:
-    if not actuals:
-        return {"r2": None, "mae": None, "rmse": None}
 
-    errors = [actual - predicted for actual, predicted in zip(actuals, predictions)]
-    mae = sum(abs(error) for error in errors) / len(errors)
+def _predict_latency(row, model: dict) -> float:
+    linear_prediction = sum(
+        coefficient * feature
+        for coefficient, feature in zip(
+            model["coefficients"],
+            _model_features(row, model["hardware_model"]),
+        )
+    )
+    # The exponential link makes predictions positive. Clipping only protects
+    # artifact generation from floating-point overflow on extreme extrapolation.
+    bounded_prediction = min(max(linear_prediction, -700.0), 700.0)
+    return float(math.exp(bounded_prediction))
+
+
+def _regression_metrics(
+    actuals: list[float],
+    predictions: list[float],
+) -> dict[str, float | int | None]:
+    prediction_count = len(predictions)
+    nonfinite_prediction_count = sum(
+        not math.isfinite(float(prediction)) for prediction in predictions
+    )
+    nonpositive_prediction_count = sum(
+        math.isfinite(float(prediction)) and float(prediction) <= 0.0
+        for prediction in predictions
+    )
+    valid_pairs = [
+        (float(actual), float(prediction))
+        for actual, prediction in zip(actuals, predictions)
+        if math.isfinite(float(actual)) and math.isfinite(float(prediction))
+    ]
+    if not valid_pairs:
+        return {
+            "r2": None,
+            "mae": None,
+            "rmse": None,
+            "relative_mae": None,
+            "smape": None,
+            "p95_absolute_error": None,
+            "mean_actual": None,
+            "prediction_count": prediction_count,
+            "nonfinite_prediction_count": nonfinite_prediction_count,
+            "nonpositive_prediction_count": nonpositive_prediction_count,
+            "min_prediction": None,
+            "max_prediction": None,
+        }
+
+    valid_actuals = [pair[0] for pair in valid_pairs]
+    valid_predictions = [pair[1] for pair in valid_pairs]
+    errors = [
+        actual - predicted
+        for actual, predicted in zip(valid_actuals, valid_predictions)
+    ]
+    absolute_errors = [abs(error) for error in errors]
+    mae = sum(absolute_errors) / len(absolute_errors)
     rmse = math.sqrt(sum(error * error for error in errors) / len(errors))
-    mean_actual = sum(actuals) / len(actuals)
-    ss_tot = sum((actual - mean_actual) ** 2 for actual in actuals)
+    mean_actual = sum(valid_actuals) / len(valid_actuals)
+    ss_tot = sum((actual - mean_actual) ** 2 for actual in valid_actuals)
     ss_res = sum(error * error for error in errors)
-    r2 = None if ss_tot <= 0.0 else 1.0 - (ss_res / ss_tot)
-    return {"r2": r2, "mae": mae, "rmse": rmse}
+    r2 = None if ss_tot <= 1e-24 else 1.0 - (ss_res / ss_tot)
+    relative_mae = None if mean_actual <= 0.0 else mae / mean_actual
+    smape_terms = [
+        2.0 * abs(actual - predicted) / (abs(actual) + abs(predicted))
+        for actual, predicted in zip(valid_actuals, valid_predictions)
+        if abs(actual) + abs(predicted) > 0.0
+    ]
+    smape = None if not smape_terms else sum(smape_terms) / len(smape_terms)
+    return {
+        "r2": r2,
+        "mae": mae,
+        "rmse": rmse,
+        "relative_mae": relative_mae,
+        "smape": smape,
+        "p95_absolute_error": float(np.percentile(absolute_errors, 95)),
+        "mean_actual": mean_actual,
+        "prediction_count": prediction_count,
+        "nonfinite_prediction_count": nonfinite_prediction_count,
+        "nonpositive_prediction_count": nonpositive_prediction_count,
+        "min_prediction": min(valid_predictions),
+        "max_prediction": max(valid_predictions),
+    }
 
 
 def _clean_json_value(value):
+    if isinstance(value, np.generic):
+        value = value.item()
     if isinstance(value, float):
         if not math.isfinite(value):
             return None
         return value
     if isinstance(value, dict):
         return {key: _clean_json_value(item) for key, item in value.items()}
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [_clean_json_value(item) for item in value]
     return value
 
 
-def _latency_model_rows(df: pd.DataFrame) -> list:
+def _latency_model_frame(df: pd.DataFrame) -> pd.DataFrame:
     required = {"cpu_cores", "mem_cap_gb", "gpu_mode", "input_scale", "latency_s"}
     missing = required - set(df.columns)
     if missing:
@@ -608,22 +800,391 @@ def _latency_model_rows(df: pd.DataFrame) -> list:
         & (model_df["latency_s"] > 0)
     ].copy()
     model_df["source_row"] = model_df.index
-    model_df["gpu_on_sort"] = model_df["gpu_mode"].map(is_gpu_on)
-    model_df = model_df.sort_values(
-        ["gpu_on_sort", "cpu_cores", "mem_cap_gb", "input_scale", "source_row"]
+    model_df["hardware_model"] = model_df["gpu_mode"].map(_hardware_model_name)
+    return model_df.sort_values(
+        ["hardware_model", "cpu_cores", "mem_cap_gb", "input_scale", "source_row"]
     ).reset_index(drop=True)
-    return list(model_df.itertuples(index=False))
 
 
-def _split_latency_model_rows(rows: list) -> tuple[list, list]:
-    test_rows = [row for idx, row in enumerate(rows) if (idx + 1) % 5 == 0]
-    train_rows = [row for idx, row in enumerate(rows) if (idx + 1) % 5 != 0]
+def _aggregate_latency_model_points(model_df: pd.DataFrame) -> list:
+    """Collapse repeated windows before any fit or validation split."""
+    point_df = model_df.groupby(
+        ["hardware_model", "cpu_cores", "mem_cap_gb", "input_scale"],
+        as_index=False,
+        sort=True,
+    ).agg(
+        latency_s=("latency_s", "median"),
+        latency_mean_s=("latency_s", "mean"),
+        latency_std_s=("latency_s", lambda values: values.std(ddof=0)),
+        repeat_count=("latency_s", "size"),
+    )
+    point_df["latency_std_s"] = point_df["latency_std_s"].fillna(0.0)
+    return list(point_df.itertuples(index=False))
 
-    if not test_rows and len(rows) > len(LATENCY_MODEL_FEATURES):
-        test_rows = [rows[-1]]
-        train_rows = rows[:-1]
 
-    return train_rows, test_rows
+def _point_key(row) -> tuple[str, float, float, float]:
+    return (
+        str(row.hardware_model),
+        float(row.cpu_cores),
+        float(row.mem_cap_gb),
+        float(row.input_scale),
+    )
+
+
+def _resource_configuration_validation(
+    rows: list,
+    hardware_model: str,
+) -> tuple[dict, dict[tuple[str, float, float, float], float]]:
+    """Leave one complete (CPU, memory) configuration out per fold."""
+    configurations = sorted({
+        (float(row.cpu_cores), float(row.mem_cap_gb)) for row in rows
+    })
+    if len(configurations) < 3:
+        return {
+            "available": False,
+            "reason": (
+                "need at least 3 resource configurations so each held-out fold "
+                "retains at least 2 training configurations"
+            ),
+            "folds": 0,
+            "completed_folds": 0,
+            "failed_folds": [],
+            "train_test_group_overlap_count": 0,
+            "metrics": _regression_metrics([], []),
+        }, {}
+
+    predictions: dict[tuple[str, float, float, float], float] = {}
+    failed_folds = []
+    fold_details = []
+    train_test_group_overlap_count = 0
+    completed_folds = 0
+    for cpu_cores, mem_cap_gb in configurations:
+        test_rows = [
+            row
+            for row in rows
+            if (
+                float(row.cpu_cores) == cpu_cores
+                and float(row.mem_cap_gb) == mem_cap_gb
+            )
+        ]
+        train_rows = [
+            row
+            for row in rows
+            if not (
+                float(row.cpu_cores) == cpu_cores
+                and float(row.mem_cap_gb) == mem_cap_gb
+            )
+        ]
+        train_groups = {
+            (float(row.cpu_cores), float(row.mem_cap_gb)) for row in train_rows
+        }
+        test_groups = {
+            (float(row.cpu_cores), float(row.mem_cap_gb)) for row in test_rows
+        }
+        fold_overlap_count = len(train_groups & test_groups)
+        train_test_group_overlap_count += fold_overlap_count
+        fold_detail = {
+            "held_out_cpu_cores": cpu_cores,
+            "held_out_mem_cap_gb": mem_cap_gb,
+            "train_case_rows": len(train_rows),
+            "test_case_rows": len(test_rows),
+            "train_test_group_overlap_count": fold_overlap_count,
+        }
+        try:
+            fold_model = _fit_log_latency_model(train_rows, hardware_model)
+            resource_feature_names = (
+                set(LATENCY_MODEL_FEATURES[hardware_model])
+                - {"intercept", "log_input_scale"}
+            )
+            if not (
+                resource_feature_names
+                & set(fold_model["selected_feature_names"])
+            ):
+                raise ValueError(
+                    "held-out fold has no identifiable CPU or memory predictor"
+                )
+        except ValueError as exc:
+            fold_detail["status"] = "failed"
+            fold_detail["reason"] = str(exc)
+            fold_details.append(fold_detail)
+            failed_folds.append({
+                "cpu_cores": cpu_cores,
+                "mem_cap_gb": mem_cap_gb,
+                "reason": str(exc),
+            })
+            continue
+
+        fold_predictions = [
+            _predict_latency(row, fold_model) for row in test_rows
+        ]
+        for row, prediction in zip(test_rows, fold_predictions):
+            predictions[_point_key(row)] = prediction
+        fold_detail["status"] = "ok"
+        fold_detail["metrics"] = _regression_metrics(
+            [float(row.latency_s) for row in test_rows],
+            fold_predictions,
+        )
+        fold_details.append(fold_detail)
+        completed_folds += 1
+
+    predicted_rows = [row for row in rows if _point_key(row) in predictions]
+    actuals = [float(row.latency_s) for row in predicted_rows]
+    predicted = [predictions[_point_key(row)] for row in predicted_rows]
+    completed_fold_details = [
+        fold_detail
+        for fold_detail in fold_details
+        if fold_detail.get("status") == "ok"
+    ]
+    worst_relative_mae_fold = (
+        None
+        if not completed_fold_details
+        else max(
+            completed_fold_details,
+            key=lambda fold_detail: (
+                math.inf
+                if fold_detail["metrics"].get("relative_mae") is None
+                else float(fold_detail["metrics"]["relative_mae"])
+            ),
+        )
+    )
+    return {
+        "available": not failed_folds and len(predicted_rows) == len(rows),
+        "method": "leave-one-(cpu_cores,mem_cap_gb)-configuration-out",
+        "group_columns": ["cpu_cores", "mem_cap_gb"],
+        "all_input_scales_move_with_held_out_configuration": True,
+        "folds": len(configurations),
+        "completed_folds": completed_folds,
+        "failed_folds": failed_folds,
+        "fold_details": fold_details,
+        "train_test_group_overlap_count": train_test_group_overlap_count,
+        "test_case_rows": len(predicted_rows),
+        "worst_fold_relative_mae": (
+            None
+            if worst_relative_mae_fold is None
+            else worst_relative_mae_fold["metrics"]["relative_mae"]
+        ),
+        "worst_fold_configuration": (
+            None
+            if worst_relative_mae_fold is None
+            else {
+                "cpu_cores": worst_relative_mae_fold["held_out_cpu_cores"],
+                "mem_cap_gb": worst_relative_mae_fold["held_out_mem_cap_gb"],
+            }
+        ),
+        "metrics": _regression_metrics(actuals, predicted),
+    }, predictions
+
+
+def _input_scale_validation(
+    rows: list,
+    hardware_model: str,
+) -> tuple[dict, dict[tuple[str, float, float, float], float]]:
+    """Train on smaller scales and hold out the largest scale for extrapolation."""
+    input_scales = sorted({float(row.input_scale) for row in rows})
+    if len(input_scales) < 3:
+        return {
+            "available": False,
+            "reason": (
+                "need at least 3 input scales so the maximum can be held out "
+                "while at least 2 distinct scales remain for training"
+            ),
+            "held_out_input_scale": None,
+            "group_columns": ["input_scale"],
+            "train_test_group_overlap_count": 0,
+            "metrics": _regression_metrics([], []),
+        }, {}
+
+    held_out_scale = input_scales[-1]
+    train_rows = [row for row in rows if float(row.input_scale) < held_out_scale]
+    test_rows = [row for row in rows if float(row.input_scale) == held_out_scale]
+    train_scale_groups = {float(row.input_scale) for row in train_rows}
+    test_scale_groups = {float(row.input_scale) for row in test_rows}
+    train_test_group_overlap_count = len(train_scale_groups & test_scale_groups)
+    try:
+        scale_model = _fit_log_latency_model(train_rows, hardware_model)
+        if "log_input_scale" not in scale_model["selected_feature_names"]:
+            raise ValueError(
+                "maximum-scale training fold has no identifiable input-scale predictor"
+            )
+    except ValueError as exc:
+        return {
+            "available": False,
+            "reason": str(exc),
+            "held_out_input_scale": held_out_scale,
+            "group_columns": ["input_scale"],
+            "train_input_scale_max": max(
+                (float(row.input_scale) for row in train_rows),
+                default=None,
+            ),
+            "train_test_group_overlap_count": train_test_group_overlap_count,
+            "metrics": _regression_metrics([], []),
+        }, {}
+
+    predictions = {
+        _point_key(row): _predict_latency(row, scale_model) for row in test_rows
+    }
+    actuals = [float(row.latency_s) for row in test_rows]
+    predicted = [predictions[_point_key(row)] for row in test_rows]
+    case_relative_errors = [
+        abs(actual - prediction) / actual
+        for actual, prediction in zip(actuals, predicted)
+    ]
+    worst_case_idx = max(
+        range(len(test_rows)),
+        key=lambda idx: case_relative_errors[idx],
+    )
+    worst_case = test_rows[worst_case_idx]
+    return {
+        "available": True,
+        "method": "forward holdout of maximum input_scale",
+        "group_columns": ["input_scale"],
+        "held_out_input_scale": held_out_scale,
+        "train_input_scale_max": max(float(row.input_scale) for row in train_rows),
+        "test_input_scale_min": min(float(row.input_scale) for row in test_rows),
+        "strict_extrapolation": (
+            max(float(row.input_scale) for row in train_rows)
+            < min(float(row.input_scale) for row in test_rows)
+        ),
+        "train_test_group_overlap_count": train_test_group_overlap_count,
+        "train_case_rows": len(train_rows),
+        "test_case_rows": len(test_rows),
+        "worst_case_relative_error": case_relative_errors[worst_case_idx],
+        "worst_case_configuration": {
+            "cpu_cores": float(worst_case.cpu_cores),
+            "mem_cap_gb": float(worst_case.mem_cap_gb),
+            "input_scale": float(worst_case.input_scale),
+        },
+        "metrics": _regression_metrics(actuals, predicted),
+    }, predictions
+
+
+def _validation_quality_failures(validation_name: str, validation: dict) -> list[str]:
+    if not validation.get("available"):
+        return [
+            f"{validation_name} unavailable: "
+            f"{validation.get('reason', 'incomplete validation folds')}"
+        ]
+
+    metrics = validation["metrics"]
+    failures = []
+    if int(metrics.get("prediction_count") or 0) < LATENCY_MODEL_MIN_VALIDATION_POINTS:
+        failures.append(
+            f"{validation_name} has fewer than "
+            f"{LATENCY_MODEL_MIN_VALIDATION_POINTS} predictions"
+        )
+    if int(validation.get("train_test_group_overlap_count") or 0) > 0:
+        failures.append(f"{validation_name} has train/test group leakage")
+    failed_quality_folds = []
+    for fold_detail in validation.get("fold_details", []):
+        if fold_detail.get("status") != "ok":
+            continue
+        fold_metrics = fold_detail["metrics"]
+        fold_relative_mae = fold_metrics.get("relative_mae")
+        if (
+            fold_relative_mae is None
+            or not math.isfinite(float(fold_relative_mae))
+            or float(fold_relative_mae)
+            > LATENCY_MODEL_MAX_CONFIGURATION_FOLD_RELATIVE_MAE
+            or int(fold_metrics.get("nonfinite_prediction_count") or 0) > 0
+            or int(fold_metrics.get("nonpositive_prediction_count") or 0) > 0
+        ):
+            failed_quality_folds.append(fold_detail)
+    if failed_quality_folds:
+        worst_fold = max(
+            failed_quality_folds,
+            key=lambda fold_detail: (
+                math.inf
+                if (
+                    fold_detail["metrics"].get("relative_mae") is None
+                    or not math.isfinite(
+                        float(fold_detail["metrics"]["relative_mae"])
+                    )
+                )
+                else float(fold_detail["metrics"]["relative_mae"])
+            ),
+        )
+        failures.append(
+            f"{validation_name} has {len(failed_quality_folds)} held-out "
+            "configuration fold(s) above the relative-MAE/validity threshold; "
+            f"worst=(cpu_cores={worst_fold['held_out_cpu_cores']},"
+            f"mem_cap_gb={worst_fold['held_out_mem_cap_gb']}), "
+            f"relative_mae={worst_fold['metrics'].get('relative_mae')!r}"
+        )
+    worst_case_relative_error = validation.get("worst_case_relative_error")
+    if (
+        worst_case_relative_error is not None
+        and (
+            not math.isfinite(float(worst_case_relative_error))
+            or float(worst_case_relative_error)
+            > LATENCY_MODEL_MAX_SCALE_CASE_RELATIVE_ERROR
+        )
+    ):
+        failures.append(
+            f"{validation_name} worst case relative_error="
+            f"{worst_case_relative_error!r} exceeds "
+            f"{LATENCY_MODEL_MAX_SCALE_CASE_RELATIVE_ERROR}; "
+            f"configuration={validation.get('worst_case_configuration')!r}"
+        )
+    r2 = metrics.get("r2")
+    if (
+        r2 is None
+        or not math.isfinite(float(r2))
+        or float(r2) < LATENCY_MODEL_MIN_VALIDATION_R2
+    ):
+        failures.append(
+            f"{validation_name} r2={r2!r} is below "
+            f"{LATENCY_MODEL_MIN_VALIDATION_R2}"
+        )
+    relative_mae = metrics.get("relative_mae")
+    if (
+        relative_mae is None
+        or not math.isfinite(float(relative_mae))
+        or float(relative_mae) > LATENCY_MODEL_MAX_VALIDATION_RELATIVE_MAE
+    ):
+        failures.append(
+            f"{validation_name} relative_mae={relative_mae!r} exceeds "
+            f"{LATENCY_MODEL_MAX_VALIDATION_RELATIVE_MAE}"
+        )
+    if int(metrics.get("nonfinite_prediction_count") or 0) > 0:
+        failures.append(f"{validation_name} contains non-finite predictions")
+    if int(metrics.get("nonpositive_prediction_count") or 0) > 0:
+        failures.append(f"{validation_name} contains non-positive predictions")
+    return failures
+
+
+def _validation_is_evaluable(validation: dict) -> bool:
+    if not validation.get("available"):
+        return False
+    metrics = validation.get("metrics", {})
+    return bool(
+        int(metrics.get("prediction_count") or 0)
+        >= LATENCY_MODEL_MIN_VALIDATION_POINTS
+        and metrics.get("r2") is not None
+        and math.isfinite(float(metrics["r2"]))
+    )
+
+
+def _training_range(rows: list) -> dict[str, dict[str, float]]:
+    return {
+        "cpu_cores": {
+            "min": min(float(row.cpu_cores) for row in rows),
+            "max": max(float(row.cpu_cores) for row in rows),
+        },
+        "mem_cap_gb": {
+            "min": min(float(row.mem_cap_gb) for row in rows),
+            "max": max(float(row.mem_cap_gb) for row in rows),
+        },
+        "input_scale": {
+            "min": min(float(row.input_scale) for row in rows),
+            "max": max(float(row.input_scale) for row in rows),
+        },
+    }
+
+
+def _format_optional_float(value: float | None) -> str:
+    if value is None or not math.isfinite(float(value)):
+        return ""
+    return f"{float(value):.9f}"
 
 
 def _write_skipped_latency_model_report(
@@ -632,12 +1193,22 @@ def _write_skipped_latency_model_report(
     reason: str,
 ) -> None:
     report_path = os.path.join(output_dir, LATENCY_MODEL_REPORT)
+    residuals_path = os.path.join(output_dir, LATENCY_MODEL_RESIDUALS)
+    # Always replace any previous residual artifact so a skipped rerun cannot
+    # leave stale predictions that appear to belong to the new report.
+    with open(residuals_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=LATENCY_MODEL_RESIDUAL_FIELDS)
+        writer.writeheader()
     report = {
+        "report_schema_version": 2,
         "status": "skipped",
+        "prediction_ready": False,
         "reason": reason,
         "target_metric": "latency_s",
         "model_name": static_meta.get("model_name", ""),
         "task_family": static_meta.get("task_family", ""),
+        "residuals_csv": LATENCY_MODEL_RESIDUALS,
+        "residuals_granularity": "header only because model generation was skipped",
     }
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=True, indent=2)
@@ -650,99 +1221,329 @@ def write_latency_model_report(
     static_meta: dict[str, str],
     output_dir: str,
 ) -> None:
-    """Fit a small latency model and write report/residual artifacts."""
+    """Fit validated positive latency models and write report/residual artifacts."""
     if "latency_s" not in df.columns:
         _write_skipped_latency_model_report(output_dir, static_meta, "latency_s column missing")
         return
 
     try:
-        rows = _latency_model_rows(df)
+        model_df = _latency_model_frame(df)
     except ValueError as exc:
         _write_skipped_latency_model_report(output_dir, static_meta, str(exc))
         return
 
-    feature_count = len(LATENCY_MODEL_FEATURES)
-    if len(rows) < feature_count + 2:
+    if len(model_df) < 3:
         _write_skipped_latency_model_report(
             output_dir,
             static_meta,
-            f"need at least {feature_count + 2} valid rows, got {len(rows)}",
+            f"need at least 3 valid raw rows, got {len(model_df)}",
         )
         return
 
-    train_rows, test_rows = _split_latency_model_rows(rows)
-    if len(train_rows) < feature_count:
+    points = _aggregate_latency_model_points(model_df)
+    if len(points) < 3:
         _write_skipped_latency_model_report(
             output_dir,
             static_meta,
-            f"need at least {feature_count} train rows, got {len(train_rows)}",
+            f"need at least 3 unique configuration-scale cases, got {len(points)}",
         )
         return
 
-    try:
-        coefficients = _fit_linear_model(train_rows)
-    except ValueError as exc:
-        _write_skipped_latency_model_report(output_dir, static_meta, str(exc))
-        return
+    model_reports = {}
+    fit_predictions: dict[tuple[str, float, float, float], float] = {}
+    configuration_predictions: dict[
+        tuple[str, float, float, float],
+        float,
+    ] = {}
+    scale_predictions: dict[tuple[str, float, float, float], float] = {}
+    top_level_failures = []
 
-    train_actual = [float(row.latency_s) for row in train_rows]
-    train_predictions = [_predict_latency(row, coefficients) for row in train_rows]
-    test_actual = [float(row.latency_s) for row in test_rows]
-    test_predictions = [_predict_latency(row, coefficients) for row in test_rows]
+    for hardware_model in ("cpu", "gpu"):
+        hardware_rows = [
+            row for row in points if str(row.hardware_model) == hardware_model
+        ]
+        if not hardware_rows:
+            continue
+
+        try:
+            fitted_model = _fit_log_latency_model(hardware_rows, hardware_model)
+        except ValueError as exc:
+            reason = str(exc)
+            model_reports[hardware_model] = {
+                "status": "skipped",
+                "prediction_ready": False,
+                "reason": reason,
+                "raw_rows": sum(int(row.repeat_count) for row in hardware_rows),
+                "case_rows": len(hardware_rows),
+            }
+            top_level_failures.append(f"{hardware_model}: fit failed: {reason}")
+            continue
+
+        hardware_fit_predictions = {
+            _point_key(row): _predict_latency(row, fitted_model)
+            for row in hardware_rows
+        }
+        fit_predictions.update(hardware_fit_predictions)
+        fit_metrics = _regression_metrics(
+            [float(row.latency_s) for row in hardware_rows],
+            [hardware_fit_predictions[_point_key(row)] for row in hardware_rows],
+        )
+
+        configuration_validation, hardware_configuration_predictions = (
+            _resource_configuration_validation(hardware_rows, hardware_model)
+        )
+        input_scale_validation, hardware_scale_predictions = (
+            _input_scale_validation(hardware_rows, hardware_model)
+        )
+        configuration_predictions.update(hardware_configuration_predictions)
+        scale_predictions.update(hardware_scale_predictions)
+
+        quality_failures = []
+        quality_failures.extend(_validation_quality_failures(
+            "resource_configuration_holdout",
+            configuration_validation,
+        ))
+        quality_failures.extend(_validation_quality_failures(
+            "input_scale_holdout",
+            input_scale_validation,
+        ))
+        if int(fit_metrics["nonfinite_prediction_count"] or 0) > 0:
+            quality_failures.append("full fit contains non-finite predictions")
+        if int(fit_metrics["nonpositive_prediction_count"] or 0) > 0:
+            quality_failures.append("full fit contains non-positive predictions")
+
+        validation_evaluable = bool(
+            _validation_is_evaluable(configuration_validation)
+            and _validation_is_evaluable(input_scale_validation)
+        )
+        if quality_failures:
+            model_status = "poor_fit" if validation_evaluable else "unvalidated"
+        else:
+            model_status = "ok"
+
+        coefficients = {
+            name: value
+            for name, value in zip(
+                fitted_model["feature_names"],
+                fitted_model["coefficients"],
+            )
+        }
+        model_reports[hardware_model] = {
+            "status": model_status,
+            "prediction_ready": model_status == "ok",
+            "formula": LATENCY_MODEL_FORMULAS[hardware_model],
+            "feature_columns": fitted_model["feature_names"],
+            "selected_feature_columns": fitted_model["selected_feature_names"],
+            "dropped_feature_columns": fitted_model["dropped_feature_names"],
+            "coefficients": coefficients,
+            "prediction_estimand": (
+                "exponentiated fitted log latency for the median-aggregated case"
+            ),
+            "smearing_correction_applied": False,
+            "raw_rows": sum(int(row.repeat_count) for row in hardware_rows),
+            "case_rows": len(hardware_rows),
+            "training_range": _training_range(hardware_rows),
+            "numerical_diagnostics": {
+                "solver": "numpy.linalg.lstsq",
+                "standardized_before_solve": True,
+                "rank": fitted_model["rank"],
+                "condition_number": fitted_model["condition_number"],
+            },
+            "metrics": {
+                "fit": fit_metrics,
+                "resource_configuration_holdout": configuration_validation["metrics"],
+                "input_scale_holdout": input_scale_validation["metrics"],
+            },
+            "validation": {
+                "resource_configuration_holdout": configuration_validation,
+                "input_scale_holdout": input_scale_validation,
+            },
+            "quality_gate": {
+                "passed": not quality_failures,
+                "failures": quality_failures,
+            },
+        }
+        top_level_failures.extend(
+            f"{hardware_model}: {failure}" for failure in quality_failures
+        )
+
+    if not fit_predictions:
+        status = "skipped"
+    elif any(
+        model_report.get("status") == "poor_fit"
+        for model_report in model_reports.values()
+    ):
+        status = "poor_fit"
+    elif any(
+        model_report.get("status") != "ok"
+        for model_report in model_reports.values()
+    ):
+        status = "unvalidated"
+    else:
+        status = "ok"
+
+    def metrics_for_predictions(predictions: dict) -> dict:
+        predicted_rows = [row for row in points if _point_key(row) in predictions]
+        return _regression_metrics(
+            [float(row.latency_s) for row in predicted_rows],
+            [predictions[_point_key(row)] for row in predicted_rows],
+        )
 
     residuals_path = os.path.join(output_dir, LATENCY_MODEL_RESIDUALS)
-    split_by_source = {int(row.source_row): "train" for row in train_rows}
-    split_by_source.update({int(row.source_row): "test" for row in test_rows})
     with open(residuals_path, "w", encoding="utf-8", newline="") as f:
-        fieldnames = [
-            "source_row",
-            "split",
-            "cpu_cores",
-            "mem_cap_gb",
-            "gpu_mode",
-            "input_scale",
-            "latency_s",
-            "predicted_latency_s",
-            "residual_s",
-        ]
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=LATENCY_MODEL_RESIDUAL_FIELDS)
         writer.writeheader()
-        for row in rows:
-            predicted = _predict_latency(row, coefficients)
+        for case_id, row in enumerate(points):
+            key = _point_key(row)
             actual = float(row.latency_s)
+            fitted_prediction = fit_predictions.get(key)
+            configuration_prediction = configuration_predictions.get(key)
+            scale_prediction = scale_predictions.get(key)
             writer.writerow({
-                "source_row": int(row.source_row),
-                "split": split_by_source[int(row.source_row)],
+                "report_schema_version": 2,
+                "case_id": case_id,
+                "split": (
+                    "out_of_fold_test"
+                    if configuration_prediction is not None
+                    else "validation_unavailable"
+                ),
+                "hardware_model": row.hardware_model,
                 "cpu_cores": int(row.cpu_cores),
                 "mem_cap_gb": int(row.mem_cap_gb),
-                "gpu_mode": row.gpu_mode,
+                "gpu_mode": "on" if row.hardware_model == "gpu" else "off",
                 "input_scale": f"{float(row.input_scale):.6f}",
+                "repeat_count": int(row.repeat_count),
                 "latency_s": f"{actual:.9f}",
-                "predicted_latency_s": f"{predicted:.9f}",
-                "residual_s": f"{(actual - predicted):.9f}",
+                "latency_mean_s": f"{float(row.latency_mean_s):.9f}",
+                "latency_std_s": f"{float(row.latency_std_s):.9f}",
+                # Backward-compatible aliases now point to the honest
+                # configuration-out-of-fold prediction, not an in-cell repeat.
+                "predicted_latency_s": _format_optional_float(
+                    configuration_prediction
+                ),
+                "residual_s": _format_optional_float(
+                    None
+                    if configuration_prediction is None
+                    else actual - configuration_prediction
+                ),
+                "fitted_predicted_latency_s": _format_optional_float(
+                    fitted_prediction
+                ),
+                "fitted_residual_s": _format_optional_float(
+                    None
+                    if fitted_prediction is None
+                    else actual - fitted_prediction
+                ),
+                "resource_config_oof_predicted_latency_s": _format_optional_float(
+                    configuration_prediction
+                ),
+                "resource_config_oof_residual_s": _format_optional_float(
+                    None
+                    if configuration_prediction is None
+                    else actual - configuration_prediction
+                ),
+                "max_scale_holdout_predicted_latency_s": _format_optional_float(
+                    scale_prediction
+                ),
+                "max_scale_holdout_residual_s": _format_optional_float(
+                    None if scale_prediction is None else actual - scale_prediction
+                ),
             })
 
+    fit_metrics = metrics_for_predictions(fit_predictions)
+    configuration_metrics = metrics_for_predictions(configuration_predictions)
+    input_scale_metrics = metrics_for_predictions(scale_predictions)
     report = {
-        "status": "ok",
+        "report_schema_version": 2,
+        "status": status,
+        "prediction_ready": status == "ok",
         "target_metric": "latency_s",
         "model_name": static_meta.get("model_name", ""),
         "task_family": static_meta.get("task_family", ""),
         "input_scale_type": static_meta.get("input_scale_type", "input_scale"),
-        "model_type": "ordinary_least_squares",
-        "formula": "latency_s = intercept + input_scale + inverse_cpu_cores + mem_cap_gb + gpu_on",
+        "model_type": "separate_cpu_gpu_log_linear_least_squares",
+        "positive_prediction_form": True,
+        "formula": LATENCY_MODEL_FORMULAS,
         "feature_columns": LATENCY_MODEL_FEATURES,
-        "coefficients": {
-            name: value for name, value in zip(LATENCY_MODEL_FEATURES, coefficients)
+        "separation_note": (
+            "CPU-off and GPU-on use independent coefficients. Their separate "
+            "input-scale/CPU interaction terms are the split-model equivalent "
+            "of input_scale x CPU x GPU interactions in one joint model."
+        ),
+        "aggregation": {
+            "group_columns": [
+                "hardware_model",
+                "cpu_cores",
+                "mem_cap_gb",
+                "input_scale",
+            ],
+            "target_statistic": "median",
+            "repetitions_split_across_train_and_test": False,
         },
-        "rows": len(rows),
-        "train_rows": len(train_rows),
-        "test_rows": len(test_rows),
-        "split_rule": "deterministic: every fifth sorted row is test",
+        "rows": len(model_df),
+        "raw_rows": len(model_df),
+        "case_rows": len(points),
+        "fit_case_rows": len(fit_predictions),
+        "resource_configuration_oof_test_case_rows": len(
+            configuration_predictions
+        ),
+        "input_scale_holdout_test_case_rows": len(scale_predictions),
+        # Kept for report-v1 readers. This is cross-validation, so these are
+        # accounting aliases rather than one fixed pair of disjoint row sets.
+        "train_rows": len(points),
+        "test_rows": len(configuration_predictions),
+        "legacy_row_count_note": (
+            "train_rows is the number of cases in the final full fit; test_rows "
+            "is the number receiving one resource-configuration OOF prediction. "
+            "They are not a single fixed mutually exclusive split."
+        ),
+        "split_rule": (
+            "resource configuration: leave one complete (cpu_cores,mem_cap_gb) "
+            "out per fold; input scale: train below maximum and hold out maximum"
+        ),
         "metrics": {
-            "train": _regression_metrics(train_actual, train_predictions),
-            "test": _regression_metrics(test_actual, test_predictions),
+            "fit": fit_metrics,
+            "resource_configuration_holdout": configuration_metrics,
+            "input_scale_holdout": input_scale_metrics,
+            # Compatibility aliases: "test" is now true configuration OOF.
+            "train": fit_metrics,
+            "test": configuration_metrics,
+        },
+        "models": model_reports,
+        "quality_gate": {
+            "passed": status == "ok",
+            "thresholds": {
+                "minimum_validation_r2": LATENCY_MODEL_MIN_VALIDATION_R2,
+                "maximum_validation_relative_mae": (
+                    LATENCY_MODEL_MAX_VALIDATION_RELATIVE_MAE
+                ),
+                "maximum_single_configuration_fold_relative_mae": (
+                    LATENCY_MODEL_MAX_CONFIGURATION_FOLD_RELATIVE_MAE
+                ),
+                "maximum_single_scale_holdout_case_relative_error": (
+                    LATENCY_MODEL_MAX_SCALE_CASE_RELATIVE_ERROR
+                ),
+                "minimum_validation_predictions": (
+                    LATENCY_MODEL_MIN_VALIDATION_POINTS
+                ),
+                "require_finite_positive_predictions": True,
+            },
+            "failures": top_level_failures,
+        },
+        "prediction_scope": {
+            "supported": (
+                "interpolation within each hardware model's training_range; "
+                "the maximum observed input scale is separately forward-validated"
+            ),
+            "warning": (
+                "Predictions outside profiled CPU, memory, or input-scale ranges "
+                "are unvalidated extrapolations."
+            ),
         },
         "residuals_csv": LATENCY_MODEL_RESIDUALS,
+        "residuals_granularity": (
+            "one median-aggregated hardware/cpu/memory/input-scale case per row"
+        ),
     }
     report_path = os.path.join(output_dir, LATENCY_MODEL_REPORT)
     with open(report_path, "w", encoding="utf-8") as f:
