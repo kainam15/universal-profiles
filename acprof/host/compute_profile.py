@@ -20,7 +20,11 @@ COMPUTE_PROFILE_PLAN_NAME = "compute_profile_plan.json"
 COMPUTE_PROFILE_PAYLOADS_NAME = "compute_profile_payloads.json"
 TORCH_PROFILER_TOOL = "torch_profiler"
 COMPUTE_PROFILE_TOOL_MODES = {"auto", "torch", "vendor"}
-NCU_TENSOR_METRIC_RE = re.compile(r"^sm__ops_path_tensor_src_.*_dst_.*\.sum$")
+NCU_FLOAT_TYPE_PATTERN = r"(?:bf\d+|fp\d+|tf\d+)"
+NCU_TENSOR_METRIC_RE = re.compile(
+    rf"^sm__ops_path_tensor_src_{NCU_FLOAT_TYPE_PATTERN}"
+    rf"(?:_{NCU_FLOAT_TYPE_PATTERN})*_dst_{NCU_FLOAT_TYPE_PATTERN}\.sum$"
+)
 NCU_SCALAR_FLOP_METRICS = ("flop_count_hp", "flop_count_sp", "flop_count_dp")
 NCU_SASS_FLOP_WEIGHTS = {
     "smsp__sass_thread_inst_executed_op_dadd_pred_on": 1.0,
@@ -577,35 +581,66 @@ def _parse_ncu_metric_names(query_output: str) -> List[str]:
 
 def _select_ncu_flop_metrics(available_metrics: Iterable[str]) -> List[str]:
     available = set(available_metrics)
-    modern_metrics = sorted(
+    sass_metrics = []
+    for metric in NCU_SASS_FLOP_WEIGHTS:
+        rollup_metric = f"{metric}.sum"
+        if rollup_metric in available:
+            sass_metrics.append(rollup_metric)
+        elif metric in available:
+            sass_metrics.append(metric)
+
+    tensor_metrics = sorted(
         metric for metric in available
-        if metric in NCU_SCALAR_FLOP_METRICS or NCU_TENSOR_METRIC_RE.match(metric)
+        if NCU_TENSOR_METRIC_RE.match(metric)
     )
-    if modern_metrics:
-        return modern_metrics
-    return [
-        metric for metric in NCU_SASS_FLOP_WEIGHTS
-        if metric in available
-    ]
+    # Legacy flop_count_* metrics overlap with the SASS metrics. Use them only
+    # when the current Nsight Compute version does not expose the SASS counters.
+    scalar_metrics = (
+        []
+        if sass_metrics
+        else [
+            metric
+            for metric in NCU_SCALAR_FLOP_METRICS
+            if metric in available
+        ]
+    )
+    return [*sass_metrics, *scalar_metrics, *tensor_metrics]
 
 
 def _fallback_ncu_flop_metrics() -> List[str]:
     return list(NCU_SASS_FLOP_WEIGHTS)
 
 
-def _resolve_ncu_metrics(ncu_bin: str) -> Tuple[List[str], str]:
+def _resolve_ncu_metrics(
+    ncu_bin: str,
+    *,
+    container_base_cmd: Optional[Sequence[str]] = None,
+) -> Tuple[List[str], str]:
     query_errors = []
-    for command in (
-        [ncu_bin, "--query-metrics", "--query-metrics-mode", "all"],
-        [ncu_bin, "--query-metrics"],
-    ):
-        result = _run(command, check=False)
-        if result.returncode != 0:
-            query_errors.append(result.stderr.strip() or result.stdout.strip())
-            continue
-        metrics = _select_ncu_flop_metrics(_parse_ncu_metric_names(result.stdout))
-        if metrics:
-            return metrics, ""
+    command_prefixes: List[Sequence[str]] = [()]
+    if container_base_cmd:
+        command_prefixes.append(container_base_cmd)
+
+    for command_prefix in command_prefixes:
+        for query_args in (
+            ["--query-metrics", "--query-metrics-mode", "all"],
+            ["--query-metrics"],
+        ):
+            result = _run(
+                [*command_prefix, ncu_bin, *query_args],
+                check=False,
+            )
+            if result.returncode != 0:
+                query_errors.append(result.stderr.strip() or result.stdout.strip())
+                continue
+            metrics = _select_ncu_flop_metrics(
+                _parse_ncu_metric_names(result.stdout)
+            )
+            if metrics:
+                return metrics, ""
+            detail = result.stderr.strip() or result.stdout.strip()
+            if detail:
+                query_errors.append(detail)
     fallback_metrics = _fallback_ncu_flop_metrics()
     if fallback_metrics:
         return fallback_metrics, ""
@@ -864,7 +899,21 @@ def _profile_gpu_entries(
             "error": "ncu_not_found",
             "entries": _tool_error_entries(entries, "ncu_not_found"),
         }
-    ncu_metrics, metric_error = _resolve_ncu_metrics(ncu_bin)
+    mount_roots = _tool_mount_roots(ncu_bin, ncu_root)
+    metric_query_base_cmd = _base_docker_cmd(
+        task_info=task_info,
+        image_tag=image_tag,
+        cpu=cpu,
+        mem=mem,
+        use_gpu=True,
+        payload_file=payload_file,
+        profile_root=profile_root,
+        tool_mount_roots=mount_roots,
+    )
+    ncu_metrics, metric_error = _resolve_ncu_metrics(
+        ncu_bin,
+        container_base_cmd=metric_query_base_cmd,
+    )
     if metric_error:
         return {
             "tool": "ncu",
@@ -872,7 +921,6 @@ def _profile_gpu_entries(
             "error": metric_error,
             "entries": _tool_error_entries(entries, metric_error),
         }
-    mount_roots = _tool_mount_roots(ncu_bin, ncu_root)
     profile_entries = [
         _run_ncu_for_entry(
             ncu_bin=ncu_bin,

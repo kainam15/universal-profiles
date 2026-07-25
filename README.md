@@ -312,6 +312,21 @@ GPU: latency_s = exp(
 
 中间文件 `result_case_*.csv`、`result_case_*.csv.sniff_groups.jsonl`、`lat_case_*.json`、`sniff_case_*.pcap` 会在 `result_all.csv` 成功 merge 后自动清理。若运行被中断，这些中间文件可能保留。
 
+### 已有 CSV 回填 compute profile
+
+如果 latency 已采集完成、之后才生成 `compute_profile_plan.json`，可以写出一份带 FLOP/MFLOPS 的新 CSV：
+
+```bash
+python -m acprof.cli.backfill_compute \
+  results/<model>/result_all.csv \
+  results/<model>/compute_profile_plan.json \
+  --output results/<model>/result_all.with_compute.csv
+```
+
+工具按 `gpu_mode` 和 `input_scale`（绝对容差 `1e-6`）匹配 CPU/GPU plan 条目。`compute_mflops_app` 使用 `latency_app_s`；`compute_mflops` 优先使用有效的 `latency_s`，否则回退到 application latency。未匹配条目保持 `nan`，原因写入 `compute_profile_error`。输出采用原子写入，且默认拒绝覆盖已有文件；确需替换显式输出路径时追加 `--overwrite`。
+
+如果结果用于比较 CPU/GPU，plan 中的 `model_mflop_per_request` 应采用统一的逻辑 FLOP 口径。NCU 的硬件执行 FLOP 会受 Tensor Core tile/padding 影响，不应与 CPU 的算子形状 FLOP 混作同一列；这类数据宜另存为 GPU hardware FLOP sidecar。
+
 ## 8. `result_all.csv` 字段解释
 
 `result_all.csv` 只放 per-case / per-iteration 的动态字段。
@@ -336,7 +351,7 @@ GPU: latency_s = exp(
 | `compute_profile_tool` | FLOP profiling 工具。默认 CPU 行为 `torch_profiler`、GPU 行为 `ncu`；显式 `--compute-profile-tool torch` 时全部为 `torch_profiler`；显式 `vendor` 时 CPU-only 行为 `intel_advisor`、GPU 行为 `ncu`；未采集时为 `nan`。 |
 | `model_mflop_per_request` | profiler 采集到的单 request 模型计算量，单位 MFLOP。默认 CPU 根据 PyTorch profiler operator shapes 统计，GPU 来自 ncu FLOP / tensor operation counters；vendor 模式下 CPU 来自 Intel Advisor `Self GFLOP`。 |
 | `compute_mflops_app` | `model_mflop_per_request / latency_app_s`，单位 MFLOPS。 |
-| `compute_mflops` | 默认等于 `compute_mflops_app`；如果 `latency_s` 成功 merge，则用 packet-level `latency_s` 重算。 |
+| `compute_mflops` | `model_mflop_per_request / latency_s`，单位 MFLOPS。 |
 | `compute_profile_error` | compute profiling 的诊断信息。正常为空；工具缺失、性能计数器受限、报告解析失败时记录原因。 |
 | `gpu_idle_power_w` | GPU matched-control baseline power，单位 W。仅 `gpu_mode=on` 且 NVML 可用时有值；使用与 workload 相同的 NVML monitor 生命周期，由 control samples 梯形积分后的能量 / 实际 duration 得到。 |
 | `gpu_idle_measured_at` | `--idle-debug` 开启且 `gpu_mode=on` 时，matched control window 测量完成时的本地 ISO-8601 时间戳；未开启或 GPU 不可用时为 `nan`。CPU/GPU control 同时采集，因此两者共用同一时间戳。 |

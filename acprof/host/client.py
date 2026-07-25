@@ -39,6 +39,11 @@ from acprof.config import (
     DEFAULT_TASK_PARAMS,
     SCALING_DIMENSIONS,
 )
+from acprof.host.compute_profile_plan import (
+    compute_mflops as _compute_mflops,
+    find_compute_profile_entry as _find_compute_profile_entry,
+    load_compute_profile_plan as _load_compute_profile_plan,
+)
 
 # ─────────────────────────────────────────────
 # Config from env
@@ -225,87 +230,6 @@ def _merge_effective_input_scale(
             f"{current} vs {resolved}"
         )
     return current
-
-
-def _load_compute_profile_plan(path: str) -> Dict[str, Any]:
-    if not path:
-        return {"profiles": {}, "_load_error": "compute_profile_disabled"}
-    if not os.path.exists(path):
-        return {"profiles": {}, "_load_error": f"compute_profile_plan_not_found:{path}"}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            plan = json.load(f)
-    except Exception as exc:
-        return {"profiles": {}, "_load_error": f"compute_profile_plan_invalid:{exc!r}"}
-    if not isinstance(plan, dict):
-        return {"profiles": {}, "_load_error": "compute_profile_plan_invalid:not_dict"}
-    profiles = plan.get("profiles")
-    if not isinstance(profiles, dict):
-        return {"profiles": {}, "_load_error": "compute_profile_plan_invalid:missing_profiles"}
-    return plan
-
-
-def _find_compute_profile_entry(
-    plan: Dict[str, Any],
-    gpu_mode: str,
-    input_scale: float,
-) -> Dict[str, Any]:
-    profile_key = "gpu" if gpu_mode == "on" else "cpu"
-    load_error = str(plan.get("_load_error", "") or "")
-    if load_error:
-        return {
-            "tool": "nan",
-            "model_mflop_per_request": float("nan"),
-            "error": load_error,
-        }
-
-    profile = plan.get("profiles", {}).get(profile_key)
-    if not isinstance(profile, dict):
-        return {
-            "tool": "nan",
-            "model_mflop_per_request": float("nan"),
-            "error": f"compute_profile_missing_profile:{profile_key}",
-        }
-
-    tool = str(profile.get("tool") or "nan")
-    profile_error = str(profile.get("error") or "")
-    entries = profile.get("entries")
-    if not isinstance(entries, list):
-        return {
-            "tool": tool,
-            "model_mflop_per_request": float("nan"),
-            "error": profile_error or f"compute_profile_missing_entries:{profile_key}",
-        }
-
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        try:
-            entry_scale = float(entry.get("input_scale"))
-        except (TypeError, ValueError):
-            continue
-        if math.isclose(entry_scale, float(input_scale), rel_tol=0.0, abs_tol=1e-6):
-            return {
-                "tool": str(entry.get("tool") or tool or "nan"),
-                "model_mflop_per_request": _to_float_or_nan(
-                    entry.get("model_mflop_per_request")
-                ),
-                "error": str(entry.get("error") or profile_error),
-            }
-
-    return {
-        "tool": tool,
-        "model_mflop_per_request": float("nan"),
-        "error": f"compute_profile_missing_scale:{input_scale:g}",
-    }
-
-
-def _compute_mflops(model_mflop_per_request: float, latency_s: float) -> float:
-    mflop = _to_float_or_nan(model_mflop_per_request)
-    latency = _to_float_or_nan(latency_s)
-    if mflop == mflop and latency == latency and latency > 0:
-        return mflop / latency
-    return float("nan")
 
 
 def _estimate_cpu_cycles(

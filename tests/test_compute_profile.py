@@ -102,6 +102,28 @@ class ComputeProfileTests(unittest.TestCase):
                     "Metric Value": "2.5K",
                 })
                 writer.writerow({
+                    "Kernel Name": "kernel_b",
+                    "Metric Name": (
+                        "sm__ops_path_tensor_src_fp16_dst_fp32_sparsity_on.sum"
+                    ),
+                    "Metric Unit": "FLOP",
+                    "Metric Value": "1.5K",
+                })
+                writer.writerow({
+                    "Kernel Name": "kernel_b",
+                    "Metric Name": (
+                        "sm__ops_path_tensor_src_fp16_dst_fp32_sparsity_off.sum"
+                    ),
+                    "Metric Unit": "FLOP",
+                    "Metric Value": "1K",
+                })
+                writer.writerow({
+                    "Kernel Name": "kernel_b",
+                    "Metric Name": "sm__ops_path_tensor_src_int8_dst_int32.sum",
+                    "Metric Unit": "OP",
+                    "Metric Value": "9K",
+                })
+                writer.writerow({
                     "Kernel Name": "kernel_c",
                     "Metric Name": "gpu__time_duration.sum",
                     "Metric Unit": "nsecond",
@@ -161,6 +183,23 @@ class ComputeProfileTests(unittest.TestCase):
                 10 + 20 * 2 + 1000 + 2000 * 2,
             )
 
+    def test_select_ncu_metrics_combines_sass_and_float_tensor_aggregates(self) -> None:
+        fadd = "smsp__sass_thread_inst_executed_op_fadd_pred_on"
+        ffma = "smsp__sass_thread_inst_executed_op_ffma_pred_on"
+        tensor = "sm__ops_path_tensor_src_fp16_dst_fp32.sum"
+
+        metrics = compute_profile._select_ncu_flop_metrics([
+            fadd,
+            f"{ffma}.sum",
+            "flop_count_sp",
+            tensor,
+            "sm__ops_path_tensor_src_fp16_dst_fp32_sparsity_on.sum",
+            "sm__ops_path_tensor_src_fp16_dst_fp32_sparsity_off.sum",
+            "sm__ops_path_tensor_src_int8_dst_int32.sum",
+        ])
+
+        self.assertEqual(metrics, [fadd, f"{ffma}.sum", tensor])
+
     def test_resolve_ncu_metrics_falls_back_when_query_requires_privileges(self) -> None:
         calls = []
 
@@ -191,6 +230,122 @@ class ComputeProfileTests(unittest.TestCase):
         self.assertEqual(metrics, list(compute_profile.NCU_SASS_FLOP_WEIGHTS))
         self.assertEqual(error, "")
         self.assertEqual(len(calls), 2)
+
+    def test_resolve_ncu_metrics_retries_query_in_gpu_container(self) -> None:
+        calls = []
+        container_base_cmd = [
+            "docker", "run", "--rm",
+            "--gpus", "all",
+            "--cap-add=SYS_ADMIN",
+            "--cap-add=SYS_PTRACE",
+            "acprof-test:latest",
+        ]
+        fadd = "smsp__sass_thread_inst_executed_op_fadd_pred_on.sum"
+        tensor = "sm__ops_path_tensor_src_fp16_dst_fp32.sum"
+
+        def fake_run(cmd, check=False):
+            calls.append(cmd)
+            if cmd[:len(container_base_cmd)] == container_base_cmd:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="\n".join([
+                        fadd,
+                        tensor,
+                        (
+                            "sm__ops_path_tensor_src_fp16_dst_fp32_"
+                            "sparsity_on.sum"
+                        ),
+                        "sm__ops_path_tensor_src_int8_dst_int32.sum",
+                    ]),
+                    stderr="",
+                )
+            if "--query-metrics-mode" in cmd:
+                return SimpleNamespace(
+                    returncode=1,
+                    stdout="",
+                    stderr="unsupported query mode",
+                )
+            return SimpleNamespace(
+                returncode=0,
+                stdout="",
+                stderr=(
+                    "==ERROR== ERR_NVGPUCTRPERM - The user does not have "
+                    "permission to access NVIDIA GPU Performance Counters"
+                ),
+            )
+
+        with patch("acprof.host.compute_profile._run", side_effect=fake_run):
+            metrics, error = compute_profile._resolve_ncu_metrics(
+                "/opt/ncu",
+                container_base_cmd=container_base_cmd,
+            )
+
+        self.assertEqual(metrics, [fadd, tensor])
+        self.assertEqual(error, "")
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(
+            calls[-1],
+            [
+                *container_base_cmd,
+                "/opt/ncu",
+                "--query-metrics",
+                "--query-metrics-mode",
+                "all",
+            ],
+        )
+
+    def test_gpu_profile_builds_privileged_container_for_metric_query(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+        query = {}
+
+        def fake_resolve(ncu_bin, *, container_base_cmd=None):
+            query["ncu_bin"] = ncu_bin
+            query["container_base_cmd"] = container_base_cmd
+            return list(compute_profile.NCU_SASS_FLOP_WEIGHTS), ""
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "acprof.host.compute_profile._resolve_ncu_metrics",
+            side_effect=fake_resolve,
+        ), patch(
+            "acprof.host.compute_profile._run_ncu_for_entry",
+            return_value={
+                "input_scale": 8.0,
+                "tool": "ncu",
+                "model_mflop_per_request": 1.0,
+                "error": "",
+            },
+        ):
+            compute_profile._profile_gpu_entries(
+                entries=[{"input_scale": 8.0}],
+                ncu_bin="/opt/nvidia/nsight-compute/2025.1.0/ncu",
+                ncu_root=None,
+                task_info=task_info,
+                image_tag="acprof-test:latest",
+                cpu=2,
+                mem=4,
+                payload_file=os.path.join(tmp, "payloads.json"),
+                profile_root=tmp,
+                repeat=1,
+            )
+
+        self.assertEqual(
+            query["ncu_bin"],
+            "/opt/nvidia/nsight-compute/2025.1.0/ncu",
+        )
+        container_base_cmd = query["container_base_cmd"]
+        self.assertIn("--gpus", container_base_cmd)
+        self.assertIn("--cap-add=SYS_ADMIN", container_base_cmd)
+        self.assertIn("--cap-add=SYS_PTRACE", container_base_cmd)
+        self.assertIn("--security-opt=seccomp=unconfined", container_base_cmd)
+        self.assertEqual(container_base_cmd[-1], "acprof-test:latest")
 
     def test_vendor_mode_missing_tools_write_nan_profiles_with_errors(self) -> None:
         task_info = TaskInfo(
