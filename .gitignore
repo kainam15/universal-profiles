@@ -9,7 +9,7 @@ __pycache__/
 results/
 result-past/
 *.csv
-docs/*.png
+
 /docs
 AGENTS.md
 CLAUDE.md
