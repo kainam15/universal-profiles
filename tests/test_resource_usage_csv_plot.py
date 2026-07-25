@@ -312,6 +312,81 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
         self.assertNotIn("avg_power_vs_scale.png", out_pngs)
         self.assertNotIn("energy_vs_scale.png", out_pngs)
 
+    def test_main_splits_plots_into_cpu_gpu_and_combined_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = os.path.join(tmp, "result_all.csv")
+            with open(csv_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=[
+                        "cpu_cores",
+                        "mem_cap_gb",
+                        "gpu_mode",
+                        "input_scale",
+                        "warmup",
+                        "status",
+                        "latency_s",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerows([
+                    {
+                        "cpu_cores": "1",
+                        "mem_cap_gb": "4",
+                        "gpu_mode": "off",
+                        "input_scale": "64",
+                        "warmup": "0",
+                        "status": "ok",
+                        "latency_s": "0.2",
+                    },
+                    {
+                        "cpu_cores": "1",
+                        "mem_cap_gb": "4",
+                        "gpu_mode": "on",
+                        "input_scale": "64",
+                        "warmup": "0",
+                        "status": "ok",
+                        "latency_s": "0.1",
+                    },
+                    {
+                        "cpu_cores": "1",
+                        "mem_cap_gb": "4",
+                        "gpu_mode": "unknown",
+                        "input_scale": "64",
+                        "warmup": "0",
+                        "status": "ok",
+                        "latency_s": "0.3",
+                    },
+                ])
+
+            modes_by_directory = {}
+
+            def capture_plot_metric(group_df, *_args, **kwargs):
+                if kwargs["metric"] != "latency_s":
+                    return
+                output_directory = os.path.basename(
+                    os.path.dirname(kwargs["out_png"])
+                )
+                modes_by_directory[output_directory] = set(group_df["gpu_mode"])
+
+            with patch.object(
+                plot, "plot_metric", side_effect=capture_plot_metric
+            ), patch.object(plot, "plot_cold_start_bar"), patch.object(
+                plot, "write_latency_model_report"
+            ):
+                plot.main([csv_path])
+
+            self.assertEqual(
+                modes_by_directory,
+                {
+                    "cpu": {"off"},
+                    "gpu": {"on"},
+                    "cpu+gpu": {"off", "on"},
+                },
+            )
+            for directory in ("cpu", "gpu", "cpu+gpu"):
+                self.assertTrue(os.path.isdir(os.path.join(tmp, directory)))
+
     def test_main_plots_packet_cpu_metrics_vs_input_scale(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             csv_path = os.path.join(tmp, "result_all.csv")

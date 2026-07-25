@@ -161,6 +161,7 @@ PLOT_METRICS = [
         "gpu_mem_used_vs_scale.png",
     ),
 ]
+PLOT_OUTPUT_DIRS = ("cpu", "gpu", "cpu+gpu")
 LATENCY_MODEL_REPORT = "latency_model_report.json"
 LATENCY_MODEL_RESIDUALS = "latency_model_residuals.csv"
 LATENCY_MODEL_FEATURES = {
@@ -231,6 +232,24 @@ def make_config_label(row) -> str:
 
 def is_gpu_on(gpu_mode: object) -> bool:
     return str(gpu_mode).strip().lower() in GPU_MODE_ON_VALUES
+
+
+def is_gpu_off(gpu_mode: object) -> bool:
+    return str(gpu_mode).strip().lower() in GPU_MODE_OFF_VALUES
+
+
+def build_plot_groups(df: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
+    """Split plot inputs into CPU-only, GPU-only, and comparison groups."""
+    gpu_on = df["gpu_mode"].map(is_gpu_on)
+    gpu_off = df["gpu_mode"].map(is_gpu_off)
+    cpu_df = df[gpu_off].copy()
+    gpu_df = df[gpu_on].copy()
+    combined_df = (
+        df[gpu_off | gpu_on].copy()
+        if not cpu_df.empty and not gpu_df.empty
+        else df.iloc[0:0].copy()
+    )
+    return list(zip(PLOT_OUTPUT_DIRS, (cpu_df, gpu_df, combined_df)))
 
 
 def prepare_df(csv_path: str) -> pd.DataFrame:
@@ -1581,20 +1600,38 @@ def main(argv=None):
 
     output_dir = os.path.dirname(csv_path) or "."
 
-    for metric, title, ylabel, filename in PLOT_METRICS:
-        plot_metric(
-            df, metric=metric,
-            title=title,
-            ylabel=ylabel, xlabel=xlabel,
-            out_png=os.path.join(output_dir, filename) if SAVE_PNG else None,
-        )
+    for group_name, group_df in build_plot_groups(df):
+        group_output_dir = os.path.join(output_dir, group_name)
+        if SAVE_PNG:
+            os.makedirs(group_output_dir, exist_ok=True)
+        if group_df.empty:
+            print(f"[skip] No data available for {group_name} plots")
+            continue
 
-    plot_cold_start_bar(
-        df,
-        title="Cold Start by Configuration",
-        ylabel="Cold Start (s)",
-        out_png=os.path.join(output_dir, "cold_start_bar.png") if SAVE_PNG else None,
-    )
+        for metric, title, ylabel, filename in PLOT_METRICS:
+            plot_metric(
+                group_df,
+                metric=metric,
+                title=title,
+                ylabel=ylabel,
+                xlabel=xlabel,
+                out_png=(
+                    os.path.join(group_output_dir, filename)
+                    if SAVE_PNG
+                    else None
+                ),
+            )
+
+        plot_cold_start_bar(
+            group_df,
+            title="Cold Start by Configuration",
+            ylabel="Cold Start (s)",
+            out_png=(
+                os.path.join(group_output_dir, "cold_start_bar.png")
+                if SAVE_PNG
+                else None
+            ),
+        )
     write_latency_model_report(df, static_meta, output_dir)
 
 

@@ -199,7 +199,13 @@ python run.py --model google-bert/bert-base-uncased --input-scales 64,128,256,51
 python plot.py results/google-bert--bert-base-uncased/result_all.csv
 ```
 
-`plot.py` 默认读取同目录下的 `static_meta.csv`，用其中的 `input_scale_type` 作为横轴语义名，并在结果目录生成：
+`plot.py` 默认读取同目录下的 `static_meta.csv`，用其中的 `input_scale_type` 作为横轴语义名。图片会写入结果目录下的三个子目录：
+
+- `cpu/`：只使用 `gpu_mode=off` 的 CPU 数据
+- `gpu/`：只使用 `gpu_mode=on` 的 GPU 数据
+- `cpu+gpu/`：同时包含 CPU 和 GPU 数据，用于对比
+
+每个有对应数据的目录会按可用指标生成以下图表（整列为空的指标会跳过）：
 
 - `latency_vs_scale.png`
 - `latency_app_vs_scale.png`
@@ -218,6 +224,9 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 - `gpu_mem_util_vs_scale.png`
 - `gpu_mem_used_vs_scale.png`
 - `cold_start_bar.png`
+
+延迟建模产物仍直接写在结果目录：
+
 - `latency_model_report.json`
 - `latency_model_residuals.csv`
 
@@ -308,7 +317,9 @@ GPU: latency_s = exp(
 | `latency_model_report.json` | `plot.py` 生成的 latency 拟合报告。包含分 CPU/GPU 的正值模型、整配置留一与最大尺度外推指标、质量门槛、系数和训练范围。 |
 | `latency_model_residuals.csv` | `plot.py` 生成的 case-level residual。每个 `GPU mode × CPU × memory × input scale` 聚合 case 一行，包含重复数/离散度、full-fit、resource-config OOF 和最大尺度 holdout 预测。 |
 | `result_case_*.csv.idle_diag.jsonl` | 仅 `--idle-debug` 时生成。每行对应一个 workload window 的 idle 诊断记录，包含 GPU NVML idle power trace、`nvidia-smi` GPU/process 快照、CPU idle window 内 RAPL 子窗口功率、host/container CPU delta、top proc CPU delta，以及 after-idle 快照，用于定位 `gpu_idle_power_w` / `cpu_idle_power_w` case 内波动来源。 |
-| `*.png` | `plot.py` 生成的图表。 |
+| `cpu/*.png` | `plot.py` 生成的 CPU-only 图表。 |
+| `gpu/*.png` | `plot.py` 生成的 GPU-only 图表。 |
+| `cpu+gpu/*.png` | `plot.py` 生成的 CPU/GPU 对比图表。 |
 
 中间文件 `result_case_*.csv`、`result_case_*.csv.sniff_groups.jsonl`、`lat_case_*.json`、`sniff_case_*.pcap` 会在 `result_all.csv` 成功 merge 后自动清理。若运行被中断，这些中间文件可能保留。
 
