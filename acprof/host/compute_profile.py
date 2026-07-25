@@ -11,13 +11,12 @@ import shutil
 import subprocess
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from acprof.config import SCALING_DIMENSIONS
 from acprof.host.detect import TaskInfo
 from acprof.host.env_utils import hf_offline_docker_env_args
 
 
 COMPUTE_PROFILE_PLAN_NAME = "compute_profile_plan.json"
-COMPUTE_PROFILE_PAYLOADS_NAME = "compute_profile_payloads.json"
+CONTAINER_INPUT_SCALE_PLAN_FILE = "/payloads/input_scale_plan.json"
 TORCH_PROFILER_TOOL = "torch_profiler"
 COMPUTE_PROFILE_TOOL_MODES = {"auto", "torch", "vendor"}
 NCU_FLOAT_TYPE_PATTERN = r"(?:bf\d+|fp\d+|tf\d+)"
@@ -59,10 +58,6 @@ def _run(cmd: Sequence[str], check: bool = False, **kwargs) -> subprocess.Comple
         errors="replace",
         **kwargs,
     )
-
-
-def _parse_float_list(s: str) -> List[float]:
-    return [float(x.strip()) for x in s.split(",") if x.strip()]
 
 
 def _format_scale_value(scale: float) -> str:
@@ -366,64 +361,51 @@ def _tool_mount_roots(tool_path: str, requested_root: Optional[str]) -> List[str
     return roots
 
 
-def _default_scales(task_info: TaskInfo) -> List[float]:
-    scaling_cfg = SCALING_DIMENSIONS.get(task_info.task_family)
-    if scaling_cfg and scaling_cfg.values:
-        return [float(value) for value in scaling_cfg.values]
-    return [1.0]
-
-
-def _load_payload_entries(
-    task_info: TaskInfo,
-    batch_size: int,
-    input_scale_plan_file: Optional[str],
-    input_scales: Optional[str],
+def _load_input_scale_plan_entries(
+    input_scale_plan_file: str,
 ) -> List[Dict[str, Any]]:
-    if input_scale_plan_file and os.path.exists(input_scale_plan_file):
-        with open(input_scale_plan_file, "r", encoding="utf-8") as f:
-            plan = json.load(f)
-        entries = plan.get("entries")
-        if isinstance(entries, list) and entries:
-            return [
-                {
-                    "input_scale": float(entry["input_scale"]),
-                    "scale_label": str(entry.get("scale_label") or _format_scale_value(float(entry["input_scale"]))),
-                    "payload": entry["payload"],
-                }
-                for entry in entries
-                if isinstance(entry, dict) and isinstance(entry.get("payload"), dict)
-            ]
+    if not input_scale_plan_file:
+        raise ValueError("input_scale_plan_file is required for compute profiling")
+    if not os.path.isfile(input_scale_plan_file):
+        raise FileNotFoundError(
+            f"input scale plan not found: {input_scale_plan_file}"
+        )
 
-    from acprof.workloads import get_generator
+    with open(input_scale_plan_file, "r", encoding="utf-8") as f:
+        plan = json.load(f)
+    if not isinstance(plan, dict):
+        raise ValueError(
+            f"invalid input scale plan (expected object): {input_scale_plan_file}"
+        )
 
-    scales = _parse_float_list(input_scales) if input_scales else _default_scales(task_info)
-    workload_gen = get_generator(
-        task_info.task_family,
-        task_info.model_id,
-        task_info.pipeline_tag,
-        batch_size,
-    )
-    return [
-        {
-            "input_scale": float(scale),
-            "scale_label": workload_gen.scale_label(float(scale)),
-            "payload": workload_gen.generate(float(scale)),
-        }
-        for scale in scales
-    ]
+    raw_entries = plan.get("entries")
+    if not isinstance(raw_entries, list) or not raw_entries:
+        raise ValueError(
+            f"invalid input scale plan (missing entries): {input_scale_plan_file}"
+        )
 
-
-def _write_payload_file(output_dir: str, task_info: TaskInfo, entries: List[Dict[str, Any]]) -> str:
-    payload_file = os.path.join(output_dir, COMPUTE_PROFILE_PAYLOADS_NAME)
-    payload = {
-        "model_id": task_info.model_id,
-        "task_family": task_info.task_family,
-        "pipeline_tag": task_info.pipeline_tag,
-        "entries": entries,
-    }
-    with open(payload_file, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=True, indent=2)
-    return payload_file
+    entries: List[Dict[str, Any]] = []
+    for idx, entry in enumerate(raw_entries):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"invalid input scale plan entry at index {idx}: {entry!r}"
+            )
+        raw_scale = entry.get("input_scale")
+        payload = entry.get("payload")
+        if raw_scale is None or not isinstance(payload, dict):
+            raise ValueError(
+                f"input scale plan entry missing input_scale/payload "
+                f"at index {idx}"
+            )
+        scale = float(raw_scale)
+        entries.append({
+            "input_scale": scale,
+            "scale_label": str(
+                entry.get("scale_label") or _format_scale_value(scale)
+            ),
+            "payload": payload,
+        })
+    return entries
 
 
 def _base_docker_cmd(
@@ -444,7 +426,7 @@ def _base_docker_cmd(
         "docker", "run", "--rm",
         f"--cpus={cpu}",
         f"--memory={mem}g",
-        "-v", f"{os.path.abspath(payload_file)}:/payloads/{COMPUTE_PROFILE_PAYLOADS_NAME}:ro",
+        "-v", f"{os.path.abspath(payload_file)}:{CONTAINER_INPUT_SCALE_PLAN_FILE}:ro",
         "-v", f"{os.path.abspath(profile_root)}:/profiles",
         "-e", f"MODEL_ID={task_info.model_id}",
         "-e", f"MODEL_REVISION={task_info.model_revision or 'main'}",
@@ -479,7 +461,7 @@ def _base_docker_cmd(
 def _runner_args(entry: Dict[str, Any], repeat: int, mode: str) -> List[str]:
     return [
         "python", "-m", "acprof.container.compute_profile_runner",
-        "--payload-file", f"/payloads/{COMPUTE_PROFILE_PAYLOADS_NAME}",
+        "--payload-file", CONTAINER_INPUT_SCALE_PLAN_FILE,
         "--input-scale", _format_scale_value(float(entry["input_scale"])),
         "--repeat", str(max(1, int(repeat))),
         "--profile-mode", mode,
@@ -954,10 +936,8 @@ def collect_compute_profile_plan(
     cpu_list: List[int],
     mem_list: List[int],
     gpu_list: List[str],
-    batch_size: int,
     output_dir: str,
-    input_scale_plan_file: Optional[str],
-    input_scales: Optional[str],
+    input_scale_plan_file: str,
     advisor_root: Optional[str],
     ncu_root: Optional[str],
     advisor_repeat: int,
@@ -978,8 +958,8 @@ def collect_compute_profile_plan(
 
     profile_root = os.path.join(output_dir, "compute_profiles")
     os.makedirs(profile_root, exist_ok=True)
-    entries = _load_payload_entries(task_info, batch_size, input_scale_plan_file, input_scales)
-    payload_file = _write_payload_file(output_dir, task_info, entries)
+    entries = _load_input_scale_plan_entries(input_scale_plan_file)
+    payload_file = input_scale_plan_file
 
     normalized_gpus = {_normal_gpu_mode(gpu) for gpu in gpu_list}
     advisor_bin = (

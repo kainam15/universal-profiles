@@ -346,6 +346,125 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(plan["entries"][0]["input_scale"], 254.0)
         self.assertEqual(plan["entries"][0]["payload"], {"text": "hello [MASK]", "params": {}})
 
+    def test_manual_non_nlp_scales_write_reusable_payload_plan(self) -> None:
+        class FakeWorkloadGenerator:
+            def generate(self, scale: float) -> dict:
+                return {"value": float(scale)}
+
+            def effective_input_scale(
+                self,
+                scale: float,
+                payload: dict | None = None,
+            ) -> float:
+                return float(scale)
+
+            def scale_label(self, scale: float) -> str:
+                return f"scale{scale:g}"
+
+        for task_family in ("cv", "audio", "timeseries"):
+            with self.subTest(task_family=task_family), tempfile.TemporaryDirectory() as tmp, patch(
+                "acprof.workloads.get_generator",
+                return_value=FakeWorkloadGenerator(),
+            ):
+                task_info = TaskInfo(
+                    model_id=f"test/{task_family}",
+                    pipeline_tag="test-task",
+                    task_family=task_family,
+                    runtime_backend="transformers_pipeline",
+                    library_name="transformers",
+                    model_revision="main",
+                    detection_method="unit",
+                )
+
+                planned = orchestrator.plan_input_scales(
+                    task_info=task_info,
+                    image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                    cpu_list=[1],
+                    mem_list=[4],
+                    gpu_list=["off"],
+                    batch_size=1,
+                    output_dir=tmp,
+                    input_scales="1,2",
+                )
+
+                self.assertEqual(planned.scales, [1.0, 2.0])
+                self.assertEqual(planned.source, "manual")
+                self.assertEqual(
+                    planned.plan_file,
+                    os.path.join(tmp, "input_scale_plan.json"),
+                )
+                assert planned.plan_file is not None
+                with open(planned.plan_file, "r", encoding="utf-8") as f:
+                    plan = json.load(f)
+
+                self.assertEqual(
+                    plan["entries"],
+                    [
+                        {
+                            "input_scale": 1.0,
+                            "scale_label": "scale1",
+                            "payload": {"value": 1.0},
+                        },
+                        {
+                            "input_scale": 2.0,
+                            "scale_label": "scale2",
+                            "payload": {"value": 2.0},
+                        },
+                    ],
+                )
+
+    def test_auto_non_nlp_scales_write_reusable_payload_plan(self) -> None:
+        class FakeWorkloadGenerator:
+            def generate(self, scale: float) -> dict:
+                return {"value": float(scale)}
+
+            def effective_input_scale(
+                self,
+                scale: float,
+                payload: dict | None = None,
+            ) -> float:
+                return float(scale)
+
+            def scale_label(self, scale: float) -> str:
+                return f"duration{scale:g}"
+
+        task_info = TaskInfo(
+            model_id="test/audio",
+            pipeline_tag="automatic-speech-recognition",
+            task_family="audio",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="unit",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "acprof.workloads.get_generator",
+            return_value=FakeWorkloadGenerator(),
+        ), patch(
+            "acprof.host.orchestrator._default_family_max_scale",
+            return_value=6.0,
+        ):
+            planned = orchestrator.plan_input_scales(
+                task_info=task_info,
+                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                cpu_list=[1],
+                mem_list=[4],
+                gpu_list=["off"],
+                batch_size=1,
+                output_dir=tmp,
+            )
+
+            self.assertEqual(planned.scales, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+            assert planned.plan_file is not None
+            with open(planned.plan_file, "r", encoding="utf-8") as f:
+                plan = json.load(f)
+
+        self.assertEqual(
+            [entry["input_scale"] for entry in plan["entries"]],
+            planned.scales,
+        )
+
     def test_run_single_case_passes_container_name_to_client(self) -> None:
         task_info = TaskInfo(
             model_id="google-bert/bert-base-uncased",

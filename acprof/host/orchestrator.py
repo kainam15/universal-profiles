@@ -173,6 +173,72 @@ def _write_scale_plan_file(
         json.dump(payload, f, ensure_ascii=True, indent=2)
 
 
+def _materialize_scale_plan(
+    *,
+    task_info: TaskInfo,
+    scales: List[float],
+    batch_size: int,
+    output_dir: str,
+    source: str,
+) -> PlannedInputScales:
+    """Generate one reusable payload plan for non-NLP task families."""
+    from acprof.workloads import get_generator
+
+    workload_gen = get_generator(
+        task_info.task_family,
+        task_info.model_id,
+        task_info.pipeline_tag,
+        batch_size,
+    )
+    entries: List[Dict[str, Any]] = []
+    effective_scales: List[float] = []
+
+    for scale in scales:
+        requested_scale = float(scale)
+        payload = workload_gen.generate(requested_scale)
+        if not isinstance(payload, dict):
+            raise RuntimeError(
+                f"workload generator returned a non-object payload for "
+                f"task_family={task_info.task_family}, "
+                f"input_scale={_format_scale_value(requested_scale)}"
+            )
+
+        effective_scale = workload_gen.effective_input_scale(
+            requested_scale,
+            payload,
+        )
+        if effective_scale is None:
+            raise RuntimeError(
+                f"cannot determine effective input scale for "
+                f"task_family={task_info.task_family}, "
+                f"input_scale={_format_scale_value(requested_scale)}"
+            )
+
+        actual_scale = float(effective_scale)
+        if effective_scales and actual_scale <= effective_scales[-1]:
+            raise RuntimeError(
+                f"input scale plan is not strictly increasing for "
+                f"task_family={task_info.task_family}: "
+                f"{_format_scale_value(effective_scales[-1])}, "
+                f"{_format_scale_value(actual_scale)}"
+            )
+
+        effective_scales.append(actual_scale)
+        entries.append({
+            "input_scale": actual_scale,
+            "scale_label": workload_gen.scale_label(actual_scale),
+            "payload": payload,
+        })
+
+    plan_file = _scale_plan_file_path(output_dir)
+    _write_scale_plan_file(plan_file, task_info, entries)
+    return PlannedInputScales(
+        scales=effective_scales,
+        source=source,
+        plan_file=plan_file,
+    )
+
+
 def _integer_auto_scales(max_value: int, count: int = AUTO_INPUT_SCALE_COUNT) -> List[float]:
     if max_value < count:
         raise RuntimeError(
@@ -1616,7 +1682,7 @@ def plan_input_scales(
                 batch_size=batch_size,
                 output_dir=output_dir,
             )
-        elif task_info.task_family == "timeseries":
+        if task_info.task_family == "timeseries":
             manual_scales = _assert_manual_timeseries_scales_legal(
                 task_info=task_info,
                 scales=manual_scales,
@@ -1625,7 +1691,13 @@ def plan_input_scales(
         else:
             print(f"[scale] Using manual input scales: {serialize_input_scales(manual_scales)}")
 
-        return PlannedInputScales(scales=manual_scales, source="manual")
+        return _materialize_scale_plan(
+            task_info=task_info,
+            scales=manual_scales,
+            batch_size=batch_size,
+            output_dir=output_dir,
+            source="manual",
+        )
 
     if task_info.task_family == "nlp":
         return _plan_nlp_auto_scales(
@@ -1648,7 +1720,13 @@ def plan_input_scales(
         f"[scale] Auto-planned {task_info.task_family} scales: "
         f"{serialize_input_scales(scales)}"
     )
-    return PlannedInputScales(scales=scales, source="auto")
+    return _materialize_scale_plan(
+        task_info=task_info,
+        scales=scales,
+        batch_size=batch_size,
+        output_dir=output_dir,
+        source="auto",
+    )
 
 
 # ─────────────────────────────────────────────

@@ -11,7 +11,46 @@ from acprof.host.detect import TaskInfo
 from acprof.host import compute_profile
 
 
+def _write_input_scale_plan(directory: str, input_scale: float = 8.0) -> str:
+    path = os.path.join(directory, "input_scale_plan.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "model_id": "google-bert/bert-base-uncased",
+                "task_family": "nlp",
+                "pipeline_tag": "fill-mask",
+                "entries": [
+                    {
+                        "input_scale": input_scale,
+                        "scale_label": f"seq{input_scale:g}",
+                        "payload": {
+                            "text": "hello [MASK]",
+                            "params": {},
+                        },
+                    }
+                ],
+            },
+            f,
+        )
+    return path
+
+
 class ComputeProfileTests(unittest.TestCase):
+    def test_input_scale_plan_is_required(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "input_scale_plan_file is required",
+        ):
+            compute_profile._load_input_scale_plan_entries("")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = os.path.join(tmp, "input_scale_plan.json")
+            with self.assertRaisesRegex(
+                FileNotFoundError,
+                "input scale plan not found",
+            ):
+                compute_profile._load_input_scale_plan_entries(missing)
+
     def test_compute_container_is_offline_and_does_not_receive_hf_token(self) -> None:
         task_info = TaskInfo(
             model_id="google-bert/bert-base-uncased",
@@ -41,6 +80,10 @@ class ComputeProfileTests(unittest.TestCase):
                 tool_mount_roots=(),
             )
 
+        self.assertIn(
+            f"{os.path.abspath(payload_file)}:/payloads/input_scale_plan.json:ro",
+            cmd,
+        )
         self.assertIn("HF_HUB_OFFLINE=1", cmd)
         self.assertIn("TRANSFORMERS_OFFLINE=1", cmd)
         self.assertIn("MODEL_LOCAL_PATH=/models/model-snapshot", cmd)
@@ -371,10 +414,8 @@ class ComputeProfileTests(unittest.TestCase):
                 cpu_list=[1],
                 mem_list=[4],
                 gpu_list=["off", "on"],
-                batch_size=1,
                 output_dir=tmp,
-                input_scale_plan_file=None,
-                input_scales="8",
+                input_scale_plan_file=_write_input_scale_plan(tmp),
                 advisor_root=None,
                 ncu_root=None,
                 advisor_repeat=20,
@@ -385,6 +426,11 @@ class ComputeProfileTests(unittest.TestCase):
 
             with open(plan_path, "r", encoding="utf-8") as f:
                 plan = json.load(f)
+            self.assertFalse(
+                os.path.exists(
+                    os.path.join(tmp, "compute_profile_payloads.json")
+                )
+            )
 
         self.assertIn("advisor_not_found", plan["profiles"]["cpu"]["error"])
         self.assertIn("ncu_not_found", plan["profiles"]["gpu"]["error"])
@@ -466,10 +512,8 @@ class ComputeProfileTests(unittest.TestCase):
                 cpu_list=[1],
                 mem_list=[4],
                 gpu_list=["off", "on"],
-                batch_size=1,
                 output_dir=tmp,
-                input_scale_plan_file=None,
-                input_scales="8",
+                input_scale_plan_file=_write_input_scale_plan(tmp),
                 advisor_root=None,
                 ncu_root=None,
                 advisor_repeat=20,
@@ -561,10 +605,8 @@ class ComputeProfileTests(unittest.TestCase):
                 cpu_list=[1],
                 mem_list=[4],
                 gpu_list=["off", "on"],
-                batch_size=1,
                 output_dir=tmp,
-                input_scale_plan_file=None,
-                input_scales="8",
+                input_scale_plan_file=_write_input_scale_plan(tmp),
                 advisor_root=None,
                 ncu_root=None,
                 advisor_repeat=20,
@@ -619,10 +661,8 @@ class ComputeProfileTests(unittest.TestCase):
                 cpu_list=[1],
                 mem_list=[4],
                 gpu_list=["off", "on"],
-                batch_size=1,
                 output_dir=tmp,
-                input_scale_plan_file=None,
-                input_scales="8",
+                input_scale_plan_file=_write_input_scale_plan(tmp),
                 advisor_root=None,
                 ncu_root=None,
                 advisor_repeat=20,
@@ -673,10 +713,8 @@ class ComputeProfileTests(unittest.TestCase):
                 cpu_list=[1],
                 mem_list=[4],
                 gpu_list=["off", "on"],
-                batch_size=1,
                 output_dir=tmp,
-                input_scale_plan_file=None,
-                input_scales="8",
+                input_scale_plan_file=_write_input_scale_plan(tmp),
                 advisor_root=None,
                 ncu_root=None,
                 advisor_repeat=20,
@@ -724,10 +762,8 @@ class ComputeProfileTests(unittest.TestCase):
                 cpu_list=[1],
                 mem_list=[4],
                 gpu_list=["off"],
-                batch_size=1,
                 output_dir=tmp,
-                input_scale_plan_file=None,
-                input_scales="8",
+                input_scale_plan_file=_write_input_scale_plan(tmp),
                 advisor_root=None,
                 ncu_root=None,
                 advisor_repeat=20,

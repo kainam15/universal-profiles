@@ -301,7 +301,7 @@ GPU: latency_s = exp(
 - `nlp` 会启动容器读取 tokenizer / handler 的可用最大输入长度，最后一档尽量贴近有效上限。
 - `cv`、`audio`、`timeseries` 会根据各自 workload generator 的最大尺度或配置默认值生成 6 档。
 - 同一次 run 的所有资源配置共用同一组 scale。
-- 自动规划的 payload 会写入 `input_scale_plan.json`，`acprof.host.client` 用它保证实际执行 payload 与 CSV 中记录的 `input_scale` 一致。
+- 所有任务族都会把已确定尺度的 payload 写入唯一的 `input_scale_plan.json`；主采集与 compute profiler 共同读取该文件，保证实际执行 payload、FLOP profiling 和 CSV 中记录的 `input_scale` 一致。
 - 手动传入 `--input-scales` 时以手动值为准；`nlp` 和 `timeseries` 会在 sweep 前验证合法性。
 
 ## 7. 输出文件
@@ -312,7 +312,7 @@ GPU: latency_s = exp(
 | --- | --- |
 | `result_all.csv` | 动态测量结果。每一行对应一个 resource config、一个 input scale、一次 warmup/repeat iteration。 |
 | `static_meta.csv` | 一行静态元数据。记录模型、镜像、batch、input scale 语义、GPU、环境和大小信息。 |
-| `input_scale_plan.json` | 自动 input scale 规划文件。手动 `--input-scales` 时可能不存在。 |
+| `input_scale_plan.json` | 所有任务族共用的 input scale/payload 计划。自动与手动 `--input-scales` 都会生成，主采集和 compute profiler 复用同一份内容。 |
 | `compute_profile_plan.json` | per-scale FLOP profiling 结果。默认 CPU 来自 PyTorch profiler、GPU 来自 ncu；显式 `--compute-profile-tool torch` 时全部来自 PyTorch profiler，显式 `vendor` 时来自 Intel Advisor / ncu。失败时也会写入错误信息，供 `result_all.csv` compute 字段引用。 |
 | `latency_model_report.json` | `plot.py` 生成的 latency 拟合报告。包含分 CPU/GPU 的正值模型、整配置留一与最大尺度外推指标、质量门槛、系数和训练范围。 |
 | `latency_model_residuals.csv` | `plot.py` 生成的 case-level residual。每个 `GPU mode × CPU × memory × input scale` 聚合 case 一行，包含重复数/离散度、full-fit、resource-config OOF 和最大尺度 holdout 预测。 |
