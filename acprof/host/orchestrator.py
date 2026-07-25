@@ -25,6 +25,7 @@ from acprof.config import (
     DEFAULT_REPEAT_WINDOW_SECONDS,
     DOCKER_IMAGE_PREFIX,
     HF_MIRROR_ENDPOINT,
+    IDLE_DIAG_DIRNAME,
     PYPI_MIRROR_INDEX,
     SCALING_DIMENSIONS,
     SERVER_PORT,
@@ -1922,6 +1923,11 @@ def run_single_case(
 
     host_port = _host_port(cpu, mem)
     out_csv = os.path.join(output_dir, f"result_{case_name}.csv")
+    idle_diag_path = os.path.join(
+        output_dir,
+        IDLE_DIAG_DIRNAME,
+        f"{os.path.basename(out_csv)}.idle_diag.jsonl",
+    )
     pcap_file = os.path.join(output_dir, f"sniff_{case_name}.pcap")
     lat_json = os.path.join(output_dir, f"lat_{case_name}.json")
 
@@ -2023,7 +2029,7 @@ def run_single_case(
             "IDLE_SECONDS": str(idle_seconds),
             "IDLE_COOLDOWN_SECONDS": str(idle_cooldown_seconds),
             "IDLE_DEBUG": "1" if idle_debug else "0",
-            "IDLE_DIAG_PATH": f"{out_csv}.idle_diag.jsonl" if idle_debug else "",
+            "IDLE_DIAG_PATH": idle_diag_path if idle_debug else "",
             "DEVICE_INDEX": "0",
             "INPUT_SCALES": scales_str,
             "INPUT_SCALE_PLAN_FILE": input_scale_plan_file or "",

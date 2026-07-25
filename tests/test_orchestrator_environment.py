@@ -494,7 +494,14 @@ class DetectEnvironmentTests(unittest.TestCase):
 
         self.assertEqual(captured_env["IDLE_DEBUG"], "1")
         self.assertEqual(captured_env["IDLE_COOLDOWN_SECONDS"], "4.5")
-        self.assertEqual(captured_env["IDLE_DIAG_PATH"], captured_env["OUT_CSV"] + ".idle_diag.jsonl")
+        self.assertEqual(
+            captured_env["IDLE_DIAG_PATH"],
+            os.path.join(
+                os.path.dirname(captured_env["OUT_CSV"]),
+                "debug_idle_diag",
+                os.path.basename(captured_env["OUT_CSV"]) + ".idle_diag.jsonl",
+            ),
+        )
 
     def test_run_single_case_passes_auto_repeat_window_settings_to_client(self) -> None:
         task_info = TaskInfo(

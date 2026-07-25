@@ -14,6 +14,18 @@ from acprof.config import CSV_FIELDS
 
 
 class EffectiveEnergyWarningTests(unittest.TestCase):
+    def test_default_idle_diag_path_uses_dedicated_debug_directory(self) -> None:
+        with patch.object(client, "IDLE_DIAG_PATH", ""):
+            self.assertEqual(
+                client._idle_diag_path("results/model/result_case.csv"),
+                os.path.join(
+                    "results",
+                    "model",
+                    "debug_idle_diag",
+                    "result_case.csv.idle_diag.jsonl",
+                ),
+            )
+
     def test_matched_control_starts_all_monitors_before_wait_and_applies_baselines(self) -> None:
         events = []
 
@@ -744,7 +756,11 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             out_csv = f"{tmp_dir}/result.csv"
-            diag_path = f"{out_csv}.idle_diag.jsonl"
+            diag_path = os.path.join(
+                tmp_dir,
+                "debug_idle_diag",
+                "result.csv.idle_diag.jsonl",
+            )
             with patch.object(
                 client, "OUT_CSV", out_csv
             ), patch.object(
@@ -764,7 +780,7 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
             ), patch.object(
                 client, "IDLE_DEBUG", True, create=True
             ), patch.object(
-                client, "IDLE_DIAG_PATH", diag_path, create=True
+                client, "IDLE_DIAG_PATH", "", create=True
             ), patch.object(
                 client, "energy_mod", None
             ), patch.object(

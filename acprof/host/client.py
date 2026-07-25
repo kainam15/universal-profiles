@@ -37,6 +37,7 @@ from acprof.config import (
     DEFAULT_REPEAT_IN_WINDOW,
     DEFAULT_REPEAT_WINDOW_SECONDS,
     DEFAULT_TASK_PARAMS,
+    IDLE_DIAG_DIRNAME,
     SCALING_DIMENSIONS,
 )
 from acprof.host.compute_profile_plan import (
@@ -114,7 +115,15 @@ def _sniff_groups_path(csv_path: str) -> str:
 
 
 def _idle_diag_path(csv_path: str) -> str:
-    return IDLE_DIAG_PATH or f"{csv_path}.idle_diag.jsonl"
+    if IDLE_DIAG_PATH:
+        return IDLE_DIAG_PATH
+    csv_dir = os.path.dirname(csv_path)
+    csv_name = os.path.basename(csv_path)
+    return os.path.join(
+        csv_dir,
+        IDLE_DIAG_DIRNAME,
+        f"{csv_name}.idle_diag.jsonl",
+    )
 
 
 def _to_float_or_nan(x: Any) -> float:
@@ -1010,11 +1019,12 @@ def main() -> None:
     compute_profile_plan = _load_compute_profile_plan(COMPUTE_PROFILE_PLAN_FILE)
     need_header = _is_file_empty(OUT_CSV)
     sidecar_mode = "w" if need_header else "a"
-    diag_context = (
-        open(_idle_diag_path(OUT_CSV), sidecar_mode, encoding="utf-8")
-        if IDLE_DEBUG
-        else nullcontext(None)
-    )
+    if IDLE_DEBUG:
+        diag_path = _idle_diag_path(OUT_CSV)
+        os.makedirs(os.path.dirname(diag_path) or ".", exist_ok=True)
+        diag_context = open(diag_path, sidecar_mode, encoding="utf-8")
+    else:
+        diag_context = nullcontext(None)
     with open(OUT_CSV, "a", newline="", encoding="utf-8") as f, open(
         _sniff_groups_path(OUT_CSV),
         sidecar_mode,
