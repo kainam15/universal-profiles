@@ -115,7 +115,10 @@ def _read_sidecar_groups(csv_path: str) -> list[str]:
 def main(argv: Sequence[str] | None = None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
     if len(args) != 3:
-        raise SystemExit("usage: merge_packet_latency.py <in_csv> <lat_json> <out_csv>")
+        raise SystemExit(
+            "usage: python -m acprof.packet.merge_packet_latency "
+            "<in_csv> <lat_json> <out_csv>"
+        )
 
     in_csv, lat_json, out_csv = args
     with open(lat_json, "r", encoding="utf-8") as f:

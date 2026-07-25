@@ -62,7 +62,14 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
                 json.dump({"case_seq1_r0:0": 0.25, "case_seq1_r0:1": 0.25}, f)
 
             subprocess.run(
-                [sys.executable, "merge_packet_latency.py", in_csv, lat_json, out_csv],
+                [
+                    sys.executable,
+                    "-m",
+                    "acprof.packet.merge_packet_latency",
+                    in_csv,
+                    lat_json,
+                    out_csv,
+                ],
                 check=True,
                 cwd=os.path.dirname(os.path.dirname(__file__)),
             )
@@ -119,7 +126,14 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
                 }, f)
 
             subprocess.run(
-                [sys.executable, "merge_packet_latency.py", in_csv, lat_json, out_csv],
+                [
+                    sys.executable,
+                    "-m",
+                    "acprof.packet.merge_packet_latency",
+                    in_csv,
+                    lat_json,
+                    out_csv,
+                ],
                 check=True,
                 cwd=os.path.dirname(os.path.dirname(__file__)),
             )
@@ -168,7 +182,14 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
                 json.dump({"case_seq1_r0:0": 0.5, "case_seq1_r0:1": 0.5}, f)
 
             subprocess.run(
-                [sys.executable, "merge_packet_latency.py", in_csv, lat_json, out_csv],
+                [
+                    sys.executable,
+                    "-m",
+                    "acprof.packet.merge_packet_latency",
+                    in_csv,
+                    lat_json,
+                    out_csv,
+                ],
                 check=True,
                 cwd=os.path.dirname(os.path.dirname(__file__)),
             )

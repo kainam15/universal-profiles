@@ -6,7 +6,7 @@ from typing import Sequence
 
 
 # 用法：
-#   python3 sniff_parse_pcap.py <pcap> <port>
+#   python3 -m acprof.packet.sniff_parse_pcap <pcap> <port>
 #
 # 输出 JSON:
 #   {"<sniff_group_id>:<req_frame>": latency_s, ...}
@@ -44,7 +44,9 @@ def extract_group_id_from_request_lines(req_lines: str) -> str:
 def main(argv: Sequence[str] | None = None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
-        raise SystemExit("usage: sniff_parse_pcap.py <pcap> <port>")
+        raise SystemExit(
+            "usage: python -m acprof.packet.sniff_parse_pcap <pcap> <port>"
+        )
 
     pcap = args[0]
     port = args[1] if len(args) > 1 else "8002"
