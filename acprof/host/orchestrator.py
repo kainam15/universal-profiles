@@ -7,11 +7,9 @@ from __future__ import annotations
 import csv
 import json
 import math
-import ntpath
 import os
 import platform
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -659,35 +657,6 @@ def _detect_environment() -> str:
     return label
 
 
-def _windows_path_to_wsl(path: str) -> str:
-    drive, tail = ntpath.splitdrive(path)
-    if drive:
-        drive_letter = drive.rstrip(":").lower()
-        wsl_tail = tail.replace("\\", "/")
-        return f"/mnt/{drive_letter}{wsl_tail}"
-    abs_path = os.path.abspath(path)
-    return abs_path.replace("\\", "/")
-
-
-def _wsl_launcher() -> Optional[str]:
-    wsl_cmd = shutil.which("wsl.exe") or shutil.which("wsl")
-    if not wsl_cmd:
-        return None
-    return ntpath.basename(wsl_cmd)
-
-
-def _wsl_has_command(command: str) -> bool:
-    launcher = _wsl_launcher()
-    if not launcher:
-        return False
-
-    result = _run(
-        [launcher, "sh", "-lc", f"command -v {shlex.quote(command)} >/dev/null 2>&1"],
-        check=False,
-    )
-    return result.returncode == 0
-
-
 def _tcpdump_can_capture_without_sudo(tcpdump_path: str) -> bool:
     if os.geteuid() == 0:
         return True
@@ -725,8 +694,8 @@ def _sniff_interface_exists(sniff_iface: str) -> bool:
 
 
 def require_packet_latency_prerequisites(project_dir: str, sniff_iface: str) -> None:
-    """Fail early when packet-level latency cannot be collected."""
-    del project_dir  # Reserved for future remote/WSL checks; local Linux is the strict path.
+    """Fail early when native-Linux packet latency cannot be collected."""
+    del project_dir  # Kept for compatibility with existing callers.
 
     missing_tools = [
         name for name in ("tcpdump", "tshark")
@@ -815,6 +784,7 @@ def _resolve_packet_latency_runtime(
     pcap_file: str,
     sniff_iface: str,
 ) -> Optional[PacketLatencyRuntime]:
+    del project_dir  # Packet capture and parsing now always run on the local Linux host.
     local_tcpdump = shutil.which("tcpdump")
     local_tshark = shutil.which("tshark")
     if local_tcpdump and local_tshark:
@@ -845,42 +815,6 @@ def _resolve_packet_latency_runtime(
                 pcap_file,
                 str(SERVER_PORT),
             ],
-        )
-
-    launcher = _wsl_launcher()
-    if (
-        launcher
-        and _detect_environment().endswith("+wsl")
-        and all(_wsl_has_command(cmd) for cmd in ("python3", "tcpdump", "tshark"))
-    ):
-        wsl_pcap = _windows_path_to_wsl(pcap_file)
-        wsl_project_dir = _windows_path_to_wsl(project_dir)
-        parse_shell = (
-            f"cd {shlex.quote(wsl_project_dir)} && "
-            "python3 -m acprof.packet.sniff_parse_pcap "
-            f"{shlex.quote(wsl_pcap)} {shlex.quote(str(SERVER_PORT))}"
-        )
-        return PacketLatencyRuntime(
-            mode="wsl",
-            tcpdump_cmd=[
-                launcher,
-                "-e",
-                "sudo",
-                "-n",
-                "tcpdump",
-                "-i",
-                sniff_iface,
-                "-s",
-                "0",
-                "-B",
-                "4096",
-                "-w",
-                wsl_pcap,
-                "tcp",
-                "port",
-                str(SERVER_PORT),
-            ],
-            parse_cmd=[launcher, "-e", "sh", "-lc", parse_shell],
         )
 
     return None

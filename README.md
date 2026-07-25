@@ -27,22 +27,23 @@ acprof/
 
 基础要求：
 
+- 原生 Linux 主机；当前推荐并验证的环境是 Ubuntu 24.04。WSL、Windows host 和 macOS host 不作为实验采集环境。
 - Python 3.10+
-- Docker
+- 原生 Docker Engine，并通过本机 `unix:///var/run/docker.sock` 访问；运行用户需要属于 `docker` 组。
 - Hugging Face Hub 网络访问，或可用的 `HF_TOKEN`（仅用于 host 检测和镜像构建）
 - `pip install -r requirements.txt`
 
-可选但会影响字段完整性：
+采集依赖（是否必需按各项说明）：
 
 - NVIDIA GPU + NVIDIA Container Toolkit：用于 `--gpus on`、GPU energy metrics、GPU utilization 和 VRAM metrics。
-- Linux RAPL powercap（`/sys/class/powercap/*/energy_uj`）：用于 CPU package power / energy 和 estimated vCPU energy metrics。
+- Linux RAPL powercap（`/sys/class/powercap/*/energy_uj`）：必需，用于 CPU package power / energy 和 estimated vCPU energy metrics；不可读时 preflight 会退出。
 - Docker cgroup CPU / memory files：用于 container CPU utilization、vCPU CPU time/share、memory footprint metrics，以及 estimated CPU cycles 的 CPU utilization 输入。
 - Linux CPU frequency sysfs 或 `/proc/cpuinfo`：用于 `cpu_freq_*` 和 estimated CPU cycles。优先读取 `/sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq` / `cpuinfo_cur_freq`，不可用时回退到 `/proc/cpuinfo` 的 `cpu MHz`。
 - Linux `perf` + hardware event `instructions`：必需，用于真实 retired-instruction MIPS。`run.py` 启动时会先做 preflight；如果 `perf_event_paranoid`、sudo 或 PMU 权限不足，会直接退出并给出修复命令。
 - `tcpdump` + `tshark`：必需，用于填充 `result_all.csv` 的 `latency_s` packet-level latency。`run.py` 启动时会先做 preflight；不满足条件会直接退出并给出恢复提示。
 - Intel Advisor：仅在显式 `--compute-profile-tool vendor` 时用于 `gpu_mode=off` 行的 CPU FLOP / MFLOPS profiling。通过 `--advisor-root` 挂载到临时 profiler container。
 - NVIDIA Nsight Compute CLI (`ncu`)：默认用于 `gpu_mode=on` 行的 GPU FLOP / MFLOPS profiling。通过 `--ncu-root` 挂载到临时 profiler container；不可用、不兼容当前 CUDA/driver、或性能计数器被限制时 compute 字段为 `nan`。Ubuntu multiverse 的 `nsight-compute` 可能过旧，推荐使用 NVIDIA CUDA apt 源里的版本化包，例如 `/opt/nvidia/nsight-compute/<version>/ncu`。
-- Linux / WSL native Docker 的 `docker0` bridge：packet sniffing 默认监听 `docker0`。如果抓包条件不足、PCAP 为空或 merge 后仍有 `latency_s=nan`，程序会退出，不会产出看似完整但缺少 packet latency 的结果。
+- 原生 Docker 的 `docker0` bridge：packet sniffing 默认监听 `docker0`。如果抓包条件不足、PCAP 为空或 merge 后仍有 `latency_s=nan`，程序会退出，不会产出看似完整但缺少 packet latency 的结果。
 
 Hugging Face token 可以放在项目根目录 `.env.local`：
 
@@ -59,12 +60,8 @@ ACPROF_SUDO_PASSWORD=your_sudo_password
 ## 2. 安装
 
 ```bash
-pip install -r requirements.txt
-```
-
-如果在 Windows 上遇到 `pip.exe` 被拦截，优先使用：
-
-```bash
+cd /home/kainam/DOR/universal-profiles
+source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
@@ -86,16 +83,7 @@ python run.py --model google-bert/bert-base-uncased
 - repeat: 5
 - repeat-in-window: auto 模式下每行连续发送请求，直到本行累计 application latency 达到目标 workload window，默认约 10 秒
 
-默认完整矩阵较慢。开发和验证建议先跑小矩阵：
-
-```bash
-python run.py --model google-bert/bert-base-uncased ^
-  --cpus 1 --mems 4 --gpus off ^
-  --warmup 0 --repeat 1 --repeat-in-window 1 ^
-  --output-dir results/smoke
-```
-
-Linux / WSL shell 使用反斜杠换行：
+默认完整矩阵较慢。开发和验证建议先在 Ubuntu shell 中跑小矩阵：
 
 ```bash
 python run.py --model google-bert/bert-base-uncased \
@@ -117,20 +105,49 @@ python run.py --model google-bert/bert-base-uncased \
 
 如需 CPU 行也使用 Intel Advisor，可额外传 `--compute-profile-tool vendor --advisor-root /opt/intel/oneapi/advisor/latest`。
 
-### 采集 `latency_s` 的推荐启动方式
+### 原生 Ubuntu 下采集 `latency_s` 的推荐启动方式
 
-`run.py` 默认要求完整采集 `latency_s`。启动后会先检查 `tcpdump`、`tshark`、抓包网卡和 `tcpdump` capability；任一条件不满足都会在模型检测/build 前退出。推荐从 WSL 启动，并显式使用 WSL native Docker daemon，不要落回 Docker Desktop daemon：
+`run.py` 现在明确要求“原生 Linux 进程 + 本机 Docker daemon”。启动后会依次检查 host 是否为 WSL、本机 Docker endpoint、`tcpdump`、`tshark`、抓包网卡、`tcpdump` capability、RAPL 和 `perf`；任一必需条件不满足都会在模型检测/build 前退出。WSL、Docker Desktop、远程 Docker 和旧的 `/var/run/docker-native.sock` 会被主动拒绝，避免长时间实验结束后才发现部分字段无法采集。
+
+首次配置或切换环境后，先确认基础链路：
 
 ```bash
-wsl.exe sh -lc "cd /mnt/d/DOR/universal-profiles && DOCKER_HOST=unix:///var/run/docker-native.sock python3 run.py --model google-bert/bert-base-uncased --skip-build --output-dir results/test"
+cd /home/kainam/DOR/universal-profiles
+source .venv/bin/activate
+
+unset DOCKER_HOST DOCKER_CONTEXT
+docker context use default
+docker context inspect default --format '{{(index .Endpoints "docker").Host}}'
+docker info --format 'OperatingSystem={{.OperatingSystem}}'
+
+command -v tcpdump
+command -v tshark
+getcap "$(command -v tcpdump)"
+ip link show docker0
 ```
 
-这条路径用于让 `tcpdump` 在 WSL Docker 的 `docker0` bridge 上抓到容器流量。前提是：
+Docker endpoint 应输出 `unix:///var/run/docker.sock`。`tcpdump` capability 应包含 `cap_net_raw` 和 `cap_net_admin`；缺少时执行一次：
 
-- WSL native Docker daemon 已启动，并监听 `unix:///var/run/docker-native.sock`。
-- WSL 内已安装 `tcpdump` 和 `tshark`。
-- `--skip-build` 只有在该 native daemon 的 image store 里已经有对应 image 时才可用；Docker Desktop 和 WSL native Docker 的 image store 不是同一个。
-- 实验需要完整跑到 merge 阶段，并且所有结果行都成功回填 `latency_s`。否则本次 run 会失败退出并保留错误提示。
+```bash
+sudo apt-get install -y tcpdump tshark
+sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v tcpdump)"
+```
+
+随后直接从 Ubuntu shell 启动，不再使用 `wsl.exe`、`/mnt/...` 路径或 `DOCKER_HOST=unix:///var/run/docker-native.sock`：
+
+```bash
+python run.py --model google-bert/bert-base-uncased \
+  --skip-build \
+  --output-dir results/test
+```
+
+前提是：
+
+- 当前 shell 的 `uname -r` 不包含 `microsoft`，Docker daemon 的操作系统为本机 Ubuntu。
+- Docker context 指向 `unix:///var/run/docker.sock`，且当前普通用户可以直接执行 `docker info`。
+- 默认 bridge 名为 `docker0`。如果 daemon 明确改过 bridge 名，使用 `docker network inspect bridge` 核对后传 `--sniff-iface <实际网卡>`。
+- `--skip-build` 只有在本机 `/var/lib/docker` 对应的 image store 已存在目标 image 时才可用。
+- 实验需要完整跑到 merge 阶段，并且所有结果行都成功回填 `latency_s`；否则本次 run 会失败退出并保留错误提示。
 
 如果 Docker image 已经存在，可以跳过 build：
 
@@ -255,7 +272,7 @@ GPU: latency_s = exp(
 | `--compute-profile-cpus` | host logical CPUs | 临时 compute profiler container 的 CPU core cap。 |
 | `--compute-profile-mem` | 75% host memory | 临时 compute profiler container 的 memory cap，单位 GB。 |
 | `--keep-compute-profiles` | false | 保留 raw profiler artifacts。默认 GPU / vendor GPU 包括 ncu report/CSV，vendor CPU 包括 Advisor project。 |
-| `--sniff-iface` | `docker0` | `tcpdump` 抓包网卡。 |
+| `--sniff-iface` | `docker0` | 本机 Docker 默认 bridge 对应的 `tcpdump` 抓包网卡。只有 daemon 改过 bridge 名时才覆盖。 |
 | `--output-dir` | `results` | 输出根目录。最终还会追加 model name 子目录。 |
 | `--skip-build` | false | 跳过 Docker build，直接使用已存在的 image tag。 |
 
@@ -492,6 +509,12 @@ auto warmup: 32 cases * 6 scales * 5 requests，耗时取决于单 request laten
 
 - 按错误里的恢复提示检查 `tcpdump`、`tshark`、`getcap $(command -v tcpdump)`、`--sniff-iface` 和 Docker bridge。
 - 常用修复命令：`sudo setcap cap_net_raw,cap_net_admin=eip $(command -v tcpdump)`。
+
+`run.py` 启动时报 `[infra][ERROR]`：
+
+- 确认命令是在原生 Ubuntu shell 中执行，而不是 WSL。
+- 执行 `unset DOCKER_HOST DOCKER_CONTEXT && docker context use default`，然后确认 Docker endpoint 是 `unix:///var/run/docker.sock`。
+- 不要使用 Docker Desktop、远程 Docker context 或旧的 `/var/run/docker-native.sock`；这些 daemon 与宿主侧抓包、cgroup、RAPL、perf PID 和 profiler 观察到的对象不一致。
 
 GPU energy 字段全是 `nan`：
 

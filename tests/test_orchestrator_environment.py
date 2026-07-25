@@ -843,37 +843,15 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertIn("--idle-seconds", message)
         self.assertIn("host background processes", message)
 
-    def test_resolve_packet_latency_runtime_uses_wsl_tools_on_windows_wsl(self) -> None:
-        project_dir = r"D:\DOR\universal-profiles"
-        pcap_file = r"D:\DOR\universal-profiles\results\test\sniff_case.pcap"
-
-        def fake_which(name: str) -> str | None:
-            if name.lower() in {"wsl", "wsl.exe"}:
-                return r"C:\Windows\System32\wsl.exe"
-            return None
-
-        with patch("acprof.host.orchestrator._detect_environment", return_value="windows11+wsl"), patch(
-            "acprof.host.orchestrator.shutil.which",
-            side_effect=fake_which,
-        ), patch(
-            "acprof.host.orchestrator._wsl_has_command",
-            return_value=True,
-        ):
+    def test_resolve_packet_latency_runtime_requires_local_linux_tools(self) -> None:
+        with patch("acprof.host.orchestrator.shutil.which", return_value=None):
             runtime = orchestrator._resolve_packet_latency_runtime(
-                project_dir=project_dir,
-                pcap_file=pcap_file,
+                project_dir="/repo",
+                pcap_file="/repo/results/sniff_case.pcap",
                 sniff_iface="docker0",
             )
 
-        self.assertIsNotNone(runtime)
-        assert runtime is not None
-        self.assertEqual(runtime.mode, "wsl")
-        self.assertEqual(runtime.tcpdump_cmd[:3], ["wsl.exe", "-e", "sudo"])
-        self.assertIn("tcpdump", runtime.tcpdump_cmd)
-        self.assertIn("/mnt/d/DOR/universal-profiles/results/test/sniff_case.pcap", runtime.tcpdump_cmd)
-        self.assertEqual(runtime.parse_cmd[:4], ["wsl.exe", "-e", "sh", "-lc"])
-        self.assertIn("python3 -m acprof.packet.sniff_parse_pcap", runtime.parse_cmd[-1])
-        self.assertIn("/mnt/d/DOR/universal-profiles/results/test/sniff_case.pcap", runtime.parse_cmd[-1])
+        self.assertIsNone(runtime)
 
     def test_resolve_packet_latency_runtime_uses_tcpdump_without_sudo_when_capable(self) -> None:
         def fake_which(name: str) -> str | None:

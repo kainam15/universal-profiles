@@ -12,6 +12,45 @@ from acprof.host.detect import TaskInfo
 
 
 class NativeDockerGuardTests(unittest.TestCase):
+    def test_native_linux_host_allows_ubuntu(self) -> None:
+        with patch("acprof.cli.run.platform.system", return_value="Linux"), patch(
+            "acprof.cli.run.platform.release",
+            return_value="7.0.0-28-generic",
+        ), patch.dict("acprof.cli.run.os.environ", {}, clear=True):
+            run.require_native_linux_host()
+
+    def test_native_linux_host_rejects_wsl(self) -> None:
+        stderr = io.StringIO()
+
+        with patch("acprof.cli.run.platform.system", return_value="Linux"), patch(
+            "acprof.cli.run.platform.release",
+            return_value="6.6.87.2-microsoft-standard-WSL2",
+        ), patch.dict(
+            "acprof.cli.run.os.environ",
+            {"WSL_DISTRO_NAME": "Ubuntu"},
+            clear=True,
+        ), self.assertRaises(SystemExit) as raised, redirect_stderr(stderr):
+            run.require_native_linux_host()
+
+        self.assertEqual(raised.exception.code, 1)
+        message = stderr.getvalue()
+        self.assertIn("native Linux host", message)
+        self.assertIn("WSL was detected", message)
+        self.assertIn("source .venv/bin/activate", message)
+
+    def test_native_linux_host_rejects_windows(self) -> None:
+        stderr = io.StringIO()
+
+        with patch("acprof.cli.run.platform.system", return_value="Windows"), patch.dict(
+            "acprof.cli.run.os.environ",
+            {},
+            clear=True,
+        ), self.assertRaises(SystemExit) as raised, redirect_stderr(stderr):
+            run.require_native_linux_host()
+
+        self.assertEqual(raised.exception.code, 1)
+        self.assertIn("detected host OS Windows", stderr.getvalue())
+
     def test_cpu_energy_preflight_exits_with_remediation_when_unavailable(self) -> None:
         stderr = io.StringIO()
 
@@ -40,7 +79,9 @@ class NativeDockerGuardTests(unittest.TestCase):
         with patch.object(sys, "argv", ["acprof.cli.run.py", "--model", "dummy-model"]), patch(
             "acprof.cli.run.bootstrap_project_env",
             return_value=None,
-        ), patch("acprof.cli.run.require_native_docker"), patch(
+        ), patch("acprof.cli.run.require_native_linux_host"), patch(
+            "acprof.cli.run.require_native_docker"
+        ), patch(
             "acprof.cli.run.require_packet_latency_prerequisites",
         ), patch(
             "acprof.cli.run.require_cpu_energy_prerequisites",
@@ -61,7 +102,9 @@ class NativeDockerGuardTests(unittest.TestCase):
         with patch.object(sys, "argv", ["acprof.cli.run.py", "--model", "dummy-model"]), patch(
             "acprof.cli.run.bootstrap_project_env",
             return_value=None,
-        ), patch("acprof.cli.run.require_native_docker"), patch(
+        ), patch("acprof.cli.run.require_native_linux_host"), patch(
+            "acprof.cli.run.require_native_docker"
+        ), patch(
             "acprof.cli.run.require_packet_latency_prerequisites",
         ), patch(
             "acprof.cli.run.require_cpu_energy_prerequisites",
@@ -81,7 +124,10 @@ class NativeDockerGuardTests(unittest.TestCase):
     def test_docker_desktop_context_exits_before_docker_info(self) -> None:
         context = SimpleNamespace(returncode=0, stdout="desktop-linux\n", stderr="")
 
-        with patch("acprof.cli.run.subprocess.run", return_value=context) as mock_run, patch(
+        with patch.dict("acprof.cli.run.os.environ", {}, clear=True), patch(
+            "acprof.cli.run.subprocess.run",
+            return_value=context,
+        ) as mock_run, patch(
             "builtins.print"
         ) as mock_print:
             with self.assertRaises(SystemExit) as raised:
@@ -95,6 +141,11 @@ class NativeDockerGuardTests(unittest.TestCase):
 
     def test_docker_desktop_info_exits_with_native_docker_hint(self) -> None:
         context = SimpleNamespace(returncode=0, stdout="default\n", stderr="")
+        endpoint = SimpleNamespace(
+            returncode=0,
+            stdout="unix:///var/run/docker.sock\n",
+            stderr="",
+        )
         completed = SimpleNamespace(
             returncode=0,
             stdout=(
@@ -105,7 +156,10 @@ class NativeDockerGuardTests(unittest.TestCase):
             stderr="",
         )
 
-        with patch("acprof.cli.run.subprocess.run", side_effect=[context, completed]), patch(
+        with patch.dict("acprof.cli.run.os.environ", {}, clear=True), patch(
+            "acprof.cli.run.subprocess.run",
+            side_effect=[context, endpoint, completed],
+        ), patch(
             "builtins.print"
         ) as mock_print:
             with self.assertRaises(SystemExit) as raised:
@@ -119,6 +173,11 @@ class NativeDockerGuardTests(unittest.TestCase):
 
     def test_native_linux_docker_info_is_allowed(self) -> None:
         context = SimpleNamespace(returncode=0, stdout="default\n", stderr="")
+        endpoint = SimpleNamespace(
+            returncode=0,
+            stdout="unix:///var/run/docker.sock\n",
+            stderr="",
+        )
         completed = SimpleNamespace(
             returncode=0,
             stdout=(
@@ -129,11 +188,65 @@ class NativeDockerGuardTests(unittest.TestCase):
             stderr="",
         )
 
-        with patch("acprof.cli.run.subprocess.run", side_effect=[context, completed]):
+        with patch.dict("acprof.cli.run.os.environ", {}, clear=True), patch(
+            "acprof.cli.run.subprocess.run",
+            side_effect=[context, endpoint, completed],
+        ):
             run.require_native_docker()
 
-    def test_main_invokes_native_docker_guard_after_parsing_args(self) -> None:
+    def test_remote_docker_context_exits_before_docker_info(self) -> None:
+        context = SimpleNamespace(returncode=0, stdout="remote-lab\n", stderr="")
+        endpoint = SimpleNamespace(
+            returncode=0,
+            stdout="tcp://192.0.2.10:2376\n",
+            stderr="",
+        )
+        stderr = io.StringIO()
+
+        with patch.dict("acprof.cli.run.os.environ", {}, clear=True), patch(
+            "acprof.cli.run.subprocess.run",
+            side_effect=[context, endpoint],
+        ) as mock_run, self.assertRaises(SystemExit) as raised, redirect_stderr(stderr):
+            run.require_native_docker()
+
+        self.assertEqual(raised.exception.code, 1)
+        self.assertEqual(mock_run.call_count, 2)
+        self.assertIn("tcp://192.0.2.10:2376", stderr.getvalue())
+        self.assertIn("/var/run/docker.sock", stderr.getvalue())
+
+    def test_wsl_native_socket_override_is_rejected(self) -> None:
+        context = SimpleNamespace(returncode=0, stdout="default\n", stderr="")
+        stderr = io.StringIO()
+
+        with patch.dict(
+            "acprof.cli.run.os.environ",
+            {"DOCKER_HOST": "unix:///var/run/docker-native.sock"},
+            clear=True,
+        ), patch(
+            "acprof.cli.run.subprocess.run",
+            return_value=context,
+        ) as mock_run, self.assertRaises(SystemExit) as raised, redirect_stderr(stderr):
+            run.require_native_docker()
+
+        self.assertEqual(raised.exception.code, 1)
+        self.assertEqual(mock_run.call_count, 1)
+        self.assertIn("docker-native.sock", stderr.getvalue())
+
+    def test_main_invokes_native_linux_guard_after_parsing_args(self) -> None:
         with patch.object(sys, "argv", ["acprof.cli.run.py", "--model", "dummy-model"]), patch(
+            "acprof.cli.run.require_native_linux_host",
+            side_effect=RuntimeError("host guard called"),
+        ), patch(
+            "acprof.cli.run.require_native_docker",
+            side_effect=AssertionError("Docker guard must run after host guard"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "host guard called"):
+                run.main()
+
+    def test_main_invokes_native_docker_guard_after_host_guard(self) -> None:
+        with patch.object(sys, "argv", ["acprof.cli.run.py", "--model", "dummy-model"]), patch(
+            "acprof.cli.run.require_native_linux_host",
+        ), patch(
             "acprof.cli.run.require_native_docker",
             side_effect=RuntimeError("guard called"),
         ):
@@ -144,7 +257,9 @@ class NativeDockerGuardTests(unittest.TestCase):
         with patch.object(sys, "argv", ["acprof.cli.run.py", "--model", "dummy-model"]), patch(
             "acprof.cli.run.bootstrap_project_env",
             return_value=None,
-        ), patch("acprof.cli.run.require_native_docker"), patch(
+        ), patch("acprof.cli.run.require_native_linux_host"), patch(
+            "acprof.cli.run.require_native_docker"
+        ), patch(
             "acprof.cli.run.require_packet_latency_prerequisites",
             side_effect=SystemExit(2),
         ) as preflight, patch(
@@ -195,6 +310,8 @@ class NativeDockerGuardTests(unittest.TestCase):
         ), patch(
             "acprof.cli.run.bootstrap_project_env",
             return_value=None,
+        ), patch(
+            "acprof.cli.run.require_native_linux_host"
         ), patch(
             "acprof.cli.run.require_native_docker"
         ), patch(
@@ -262,6 +379,8 @@ class NativeDockerGuardTests(unittest.TestCase):
             "acprof.cli.run.bootstrap_project_env",
             return_value=None,
         ), patch(
+            "acprof.cli.run.require_native_linux_host"
+        ), patch(
             "acprof.cli.run.require_native_docker"
         ), patch(
             "acprof.cli.run.require_packet_latency_prerequisites"
@@ -328,6 +447,8 @@ class NativeDockerGuardTests(unittest.TestCase):
         ), patch(
             "acprof.cli.run.bootstrap_project_env",
             return_value=None,
+        ), patch(
+            "acprof.cli.run.require_native_linux_host"
         ), patch(
             "acprof.cli.run.require_native_docker"
         ), patch(
