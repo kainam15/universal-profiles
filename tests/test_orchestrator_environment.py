@@ -240,6 +240,17 @@ class DetectEnvironmentTests(unittest.TestCase):
                 input_scale_type="seq_length",
                 run_command="python run.py --model google-bert/bert-base-uncased",
             )
+            disabled_meta = orchestrator.collect_static_meta(
+                task_info=task_info,
+                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                batch_size=1,
+                input_scale_type="seq_length",
+                run_command=(
+                    "python run.py --model google-bert/bert-base-uncased "
+                    "--no-compute-profile"
+                ),
+                compute_profile_enabled=False,
+            )
 
         self.assertEqual(meta.environment, "windows11+wsl")
         self.assertEqual(
@@ -251,23 +262,110 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(meta.vcpu_power_method, "rapl_cgroup_cpu_share")
         self.assertEqual(meta.cpu_governor, "performance")
         self.assertEqual(meta.cpu_boost, "on")
+        self.assertEqual(disabled_meta.compute_profile_schema_version, "2")
+        self.assertEqual(disabled_meta.compute_profile_tools, "[]")
+        self.assertEqual(disabled_meta.compute_profiles_retained, "false")
+        self.assertEqual(disabled_meta.compute_profile_provenance, "disabled")
 
-    def test_static_meta_cpu_power_fields_are_trailing(self) -> None:
+    def test_static_meta_compute_profile_fields_follow_host_metadata(self) -> None:
         self.assertIn("gpu_mem_total_bytes", STATIC_META_FIELDS)
         self.assertLess(
             STATIC_META_FIELDS.index("gpu_mem_total_bytes"),
             STATIC_META_FIELDS.index("environment"),
         )
-        self.assertEqual(
-            STATIC_META_FIELDS[-5:],
-            [
-                "environment",
-                "cpu_power_source",
-                "vcpu_power_method",
-                "cpu_governor",
-                "cpu_boost",
-            ],
+        self.assertLess(
+            STATIC_META_FIELDS.index("cpu_boost"),
+            STATIC_META_FIELDS.index("compute_profile_schema_version"),
         )
+        self.assertEqual(STATIC_META_FIELDS[-1], "compute_profile_provenance")
+
+    def test_enrich_static_meta_serializes_compute_profile_metadata(self) -> None:
+        base = orchestrator.StaticMeta(
+            model_name="model",
+            model_revision="main",
+            task_family="nlp",
+            pipeline_tag="fill-mask",
+            runtime_backend="transformers_pipeline",
+            image_tag="image",
+            batch_size=1,
+            input_scale_type="seq_length",
+            run_command="python run.py",
+            model_download_url="https://example.invalid/model",
+            gpu="GPU",
+            gpu_mem_total_bytes=123,
+            model_weight_bytes=456,
+            docker_image_bytes=789,
+            environment="ubuntu24.04",
+            cpu_power_source="rapl",
+            vcpu_power_method="rapl_cgroup_cpu_share",
+            cpu_governor="performance",
+            cpu_boost="off",
+        )
+
+        enriched = orchestrator.enrich_static_meta(
+            base,
+            {
+                "compute_profile_schema_version": 2,
+                "compute_profile_tools": ["torch_profiler_eager", "ncu"],
+                "ncu_metrics": ["gpu__time_duration.sum", "metric.sum"],
+                "compute_profiles_retained": True,
+            },
+        )
+
+        self.assertEqual(enriched.compute_profile_schema_version, "2")
+        self.assertEqual(
+            enriched.compute_profile_tools,
+            '["torch_profiler_eager","ncu"]',
+        )
+        self.assertEqual(
+            enriched.ncu_metrics,
+            '["gpu__time_duration.sum","metric.sum"]',
+        )
+        self.assertEqual(enriched.compute_profiles_retained, "true")
+        self.assertEqual(enriched.run_command, base.run_command)
+
+    def test_write_static_meta_csv_includes_enriched_fields_atomically(self) -> None:
+        meta = orchestrator.StaticMeta(
+            model_name="model",
+            model_revision="main",
+            task_family="nlp",
+            pipeline_tag="fill-mask",
+            runtime_backend="transformers_pipeline",
+            image_tag="image",
+            batch_size=1,
+            input_scale_type="seq_length",
+            run_command="python run.py --model model",
+            model_download_url="https://example.invalid/model",
+            gpu="GPU",
+            gpu_mem_total_bytes=123,
+            model_weight_bytes=456,
+            docker_image_bytes=789,
+            environment="ubuntu24.04",
+            cpu_power_source="rapl",
+            vcpu_power_method="rapl_cgroup_cpu_share",
+            cpu_governor="performance",
+            cpu_boost="off",
+            compute_profile_schema_version="2",
+            compute_profile_tools='["torch_profiler_eager","ncu"]',
+            compute_profile_provenance="direct",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "static_meta.csv")
+            orchestrator.write_static_meta_csv(meta, path)
+            with open(path, "r", encoding="utf-8", newline="") as f:
+                rows = list(csv.DictReader(f))
+            leftovers = [
+                name
+                for name in os.listdir(tmp)
+                if name.startswith(".static_meta.csv.")
+            ]
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(list(rows[0]), STATIC_META_FIELDS)
+        self.assertEqual(rows[0]["compute_profile_schema_version"], "2")
+        self.assertEqual(rows[0]["compute_profile_provenance"], "direct")
+        self.assertEqual(leftovers, [])
 
     def test_cpu_frequency_policy_metadata_reads_governor_and_boost(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

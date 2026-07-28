@@ -13,6 +13,15 @@ from acprof.monitors import energy_cpu
 from acprof.config import CSV_FIELDS
 
 
+REMOVED_LEGACY_COMPUTE_FIELDS = (
+    "compute_profile_tool",
+    "model_mflop_per_request",
+    "compute_mflops_app",
+    "compute_mflops",
+    "compute_profile_error",
+)
+
+
 class EffectiveEnergyWarningTests(unittest.TestCase):
     def test_default_idle_diag_path_uses_dedicated_debug_directory(self) -> None:
         with patch.object(client, "IDLE_DIAG_PATH", ""):
@@ -141,6 +150,35 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
             self.assertIn(field, CSV_FIELDS)
         for field in old_names:
             self.assertNotIn(field, CSV_FIELDS)
+
+    def test_csv_schema_distinguishes_torch_logical_and_ncu_executed_flops(self) -> None:
+        torch_fields = [
+            "model_logical_mflop_per_request_torch_profiler_eager",
+            "model_logical_mflops_app_torch_profiler_eager",
+            "model_logical_mflops_packet_torch_profiler_eager",
+            "compute_profile_error_torch_profiler_eager",
+        ]
+        ncu_fields = [
+            "gpu_executed_mflop_per_request_ncu",
+            "gpu_executed_tensor_mflop_per_request_ncu",
+            "gpu_executed_scalar_mflop_per_request_ncu",
+            "gpu_executed_tensor_share_pct_ncu",
+            "gpu_executed_mflops_app_ncu",
+            "gpu_executed_mflops_packet_ncu",
+            "gpu_kernel_launch_count_per_request_ncu",
+            "gpu_kernel_time_sum_ms_per_request_ncu",
+            "compute_profile_error_ncu",
+        ]
+
+        for field in [*torch_fields, *ncu_fields]:
+            self.assertIn(field, CSV_FIELDS)
+        for field in REMOVED_LEGACY_COMPUTE_FIELDS:
+            self.assertNotIn(field, CSV_FIELDS)
+        self.assertNotIn("gpu_profile_report_ncu", CSV_FIELDS)
+        self.assertLess(
+            CSV_FIELDS.index(torch_fields[0]),
+            CSV_FIELDS.index(ncu_fields[0]),
+        )
 
     def test_auto_repeat_window_prepares_each_scale_with_warmup_only(self) -> None:
         request_ids = []
@@ -1248,7 +1286,7 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(rows[0]["container_cpu_util_avg_pct"], "nan")
         self.assertEqual(rows[0]["gpu_util_avg_pct"], "nan")
 
-    def test_compute_profile_metrics_are_written_from_plan(self) -> None:
+    def test_legacy_advisor_plan_does_not_emit_removed_generic_columns(self) -> None:
         plan = {
             "profiles": {
                 "cpu": {
@@ -1312,11 +1350,151 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                     rows = list(csv.DictReader(f))
 
         self.assertEqual(rows[0]["status"], "ok")
-        self.assertEqual(rows[0]["compute_profile_tool"], "intel_advisor")
-        self.assertEqual(rows[0]["model_mflop_per_request"], "200.000000")
-        self.assertEqual(rows[0]["compute_mflops_app"], "400.000000")
-        self.assertEqual(rows[0]["compute_mflops"], "400.000000")
-        self.assertEqual(rows[0]["compute_profile_error"], "")
+        for field in REMOVED_LEGACY_COMPUTE_FIELDS:
+            self.assertNotIn(field, rows[0])
+        self.assertEqual(
+            rows[0]["model_logical_mflop_per_request_torch_profiler_eager"],
+            "nan",
+        )
+
+    def test_v2_compute_plan_writes_independent_torch_and_ncu_metrics(self) -> None:
+        plan = {
+            "compute_profile_schema_version": 2,
+            "profiles": {
+                "gpu": {
+                    "torch_profiler_eager": {
+                        "tool": "torch_profiler_eager",
+                        "entries": [
+                            {
+                                "input_scale": 1.0,
+                                "model_logical_mflop_per_request_torch_profiler_eager": 200.0,
+                                "error": "",
+                            }
+                        ],
+                    },
+                    "ncu": {
+                        "tool": "ncu",
+                        "entries": [
+                            {
+                                "input_scale": 1.0,
+                                "gpu_executed_mflop_per_request_ncu": 100.0,
+                                "gpu_executed_tensor_mflop_per_request_ncu": 80.0,
+                                "gpu_executed_scalar_mflop_per_request_ncu": 20.0,
+                                "gpu_executed_tensor_share_pct_ncu": 80.0,
+                                "gpu_kernel_launch_count_per_request_ncu": 12.0,
+                                "gpu_kernel_time_sum_ms_per_request_ncu": 1.5,
+                                "error": "",
+                            }
+                        ],
+                    },
+                }
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_csv = f"{tmp_dir}/result.csv"
+            plan_path = f"{tmp_dir}/compute_profile_plan.json"
+            with open(plan_path, "w", encoding="utf-8") as f:
+                json.dump(plan, f)
+
+            with patch.object(
+                client, "OUT_CSV", out_csv
+            ), patch.object(
+                client, "WARMUP", 0
+            ), patch.object(
+                client, "REPEAT", 1
+            ), patch.object(
+                client, "REPEAT_IN_WINDOW", 1
+            ), patch.object(
+                client, "USE_ENERGY", False
+            ), patch.object(
+                client, "GPU_MODE", "on"
+            ), patch.object(
+                client, "COMPUTE_PROFILE_PLAN_FILE", plan_path, create=True
+            ), patch.object(
+                client, "energy_mod", None
+            ), patch.object(
+                client, "cpu_energy_mod", None
+            ), patch.object(
+                client, "resource_usage_mod", None
+            ), patch.object(
+                client,
+                "input_scale_entries",
+                [{"input_scale": 1.0, "scale_label": "1", "payload": {}}],
+            ), patch.object(
+                client.requests,
+                "get",
+                return_value=SimpleNamespace(status_code=200, text="ok"),
+            ), patch.object(
+                client,
+                "_one_request",
+                return_value={"latency_app_s": 0.5, "effective_input_scale": 1.0},
+            ):
+                client.main()
+                with open(out_csv, "r", encoding="utf-8", newline="") as f:
+                    row = next(csv.DictReader(f))
+
+        self.assertEqual(row["status"], "ok")
+        for field in REMOVED_LEGACY_COMPUTE_FIELDS:
+            self.assertNotIn(field, row)
+        self.assertEqual(
+            row["model_logical_mflop_per_request_torch_profiler_eager"],
+            "200.000000",
+        )
+        self.assertEqual(
+            row["model_logical_mflops_app_torch_profiler_eager"],
+            "400.000000",
+        )
+        self.assertEqual(
+            row["model_logical_mflops_packet_torch_profiler_eager"],
+            "400.000000",
+        )
+        self.assertEqual(
+            row["gpu_executed_mflop_per_request_ncu"],
+            "100.000000",
+        )
+        self.assertEqual(row["gpu_executed_mflops_app_ncu"], "200.000000")
+        self.assertEqual(
+            row["gpu_executed_mflops_packet_ncu"],
+            "200.000000",
+        )
+        self.assertNotIn("gpu_profile_report_ncu", row)
+        self.assertEqual(row["compute_profile_error_torch_profiler_eager"], "")
+        self.assertEqual(row["compute_profile_error_ncu"], "")
+
+    def test_v2_compute_profile_failures_are_isolated(self) -> None:
+        profile = {
+            "tool": "torch_profiler_eager",
+            "model_mflop_per_request": float("nan"),
+            "error": "torch_failed",
+            "model_logical_mflop_per_request_torch_profiler_eager": float("nan"),
+            "compute_profile_error_torch_profiler_eager": "torch_failed",
+            "gpu_executed_mflop_per_request_ncu": 100.0,
+            "gpu_executed_tensor_mflop_per_request_ncu": 90.0,
+            "gpu_executed_scalar_mflop_per_request_ncu": 10.0,
+            "gpu_executed_tensor_share_pct_ncu": 90.0,
+            "gpu_kernel_launch_count_per_request_ncu": 4.0,
+            "gpu_kernel_time_sum_ms_per_request_ncu": 0.75,
+            "compute_profile_error_ncu": "",
+        }
+
+        row_metrics = client._compute_profile_row_metrics(profile, 0.5)
+
+        for field in REMOVED_LEGACY_COMPUTE_FIELDS:
+            self.assertNotIn(field, row_metrics)
+        self.assertEqual(
+            row_metrics["compute_profile_error_torch_profiler_eager"],
+            "torch_failed",
+        )
+        self.assertEqual(
+            row_metrics["gpu_executed_mflop_per_request_ncu"],
+            "100.000000",
+        )
+        self.assertEqual(
+            row_metrics["gpu_executed_mflops_app_ncu"],
+            "200.000000",
+        )
+        self.assertEqual(row_metrics["compute_profile_error_ncu"], "")
 
     def test_missing_compute_profile_keeps_successful_row_ok_with_nan_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1365,9 +1543,16 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                     rows = list(csv.DictReader(f))
 
         self.assertEqual(rows[0]["status"], "ok")
-        self.assertEqual(rows[0]["model_mflop_per_request"], "nan")
-        self.assertEqual(rows[0]["compute_mflops"], "nan")
-        self.assertIn("compute_profile_plan_not_found", rows[0]["compute_profile_error"])
+        for field in REMOVED_LEGACY_COMPUTE_FIELDS:
+            self.assertNotIn(field, rows[0])
+        self.assertEqual(
+            rows[0]["model_logical_mflop_per_request_torch_profiler_eager"],
+            "nan",
+        )
+        self.assertIn(
+            "compute_profile_plan_not_found",
+            rows[0]["compute_profile_error_torch_profiler_eager"],
+        )
 
 
 if __name__ == "__main__":

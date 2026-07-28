@@ -46,6 +46,32 @@ GPU_METRIC_ALIASES = {
     "peak_power_eff_w": "gpu_peak_power_eff_w",
     "energy_eff_j": "gpu_energy_eff_j",
 }
+TORCH_EAGER_COMPUTE_LEGACY_FALLBACKS = {
+    "model_logical_mflop_per_request_torch_profiler_eager": (
+        "model_mflop_per_request"
+    ),
+    "model_logical_mflops_app_torch_profiler_eager": "compute_mflops_app",
+    "model_logical_mflops_packet_torch_profiler_eager": "compute_mflops",
+}
+NCU_COMPUTE_LEGACY_FALLBACKS = {
+    "gpu_executed_mflop_per_request_ncu": "model_mflop_per_request",
+    "gpu_executed_mflops_app_ncu": "compute_mflops_app",
+    "gpu_executed_mflops_packet_ncu": "compute_mflops",
+}
+COMPUTE_NUMERIC_COLUMNS = [
+    "model_mflop_per_request",
+    "compute_mflops_app",
+    "compute_mflops",
+    *TORCH_EAGER_COMPUTE_LEGACY_FALLBACKS,
+    "gpu_executed_mflop_per_request_ncu",
+    "gpu_executed_tensor_mflop_per_request_ncu",
+    "gpu_executed_scalar_mflop_per_request_ncu",
+    "gpu_executed_tensor_share_pct_ncu",
+    "gpu_executed_mflops_app_ncu",
+    "gpu_executed_mflops_packet_ncu",
+    "gpu_kernel_launch_count_per_request_ncu",
+    "gpu_kernel_time_sum_ms_per_request_ncu",
+]
 PLOT_METRICS = [
     (
         "latency_s",
@@ -102,10 +128,82 @@ PLOT_METRICS = [
         "throughput_vs_scale.png",
     ),
     (
-        "compute_mflops",
-        "Compute Throughput vs. Input Scale",
-        "MFLOPS",
-        "compute_mflops_vs_scale.png",
+        "model_logical_mflop_per_request_torch_profiler_eager",
+        "Torch Profiler Eager Logical FLOP per Request vs. Input Scale",
+        "Logical MFLOP/request",
+        "torch_profiler_eager_logical_mflop_per_request_vs_scale.png",
+    ),
+    (
+        "model_logical_mflops_app_torch_profiler_eager",
+        (
+            "Torch Profiler Eager Logical Compute Throughput "
+            "(Application Latency) vs. Input Scale"
+        ),
+        "Logical MFLOPS (application latency)",
+        "torch_profiler_eager_logical_mflops_app_vs_scale.png",
+    ),
+    (
+        "model_logical_mflops_packet_torch_profiler_eager",
+        (
+            "Torch Profiler Eager Logical Compute Throughput "
+            "(Packet Latency) vs. Input Scale"
+        ),
+        "Logical MFLOPS (packet latency)",
+        "torch_profiler_eager_logical_mflops_packet_vs_scale.png",
+    ),
+    (
+        "gpu_executed_mflop_per_request_ncu",
+        "NCU GPU-Executed FLOP per Request vs. Input Scale",
+        "GPU-executed MFLOP/request",
+        "ncu_gpu_executed_mflop_per_request_vs_scale.png",
+    ),
+    (
+        "gpu_executed_tensor_mflop_per_request_ncu",
+        "NCU GPU-Executed Tensor FLOP per Request vs. Input Scale",
+        "GPU-executed tensor MFLOP/request",
+        "ncu_gpu_executed_tensor_mflop_per_request_vs_scale.png",
+    ),
+    (
+        "gpu_executed_scalar_mflop_per_request_ncu",
+        "NCU GPU-Executed Scalar FLOP per Request vs. Input Scale",
+        "GPU-executed scalar MFLOP/request",
+        "ncu_gpu_executed_scalar_mflop_per_request_vs_scale.png",
+    ),
+    (
+        "gpu_executed_tensor_share_pct_ncu",
+        "NCU GPU-Executed Tensor FLOP Share vs. Input Scale",
+        "Tensor FLOP share (%)",
+        "ncu_gpu_executed_tensor_share_vs_scale.png",
+    ),
+    (
+        "gpu_executed_mflops_app_ncu",
+        (
+            "NCU GPU-Executed Compute Throughput "
+            "(Application Latency) vs. Input Scale"
+        ),
+        "GPU-executed MFLOPS (application latency)",
+        "ncu_gpu_executed_mflops_app_vs_scale.png",
+    ),
+    (
+        "gpu_executed_mflops_packet_ncu",
+        (
+            "NCU GPU-Executed Compute Throughput "
+            "(Packet Latency) vs. Input Scale"
+        ),
+        "GPU-executed MFLOPS (packet latency)",
+        "ncu_gpu_executed_mflops_packet_vs_scale.png",
+    ),
+    (
+        "gpu_kernel_launch_count_per_request_ncu",
+        "NCU GPU Kernel Launches per Request vs. Input Scale",
+        "Kernel launches/request",
+        "ncu_gpu_kernel_launch_count_per_request_vs_scale.png",
+    ),
+    (
+        "gpu_kernel_time_sum_ms_per_request_ncu",
+        "NCU GPU Kernel Time per Request vs. Input Scale",
+        "Summed kernel time (ms/request)",
+        "ncu_gpu_kernel_time_sum_ms_per_request_vs_scale.png",
     ),
     (
         "container_cpu_util_avg_pct",
@@ -299,11 +397,43 @@ def prepare_df(csv_path: str) -> pd.DataFrame:
         "gpu_mem_total_bytes",
         "cpu_cores", "mem_cap_gb", "warmup", "cold_start_s",
         "throughput_samples_per_s",
-        "model_mflop_per_request", "compute_mflops_app", "compute_mflops",
+        *COMPUTE_NUMERIC_COLUMNS,
     ]
     for c in num_cols:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    if "compute_profile_tool" in df.columns:
+        profile_tools = (
+            df["compute_profile_tool"].fillna("").astype(str).str.strip().str.lower()
+        )
+        torch_fallback_rows = profile_tools.str.contains("torch")
+        ncu_fallback_rows = (
+            profile_tools.eq("ncu") | profile_tools.str.contains("nsight")
+        )
+    else:
+        # Very old CSVs did not identify the profiler. Preserve their previous
+        # generic-as-logical fallback, but do not label the same data as NCU.
+        torch_fallback_rows = pd.Series(True, index=df.index)
+        ncu_fallback_rows = pd.Series(False, index=df.index)
+
+    def _fill_profile_specific_fallbacks(fallbacks, eligible_rows):
+        for new_name, legacy_name in fallbacks.items():
+            if legacy_name not in df.columns:
+                continue
+            if new_name not in df.columns:
+                df[new_name] = np.nan
+            missing_rows = df[new_name].isna() & eligible_rows
+            df.loc[missing_rows, new_name] = df.loc[missing_rows, legacy_name]
+
+    _fill_profile_specific_fallbacks(
+        TORCH_EAGER_COMPUTE_LEGACY_FALLBACKS,
+        torch_fallback_rows,
+    )
+    _fill_profile_specific_fallbacks(
+        NCU_COMPUTE_LEGACY_FALLBACKS,
+        ncu_fallback_rows,
+    )
 
     bytes_to_gib = {
         "container_mem_usage_avg_bytes": "container_mem_usage_avg_gib",

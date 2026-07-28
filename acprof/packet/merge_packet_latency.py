@@ -61,6 +61,58 @@ def _fmt_float(value: float) -> str:
     return f"{value:.6f}"
 
 
+def _mflops_for_latency(work_mflop: object, latency_s: float) -> float:
+    work = _to_float(work_mflop)
+    if math.isfinite(work) and math.isfinite(latency_s) and latency_s > 0.0:
+        return work / latency_s
+    return float("nan")
+
+
+def _recompute_packet_flop_rates(row: dict, latency_s: float) -> None:
+    """Recompute packet-denominator rates without changing app rates."""
+    legacy_work = _to_float(row.get("model_mflop_per_request", "nan"))
+    logical_work = _to_float(
+        row.get(
+            "model_logical_mflop_per_request_torch_profiler_eager",
+            "nan",
+        )
+    )
+    ncu_work = _to_float(
+        row.get("gpu_executed_mflop_per_request_ncu", "nan")
+    )
+    tool = str(row.get("compute_profile_tool", "") or "").strip().lower()
+
+    # Legacy CSVs can carry generic aliases; new CSVs use explicit fields.
+    generic_work = (
+        legacy_work if math.isfinite(legacy_work) else logical_work
+    )
+    generic_rate = _mflops_for_latency(generic_work, latency_s)
+    if "compute_mflops" in row and math.isfinite(generic_rate):
+        row["compute_mflops"] = _fmt_float(generic_rate)
+
+    if not math.isfinite(logical_work) and "torch" in tool:
+        logical_work = legacy_work
+    logical_rate = _mflops_for_latency(logical_work, latency_s)
+    if (
+        "model_logical_mflops_packet_torch_profiler_eager" in row
+        and math.isfinite(logical_rate)
+    ):
+        row[
+            "model_logical_mflops_packet_torch_profiler_eager"
+        ] = _fmt_float(logical_rate)
+
+    if not math.isfinite(ncu_work) and (
+        tool == "ncu" or "nsight" in tool
+    ):
+        ncu_work = legacy_work
+    ncu_rate = _mflops_for_latency(ncu_work, latency_s)
+    if (
+        "gpu_executed_mflops_packet_ncu" in row
+        and math.isfinite(ncu_rate)
+    ):
+        row["gpu_executed_mflops_packet_ncu"] = _fmt_float(ncu_rate)
+
+
 def _estimate_cpu_cycles(row: dict, latency_s: float) -> float:
     freq_hz = _to_float(row.get("cpu_freq_avg_hz", "nan"))
     cpu_cores = _to_float(row.get("cpu_cores", "nan"))
@@ -161,10 +213,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             except Exception:
                 pass
             try:
-                lat = float(r["latency_s"])
-                model_mflop_per_request = float(r.get("model_mflop_per_request", "nan"))
-                if lat > 0 and model_mflop_per_request == model_mflop_per_request:
-                    r["compute_mflops"] = f"{(model_mflop_per_request / lat):.6f}"
+                _recompute_packet_flop_rates(r, float(r["latency_s"]))
             except Exception:
                 pass
             try:

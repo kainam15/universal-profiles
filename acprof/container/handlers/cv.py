@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import base64
 import io
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
-from acprof.container.handlers import BaseHandler, HandlerRegistry, model_revision_kwargs
+from acprof.container.handlers import (
+    BaseHandler,
+    HandlerRegistry,
+    model_revision_kwargs,
+    transformers_pipeline_load_kwargs,
+)
 
 
 class CVHandler(BaseHandler):
@@ -18,6 +23,7 @@ class CVHandler(BaseHandler):
         backend: str,
         device: str,
         model_revision: str = "main",
+        load_options: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         import torch
         from transformers import pipeline as hf_pipeline
@@ -29,6 +35,7 @@ class CVHandler(BaseHandler):
             task=task_type,
             model=model_source,
             **model_revision_kwargs(model_source, model_revision),
+            **transformers_pipeline_load_kwargs(load_options),
             device_map=device_map,
             torch_dtype=torch_dtype,
             trust_remote_code=True,
@@ -38,6 +45,7 @@ class CVHandler(BaseHandler):
             "task_type": task_type,
             "device": device,
             "model_revision": model_revision or "main",
+            "load_options": dict(load_options or {}),
         }
 
     def preprocess(self, model_ctx: Dict[str, Any], raw_input: Dict[str, Any]) -> Any:

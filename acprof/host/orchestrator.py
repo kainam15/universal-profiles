@@ -11,10 +11,12 @@ import os
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -35,6 +37,10 @@ from acprof.config import (
 )
 from acprof.host.detect import TaskInfo
 from acprof.host.env_utils import hf_offline_docker_env_args
+from acprof.host.compute_profile_plan import (
+    NCU_ERROR_FIELD,
+    TORCH_ERROR_FIELD,
+)
 from acprof.monitors.perf_mips import MIPS_EXIT_CODE
 
 
@@ -64,6 +70,23 @@ class StaticMeta:
     vcpu_power_method: str
     cpu_governor: str
     cpu_boost: str
+    compute_profile_schema_version: str = ""
+    compute_profile_tools: str = ""
+    torch_profiler_eager_flop_semantics: str = ""
+    torch_profiler_eager_attention_implementation: str = ""
+    torch_profiler_eager_repeat_cpu: str = ""
+    torch_profiler_eager_repeat_gpu: str = ""
+    ncu_flop_semantics: str = ""
+    ncu_repeat: str = ""
+    ncu_fma_flop_weight: str = ""
+    ncu_metrics: str = ""
+    torch_version: str = ""
+    transformers_version: str = ""
+    ncu_version: str = ""
+    gpu_compute_capability: str = ""
+    gpu_sm_count: str = ""
+    compute_profiles_retained: str = ""
+    compute_profile_provenance: str = ""
 
 
 @dataclass
@@ -986,11 +1009,12 @@ def collect_static_meta(
     input_scale_type: str,
     run_command: str = "",
     device_index: int = 0,
+    compute_profile_enabled: bool = True,
 ) -> StaticMeta:
     """Collect static metadata for the current model/image pair."""
     cpu_power_source, vcpu_power_method = _cpu_power_metadata()
     cpu_governor, cpu_boost = _cpu_frequency_policy_metadata()
-    return StaticMeta(
+    static_meta = StaticMeta(
         model_name=task_info.model_id,
         model_revision=task_info.model_revision,
         task_family=task_info.task_family,
@@ -1011,6 +1035,71 @@ def collect_static_meta(
         cpu_governor=cpu_governor,
         cpu_boost=cpu_boost,
     )
+    if compute_profile_enabled:
+        return static_meta
+    return enrich_static_meta(
+        static_meta,
+        {
+            "compute_profile_schema_version": 2,
+            "compute_profile_tools": [],
+            "torch_profiler_eager_flop_semantics": (
+                "logical_operator_shape_flops"
+            ),
+            "torch_profiler_eager_attention_implementation": "eager",
+            "ncu_flop_semantics": (
+                "gpu_executed_floating_point_operations"
+            ),
+            "ncu_fma_flop_weight": 2,
+            "ncu_metrics": [],
+            "torch_version": "unknown",
+            "transformers_version": "unknown",
+            "ncu_version": "unknown",
+            "gpu_compute_capability": "unknown",
+            "gpu_sm_count": "unknown",
+            "compute_profiles_retained": False,
+            "compute_profile_provenance": "disabled",
+        },
+    )
+
+
+def enrich_static_meta(
+    static_meta: StaticMeta,
+    metadata: Dict[str, Any],
+) -> StaticMeta:
+    """Return static metadata enriched with recognized compute-profile fields."""
+    updates: Dict[str, Any] = {}
+    for field in STATIC_META_FIELDS:
+        if field not in metadata:
+            continue
+        value = metadata[field]
+        if isinstance(value, (dict, list, tuple)):
+            value = json.dumps(value, ensure_ascii=True, separators=(",", ":"))
+        elif isinstance(value, bool):
+            value = "true" if value else "false"
+        elif value is None:
+            value = ""
+        updates[field] = str(value)
+    return replace(static_meta, **updates) if updates else static_meta
+
+
+def enrich_static_meta_from_compute_plan(
+    static_meta: StaticMeta,
+    plan_path: str,
+) -> StaticMeta:
+    """Read compute-profile metadata without making a failed probe fatal."""
+    if not plan_path or not os.path.exists(plan_path):
+        return static_meta
+    try:
+        with open(plan_path, "r", encoding="utf-8") as f:
+            plan = json.load(f)
+    except (OSError, ValueError, TypeError) as exc:
+        print(f"[meta][WARN] Cannot read compute profile metadata: {exc}")
+        return static_meta
+    metadata = plan.get("static_metadata", {})
+    if not isinstance(metadata, dict):
+        print("[meta][WARN] compute_profile_plan static_metadata is not an object")
+        return static_meta
+    return enrich_static_meta(static_meta, metadata)
 
 
 def write_static_meta_csv(static_meta: StaticMeta, output_path: str) -> None:
@@ -1025,17 +1114,43 @@ def write_static_meta_csv(static_meta: StaticMeta, output_path: str) -> None:
         needs_quote = force_quote or any(ch in text for ch in [",", '"', "\n", "\r"])
         return f'"{escaped}"' if needs_quote else escaped
 
-    with open(output_path, "w", encoding="utf-8", newline="") as f:
-        header = ",".join(_serialize_csv_value(field) for field in STATIC_META_FIELDS)
-        values = ",".join(
-            _serialize_csv_value(
-                row[field],
-                force_quote=field == "model_download_url",
+    output_dir = os.path.dirname(os.path.abspath(output_path))
+    os.makedirs(output_dir, exist_ok=True)
+    fd, temporary_path = tempfile.mkstemp(
+        dir=output_dir,
+        prefix=f".{os.path.basename(output_path)}.",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            header = ",".join(
+                _serialize_csv_value(field) for field in STATIC_META_FIELDS
             )
-            for field in STATIC_META_FIELDS
+            values = ",".join(
+                _serialize_csv_value(
+                    row[field],
+                    force_quote=field == "model_download_url",
+                )
+                for field in STATIC_META_FIELDS
+            )
+            f.write(header + "\n")
+            f.write(values + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        output_mode = (
+            stat.S_IMODE(os.stat(output_path).st_mode)
+            if os.path.exists(output_path)
+            else 0o644
         )
-        f.write(header + "\n")
-        f.write(values + "\n")
+        os.chmod(temporary_path, output_mode)
+        os.replace(temporary_path, output_path)
+        temporary_path = ""
+    finally:
+        if temporary_path:
+            try:
+                os.unlink(temporary_path)
+            except FileNotFoundError:
+                pass
 
     print(f"[meta] Static meta CSV: {output_path}")
 
@@ -2248,10 +2363,12 @@ def _write_case_error_csv(
             "repeat_idx": str(repeat_idx),
             "warmup": "1" if is_warmup else "0",
             "repeat_in_window": str(repeat_in_window),
-            "compute_profile_error": "not_run",
+            TORCH_ERROR_FIELD: "not_run",
             "status": "error",
             "error": error,
         })
+        if gpu == "on":
+            row[NCU_ERROR_FIELD] = "not_run"
         return row
 
     rows = []

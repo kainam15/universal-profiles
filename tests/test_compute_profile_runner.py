@@ -83,6 +83,46 @@ class ComputeProfileRunnerITTTests(unittest.TestCase):
 
         self.assertEqual(calls, ["resume", "pause"])
 
+    def test_eager_load_option_is_isolated_from_vendor_modes(self):
+        runner = self._import_runner()
+
+        self.assertEqual(
+            runner._load_options_for_profile_mode("torch_eager_cpu"),
+            {"attention_implementation": "eager"},
+        )
+        self.assertEqual(
+            runner._load_options_for_profile_mode("torch_eager_gpu"),
+            {"attention_implementation": "eager"},
+        )
+        self.assertIsNone(runner._load_options_for_profile_mode("cpu"))
+        self.assertIsNone(runner._load_options_for_profile_mode("gpu"))
+
+    def test_eager_attention_verification_reads_loaded_model_config(self):
+        runner = self._import_runner()
+        model = types.SimpleNamespace(
+            config=types.SimpleNamespace(_attn_implementation="eager")
+        )
+        model_ctx = {
+            "pipeline": types.SimpleNamespace(model=model),
+        }
+
+        self.assertEqual(runner._verify_eager_attention(model_ctx), "eager")
+
+    def test_eager_attention_verification_rejects_non_eager_model(self):
+        runner = self._import_runner()
+        model = types.SimpleNamespace(
+            config=types.SimpleNamespace(_attn_implementation="sdpa")
+        )
+        model_ctx = {
+            "pipeline": types.SimpleNamespace(model=model),
+        }
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "expected=eager,actual=sdpa",
+        ):
+            runner._verify_eager_attention(model_ctx)
+
 
 if __name__ == "__main__":
     unittest.main()

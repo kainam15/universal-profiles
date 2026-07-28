@@ -8,6 +8,78 @@ import unittest
 
 
 class MergePacketLatencyComputeTests(unittest.TestCase):
+    def test_recomputes_both_explicit_flop_rates_from_packet_latency(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            in_csv = os.path.join(tmp, "result.csv")
+            lat_json = os.path.join(tmp, "lat.json")
+            out_csv = os.path.join(tmp, "result.merged.csv")
+            fieldnames = [
+                "sniff_group_id",
+                "latency_s",
+                "compute_profile_tool",
+                "model_mflop_per_request",
+                "compute_mflops_app",
+                "compute_mflops",
+                "model_logical_mflop_per_request_torch_profiler_eager",
+                "model_logical_mflops_app_torch_profiler_eager",
+                "model_logical_mflops_packet_torch_profiler_eager",
+                "gpu_executed_mflop_per_request_ncu",
+                "gpu_executed_mflops_app_ncu",
+                "gpu_executed_mflops_packet_ncu",
+            ]
+            with open(in_csv, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "sniff_group_id": "case_seq1_r0",
+                        "latency_s": "nan",
+                        "compute_profile_tool": "torch_profiler_eager",
+                        "model_mflop_per_request": "200",
+                        "compute_mflops_app": "400",
+                        "compute_mflops": "400",
+                        "model_logical_mflop_per_request_torch_profiler_eager": "200",
+                        "model_logical_mflops_app_torch_profiler_eager": "400",
+                        "model_logical_mflops_packet_torch_profiler_eager": "nan",
+                        "gpu_executed_mflop_per_request_ncu": "100",
+                        "gpu_executed_mflops_app_ncu": "200",
+                        "gpu_executed_mflops_packet_ncu": "nan",
+                    }
+                )
+            with open(lat_json, "w", encoding="utf-8") as f:
+                json.dump({"case_seq1_r0:0": 0.25}, f)
+
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "acprof.packet.merge_packet_latency",
+                    in_csv,
+                    lat_json,
+                    out_csv,
+                ],
+                check=True,
+                cwd=os.path.dirname(os.path.dirname(__file__)),
+            )
+            with open(out_csv, "r", encoding="utf-8", newline="") as f:
+                row = next(csv.DictReader(f))
+
+        self.assertEqual(row["compute_mflops"], "800.000000")
+        self.assertEqual(row["compute_mflops_app"], "400")
+        self.assertEqual(
+            row["model_logical_mflops_packet_torch_profiler_eager"],
+            "800.000000",
+        )
+        self.assertEqual(
+            row["model_logical_mflops_app_torch_profiler_eager"],
+            "400",
+        )
+        self.assertEqual(
+            row["gpu_executed_mflops_packet_ncu"],
+            "400.000000",
+        )
+        self.assertEqual(row["gpu_executed_mflops_app_ncu"], "200")
+
     def test_recomputes_compute_mflops_from_packet_latency(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             in_csv = os.path.join(tmp, "result.csv")

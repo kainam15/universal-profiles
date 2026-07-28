@@ -235,6 +235,238 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
         self.assertEqual(float(df["model_mflop_per_request"].iloc[0]), 200.5)
         self.assertEqual(float(df["compute_mflops_app"].iloc[0]), 401.0)
         self.assertEqual(float(df["compute_mflops"].iloc[0]), 802.0)
+        self.assertEqual(
+            float(
+                df[
+                    "model_logical_mflop_per_request_torch_profiler_eager"
+                ].iloc[0]
+            ),
+            200.5,
+        )
+        self.assertEqual(
+            float(
+                df[
+                    "model_logical_mflops_app_torch_profiler_eager"
+                ].iloc[0]
+            ),
+            401.0,
+        )
+        self.assertEqual(
+            float(
+                df[
+                    "model_logical_mflops_packet_torch_profiler_eager"
+                ].iloc[0]
+            ),
+            802.0,
+        )
+
+    def test_prepare_df_prefers_new_compute_fields_and_parses_ncu_fields(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = os.path.join(tmp, "result_all.csv")
+            ncu_values = {
+                "gpu_executed_mflop_per_request_ncu": "300.5",
+                "gpu_executed_tensor_mflop_per_request_ncu": "250.25",
+                "gpu_executed_scalar_mflop_per_request_ncu": "50.25",
+                "gpu_executed_tensor_share_pct_ncu": "83.27787",
+                "gpu_executed_mflops_app_ncu": "601.0",
+                "gpu_executed_mflops_packet_ncu": "1202.0",
+                "gpu_kernel_launch_count_per_request_ncu": "156",
+                "gpu_kernel_time_sum_ms_per_request_ncu": "12.5",
+            }
+            fieldnames = [
+                "cpu_cores",
+                "mem_cap_gb",
+                "gpu_mode",
+                "input_scale",
+                "warmup",
+                "status",
+                "model_mflop_per_request",
+                "compute_mflops_app",
+                "compute_mflops",
+                "model_logical_mflop_per_request_torch_profiler_eager",
+                "model_logical_mflops_app_torch_profiler_eager",
+                "model_logical_mflops_packet_torch_profiler_eager",
+                *ncu_values,
+            ]
+            with open(csv_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerow({
+                    "cpu_cores": "1",
+                    "mem_cap_gb": "4",
+                    "gpu_mode": "on",
+                    "input_scale": "64",
+                    "warmup": "0",
+                    "status": "ok",
+                    "model_mflop_per_request": "200.5",
+                    "compute_mflops_app": "401.0",
+                    "compute_mflops": "802.0",
+                    (
+                        "model_logical_mflop_per_request_"
+                        "torch_profiler_eager"
+                    ): "999.5",
+                    (
+                        "model_logical_mflops_app_"
+                        "torch_profiler_eager"
+                    ): "1999.0",
+                    (
+                        "model_logical_mflops_packet_"
+                        "torch_profiler_eager"
+                    ): "not-a-number",
+                    **ncu_values,
+                })
+
+            df = plot.prepare_df(csv_path)
+
+        self.assertEqual(
+            float(
+                df[
+                    "model_logical_mflop_per_request_torch_profiler_eager"
+                ].iloc[0]
+            ),
+            999.5,
+        )
+        self.assertEqual(
+            float(
+                df[
+                    "model_logical_mflops_app_torch_profiler_eager"
+                ].iloc[0]
+            ),
+            1999.0,
+        )
+        self.assertEqual(
+            float(
+                df[
+                    "model_logical_mflops_packet_torch_profiler_eager"
+                ].iloc[0]
+            ),
+            802.0,
+        )
+        for column, value in ncu_values.items():
+            self.assertEqual(float(df[column].iloc[0]), float(value))
+
+    def test_prepare_df_routes_legacy_compute_values_by_profiler_tool(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = os.path.join(tmp, "result_all.csv")
+            fieldnames = [
+                "cpu_cores",
+                "mem_cap_gb",
+                "gpu_mode",
+                "input_scale",
+                "compute_profile_tool",
+                "model_mflop_per_request",
+                "compute_mflops_app",
+                "compute_mflops",
+                "warmup",
+                "status",
+            ]
+            with open(csv_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows([
+                    {
+                        "cpu_cores": "1",
+                        "mem_cap_gb": "4",
+                        "gpu_mode": "off",
+                        "input_scale": "64",
+                        "compute_profile_tool": "torch_profiler",
+                        "model_mflop_per_request": "100",
+                        "compute_mflops_app": "200",
+                        "compute_mflops": "250",
+                        "warmup": "0",
+                        "status": "ok",
+                    },
+                    {
+                        "cpu_cores": "1",
+                        "mem_cap_gb": "4",
+                        "gpu_mode": "on",
+                        "input_scale": "64",
+                        "compute_profile_tool": "ncu",
+                        "model_mflop_per_request": "300",
+                        "compute_mflops_app": "600",
+                        "compute_mflops": "750",
+                        "warmup": "0",
+                        "status": "ok",
+                    },
+                ])
+
+            prepared = plot.prepare_df(csv_path)
+
+        torch_row = prepared.iloc[0]
+        ncu_row = prepared.iloc[1]
+        self.assertEqual(
+            torch_row[
+                "model_logical_mflop_per_request_torch_profiler_eager"
+            ],
+            100.0,
+        )
+        self.assertTrue(
+            pd.isna(torch_row["gpu_executed_mflop_per_request_ncu"])
+        )
+        self.assertTrue(
+            pd.isna(
+                ncu_row[
+                    "model_logical_mflop_per_request_torch_profiler_eager"
+                ]
+            )
+        )
+        self.assertEqual(
+            ncu_row["gpu_executed_mflop_per_request_ncu"],
+            300.0,
+        )
+        self.assertEqual(ncu_row["gpu_executed_mflops_app_ncu"], 600.0)
+        self.assertEqual(ncu_row["gpu_executed_mflops_packet_ncu"], 750.0)
+
+    def test_compute_plot_metrics_separate_torch_eager_from_ncu(self) -> None:
+        metrics = {
+            metric: (title, ylabel, filename)
+            for metric, title, ylabel, filename in plot.PLOT_METRICS
+        }
+
+        self.assertNotIn("compute_mflops", metrics)
+        self.assertEqual(
+            metrics["model_logical_mflops_packet_torch_profiler_eager"],
+            (
+                (
+                    "Torch Profiler Eager Logical Compute Throughput "
+                    "(Packet Latency) vs. Input Scale"
+                ),
+                "Logical MFLOPS (packet latency)",
+                "torch_profiler_eager_logical_mflops_packet_vs_scale.png",
+            ),
+        )
+        self.assertEqual(
+            metrics["gpu_executed_mflops_packet_ncu"],
+            (
+                (
+                    "NCU GPU-Executed Compute Throughput "
+                    "(Packet Latency) vs. Input Scale"
+                ),
+                "GPU-executed MFLOPS (packet latency)",
+                "ncu_gpu_executed_mflops_packet_vs_scale.png",
+            ),
+        )
+        self.assertIn(
+            "gpu_executed_tensor_mflop_per_request_ncu",
+            metrics,
+        )
+        self.assertIn(
+            "gpu_executed_scalar_mflop_per_request_ncu",
+            metrics,
+        )
+        self.assertIn("gpu_executed_tensor_share_pct_ncu", metrics)
+        self.assertIn(
+            "gpu_kernel_launch_count_per_request_ncu",
+            metrics,
+        )
+        self.assertIn(
+            "gpu_kernel_time_sum_ms_per_request_ncu",
+            metrics,
+        )
 
     def test_prepare_df_aliases_legacy_gpu_energy_columns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

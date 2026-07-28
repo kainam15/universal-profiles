@@ -347,7 +347,7 @@ class NativeDockerGuardTests(unittest.TestCase):
         self.assertEqual(kwargs["repeat_in_window"], 0)
         self.assertEqual(kwargs["repeat_window_seconds"], 10.0)
 
-    def test_main_defaults_compute_profile_tool_to_auto(self) -> None:
+    def test_main_defaults_to_dual_compute_profiles_and_keeps_artifacts(self) -> None:
         task_info = TaskInfo(
             model_id="dummy-model",
             pipeline_tag="fill-mask",
@@ -413,7 +413,10 @@ class NativeDockerGuardTests(unittest.TestCase):
             run.main()
 
         _, kwargs = collect_compute_profile_plan.call_args
-        self.assertEqual(kwargs["compute_profile_tool"], "auto")
+        self.assertEqual(kwargs["compute_profile_tool"], "both")
+        self.assertEqual(kwargs["torch_profiler_repeat"], 1)
+        self.assertEqual(kwargs["ncu_repeat"], 1)
+        self.assertTrue(kwargs["keep_profiles"])
 
     def test_main_records_invocation_command_in_static_meta(self) -> None:
         task_info = TaskInfo(

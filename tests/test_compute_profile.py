@@ -6,6 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from acprof.container.handlers import transformers_pipeline_load_kwargs
 from acprof.host.detect import TaskInfo
 
 from acprof.host import compute_profile
@@ -36,6 +37,19 @@ def _write_input_scale_plan(directory: str, input_scale: float = 8.0) -> str:
 
 
 class ComputeProfileTests(unittest.TestCase):
+    def test_transformers_handler_forces_eager_only_when_requested(self) -> None:
+        self.assertEqual(transformers_pipeline_load_kwargs(None), {})
+        self.assertEqual(
+            transformers_pipeline_load_kwargs({
+                "attention_implementation": "eager",
+            }),
+            {"model_kwargs": {"attn_implementation": "eager"}},
+        )
+        with self.assertRaisesRegex(ValueError, "must be 'eager'"):
+            transformers_pipeline_load_kwargs({
+                "attention_implementation": "sdpa",
+            })
+
     def test_input_scale_plan_is_required(self) -> None:
         with self.assertRaisesRegex(
             ValueError,
@@ -225,6 +239,289 @@ class ComputeProfileTests(unittest.TestCase):
                 compute_profile.parse_ncu_flop_csv(report_path),
                 10 + 20 * 2 + 1000 + 2000 * 2,
             )
+
+    def test_parse_ncu_long_csv_returns_normalized_structured_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = os.path.join(tmp, "ncu_long.csv")
+            with open(report_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=[
+                        "ID",
+                        "Kernel Name",
+                        "Metric Name",
+                        "Metric Unit",
+                        "Metric Value",
+                    ],
+                )
+                writer.writeheader()
+                metrics = [
+                    ("0", "kernel_a", "smsp__sass_thread_inst_executed_op_fadd_pred_on", "inst", "10"),
+                    ("0", "kernel_a", "smsp__sass_thread_inst_executed_op_ffma_pred_on", "inst", "20"),
+                    ("0", "kernel_a", "sm__ops_path_tensor_src_fp16_dst_fp32.sum", "FLOP", "100"),
+                    ("0", "kernel_a", "gpu__time_duration.sum", "usec", "1000"),
+                    ("1", "kernel_b", "smsp__sass_thread_inst_executed_op_fadd_pred_on", "inst", "30"),
+                    ("1", "kernel_b", "smsp__sass_thread_inst_executed_op_ffma_pred_on", "inst", "40"),
+                    ("1", "kernel_b", "sm__ops_path_tensor_src_fp16_dst_fp32.sum", "FLOP", "300"),
+                    ("1", "kernel_b", "gpu__time_duration.sum", "msecond", "2"),
+                ]
+                for launch_id, kernel, metric, unit, value in metrics:
+                    writer.writerow({
+                        "ID": launch_id,
+                        "Kernel Name": kernel,
+                        "Metric Name": metric,
+                        "Metric Unit": unit,
+                        "Metric Value": value,
+                    })
+
+            parsed = compute_profile.parse_ncu_profile_csv(
+                report_path,
+                repeat=2,
+            )
+
+        self.assertAlmostEqual(parsed["scalar_flops_per_request"], 80.0)
+        self.assertAlmostEqual(parsed["tensor_flops_per_request"], 200.0)
+        self.assertAlmostEqual(parsed["total_flops_per_request"], 280.0)
+        self.assertAlmostEqual(
+            parsed["tensor_share_pct"],
+            (400.0 / 560.0) * 100.0,
+        )
+        self.assertAlmostEqual(parsed["kernel_launch_count_per_request"], 1.0)
+        self.assertAlmostEqual(parsed["kernel_time_sum_ms_per_request"], 1.5)
+
+    def test_parse_ncu_wide_csv_normalizes_duration_and_launches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = os.path.join(tmp, "ncu_wide.csv")
+            with open(report_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    "ID",
+                    "Kernel Name",
+                    "CC",
+                    "launch__sm_count",
+                    "smsp__sass_thread_inst_executed_op_ffma_pred_on.sum",
+                    "sm__ops_path_tensor_src_fp16_dst_fp32.sum",
+                    "gpu__time_duration.sum",
+                ])
+                writer.writerow(["", "", "", "SM", "inst", "FLOP", "nsecond"])
+                writer.writerow(["0", "kernel_a", "8.9", "24", "10", "100", "1000"])
+                writer.writerow(["1", "kernel_b", "8.9", "24", "20", "200", "3000"])
+
+            parsed = compute_profile.parse_ncu_profile_csv(
+                report_path,
+                repeat=2,
+            )
+
+        self.assertAlmostEqual(parsed["scalar_flops_per_request"], 30.0)
+        self.assertAlmostEqual(parsed["tensor_flops_per_request"], 150.0)
+        self.assertAlmostEqual(parsed["total_flops_per_request"], 180.0)
+        self.assertAlmostEqual(parsed["kernel_launch_count_per_request"], 1.0)
+        self.assertAlmostEqual(parsed["kernel_time_sum_ms_per_request"], 0.002)
+        self.assertEqual(parsed["gpu_compute_capability"], "8.9")
+        self.assertEqual(parsed["gpu_sm_count"], 24.0)
+
+    def test_torch_profile_rejects_unverified_eager_result(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+        runner_result = {
+            "model_logical_mflop_per_request_torch_profiler_eager": 123.0,
+            "attention_implementation": "sdpa",
+            "attention_implementation_verified": False,
+        }
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "acprof.host.compute_profile._base_docker_cmd",
+            return_value=["docker"],
+        ), patch(
+            "acprof.host.compute_profile._run",
+            return_value=SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(runner_result),
+                stderr="",
+            ),
+        ):
+            entry = compute_profile._run_torch_profiler_for_entry(
+                task_info=task_info,
+                image_tag="acprof-test:latest",
+                cpu=1,
+                mem=4,
+                use_gpu=True,
+                payload_file=os.path.join(tmp, "payloads.json"),
+                profile_root=tmp,
+                entry={"input_scale": 8.0},
+                repeat=1,
+            )
+
+        self.assertIsNone(
+            entry["model_logical_mflop_per_request_torch_profiler_eager"]
+        )
+        self.assertIn("attention_implementation_not_verified", entry["error"])
+
+    def test_ncu_entry_exposes_exact_csv_metric_keys_and_relative_report(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+        csv_text = "\n".join([
+            (
+                '"ID","Kernel Name","smsp__sass_thread_inst_executed_op_'
+                'ffma_pred_on.sum","sm__ops_path_tensor_src_fp16_dst_fp32.sum",'
+                '"gpu__time_duration.sum"'
+            ),
+            '"","","inst","FLOP","usec"',
+            '"0","kernel_a","10","100","1000"',
+            '"1","kernel_b","20","300","2000"',
+        ])
+        collect_result = SimpleNamespace(
+            returncode=0,
+            stdout=(
+                '{"gpu_compute_capability":"8.9","gpu_sm_count":24}\n'
+            ),
+            stderr="",
+        )
+        import_result = SimpleNamespace(
+            returncode=0,
+            stdout=csv_text,
+            stderr="",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_root = os.path.join(tmp, "compute_profiles")
+            os.makedirs(profile_root)
+            with patch(
+                "acprof.host.compute_profile._base_docker_cmd",
+                return_value=["docker"],
+            ), patch(
+                "acprof.host.compute_profile._ncu_collect_filter_args",
+                return_value=[],
+            ), patch(
+                "acprof.host.compute_profile._ncu_section_args",
+                return_value=[],
+            ), patch(
+                "acprof.host.compute_profile._run",
+                side_effect=[collect_result, import_result],
+            ):
+                result = compute_profile._run_ncu_for_entry(
+                    ncu_bin="/usr/bin/ncu",
+                    ncu_metrics=[
+                        "smsp__sass_thread_inst_executed_op_ffma_pred_on.sum",
+                        "sm__ops_path_tensor_src_fp16_dst_fp32.sum",
+                        "gpu__time_duration.sum",
+                    ],
+                    task_info=task_info,
+                    image_tag="acprof-test:latest",
+                    cpu=1,
+                    mem=4,
+                    payload_file=os.path.join(tmp, "payloads.json"),
+                    profile_root=profile_root,
+                    tool_mount_roots=(),
+                    entry={"input_scale": 8.0},
+                    repeat=2,
+                )
+
+            self.assertTrue(
+                os.path.isfile(os.path.join(profile_root, "ncu_scale_8.csv"))
+            )
+
+        self.assertAlmostEqual(
+            result["gpu_executed_mflop_per_request_ncu"],
+            0.00023,
+        )
+        self.assertAlmostEqual(
+            result["gpu_executed_tensor_mflop_per_request_ncu"],
+            0.0002,
+        )
+        self.assertAlmostEqual(
+            result["gpu_executed_scalar_mflop_per_request_ncu"],
+            0.00003,
+        )
+        self.assertAlmostEqual(
+            result["gpu_executed_tensor_share_pct_ncu"],
+            (400.0 / 460.0) * 100.0,
+        )
+        self.assertEqual(result["gpu_kernel_launch_count_per_request_ncu"], 1.0)
+        self.assertEqual(result["gpu_kernel_time_sum_ms_per_request_ncu"], 1.5)
+        self.assertNotIn("gpu_profile_report_ncu", result)
+        self.assertEqual(
+            result["report"],
+            os.path.join("compute_profiles", "ncu_scale_8.csv"),
+        )
+
+    def test_ncu_parse_failure_preserves_report_until_artifacts_are_discarded(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+        command_result = SimpleNamespace(
+            returncode=0,
+            stdout="not a parseable NCU CSV",
+            stderr="",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_root = os.path.join(tmp, "compute_profiles")
+            os.makedirs(profile_root)
+            with patch(
+                "acprof.host.compute_profile._base_docker_cmd",
+                return_value=["docker"],
+            ), patch(
+                "acprof.host.compute_profile._ncu_collect_filter_args",
+                return_value=[],
+            ), patch(
+                "acprof.host.compute_profile._ncu_section_args",
+                return_value=[],
+            ), patch(
+                "acprof.host.compute_profile._run",
+                side_effect=[command_result, command_result],
+            ):
+                result = compute_profile._run_ncu_for_entry(
+                    ncu_bin="/usr/bin/ncu",
+                    ncu_metrics=["flop_count_sp"],
+                    task_info=task_info,
+                    image_tag="acprof-test:latest",
+                    cpu=1,
+                    mem=4,
+                    payload_file=os.path.join(tmp, "payloads.json"),
+                    profile_root=profile_root,
+                    tool_mount_roots=(),
+                    entry={"input_scale": 8.0},
+                    repeat=1,
+                )
+
+            report = os.path.join("compute_profiles", "ncu_scale_8.csv")
+            self.assertNotIn("gpu_profile_report_ncu", result)
+            self.assertEqual(result["report"], report)
+            self.assertTrue(os.path.isfile(os.path.join(tmp, report)))
+
+            profiles = {
+                "gpu": {
+                    "ncu": {
+                        "tool": "ncu",
+                        "entries": [result],
+                    },
+                },
+            }
+            compute_profile._strip_discarded_profile_paths(profiles)
+
+        self.assertNotIn("gpu_profile_report_ncu", result)
+        self.assertIsNone(result["report"])
 
     def test_select_ncu_metrics_combines_sass_and_float_tensor_aggregates(self) -> None:
         fadd = "smsp__sass_thread_inst_executed_op_fadd_pred_on"
@@ -443,7 +740,7 @@ class ComputeProfileTests(unittest.TestCase):
             None,
         )
 
-    def test_default_compute_profile_uses_cpu_torch_and_gpu_ncu(self) -> None:
+    def test_default_compute_profile_uses_torch_on_each_device_and_gpu_ncu(self) -> None:
         task_info = TaskInfo(
             model_id="google-bert/bert-base-uncased",
             pipeline_tag="fill-mask",
@@ -464,13 +761,13 @@ class ComputeProfileTests(unittest.TestCase):
         def fake_torch_profile(**kwargs):
             calls.append(("torch", kwargs["profile_key"], kwargs["use_gpu"]))
             return {
-                "tool": "torch_profiler",
+                "tool": "torch_profiler_eager",
                 "repeat": kwargs["repeat"],
                 "error": "",
                 "entries": [
                     {
                         "input_scale": 8.0,
-                        "tool": "torch_profiler",
+                        "tool": "torch_profiler_eager",
                         "model_mflop_per_request": 123.0,
                         "error": "",
                     }
@@ -529,14 +826,15 @@ class ComputeProfileTests(unittest.TestCase):
             [
                 ("find", ("ncu", "nv-nsight-cu-cli")),
                 ("torch", "cpu", False),
+                ("torch", "gpu", True),
                 ("gpu", "/opt/nvidia/nsight-compute/2024.1.1/ncu"),
             ],
         )
-        self.assertEqual(plan["compute_profile_tool_mode"], "auto")
-        self.assertEqual(plan["profiles"]["cpu"]["tool"], "torch_profiler")
+        self.assertEqual(plan["compute_profile_tool_mode"], "both")
+        self.assertEqual(plan["profiles"]["cpu"]["tool"], "torch_profiler_eager")
         self.assertEqual(plan["profiles"]["gpu"]["tool"], "ncu")
 
-    def test_auto_compute_profile_uses_cpu_torch_and_gpu_ncu(self) -> None:
+    def test_auto_compute_profile_is_alias_for_dual_collection(self) -> None:
         task_info = TaskInfo(
             model_id="google-bert/bert-base-uncased",
             pipeline_tag="fill-mask",
@@ -557,13 +855,13 @@ class ComputeProfileTests(unittest.TestCase):
         def fake_torch_profile(**kwargs):
             calls.append(("torch", kwargs["profile_key"], kwargs["use_gpu"]))
             return {
-                "tool": "torch_profiler",
+                "tool": "torch_profiler_eager",
                 "repeat": kwargs["repeat"],
                 "error": "",
                 "entries": [
                     {
                         "input_scale": 8.0,
-                        "tool": "torch_profiler",
+                        "tool": "torch_profiler_eager",
                         "model_mflop_per_request": 123.0,
                         "error": "",
                     }
@@ -623,10 +921,11 @@ class ComputeProfileTests(unittest.TestCase):
             [
                 ("find", ("ncu", "nv-nsight-cu-cli")),
                 ("torch", "cpu", False),
+                ("torch", "gpu", True),
                 ("gpu", "/usr/bin/ncu"),
             ],
         )
-        self.assertEqual(plan["profiles"]["cpu"]["tool"], "torch_profiler")
+        self.assertEqual(plan["profiles"]["cpu"]["tool"], "torch_profiler_eager")
         self.assertEqual(plan["profiles"]["gpu"]["tool"], "ncu")
         self.assertEqual(
             plan["profiles"]["cpu"]["entries"][0]["model_mflop_per_request"],
@@ -636,6 +935,89 @@ class ComputeProfileTests(unittest.TestCase):
             plan["profiles"]["gpu"]["entries"][0]["model_mflop_per_request"],
             456.0,
         )
+
+    def test_both_mode_keeps_torch_and_ncu_failures_independent(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+        calls = []
+
+        def fake_torch_profile(**kwargs):
+            calls.append(("torch", kwargs["profile_key"]))
+            raise RuntimeError("torch probe failed")
+
+        def fake_gpu_profile(**kwargs):
+            calls.append(("ncu", kwargs["repeat"]))
+            return {
+                "tool": "ncu",
+                "repeat": kwargs["repeat"],
+                "metrics": ["gpu__time_duration.sum"],
+                "error": "",
+                "entries": [{
+                    "input_scale": 8.0,
+                    "tool": "ncu",
+                    "model_mflop_per_request": 42.0,
+                    "gpu_executed_mflop_per_request_ncu": 42.0,
+                    "error": "",
+                }],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "acprof.host.compute_profile._find_executable",
+            return_value="/usr/bin/ncu",
+        ), patch(
+            "acprof.host.compute_profile._profile_torch_entries",
+            side_effect=fake_torch_profile,
+        ), patch(
+            "acprof.host.compute_profile._profile_gpu_entries",
+            side_effect=fake_gpu_profile,
+        ):
+            plan_path = compute_profile.collect_compute_profile_plan(
+                task_info=task_info,
+                image_tag="acprof-test:latest",
+                cpu_list=[1],
+                mem_list=[4],
+                gpu_list=["off", "on"],
+                output_dir=tmp,
+                input_scale_plan_file=_write_input_scale_plan(tmp),
+                advisor_root=None,
+                ncu_root=None,
+                advisor_repeat=20,
+                ncu_repeat=3,
+                torch_profiler_repeat=2,
+                keep_profiles=False,
+                compute_profile_tool="both",
+            )
+            with open(plan_path, "r", encoding="utf-8") as f:
+                plan = json.load(f)
+
+        self.assertEqual(calls, [("torch", "cpu"), ("torch", "gpu"), ("ncu", 3)])
+        self.assertEqual(plan["schema_version"], 2)
+        self.assertIn(
+            "torch_profiler_eager_failed",
+            plan["profiles"]["gpu"]["torch_profiler_eager"]["error"],
+        )
+        self.assertEqual(
+            plan["profiles"]["gpu"]["ncu"]["entries"][0][
+                "gpu_executed_mflop_per_request_ncu"
+            ],
+            42.0,
+        )
+        metadata = plan["static_metadata"]
+        self.assertEqual(
+            metadata["compute_profile_tools"],
+            ["torch_profiler_eager", "ncu"],
+        )
+        self.assertEqual(metadata["torch_profiler_eager_repeat_cpu"], 2)
+        self.assertEqual(metadata["torch_profiler_eager_repeat_gpu"], 2)
+        self.assertEqual(metadata["ncu_repeat"], 3)
+        self.assertFalse(metadata["compute_profiles_retained"])
 
     def test_vendor_compute_profile_mode_keeps_missing_tool_errors(self) -> None:
         task_info = TaskInfo(

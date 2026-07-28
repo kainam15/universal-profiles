@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
-from acprof.container.handlers import BaseHandler, HandlerRegistry, model_revision_kwargs
+from acprof.container.handlers import (
+    BaseHandler,
+    HandlerRegistry,
+    model_revision_kwargs,
+    transformers_pipeline_load_kwargs,
+)
 
 
 class ChronosHandler(BaseHandler):
@@ -17,8 +22,20 @@ class ChronosHandler(BaseHandler):
         backend: str,
         device: str,
         model_revision: str = "main",
+        load_options: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         import torch
+
+        chronos_load_options: Dict[str, Any] = {}
+        if load_options:
+            attention_implementation = load_options.get(
+                "attention_implementation"
+            )
+            if attention_implementation != "eager":
+                raise ValueError(
+                    "attention_implementation must be 'eager' for compute profiling"
+                )
+            chronos_load_options["attn_implementation"] = "eager"
 
         # Try ChronosBolt first (faster), fall back to base Chronos
         try:
@@ -26,6 +43,7 @@ class ChronosHandler(BaseHandler):
             pipeline = ChronosBoltPipeline.from_pretrained(
                 model_source,
                 **model_revision_kwargs(model_source, model_revision),
+                **chronos_load_options,
                 device_map=device,
                 local_files_only=True,
             )
@@ -35,6 +53,7 @@ class ChronosHandler(BaseHandler):
             pipeline = ChronosPipeline.from_pretrained(
                 model_source,
                 **model_revision_kwargs(model_source, model_revision),
+                **chronos_load_options,
                 device_map=device,
                 local_files_only=True,
             )
@@ -46,6 +65,7 @@ class ChronosHandler(BaseHandler):
             "task_type": task_type,
             "device": device,
             "model_revision": model_revision or "main",
+            "load_options": dict(load_options or {}),
         }
 
     def preprocess(self, model_ctx: Dict[str, Any], raw_input: Dict[str, Any]) -> Any:
@@ -89,6 +109,7 @@ class TimeseriesTransformersHandler(BaseHandler):
         backend: str,
         device: str,
         model_revision: str = "main",
+        load_options: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         import torch
         from transformers import pipeline as hf_pipeline
@@ -98,6 +119,7 @@ class TimeseriesTransformersHandler(BaseHandler):
             task="time-series-forecasting",
             model=model_source,
             **model_revision_kwargs(model_source, model_revision),
+            **transformers_pipeline_load_kwargs(load_options),
             device_map=device_map,
             trust_remote_code=True,
         )
@@ -106,6 +128,7 @@ class TimeseriesTransformersHandler(BaseHandler):
             "task_type": task_type,
             "device": device,
             "model_revision": model_revision or "main",
+            "load_options": dict(load_options or {}),
         }
 
     def preprocess(self, model_ctx: Dict[str, Any], raw_input: Dict[str, Any]) -> Any:

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import glob
+import importlib.metadata
 import json
 import math
 import os
@@ -137,6 +138,93 @@ def _run_torch_flop_profile(handler: Any, model_ctx: Any, processed: Any, repeat
     return _sum_profiled_flops(prof)
 
 
+def _package_version(distribution: str) -> str:
+    try:
+        return importlib.metadata.version(distribution)
+    except Exception:
+        return "unknown"
+
+
+def _gpu_metadata() -> Dict[str, Any]:
+    metadata: Dict[str, Any] = {
+        "gpu_compute_capability": "",
+        "gpu_sm_count": None,
+    }
+    if not torch.cuda.is_available():
+        return metadata
+    try:
+        capability = torch.cuda.get_device_capability()
+        metadata["gpu_compute_capability"] = (
+            f"{int(capability[0])}.{int(capability[1])}"
+        )
+    except Exception:
+        pass
+    try:
+        properties = torch.cuda.get_device_properties(torch.cuda.current_device())
+        metadata["gpu_sm_count"] = int(properties.multi_processor_count)
+    except Exception:
+        pass
+    return metadata
+
+
+def _attention_implementation(model_ctx: Any) -> str:
+    candidates = []
+    if isinstance(model_ctx, dict):
+        for key in ("model", "pipeline"):
+            candidate = model_ctx.get(key)
+            if candidate is not None:
+                candidates.append(candidate)
+    else:
+        candidates.append(model_ctx)
+
+    expanded = list(candidates)
+    for candidate in candidates:
+        nested_model = getattr(candidate, "model", None)
+        if nested_model is not None:
+            expanded.append(nested_model)
+
+    for candidate in expanded:
+        config = getattr(candidate, "config", None)
+        if config is None:
+            continue
+        for attribute in (
+            "_attn_implementation",
+            "_attn_implementation_internal",
+            "attn_implementation",
+        ):
+            try:
+                value = getattr(config, attribute, None)
+            except Exception:
+                value = None
+            if value:
+                return str(value)
+    return ""
+
+
+def _verify_eager_attention(model_ctx: Any) -> str:
+    implementation = _attention_implementation(model_ctx)
+    if implementation != "eager":
+        detail = implementation or "unavailable"
+        raise RuntimeError(
+            "torch_profiler_eager_attention_verification_failed:"
+            f"expected=eager,actual={detail}"
+        )
+    return implementation
+
+
+def _load_options_for_profile_mode(
+    profile_mode: str,
+) -> Optional[Dict[str, str]]:
+    if profile_mode in {
+        "torch_cpu",
+        "torch_gpu",
+        "torch_eager_cpu",
+        "torch_eager_gpu",
+    }:
+        return {"attention_implementation": "eager"}
+    return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--payload-file", required=True)
@@ -145,7 +233,14 @@ def main() -> None:
     parser.add_argument(
         "--profile-mode",
         required=True,
-        choices=("cpu", "gpu", "torch_cpu", "torch_gpu"),
+        choices=(
+            "cpu",
+            "gpu",
+            "torch_cpu",
+            "torch_gpu",
+            "torch_eager_cpu",
+            "torch_eager_gpu",
+        ),
     )
     args = parser.parse_args()
 
@@ -162,8 +257,25 @@ def main() -> None:
         torch.set_num_threads(torch_threads)
 
     handler = HandlerRegistry.get(task_family, runtime_backend)
+    load_options = _load_options_for_profile_mode(args.profile_mode)
+    torch_eager_mode = load_options is not None
     t_load = time.perf_counter()
-    model_ctx = handler.load(model_source, task_type, runtime_backend, device, model_revision)
+    handler_load_kwargs: Dict[str, Any] = {}
+    if load_options is not None:
+        handler_load_kwargs["load_options"] = load_options
+    model_ctx = handler.load(
+        model_source,
+        task_type,
+        runtime_backend,
+        device,
+        model_revision,
+        **handler_load_kwargs,
+    )
+    attention_implementation = (
+        _verify_eager_attention(model_ctx)
+        if torch_eager_mode
+        else ""
+    )
     payload = _find_payload(args.payload_file, args.input_scale)
     processed = handler.preprocess(model_ctx, payload)
 
@@ -172,7 +284,7 @@ def main() -> None:
         _cuda_synchronize()
 
         repeat = max(1, int(args.repeat))
-        if args.profile_mode in {"torch_cpu", "torch_gpu"}:
+        if torch_eager_mode:
             total_flops = _run_torch_flop_profile(handler, model_ctx, processed, repeat)
             _cuda_synchronize()
             elapsed_s = time.perf_counter() - t_load
@@ -186,7 +298,15 @@ def main() -> None:
                 "elapsed_s": elapsed_s,
                 "total_flops": total_flops,
                 "model_mflop_per_request": (total_flops / 1_000_000.0) / float(repeat),
-                "profile_tool": "torch_profiler",
+                "model_logical_mflop_per_request_torch_profiler_eager": (
+                    total_flops / 1_000_000.0
+                ) / float(repeat),
+                "profile_tool": "torch_profiler_eager",
+                "attention_implementation": attention_implementation,
+                "attention_implementation_verified": True,
+                "torch_version": str(getattr(torch, "__version__", "unknown")),
+                "transformers_version": _package_version("transformers"),
+                **_gpu_metadata(),
             }))
             return
 
@@ -217,6 +337,7 @@ def main() -> None:
         "input_scale": args.input_scale,
         "repeat": max(1, int(args.repeat)),
         "elapsed_s": elapsed_s,
+        **_gpu_metadata(),
     }))
 
 

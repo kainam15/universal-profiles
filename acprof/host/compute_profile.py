@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from acprof.host.detect import TaskInfo
@@ -17,8 +18,10 @@ from acprof.host.env_utils import hf_offline_docker_env_args
 
 COMPUTE_PROFILE_PLAN_NAME = "compute_profile_plan.json"
 CONTAINER_INPUT_SCALE_PLAN_FILE = "/payloads/input_scale_plan.json"
-TORCH_PROFILER_TOOL = "torch_profiler"
-COMPUTE_PROFILE_TOOL_MODES = {"auto", "torch", "vendor"}
+COMPUTE_PROFILE_SCHEMA_VERSION = 2
+TORCH_PROFILER_TOOL = "torch_profiler_eager"
+NCU_TOOL = "ncu"
+COMPUTE_PROFILE_TOOL_MODES = {"auto", "both", "ncu", "torch", "vendor"}
 NCU_FLOAT_TYPE_PATTERN = r"(?:bf\d+|fp\d+|tf\d+)"
 NCU_TENSOR_METRIC_RE = re.compile(
     rf"^sm__ops_path_tensor_src_{NCU_FLOAT_TYPE_PATTERN}"
@@ -36,6 +39,8 @@ NCU_SASS_FLOP_WEIGHTS = {
     "smsp__sass_thread_inst_executed_op_hmul_pred_on": 1.0,
     "smsp__sass_thread_inst_executed_op_hfma_pred_on": 2.0,
 }
+NCU_DURATION_METRIC = "gpu__time_duration.sum"
+NCU_FMA_FLOP_WEIGHT = 2.0
 DEFAULT_TOOL_SEARCH_ROOTS = (
     "/opt/intel/oneapi/advisor",
     "/opt/intel/oneapi",
@@ -100,11 +105,53 @@ def _default_compute_profile_resources(
     return cpu, mem
 
 
-def _tool_error_entries(entries: List[Dict[str, Any]], error: str) -> List[Dict[str, Any]]:
+def _tool_error_entries(
+    entries: List[Dict[str, Any]],
+    error: str,
+    tool: str,
+) -> List[Dict[str, Any]]:
     return [
         {
             "input_scale": float(entry["input_scale"]),
+            "tool": tool,
             "model_mflop_per_request": None,
+            "error": error,
+        }
+        for entry in entries
+    ]
+
+
+def _ncu_error_entries(
+    entries: List[Dict[str, Any]],
+    error: str,
+) -> List[Dict[str, Any]]:
+    return [
+        {
+            "input_scale": float(entry["input_scale"]),
+            "tool": NCU_TOOL,
+            "model_mflop_per_request": None,
+            "gpu_executed_mflop_per_request_ncu": None,
+            "gpu_executed_tensor_mflop_per_request_ncu": None,
+            "gpu_executed_scalar_mflop_per_request_ncu": None,
+            "gpu_executed_tensor_share_pct_ncu": None,
+            "gpu_kernel_launch_count_per_request_ncu": None,
+            "gpu_kernel_time_sum_ms_per_request_ncu": None,
+            "error": error,
+        }
+        for entry in entries
+    ]
+
+
+def _torch_error_entries(
+    entries: List[Dict[str, Any]],
+    error: str,
+) -> List[Dict[str, Any]]:
+    return [
+        {
+            "input_scale": float(entry["input_scale"]),
+            "tool": TORCH_PROFILER_TOOL,
+            "model_mflop_per_request": None,
+            "model_logical_mflop_per_request_torch_profiler_eager": None,
             "error": error,
         }
         for entry in entries
@@ -136,6 +183,11 @@ def _to_float(value: Any) -> float:
         return float(value)
     except Exception:
         return float("nan")
+
+
+def _finite_or_none(value: Any) -> Optional[float]:
+    number = _to_float(value)
+    return number if math.isfinite(number) else None
 
 
 def _parse_last_json_line(text: str) -> Dict[str, Any]:
@@ -199,6 +251,16 @@ def _metric_value_from_row(row: Dict[str, str]) -> float:
     return float("nan")
 
 
+def _metric_unit_from_row(row: Dict[str, str]) -> str:
+    for key in ("Metric Unit", "Unit"):
+        if key in row and row.get(key):
+            return str(row[key]).strip()
+    for key, value in row.items():
+        if key and key.strip().lower() in {"metric unit", "unit"} and value:
+            return str(value).strip()
+    return ""
+
+
 def _ncu_metric_flop_weight(metric_name: str) -> Optional[float]:
     if metric_name in NCU_SCALAR_FLOP_METRICS or NCU_TENSOR_METRIC_RE.match(metric_name):
         return 1.0
@@ -215,44 +277,284 @@ def _is_ncu_flop_metric(metric_name: str) -> bool:
     return _ncu_metric_flop_weight(metric_name) is not None
 
 
-def parse_ncu_flop_csv(report_path: str) -> float:
-    """Return summed FLOP-like metric values from an ncu raw CSV export."""
-    total_flop = 0.0
-    found = False
+def _is_ncu_tensor_metric(metric_name: str) -> bool:
+    return NCU_TENSOR_METRIC_RE.match(metric_name) is not None
+
+
+def _is_ncu_sass_metric(metric_name: str) -> bool:
+    base_name = (
+        metric_name[:-len(".sum")]
+        if metric_name.endswith(".sum")
+        else metric_name
+    )
+    return base_name in NCU_SASS_FLOP_WEIGHTS
+
+
+def _duration_to_ms(value: float, unit: str) -> float:
+    normalized = str(unit or "").strip().lower().replace(" ", "")
+    factors = {
+        "s": 1_000.0,
+        "sec": 1_000.0,
+        "second": 1_000.0,
+        "seconds": 1_000.0,
+        "ms": 1.0,
+        "msec": 1.0,
+        "msecond": 1.0,
+        "millisecond": 1.0,
+        "milliseconds": 1.0,
+        "us": 0.001,
+        "usec": 0.001,
+        "usecond": 0.001,
+        "µs": 0.001,
+        "microsecond": 0.001,
+        "microseconds": 0.001,
+        "ns": 0.000001,
+        "nsec": 0.000001,
+        "nsecond": 0.000001,
+        "nanosecond": 0.000001,
+        "nanoseconds": 0.000001,
+    }
+    return value * factors.get(normalized, 0.000001)
+
+
+def _ncu_csv_rows(report_path: str) -> Tuple[List[str], List[Dict[str, str]]]:
+    """Read an NCU CSV while skipping profiler diagnostics before the header."""
     with open(report_path, "r", encoding="utf-8-sig", newline="") as f:
         filtered_lines = [
-            line for line in f
-            if line.strip() and not line.startswith("==PROF==")
+            line
+            for line in f
+            if line.strip() and not line.lstrip().startswith("==PROF==")
         ]
-    reader = csv.DictReader(filtered_lines)
-    if reader.fieldnames is None:
-        return float("nan")
+    parsed_rows = list(csv.reader(filtered_lines))
 
-    wide_metric_fields = [
-        (field, weight)
-        for field in reader.fieldnames
-        for weight in [_ncu_metric_flop_weight(field)]
-        if weight is not None
+    header_index = None
+    for idx, row in enumerate(parsed_rows):
+        normalized = {field.strip().lower() for field in row if field}
+        if "metric name" in normalized or "kernel name" in normalized:
+            header_index = idx
+            break
+        if any(
+            _is_ncu_flop_metric(field.strip())
+            or field.strip() == NCU_DURATION_METRIC
+            for field in row
+        ):
+            header_index = idx
+            break
+    if header_index is None:
+        return [], []
+
+    fieldnames = parsed_rows[header_index]
+    rows = [
+        {
+            fieldnames[column]: value
+            for column, value in enumerate(row[:len(fieldnames)])
+        }
+        for row in parsed_rows[header_index + 1:]
     ]
-    if wide_metric_fields and "Metric Name" not in reader.fieldnames:
-        for row in reader:
-            for field, weight in wide_metric_fields:
+    return fieldnames, rows
+
+
+def _first_finite(rows: Sequence[Dict[str, str]], fields: Sequence[str]) -> float:
+    for row in rows:
+        for field in fields:
+            value = _to_float(row.get(field))
+            if value == value:
+                return value
+    return float("nan")
+
+
+def _first_text(rows: Sequence[Dict[str, str]], fields: Sequence[str]) -> str:
+    for row in rows:
+        for field in fields:
+            value = str(row.get(field) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _ncu_launch_count_wide(rows: Sequence[Dict[str, str]]) -> int:
+    count = 0
+    for row in rows:
+        launch_id = str(row.get("ID") or "").strip()
+        kernel_name = str(
+            row.get("Kernel Name")
+            or row.get("Kernel")
+            or row.get("launch__kernel_name")
+            or ""
+        ).strip()
+        if launch_id or kernel_name:
+            count += 1
+    return count
+
+
+def _ncu_launch_count_long(rows: Sequence[Dict[str, str]]) -> int:
+    launch_ids = set()
+    for row in rows:
+        launch_id = str(row.get("ID") or row.get("Launch ID") or "").strip()
+        if launch_id:
+            process_id = str(row.get("Process ID") or "").strip()
+            launch_ids.add((process_id, launch_id))
+    if launch_ids:
+        return len(launch_ids)
+
+    duration_rows = sum(
+        1 for row in rows if _metric_name_from_row(row) == NCU_DURATION_METRIC
+    )
+    if duration_rows:
+        return duration_rows
+
+    metric_counts: Dict[str, int] = {}
+    for row in rows:
+        metric_name = _metric_name_from_row(row)
+        if _is_ncu_flop_metric(metric_name):
+            metric_counts[metric_name] = metric_counts.get(metric_name, 0) + 1
+    return max(metric_counts.values(), default=0)
+
+
+def parse_ncu_profile_csv(
+    report_path: str,
+    repeat: int = 1,
+) -> Dict[str, Any]:
+    """Parse wide or long NCU CSV into per-request hardware execution metrics."""
+    fieldnames, rows = _ncu_csv_rows(report_path)
+    normalized_repeat = max(1, int(repeat))
+    if not fieldnames:
+        return {
+            "total_flops_per_request": float("nan"),
+            "tensor_flops_per_request": float("nan"),
+            "scalar_flops_per_request": float("nan"),
+            "tensor_share_pct": float("nan"),
+            "kernel_launch_count_per_request": float("nan"),
+            "kernel_time_sum_ms_per_request": float("nan"),
+            "gpu_compute_capability": "",
+            "gpu_sm_count": float("nan"),
+        }
+
+    is_long = any(
+        field.strip().lower() == "metric name"
+        for field in fieldnames
+    )
+    metric_values: List[Tuple[str, float, str]] = []
+    kernel_time_ms = 0.0
+    duration_found = False
+
+    if is_long:
+        for row in rows:
+            metric_name = _metric_name_from_row(row)
+            value = _metric_value_from_row(row)
+            if value != value:
+                continue
+            if _is_ncu_flop_metric(metric_name):
+                metric_values.append((metric_name, value, _metric_unit_from_row(row)))
+            elif metric_name == NCU_DURATION_METRIC:
+                kernel_time_ms += _duration_to_ms(value, _metric_unit_from_row(row))
+                duration_found = True
+        launch_count = _ncu_launch_count_long(rows)
+    else:
+        metric_fields = [
+            field
+            for field in fieldnames
+            if _is_ncu_flop_metric(field)
+        ]
+        duration_fields = [
+            field for field in fieldnames if field == NCU_DURATION_METRIC
+        ]
+        unit_by_field: Dict[str, str] = {}
+        for row in rows:
+            for field in [*metric_fields, *duration_fields]:
+                raw_value = str(row.get(field) or "").strip()
+                if raw_value and _to_float(raw_value) != _to_float(raw_value):
+                    unit_by_field.setdefault(field, raw_value)
+        for row in rows:
+            for field in metric_fields:
                 value = _to_float(row.get(field))
                 if value == value:
-                    total_flop += value * weight
-                    found = True
-        return total_flop if found else float("nan")
+                    metric_values.append((field, value, unit_by_field.get(field, "")))
+            for field in duration_fields:
+                value = _to_float(row.get(field))
+                if value == value:
+                    kernel_time_ms += _duration_to_ms(
+                        value,
+                        unit_by_field.get(field, ""),
+                    )
+                    duration_found = True
+        launch_count = _ncu_launch_count_wide(rows)
 
-    for row in reader:
-        metric_name = _metric_name_from_row(row)
+    # Legacy flop_count_* and SASS counters describe the same scalar work.
+    # Prefer SASS when both families appear to avoid counting it twice.
+    has_sass = any(_is_ncu_sass_metric(name) for name, _, _ in metric_values)
+    tensor_flops = 0.0
+    scalar_flops = 0.0
+    tensor_found = False
+    scalar_found = False
+    for metric_name, value, _unit in metric_values:
         weight = _ncu_metric_flop_weight(metric_name)
         if weight is None:
             continue
-        value = _metric_value_from_row(row)
-        if value == value:
-            total_flop += value * weight
-            found = True
-    return total_flop if found else float("nan")
+        if _is_ncu_tensor_metric(metric_name):
+            tensor_flops += value * weight
+            tensor_found = True
+        elif not (has_sass and metric_name in NCU_SCALAR_FLOP_METRICS):
+            scalar_flops += value * weight
+            scalar_found = True
+
+    any_flops = tensor_found or scalar_found
+    total_flops = tensor_flops + scalar_flops
+    total_per_request = (
+        total_flops / normalized_repeat if any_flops else float("nan")
+    )
+    tensor_per_request = (
+        tensor_flops / normalized_repeat if any_flops else float("nan")
+    )
+    scalar_per_request = (
+        scalar_flops / normalized_repeat if any_flops else float("nan")
+    )
+    tensor_share_pct = (
+        tensor_flops / total_flops * 100.0
+        if any_flops and total_flops > 0
+        else float("nan")
+    )
+
+    compute_capability = _first_text(rows, ("CC", "Compute Capability"))
+    if not compute_capability:
+        major = _first_finite(
+            rows,
+            ("device__attribute_compute_capability_major",),
+        )
+        minor = _first_finite(
+            rows,
+            ("device__attribute_compute_capability_minor",),
+        )
+        if major == major and minor == minor:
+            compute_capability = f"{int(major)}.{int(minor)}"
+    sm_count = _first_finite(
+        rows,
+        ("launch__sm_count", "device__attribute_multiprocessor_count"),
+    )
+
+    return {
+        "total_flops_per_request": total_per_request,
+        "tensor_flops_per_request": tensor_per_request,
+        "scalar_flops_per_request": scalar_per_request,
+        "tensor_share_pct": tensor_share_pct,
+        "kernel_launch_count_per_request": (
+            float(launch_count) / normalized_repeat
+            if launch_count > 0
+            else float("nan")
+        ),
+        "kernel_time_sum_ms_per_request": (
+            kernel_time_ms / normalized_repeat
+            if duration_found
+            else float("nan")
+        ),
+        "gpu_compute_capability": compute_capability,
+        "gpu_sm_count": sm_count,
+    }
+
+
+def parse_ncu_flop_csv(report_path: str) -> float:
+    """Backward-compatible total FLOP parser for an NCU raw CSV export."""
+    return float(parse_ncu_profile_csv(report_path)["total_flops_per_request"])
 
 
 def _candidate_executable_paths(root: str, names: Sequence[str]) -> Iterable[str]:
@@ -691,11 +993,10 @@ def _run_ncu_for_entry(
     ]
     result = _run([*base_cmd, *collect_cmd], check=False)
     if result.returncode != 0:
-        return {
-            "input_scale": float(entry["input_scale"]),
-            "model_mflop_per_request": None,
-            "error": f"ncu_failed:{result.stderr.strip() or result.stdout.strip()}",
-        }
+        return _ncu_error_entries(
+            [entry],
+            f"ncu_failed:{result.stderr.strip() or result.stdout.strip()}",
+        )[0]
 
     import_cmd = [
         ncu_bin,
@@ -708,19 +1009,58 @@ def _run_ncu_for_entry(
     with open(host_csv, "w", encoding="utf-8", newline="") as f:
         f.write(csv_text)
 
-    flop = parse_ncu_flop_csv(host_csv)
-    if flop != flop:
-        return {
-            "input_scale": float(entry["input_scale"]),
-            "model_mflop_per_request": None,
-            "error": "ncu_parse_failed:flop_metrics_missing",
-        }
+    report_path = os.path.relpath(
+        host_csv,
+        start=os.path.dirname(os.path.abspath(profile_root)),
+    )
+    parsed = parse_ncu_profile_csv(host_csv, repeat=repeat)
+    total_flops = _to_float(parsed.get("total_flops_per_request"))
+    if total_flops != total_flops:
+        error_entry = _ncu_error_entries(
+            [entry],
+            "ncu_parse_failed:flop_metrics_missing",
+        )[0]
+        error_entry["report"] = report_path
+        return error_entry
+
+    runner_payload = _parse_last_json_line(result.stdout)
+    gpu_compute_capability = str(
+        runner_payload.get("gpu_compute_capability")
+        or parsed.get("gpu_compute_capability")
+        or ""
+    )
+    gpu_sm_count = _to_float(
+        runner_payload.get("gpu_sm_count", parsed.get("gpu_sm_count"))
+    )
+    total_mflop = total_flops / 1_000_000.0
+    tensor_flops = _finite_or_none(parsed.get("tensor_flops_per_request"))
+    scalar_flops = _finite_or_none(parsed.get("scalar_flops_per_request"))
+    tensor_mflop = (
+        tensor_flops / 1_000_000.0 if tensor_flops is not None else None
+    )
+    scalar_mflop = (
+        scalar_flops / 1_000_000.0 if scalar_flops is not None else None
+    )
     return {
         "input_scale": float(entry["input_scale"]),
-        "tool": "ncu",
-        "model_mflop_per_request": (flop / 1_000_000.0) / float(max(1, int(repeat))),
+        "tool": NCU_TOOL,
+        "model_mflop_per_request": total_mflop,
+        "gpu_executed_mflop_per_request_ncu": total_mflop,
+        "gpu_executed_tensor_mflop_per_request_ncu": tensor_mflop,
+        "gpu_executed_scalar_mflop_per_request_ncu": scalar_mflop,
+        "gpu_executed_tensor_share_pct_ncu": _finite_or_none(
+            parsed.get("tensor_share_pct")
+        ),
+        "gpu_kernel_launch_count_per_request_ncu": _finite_or_none(
+            parsed.get("kernel_launch_count_per_request")
+        ),
+        "gpu_kernel_time_sum_ms_per_request_ncu": _finite_or_none(
+            parsed.get("kernel_time_sum_ms_per_request")
+        ),
+        "gpu_compute_capability": gpu_compute_capability,
+        "gpu_sm_count": _finite_or_none(gpu_sm_count),
         "error": "",
-        "report": host_csv,
+        "report": report_path,
     }
 
 
@@ -746,36 +1086,54 @@ def _run_torch_profiler_for_entry(
         profile_root=profile_root,
         tool_mount_roots=(),
     )
-    runner_mode = "torch_gpu" if use_gpu else "torch_cpu"
+    runner_mode = "torch_eager_gpu" if use_gpu else "torch_eager_cpu"
     result = _run([*base_cmd, *_runner_args(entry, repeat, runner_mode)], check=False)
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip()
-        return {
-            "input_scale": float(entry["input_scale"]),
-            "tool": TORCH_PROFILER_TOOL,
-            "model_mflop_per_request": None,
-            "error": f"torch_profiler_failed:{detail}",
-        }
+        return _torch_error_entries(
+            [entry],
+            f"torch_profiler_eager_failed:{detail}",
+        )[0]
 
     payload = _parse_last_json_line(result.stdout)
-    mflop = _to_float(payload.get("model_mflop_per_request"))
+    attention_implementation = str(
+        payload.get("attention_implementation") or ""
+    )
+    attention_verified = payload.get("attention_implementation_verified") is True
+    if attention_implementation != "eager" or not attention_verified:
+        return _torch_error_entries(
+            [entry],
+            "torch_profiler_eager_parse_failed:"
+            "attention_implementation_not_verified",
+        )[0]
+    mflop = _to_float(
+        payload.get(
+            "model_logical_mflop_per_request_torch_profiler_eager",
+            payload.get("model_mflop_per_request"),
+        )
+    )
     total_flops = _to_float(payload.get("total_flops"))
     if mflop != mflop and total_flops == total_flops:
         mflop = (total_flops / 1_000_000.0) / float(max(1, int(repeat)))
     if mflop != mflop or mflop <= 0:
-        return {
-            "input_scale": float(entry["input_scale"]),
-            "tool": TORCH_PROFILER_TOOL,
-            "model_mflop_per_request": None,
-            "error": "torch_profiler_parse_failed:model_mflop_per_request_missing",
-        }
+        return _torch_error_entries(
+            [entry],
+            "torch_profiler_eager_parse_failed:model_logical_mflop_missing",
+        )[0]
 
     return {
         "input_scale": float(entry["input_scale"]),
         "tool": TORCH_PROFILER_TOOL,
         "model_mflop_per_request": mflop,
+        "model_logical_mflop_per_request_torch_profiler_eager": mflop,
         "error": "",
         "total_flops": total_flops if total_flops == total_flops else None,
+        "attention_implementation": attention_implementation,
+        "attention_implementation_verified": attention_verified,
+        "torch_version": str(payload.get("torch_version") or "unknown"),
+        "transformers_version": str(
+            payload.get("transformers_version") or "unknown"
+        ),
     }
 
 
@@ -792,25 +1150,42 @@ def _profile_torch_entries(
     profile_root: str,
     repeat: int,
 ) -> Dict[str, Any]:
-    profile_entries = [
-        _run_torch_profiler_for_entry(
-            task_info=task_info,
-            image_tag=image_tag,
-            cpu=cpu,
-            mem=mem,
-            use_gpu=use_gpu,
-            payload_file=payload_file,
-            profile_root=profile_root,
-            entry=entry,
-            repeat=repeat,
-        )
-        for entry in entries
-    ]
+    profile_entries = []
+    for entry in entries:
+        try:
+            profile_entry = _run_torch_profiler_for_entry(
+                task_info=task_info,
+                image_tag=image_tag,
+                cpu=cpu,
+                mem=mem,
+                use_gpu=use_gpu,
+                payload_file=payload_file,
+                profile_root=profile_root,
+                entry=entry,
+                repeat=repeat,
+            )
+        except Exception as exc:
+            profile_entry = _torch_error_entries(
+                [entry],
+                f"torch_profiler_eager_failed:{exc!r}",
+            )[0]
+        profile_entries.append(profile_entry)
     errors = [entry["error"] for entry in profile_entries if entry.get("error")]
+    successful_entry = next(
+        (entry for entry in profile_entries if not entry.get("error")),
+        {},
+    )
     return {
         "tool": TORCH_PROFILER_TOOL,
         "repeat": max(1, int(repeat)),
         "profile": profile_key,
+        "flop_semantics": "logical_operator_shape_flops",
+        "attention_implementation": "eager",
+        "torch_version": successful_entry.get("torch_version", "unknown"),
+        "transformers_version": successful_entry.get(
+            "transformers_version",
+            "unknown",
+        ),
         "error": "; ".join(errors),
         "entries": profile_entries,
     }
@@ -834,7 +1209,11 @@ def _profile_cpu_entries(
             "tool": "intel_advisor",
             "repeat": max(1, int(repeat)),
             "error": "advisor_not_found",
-            "entries": _tool_error_entries(entries, "advisor_not_found"),
+            "entries": _tool_error_entries(
+                entries,
+                "advisor_not_found",
+                "intel_advisor",
+            ),
         }
     mount_roots = _tool_mount_roots(advisor_bin, advisor_root)
     profile_entries = [
@@ -876,10 +1255,10 @@ def _profile_gpu_entries(
 ) -> Dict[str, Any]:
     if ncu_bin is None:
         return {
-            "tool": "ncu",
+            "tool": NCU_TOOL,
             "repeat": max(1, int(repeat)),
             "error": "ncu_not_found",
-            "entries": _tool_error_entries(entries, "ncu_not_found"),
+            "entries": _ncu_error_entries(entries, "ncu_not_found"),
         }
     mount_roots = _tool_mount_roots(ncu_bin, ncu_root)
     metric_query_base_cmd = _base_docker_cmd(
@@ -898,35 +1277,174 @@ def _profile_gpu_entries(
     )
     if metric_error:
         return {
-            "tool": "ncu",
+            "tool": NCU_TOOL,
             "repeat": max(1, int(repeat)),
             "error": metric_error,
-            "entries": _tool_error_entries(entries, metric_error),
+            "entries": _ncu_error_entries(entries, metric_error),
         }
-    profile_entries = [
-        _run_ncu_for_entry(
-            ncu_bin=ncu_bin,
-            ncu_metrics=ncu_metrics,
-            task_info=task_info,
-            image_tag=image_tag,
-            cpu=cpu,
-            mem=mem,
-            payload_file=payload_file,
-            profile_root=profile_root,
-            tool_mount_roots=mount_roots,
-            entry=entry,
-            repeat=repeat,
-        )
-        for entry in entries
-    ]
+    collection_metrics = list(dict.fromkeys([*ncu_metrics, NCU_DURATION_METRIC]))
+    profile_entries = []
+    for entry in entries:
+        try:
+            profile_entry = _run_ncu_for_entry(
+                ncu_bin=ncu_bin,
+                ncu_metrics=collection_metrics,
+                task_info=task_info,
+                image_tag=image_tag,
+                cpu=cpu,
+                mem=mem,
+                payload_file=payload_file,
+                profile_root=profile_root,
+                tool_mount_roots=mount_roots,
+                entry=entry,
+                repeat=repeat,
+            )
+        except Exception as exc:
+            profile_entry = _ncu_error_entries(
+                [entry],
+                f"ncu_failed:{exc!r}",
+            )[0]
+        profile_entries.append(profile_entry)
     errors = [entry["error"] for entry in profile_entries if entry.get("error")]
     return {
-        "tool": "ncu",
+        "tool": NCU_TOOL,
         "repeat": max(1, int(repeat)),
-        "metrics": ncu_metrics,
+        "flop_semantics": "gpu_executed_floating_point_operations",
+        "fma_flop_weight": NCU_FMA_FLOP_WEIGHT,
+        "metrics": collection_metrics,
         "error": "; ".join(errors),
         "entries": profile_entries,
     }
+
+
+def _failed_tool_profile(
+    *,
+    tool: str,
+    entries: List[Dict[str, Any]],
+    repeat: int,
+    error: str,
+) -> Dict[str, Any]:
+    error_entries = (
+        _ncu_error_entries(entries, error)
+        if tool == NCU_TOOL
+        else _torch_error_entries(entries, error)
+        if tool == TORCH_PROFILER_TOOL
+        else _tool_error_entries(entries, error, tool)
+    )
+    return {
+        "tool": tool,
+        "repeat": max(1, int(repeat)),
+        "error": error,
+        "entries": error_entries,
+    }
+
+
+def _safe_profile_tool(
+    *,
+    tool: str,
+    entries: List[Dict[str, Any]],
+    repeat: int,
+    callback: Any,
+) -> Dict[str, Any]:
+    try:
+        return callback()
+    except Exception as exc:
+        return _failed_tool_profile(
+            tool=tool,
+            entries=entries,
+            repeat=repeat,
+            error=f"{tool}_failed:{exc!r}",
+        )
+
+
+def _with_legacy_profile_alias(
+    tool_profiles: Dict[str, Dict[str, Any]],
+    preferred_tool: str,
+) -> Dict[str, Any]:
+    """Expose v2 nested tools plus the v1 selected-profile fields."""
+    result: Dict[str, Any] = dict(tool_profiles)
+    preferred = tool_profiles.get(preferred_tool)
+    if preferred is None and tool_profiles:
+        preferred = next(iter(tool_profiles.values()))
+    if preferred:
+        result.update(preferred)
+    return result
+
+
+def _executable_version(executable: Optional[str]) -> str:
+    if not executable:
+        return "unknown"
+    try:
+        result = _run([executable, "--version"], check=False)
+    except Exception:
+        return "unknown"
+    if result.returncode != 0:
+        return "unknown"
+    text = (result.stdout or result.stderr or "").strip()
+    if not text:
+        return "unknown"
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return lines[-1] if lines else "unknown"
+
+
+def _profile_tool_maps(profiles: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
+    for device_profile in profiles.values():
+        if not isinstance(device_profile, dict):
+            continue
+        for tool in (TORCH_PROFILER_TOOL, NCU_TOOL, "intel_advisor"):
+            profile = device_profile.get(tool)
+            if isinstance(profile, dict):
+                yield profile
+
+
+def _first_profile_value(
+    profiles: Dict[str, Any],
+    key: str,
+    default: Any,
+) -> Any:
+    for profile in _profile_tool_maps(profiles):
+        value = profile.get(key)
+        if value not in (None, "", "unknown"):
+            return value
+        for entry in profile.get("entries", []):
+            if not isinstance(entry, dict):
+                continue
+            value = entry.get(key)
+            if value not in (None, "", "unknown"):
+                if not isinstance(value, float) or value == value:
+                    return value
+    return default
+
+
+def _strip_discarded_profile_paths(profiles: Dict[str, Any]) -> None:
+    for profile in _profile_tool_maps(profiles):
+        for entry in profile.get("entries", []):
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("tool") == NCU_TOOL:
+                entry["report"] = None
+
+
+def _write_json_atomic(path: str, payload: Dict[str, Any]) -> None:
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    fd, temporary_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(path)}.",
+        suffix=".tmp",
+        dir=directory,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=True, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary_path, path)
+    except Exception:
+        try:
+            os.unlink(temporary_path)
+        except OSError:
+            pass
+        raise
 
 
 def collect_compute_profile_plan(
@@ -945,11 +1463,12 @@ def collect_compute_profile_plan(
     keep_profiles: bool,
     compute_profile_cpus: Optional[int] = None,
     compute_profile_mem: Optional[int] = None,
-    compute_profile_tool: str = "auto",
+    compute_profile_tool: str = "both",
+    torch_profiler_repeat: int = 1,
 ) -> str:
     """Collect or synthesize compute profiles and write a plan file."""
     os.makedirs(output_dir, exist_ok=True)
-    tool_mode = (compute_profile_tool or "auto").strip().lower()
+    tool_mode = (compute_profile_tool or "both").strip().lower()
     if tool_mode not in COMPUTE_PROFILE_TOOL_MODES:
         raise ValueError(
             "compute_profile_tool must be one of "
@@ -962,14 +1481,30 @@ def collect_compute_profile_plan(
     payload_file = input_scale_plan_file
 
     normalized_gpus = {_normal_gpu_mode(gpu) for gpu in gpu_list}
+    collect_torch_cpu = (
+        "off" in normalized_gpus
+        and tool_mode in {"auto", "both", "torch"}
+    )
+    collect_torch_gpu = (
+        "on" in normalized_gpus
+        and tool_mode in {"auto", "both", "torch"}
+    )
+    collect_advisor_cpu = (
+        "off" in normalized_gpus
+        and tool_mode == "vendor"
+    )
+    collect_ncu_gpu = (
+        "on" in normalized_gpus
+        and tool_mode in {"auto", "both", "ncu", "vendor"}
+    )
     advisor_bin = (
         _find_executable(advisor_root, ("advisor", "advixe-cl"))
-        if tool_mode == "vendor" and "off" in normalized_gpus
+        if collect_advisor_cpu
         else None
     )
     ncu_bin = (
         _find_executable(ncu_root, ("ncu", "nv-nsight-cu-cli"))
-        if tool_mode in {"auto", "vendor"} and "on" in normalized_gpus
+        if collect_ncu_gpu
         else None
     )
     max_cpu, max_mem = _default_compute_profile_resources(
@@ -979,74 +1514,175 @@ def collect_compute_profile_plan(
 
     profiles: Dict[str, Any] = {}
     if "off" in normalized_gpus:
-        if tool_mode == "vendor":
-            profiles["cpu"] = _profile_cpu_entries(
+        cpu_tools: Dict[str, Dict[str, Any]] = {}
+        if collect_advisor_cpu:
+            cpu_tools["intel_advisor"] = _safe_profile_tool(
+                tool="intel_advisor",
                 entries=entries,
-                advisor_bin=advisor_bin,
-                advisor_root=advisor_root,
-                task_info=task_info,
-                image_tag=image_tag,
-                cpu=max_cpu,
-                mem=max_mem,
-                payload_file=payload_file,
-                profile_root=profile_root,
                 repeat=advisor_repeat,
+                callback=lambda: _profile_cpu_entries(
+                    entries=entries,
+                    advisor_bin=advisor_bin,
+                    advisor_root=advisor_root,
+                    task_info=task_info,
+                    image_tag=image_tag,
+                    cpu=max_cpu,
+                    mem=max_mem,
+                    payload_file=payload_file,
+                    profile_root=profile_root,
+                    repeat=advisor_repeat,
+                ),
             )
-        else:
-            profiles["cpu"] = _profile_torch_entries(
+        if collect_torch_cpu:
+            cpu_tools[TORCH_PROFILER_TOOL] = _safe_profile_tool(
+                tool=TORCH_PROFILER_TOOL,
                 entries=entries,
-                task_info=task_info,
-                image_tag=image_tag,
-                cpu=max_cpu,
-                mem=max_mem,
-                use_gpu=False,
-                profile_key="cpu",
-                payload_file=payload_file,
-                profile_root=profile_root,
-                repeat=advisor_repeat,
+                repeat=torch_profiler_repeat,
+                callback=lambda: _profile_torch_entries(
+                    entries=entries,
+                    task_info=task_info,
+                    image_tag=image_tag,
+                    cpu=max_cpu,
+                    mem=max_mem,
+                    use_gpu=False,
+                    profile_key="cpu",
+                    payload_file=payload_file,
+                    profile_root=profile_root,
+                    repeat=torch_profiler_repeat,
+                ),
             )
-    if "on" in normalized_gpus:
-        if tool_mode in {"auto", "vendor"}:
-            profiles["gpu"] = _profile_gpu_entries(
-                entries=entries,
-                ncu_bin=ncu_bin,
-                ncu_root=ncu_root,
-                task_info=task_info,
-                image_tag=image_tag,
-                cpu=max_cpu,
-                mem=max_mem,
-                payload_file=payload_file,
-                profile_root=profile_root,
-                repeat=ncu_repeat,
+        if cpu_tools:
+            preferred_cpu_tool = (
+                "intel_advisor"
+                if collect_advisor_cpu
+                else TORCH_PROFILER_TOOL
             )
-        else:
-            profiles["gpu"] = _profile_torch_entries(
-                entries=entries,
-                task_info=task_info,
-                image_tag=image_tag,
-                cpu=max_cpu,
-                mem=max_mem,
-                use_gpu=True,
-                profile_key="gpu",
-                payload_file=payload_file,
-                profile_root=profile_root,
-                repeat=ncu_repeat,
+            profiles["cpu"] = _with_legacy_profile_alias(
+                cpu_tools,
+                preferred_cpu_tool,
             )
 
+    if "on" in normalized_gpus:
+        gpu_tools: Dict[str, Dict[str, Any]] = {}
+        if collect_torch_gpu:
+            gpu_tools[TORCH_PROFILER_TOOL] = _safe_profile_tool(
+                tool=TORCH_PROFILER_TOOL,
+                entries=entries,
+                repeat=torch_profiler_repeat,
+                callback=lambda: _profile_torch_entries(
+                    entries=entries,
+                    task_info=task_info,
+                    image_tag=image_tag,
+                    cpu=max_cpu,
+                    mem=max_mem,
+                    use_gpu=True,
+                    profile_key="gpu",
+                    payload_file=payload_file,
+                    profile_root=profile_root,
+                    repeat=torch_profiler_repeat,
+                ),
+            )
+        if collect_ncu_gpu:
+            gpu_tools[NCU_TOOL] = _safe_profile_tool(
+                tool=NCU_TOOL,
+                entries=entries,
+                repeat=ncu_repeat,
+                callback=lambda: _profile_gpu_entries(
+                    entries=entries,
+                    ncu_bin=ncu_bin,
+                    ncu_root=ncu_root,
+                    task_info=task_info,
+                    image_tag=image_tag,
+                    cpu=max_cpu,
+                    mem=max_mem,
+                    payload_file=payload_file,
+                    profile_root=profile_root,
+                    repeat=ncu_repeat,
+                ),
+            )
+        if gpu_tools:
+            preferred_gpu_tool = (
+                NCU_TOOL if collect_ncu_gpu else TORCH_PROFILER_TOOL
+            )
+            profiles["gpu"] = _with_legacy_profile_alias(
+                gpu_tools,
+                preferred_gpu_tool,
+            )
+
+    enabled_tools = [
+        tool
+        for tool, enabled in (
+            (TORCH_PROFILER_TOOL, collect_torch_cpu or collect_torch_gpu),
+            (NCU_TOOL, collect_ncu_gpu),
+            ("intel_advisor", collect_advisor_cpu),
+        )
+        if enabled
+    ]
+    ncu_metrics: List[str] = []
+    gpu_profile = profiles.get("gpu", {})
+    if isinstance(gpu_profile, dict):
+        ncu_profile = gpu_profile.get(NCU_TOOL, {})
+        if isinstance(ncu_profile, dict):
+            ncu_metrics = list(ncu_profile.get("metrics") or [])
+
+    static_metadata = {
+        "compute_profile_schema_version": COMPUTE_PROFILE_SCHEMA_VERSION,
+        "compute_profile_tools": enabled_tools,
+        "torch_profiler_eager_flop_semantics": "logical_operator_shape_flops",
+        "torch_profiler_eager_attention_implementation": "eager",
+        "torch_profiler_eager_repeat_cpu": (
+            max(1, int(torch_profiler_repeat)) if collect_torch_cpu else None
+        ),
+        "torch_profiler_eager_repeat_gpu": (
+            max(1, int(torch_profiler_repeat)) if collect_torch_gpu else None
+        ),
+        "ncu_flop_semantics": "gpu_executed_floating_point_operations",
+        "ncu_repeat": max(1, int(ncu_repeat)) if collect_ncu_gpu else None,
+        "ncu_fma_flop_weight": NCU_FMA_FLOP_WEIGHT,
+        "ncu_metrics": ncu_metrics,
+        "torch_version": _first_profile_value(
+            profiles,
+            "torch_version",
+            "unknown",
+        ),
+        "transformers_version": _first_profile_value(
+            profiles,
+            "transformers_version",
+            "unknown",
+        ),
+        "ncu_version": (
+            _executable_version(ncu_bin) if collect_ncu_gpu else "unknown"
+        ),
+        "gpu_compute_capability": _first_profile_value(
+            profiles,
+            "gpu_compute_capability",
+            "unknown",
+        ),
+        "gpu_sm_count": _first_profile_value(
+            profiles,
+            "gpu_sm_count",
+            "unknown",
+        ),
+        "compute_profiles_retained": bool(keep_profiles),
+        "compute_profile_provenance": "collected",
+    }
+
     plan = {
+        "schema_version": COMPUTE_PROFILE_SCHEMA_VERSION,
         "model_id": task_info.model_id,
         "task_family": task_info.task_family,
         "pipeline_tag": task_info.pipeline_tag,
         "runtime_backend": task_info.runtime_backend,
         "compute_profile_tool_mode": tool_mode,
+        "static_metadata": static_metadata,
         "profiles": profiles,
     }
     plan_path = os.path.join(output_dir, COMPUTE_PROFILE_PLAN_NAME)
-    with open(plan_path, "w", encoding="utf-8") as f:
-        json.dump(plan, f, ensure_ascii=True, indent=2)
 
     if not keep_profiles:
+        _strip_discarded_profile_paths(profiles)
         shutil.rmtree(profile_root, ignore_errors=True)
 
+    _write_json_atomic(plan_path, plan)
     print(f"[compute] Compute profile plan: {plan_path}")
     return plan_path

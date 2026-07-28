@@ -41,8 +41,9 @@ acprof/
 - Linux CPU frequency sysfs 或 `/proc/cpuinfo`：用于 `cpu_freq_*` 和 estimated CPU cycles。优先读取 `/sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq` / `cpuinfo_cur_freq`，不可用时回退到 `/proc/cpuinfo` 的 `cpu MHz`。
 - Linux `perf` + hardware event `instructions`：必需，用于真实 retired-instruction MIPS。`run.py` 启动时会先做 preflight；如果 `perf_event_paranoid`、sudo 或 PMU 权限不足，会直接退出并给出修复命令。
 - `tcpdump` + `tshark`：必需，用于填充 `result_all.csv` 的 `latency_s` packet-level latency。`run.py` 启动时会先做 preflight；不满足条件会直接退出并给出恢复提示。
-- Intel Advisor：仅在显式 `--compute-profile-tool vendor` 时用于 `gpu_mode=off` 行的 CPU FLOP / MFLOPS profiling。通过 `--advisor-root` 挂载到临时 profiler container。
-- NVIDIA Nsight Compute CLI (`ncu`)：默认用于 `gpu_mode=on` 行的 GPU FLOP / MFLOPS profiling。通过 `--ncu-root` 挂载到临时 profiler container；不可用、不兼容当前 CUDA/driver、或性能计数器被限制时 compute 字段为 `nan`。Ubuntu multiverse 的 `nsight-compute` 可能过旧，推荐使用 NVIDIA CUDA apt 源里的版本化包，例如 `/opt/nvidia/nsight-compute/<version>/ncu`。
+- PyTorch profiler：默认独立采集 `torch_profiler_eager` 逻辑 FLOP。该 probe 会强制并验证 eager attention，只影响临时 profiler container，不改变正常 latency / energy workload 的运行时 attention 实现。
+- NVIDIA Nsight Compute CLI (`ncu`)：默认独立采集 `gpu_mode=on` 行的 GPU 实际执行 FLOP，并把 Tensor 与 Scalar FLOP 分列。通过 `--ncu-root` 挂载到临时 profiler container；不可用、不兼容当前 CUDA/driver、或性能计数器被限制时只会令 NCU 字段为 `nan`，不会影响 Torch probe 或主采集。Ubuntu multiverse 的 `nsight-compute` 可能过旧，推荐使用 NVIDIA CUDA apt 源里的版本化包，例如 `/opt/nvidia/nsight-compute/<version>/ncu`。
+- Intel Advisor：只保留给显式 `--compute-profile-tool vendor` 的兼容/诊断流程，用于 `gpu_mode=off` 行。通过 `--advisor-root` 挂载到临时 profiler container。
 - 原生 Docker 的 `docker0` bridge：packet sniffing 默认监听 `docker0`。如果抓包条件不足、PCAP 为空或 merge 后仍有 `latency_s=nan`，程序会退出，不会产出看似完整但缺少 packet latency 的结果。
 
 Hugging Face token 可以放在项目根目录 `.env.local`：
@@ -92,7 +93,12 @@ python run.py --model google-bert/bert-base-uncased \
   --output-dir results/smoke
 ```
 
-MFLOPS profiling 默认启用，默认 `--compute-profile-tool auto`：CPU 行使用 PyTorch profiler，GPU 行使用 NVIDIA Nsight Compute `ncu`。采集不会污染正常 latency / energy window；临时 profiler container 默认使用 host 逻辑 CPU 全量和 host memory 的 75%。如果需要更保守的资源占用，可用 `--compute-profile-cpus` / `--compute-profile-mem` 显式覆盖。开发 smoke 可以先用 `--no-compute-profile` 验证主流程。只想跑原始 latency/energy 时可加 `--no-compute-profile`。
+FLOP profiling 默认启用，默认 `--compute-profile-tool both`。每个适用的 input scale 会运行相互独立的 probe：
+
+- `torch_profiler_eager` 根据 eager operator shape 统计模型逻辑 FLOP；CPU/GPU 行分别使用对应 device 的独立 eager probe。它回答“模型按 eager 算子形状应执行多少计算”。
+- `ncu` 只用于 `gpu_mode=on`，根据 GPU 性能计数器统计实际执行的 Tensor / Scalar FLOP。它会受 kernel 实现、Tensor Core tile 和 padding 影响，不能与逻辑 FLOP 混作同一口径。
+
+两套采集不会污染正常 latency / energy window，也不会互相覆盖。任一 probe 失败时只写对应的错误列和 `nan`，另一套 probe 与主实验仍继续。临时 profiler container 默认使用 host 逻辑 CPU 全量和 host memory 的 75%；可用 `--compute-profile-cpus` / `--compute-profile-mem` 覆盖。raw NCU/Advisor artifact 默认保留，只有显式传入 `--discard-compute-profiles` 才删除；开发 smoke 或只采 latency/energy 时可用 `--no-compute-profile`。
 
 默认 GPU profiling 会自动查找 `ncu`；如果工具不在默认 `PATH`，显式指定安装根目录：
 
@@ -103,7 +109,7 @@ python run.py --model google-bert/bert-base-uncased \
   --cpus 1 --mems 4 --gpus off,on
 ```
 
-如需 CPU 行也使用 Intel Advisor，可额外传 `--compute-profile-tool vendor --advisor-root /opt/intel/oneapi/advisor/latest`。
+`--compute-profile-tool auto` 是 `both` 的弃用兼容别名。`torch`、`ncu` 和 `vendor` 只用于单工具诊断或旧流程兼容；如需 CPU 行使用 Intel Advisor，可显式传 `--compute-profile-tool vendor --advisor-root /opt/intel/oneapi/advisor/latest`。
 
 ### 原生 Ubuntu 下采集 `latency_s` 的推荐启动方式
 
@@ -216,7 +222,6 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 - `vcpu_avg_power_vs_scale.png`
 - `vcpu_energy_vs_scale.png`
 - `throughput_vs_scale.png`
-- `compute_mflops_vs_scale.png`
 - `container_cpu_util_vs_scale.png`
 - `container_mem_util_vs_scale.png`
 - `container_mem_usage_vs_scale.png`
@@ -273,14 +278,16 @@ GPU: latency_s = exp(
 | `--idle-debug` | false | 开启 baseline 调试输出。主 CSV 会填充 GPU 的 `gpu_idle_measured_at` / `gpu_idle_rel_range_so_far` 和 CPU 的 `cpu_idle_measured_at` / `cpu_idle_rel_range_so_far`，并写出 `debug_idle_diag/result_case_*.csv.idle_diag.jsonl`。诊断文件记录 matched control window 的 GPU NVML trace、CPU RAPL 子窗口、host/container CPU delta，以及 control 结束后的 `nvidia-smi`、loadavg、top CPU processes、Docker 容器和 `docker stats` 快照。为避免诊断本身污染 baseline，逐进程 `/proc` 快照移到 control window 外，不再归入 RAPL control 能量。 |
 | `--input-scales` | auto | 手动覆盖 input scale 列表。未提供时自动规划 6 档。 |
 | `--no-compute-profile` | false | 禁用 MFLOPS compute profiling。 |
-| `--compute-profile-tool` | `auto` | `auto` 下 CPU 使用 PyTorch profiler、GPU 使用 ncu；`torch` 全部使用 PyTorch profiler；`vendor` 使用 Intel Advisor / ncu。 |
+| `--compute-profile-tool` | `both` | `both` 独立采集 `torch_profiler_eager` 逻辑 FLOP，并在 `gpu_mode=on` 时采集 NCU GPU 实际执行 FLOP。`auto` 是 `both` 的弃用别名；`torch`、`ncu`、`vendor` 用于单工具诊断或旧流程兼容。 |
 | `--advisor-root` | auto | Host Intel Advisor install root or executable；显式值优先于自动检测。 |
 | `--ncu-root` | auto | Host Nsight Compute install root or `ncu` executable；显式值优先于自动检测。 |
-| `--advisor-repeat` | `20` | CPU compute probe 中重复推理次数；最终 FLOP 会除回单 request。`auto` / `torch` 下对应 CPU PyTorch profiler，`vendor` 下对应 Advisor。 |
-| `--ncu-repeat` | `1` | GPU compute probe 中重复推理次数；最终 FLOP 会除回单 request。`auto` / `vendor` 下对应 ncu，`torch` 下对应 GPU PyTorch profiler。 |
+| `--advisor-repeat` | `20` | 旧 `vendor` CPU Advisor probe 的推理重复次数；最终 FLOP 会除回单 request。 |
+| `--torch-profiler-repeat` | `1` | `torch_profiler_eager` probe 的推理重复次数；CPU/GPU 结果分别除回单 request。 |
+| `--ncu-repeat` | `1` | NCU GPU probe 的推理重复次数；FLOP、kernel 数和 kernel 时间最终都除回单 request。 |
 | `--compute-profile-cpus` | host logical CPUs | 临时 compute profiler container 的 CPU core cap。 |
 | `--compute-profile-mem` | 75% host memory | 临时 compute profiler container 的 memory cap，单位 GB。 |
-| `--keep-compute-profiles` | false | 保留 raw profiler artifacts。默认 GPU / vendor GPU 包括 ncu report/CSV，vendor CPU 包括 Advisor project。 |
+| `--keep-compute-profiles` | true | 保留 raw profiler artifacts；这是默认行为。artifact 位于模型结果目录的 `compute_profiles/`，路径不写入结果行。 |
+| `--discard-compute-profiles` | false | 汇总完成后删除 raw profiler artifacts。 |
 | `--sniff-iface` | `docker0` | 本机 Docker 默认 bridge 对应的 `tcpdump` 抓包网卡。只有 daemon 改过 bridge 名时才覆盖。 |
 | `--output-dir` | `results` | 输出根目录。最终还会追加 model name 子目录。 |
 | `--skip-build` | false | 跳过 Docker build，直接使用已存在的 image tag。 |
@@ -313,7 +320,7 @@ GPU: latency_s = exp(
 | `result_all.csv` | 动态测量结果。每一行对应一个 resource config、一个 input scale、一次 warmup/repeat iteration。 |
 | `static_meta.csv` | 一行静态元数据。记录模型、镜像、batch、input scale 语义、GPU、环境和大小信息。 |
 | `input_scale_plan.json` | 所有任务族共用的 input scale/payload 计划。自动与手动 `--input-scales` 都会生成，主采集和 compute profiler 复用同一份内容。 |
-| `compute_profile_plan.json` | per-scale FLOP profiling 结果。默认 CPU 来自 PyTorch profiler、GPU 来自 ncu；显式 `--compute-profile-tool torch` 时全部来自 PyTorch profiler，显式 `vendor` 时来自 Intel Advisor / ncu。失败时也会写入错误信息，供 `result_all.csv` compute 字段引用。 |
+| `compute_profile_plan.json` | schema v2 的 per-scale FLOP profiling 结果。每个 CPU/GPU scale 可同时记录独立的 `torch_profiler_eager` 与 `ncu` profile；NCU 只存在于 GPU profile。失败信息按工具保存，读取端仍兼容旧版 plan。 |
 | `latency_model_report.json` | `plot.py` 生成的 latency 拟合报告。包含分 CPU/GPU 的正值模型、整配置留一与最大尺度外推指标、质量门槛、系数和训练范围。 |
 | `latency_model_residuals.csv` | `plot.py` 生成的 case-level residual。每个 `GPU mode × CPU × memory × input scale` 聚合 case 一行，包含重复数/离散度、full-fit、resource-config OOF 和最大尺度 holdout 预测。 |
 | `latency_model_residuals.png` | `plot.py` 在 residual CSV 有有效数据时生成的模型诊断图，包含 OOF 实际值/预测值、相对残差分布及残差随预测延迟和输入尺度的变化。 |
@@ -335,9 +342,9 @@ python -m acprof.cli.backfill_compute \
   --output results/<model>/result_all.with_compute.csv
 ```
 
-工具按 `gpu_mode` 和 `input_scale`（绝对容差 `1e-6`）匹配 CPU/GPU plan 条目。`compute_mflops_app` 使用 `latency_app_s`；`compute_mflops` 优先使用有效的 `latency_s`，否则回退到 application latency。未匹配条目保持 `nan`，原因写入 `compute_profile_error`。输出采用原子写入，且默认拒绝覆盖已有文件；确需替换显式输出路径时追加 `--overwrite`。
+工具按 `gpu_mode` 和 `input_scale`（绝对容差 `1e-6`）匹配 CPU/GPU plan 条目，并分别回填 Torch eager 逻辑 FLOP 与 NCU GPU 实际执行 FLOP。两套 `*_mflops_app_*` 都使用 `latency_app_s`，`*_mflops_packet_*` 优先使用有效的 `latency_s`，否则回退到 application latency。未匹配或失败的工具只把自身字段保留为 `nan`，原因写入该工具的错误列。输出采用原子写入，且默认拒绝覆盖已有文件；确需替换显式输出路径时追加 `--overwrite`。
 
-如果结果用于比较 CPU/GPU，plan 中的 `model_mflop_per_request` 应采用统一的逻辑 FLOP 口径。NCU 的硬件执行 FLOP 会受 Tensor Core tile/padding 影响，不应与 CPU 的算子形状 FLOP 混作同一列；这类数据宜另存为 GPU hardware FLOP sidecar。
+旧 plan / CSV 的五个通用 compute 字段仍可由绘图和迁移入口读取，但新结果不再写入这些重复列。Torch eager 与 NCU 指标分别写入名称明确的 `*_torch_profiler_eager` 和 `*_ncu` 列。
 
 ## 8. `result_all.csv` 字段解释
 
@@ -360,11 +367,19 @@ python -m acprof.cli.backfill_compute \
 | `latency_app_p50_s` / `latency_app_p90_s` / `latency_app_p95_s` | host-side application latency 在本行 request window 内的 empirical nearest-rank 分位数。 |
 | `latency_app_slow_ratio` | host-side application latency 中超过 `SLOW_LATENCY_THRESHOLD_S` 的 request 比例，默认阈值为 `0.06` 秒。 |
 | `throughput_samples_per_s` | 吞吐量，约等于 `batch_size / latency`。如果 `latency_s` 成功 merge，会优先按 `latency_s` 更新；否则按 `latency_app_s` 计算。 |
-| `compute_profile_tool` | FLOP profiling 工具。默认 CPU 行为 `torch_profiler`、GPU 行为 `ncu`；显式 `--compute-profile-tool torch` 时全部为 `torch_profiler`；显式 `vendor` 时 CPU-only 行为 `intel_advisor`、GPU 行为 `ncu`；未采集时为 `nan`。 |
-| `model_mflop_per_request` | profiler 采集到的单 request 模型计算量，单位 MFLOP。默认 CPU 根据 PyTorch profiler operator shapes 统计，GPU 来自 ncu FLOP / tensor operation counters；vendor 模式下 CPU 来自 Intel Advisor `Self GFLOP`。 |
-| `compute_mflops_app` | `model_mflop_per_request / latency_app_s`，单位 MFLOPS。 |
-| `compute_mflops` | `model_mflop_per_request / latency_s`，单位 MFLOPS。 |
-| `compute_profile_error` | compute profiling 的诊断信息。正常为空；工具缺失、性能计数器受限、报告解析失败时记录原因。 |
+| `model_logical_mflop_per_request_torch_profiler_eager` | `torch_profiler_eager` 根据 eager operator shape 统计的单 request 模型逻辑计算量，单位 MFLOP。 |
+| `model_logical_mflops_app_torch_profiler_eager` | Torch eager 逻辑 MFLOP 除以 `latency_app_s`，单位 MFLOPS。 |
+| `model_logical_mflops_packet_torch_profiler_eager` | Torch eager 逻辑 MFLOP 除以 packet latency，单位 MFLOPS；packet latency 无效时回退到 application latency。 |
+| `compute_profile_error_torch_profiler_eager` | Torch eager probe 的独立诊断；正常为空，初始化、eager attention 验证或 profiler 失败时记录原因。 |
+| `gpu_executed_mflop_per_request_ncu` | NCU 计数器得到的单 request GPU 实际执行总量，单位 MFLOP，等于 Tensor 与 Scalar 两列之和。只填充 `gpu_mode=on` 行。 |
+| `gpu_executed_tensor_mflop_per_request_ncu` | NCU 统计的单 request Tensor FLOP，单位 MFLOP。 |
+| `gpu_executed_scalar_mflop_per_request_ncu` | NCU 统计的单 request Scalar FLOP，单位 MFLOP；FMA 按 2 FLOP 计。 |
+| `gpu_executed_tensor_share_pct_ncu` | `Tensor MFLOP / total MFLOP * 100`。 |
+| `gpu_executed_mflops_app_ncu` | NCU GPU 实际执行 MFLOP 除以 `latency_app_s`，单位 MFLOPS。 |
+| `gpu_executed_mflops_packet_ncu` | NCU GPU 实际执行 MFLOP 除以 packet latency，单位 MFLOPS；packet latency 无效时回退到 application latency。 |
+| `gpu_kernel_launch_count_per_request_ncu` | NCU 报告中的 kernel launch 数，按 `--ncu-repeat` 归一化到单 request。 |
+| `gpu_kernel_time_sum_ms_per_request_ncu` | NCU 报告中的 kernel duration 总和，换算为 ms 并按 `--ncu-repeat` 归一化到单 request。 |
+| `compute_profile_error_ncu` | NCU probe 的独立诊断；正常为空，工具缺失、性能计数器受限或报告解析失败时记录原因。 |
 | `gpu_idle_power_w` | GPU matched-control baseline power，单位 W。仅 `gpu_mode=on` 且 NVML 可用时有值；使用与 workload 相同的 NVML monitor 生命周期，由 control samples 梯形积分后的能量 / 实际 duration 得到。 |
 | `gpu_idle_measured_at` | `--idle-debug` 开启且 `gpu_mode=on` 时，matched control window 测量完成时的本地 ISO-8601 时间戳；未开启或 GPU 不可用时为 `nan`。CPU/GPU control 同时采集，因此两者共用同一时间戳。 |
 | `gpu_idle_rel_range_so_far` | `--idle-debug` 开启时，截至本行为止当前 case 内有效 `gpu_idle_power_w` 的相对极差，公式为 `(max - min) / mean`；`0.05` 表示 5%。未开启时为 `nan`。 |
@@ -449,6 +464,25 @@ python -m acprof.cli.backfill_compute \
 | `vcpu_power_method` | estimated vCPU 功耗计算方法。`rapl_cgroup_cpu_share` 表示用 RAPL package energy 乘以 container cgroup CPU share；`unavailable` 表示无法估算。 |
 | `cpu_governor` | Host CPU frequency governor 汇总值，例如 `performance`、`powersave`、`schedutil`；如果各 CPU policy 不一致，会写成 `mixed:<governor>=<count>,...`；无法读取时为 `unavailable`。 |
 | `cpu_boost` | Host CPU boost / turbo 状态。`on` 表示 boost 可用，`off` 表示关闭；无法读取时为 `unavailable`。 |
+| `compute_profile_schema_version` | compute profile schema 版本；双工具 plan 为 `2`。 |
+| `compute_profile_tools` | 本次启用/实际记录的 profiler 列表，例如 `["torch_profiler_eager","ncu"]`。 |
+| `torch_profiler_eager_flop_semantics` | Torch eager FLOP 的统计口径说明。 |
+| `torch_profiler_eager_attention_implementation` | 独立 Torch probe 强制并验证的 attention 实现，当前为 `eager`。 |
+| `torch_profiler_eager_repeat_cpu` | CPU Torch eager probe 的 repeat；未采 CPU profile 时为空。 |
+| `torch_profiler_eager_repeat_gpu` | GPU Torch eager probe 的 repeat；未采 GPU profile 时为空。 |
+| `ncu_flop_semantics` | NCU GPU 实际执行 FLOP 的计数器、Tensor/Scalar 分类口径说明。 |
+| `ncu_repeat` | NCU probe repeat；所有 NCU per-request 指标据此归一化。 |
+| `ncu_fma_flop_weight` | NCU FMA 指令的 FLOP 权重，当前为 `2`。 |
+| `ncu_metrics` | 本次 NCU 实际请求/解析的 metric 列表。 |
+| `torch_version` | Torch probe 使用的 PyTorch 版本。 |
+| `transformers_version` | Torch probe 使用的 Transformers 版本。 |
+| `ncu_version` | Host NCU 版本；历史回填无法可靠确认时为 `unknown`。 |
+| `gpu_compute_capability` | profile 使用 GPU 的 compute capability。 |
+| `gpu_sm_count` | profile 使用 GPU 的 SM 数。 |
+| `compute_profiles_retained` | raw profiler artifact 是否保留。 |
+| `compute_profile_provenance` | profile 来源，例如本次直接采集或历史 `posthoc_backfill`。 |
+
+这些字段在 profiling 后原子补写，原始 `run_command` 保持不变。随 `input_scale` 变化的 FLOP 数值只存放在 `result_all.csv`，不会进入单行 `static_meta.csv`。
 
 ## 10. 结果行数和时间成本估算
 
@@ -528,7 +562,19 @@ gpu on  行: 16 cases * 6 scales * 7 rows * 19s ~= 3.5h
 auto warmup: 32 cases * 6 scales * 5 requests，耗时取决于单 request latency
 ```
 
-也就是说，默认主矩阵通常至少按 `6h+` 预留；最终 wall time 还要额外加上 auto warmup、Docker build、模型检测、每个 case 的 cold start、tcpdump/tshark parse/merge、container cleanup，以及默认启用的 compute profiling。`--no-compute-profile` 可以去掉 compute profiling 成本；否则 compute profiling 约按 `len(input_scales) * (CPU probe + GPU probe)` 追加，`ncu` / Advisor 在部分模型上可能从数分钟增加到更久。
+也就是说，默认主矩阵通常至少按 `6h+` 预留；最终 wall time 还要额外加上 auto warmup、Docker build、模型检测、每个 case 的 cold start、tcpdump/tshark parse/merge、container cleanup，以及默认启用的 compute profiling。默认 `both` 的额外成本可粗估为：
+
+```text
+compute_profile_s ~= len(input_scales) * (
+  [gpu off enabled] * torch_profiler_eager_cpu_probe_s
+  + [gpu on enabled] * (
+      torch_profiler_eager_gpu_probe_s
+      + ncu_gpu_probe_s
+    )
+)
+```
+
+probe 次数按 input scale 和启用的 GPU mode 增长，不按 CPU × memory 主矩阵展开；`--torch-profiler-repeat` 与 `--ncu-repeat` 会进一步增加各自 workload，NCU 还可能对 kernel 做 replay，因此常是最昂贵的 probe，在部分模型上可能从数分钟增加到更久。默认保留 raw NCU report 也会增加磁盘占用。`--no-compute-profile` 可完全去掉这部分成本，单工具模式只去掉未选择的 probe。
 
 ## 11. 常见判断
 
@@ -586,10 +632,11 @@ CPU / vCPU peak power 看起来异常：
 
 MFLOPS / compute profiling 字段全是 `nan`：
 
-- 默认 `--compute-profile-tool auto` 下 CPU 使用 PyTorch profiler，GPU 使用 ncu；先看 `compute_profile_error` 里的 `torch_profiler_*` 或 `ncu_*` 诊断。
+- 默认 `--compute-profile-tool both` 下 Torch eager 与 NCU 是独立 probe。先分别查看 `compute_profile_error_torch_profiler_eager` 和 `compute_profile_error_ncu`；一个失败不会令另一套指标或主实验失败。
+- NCU 字段只在 `gpu_mode=on` 行有值；CPU-only 行为 `nan` 是预期行为。
 - `gpu_mode=on` 时检查 `ncu` 是否安装、`--ncu-root` 是否正确、NVIDIA driver 是否允许 performance counters。若 `ncu` 下 CUDA 初始化报 `Error 36` 或没有 kernel，被测镜像裸跑 CUDA 正常但 ncu 下不正常，通常是 Nsight Compute 版本过旧；安装 NVIDIA CUDA apt 源里的较新版本后再试。
 - 如果显式使用 `--compute-profile-tool vendor`，`gpu_mode=off` 时检查 Intel Advisor 是否安装，以及 `--advisor-root` 是否指向可在容器中 bind mount 的 Advisor root 或 executable。
-- compute profiling 是独立 probe；失败不会影响 latency / energy / resource usage 采集。具体原因看 `compute_profile_error` 和 `compute_profile_plan.json`。
+- compute profiling 与正常 workload 分离；失败不会影响 latency / energy / resource usage 采集。完整状态与静态口径见 `compute_profile_plan.json` 和 `static_meta.csv`。
 
 `--skip-build` 后 `/scale_meta` 或 `/probe` 报错：
 

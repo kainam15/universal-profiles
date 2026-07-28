@@ -398,17 +398,40 @@ Examples:
     parser.add_argument("--no-compute-profile", action="store_true", help="Disable MFLOPS compute profiling")
     parser.add_argument(
         "--compute-profile-tool",
-        choices=("auto", "torch", "vendor"),
-        default="auto",
-        help="Compute FLOP profiler: auto uses torch for CPU and ncu for GPU; torch uses PyTorch profiler; vendor uses Intel Advisor / ncu",
+        choices=("both", "auto", "torch", "ncu", "vendor"),
+        default="both",
+        help=(
+            "Compute FLOP profiler: both (default) independently collects "
+            "torch_profiler_eager logical FLOP and ncu GPU executed FLOP; "
+            "auto is a deprecated alias for both"
+        ),
     )
     parser.add_argument("--advisor-root", default=None, help="Host Intel Advisor install root or advisor executable")
     parser.add_argument("--ncu-root", default=None, help="Host Nsight Compute install root or ncu executable")
     parser.add_argument("--advisor-repeat", type=int, default=20, help="Intel Advisor profiled inference repetitions")
+    parser.add_argument(
+        "--torch-profiler-repeat",
+        type=int,
+        default=1,
+        help="torch_profiler_eager profiled inference repetitions",
+    )
     parser.add_argument("--ncu-repeat", type=int, default=1, help="ncu profiled inference repetitions")
     parser.add_argument("--compute-profile-cpus", type=int, default=None, help="CPU cores for temporary compute profiler containers (default: host logical CPUs)")
     parser.add_argument("--compute-profile-mem", type=int, default=None, help="Memory GB for temporary compute profiler containers (default: 75%% of host memory)")
-    parser.add_argument("--keep-compute-profiles", action="store_true", help="Keep raw Advisor/ncu profiler artifacts")
+    profile_artifact_group = parser.add_mutually_exclusive_group()
+    profile_artifact_group.add_argument(
+        "--keep-compute-profiles",
+        dest="keep_compute_profiles",
+        action="store_true",
+        help="Keep raw Advisor/ncu profiler artifacts (default)",
+    )
+    profile_artifact_group.add_argument(
+        "--discard-compute-profiles",
+        dest="keep_compute_profiles",
+        action="store_false",
+        help="Discard raw profiler artifacts after summaries are recorded",
+    )
+    parser.set_defaults(keep_compute_profiles=True)
 
     # Infrastructure
     parser.add_argument("--sniff-iface", default="docker0", help="Network interface for tcpdump")
@@ -421,6 +444,10 @@ Examples:
         parser.error("--repeat-in-window must be >= 0")
     if args.repeat_window_seconds <= 0.0:
         parser.error("--repeat-window-seconds must be > 0")
+    if args.torch_profiler_repeat <= 0:
+        parser.error("--torch-profiler-repeat must be > 0")
+    if args.ncu_repeat <= 0:
+        parser.error("--ncu-repeat must be > 0")
 
     require_native_linux_host()
     require_native_docker()
@@ -462,6 +489,7 @@ Examples:
     from acprof.host.orchestrator import (
         build_image,
         collect_static_meta,
+        enrich_static_meta_from_compute_plan,
         merge_all_csvs,
         plan_input_scales,
         run_matrix,
@@ -496,6 +524,7 @@ Examples:
         batch_size=args.batch_size,
         input_scale_type=input_scale_type,
         run_command=run_command,
+        compute_profile_enabled=not args.no_compute_profile,
     )
     write_static_meta_csv(static_meta, static_meta_csv)
 
@@ -534,12 +563,18 @@ Examples:
                 advisor_root=args.advisor_root,
                 ncu_root=args.ncu_root,
                 advisor_repeat=args.advisor_repeat,
+                torch_profiler_repeat=args.torch_profiler_repeat,
                 ncu_repeat=args.ncu_repeat,
                 keep_profiles=args.keep_compute_profiles,
                 compute_profile_cpus=args.compute_profile_cpus,
                 compute_profile_mem=args.compute_profile_mem,
                 compute_profile_tool=args.compute_profile_tool,
             )
+            static_meta = enrich_static_meta_from_compute_plan(
+                static_meta,
+                compute_profile_plan_file,
+            )
+            write_static_meta_csv(static_meta, static_meta_csv)
         except Exception as exc:
             print(f"[compute][WARN] Compute profiling unavailable: {exc}")
 

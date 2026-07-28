@@ -25,6 +25,28 @@ def model_revision_kwargs(model_source: str, model_revision: str) -> Dict[str, s
     return {"revision": model_revision or "main"}
 
 
+def transformers_pipeline_load_kwargs(
+    load_options: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Translate isolated profiler load options to Transformers pipeline args."""
+    options = dict(load_options or {})
+    attention_implementation = options.pop("attention_implementation", None)
+    if options:
+        unsupported = ", ".join(sorted(options))
+        raise ValueError(f"unsupported handler load options: {unsupported}")
+    if attention_implementation is None:
+        return {}
+    if str(attention_implementation) != "eager":
+        raise ValueError(
+            "attention_implementation must be 'eager' for compute profiling"
+        )
+    return {
+        "model_kwargs": {
+            "attn_implementation": "eager",
+        },
+    }
+
+
 class BaseHandler(ABC):
     """Standard four-phase handler interface for all task families."""
 
@@ -36,6 +58,7 @@ class BaseHandler(ABC):
         backend: str,
         device: str,
         model_revision: str = "main",
+        load_options: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Load model, return model_ctx dict containing model, tokenizer, processor, device, etc."""
 

@@ -41,6 +41,15 @@ from acprof.config import (
     SCALING_DIMENSIONS,
 )
 from acprof.host.compute_profile_plan import (
+    NCU_ERROR_FIELD,
+    NCU_KERNEL_COUNT_FIELD,
+    NCU_KERNEL_TIME_FIELD,
+    NCU_SCALAR_MFLOP_FIELD,
+    NCU_TENSOR_MFLOP_FIELD,
+    NCU_TENSOR_SHARE_FIELD,
+    NCU_TOTAL_MFLOP_FIELD,
+    TORCH_ERROR_FIELD,
+    TORCH_LOGICAL_MFLOP_FIELD,
     compute_mflops as _compute_mflops,
     find_compute_profile_entry as _find_compute_profile_entry,
     load_compute_profile_plan as _load_compute_profile_plan,
@@ -148,6 +157,51 @@ def _now_iso() -> str:
 def _finite_positive(value: Any) -> bool:
     number = _to_float_or_nan(value)
     return math.isfinite(number) and number > 0.0
+
+
+def _compute_profile_row_metrics(
+    profile: Dict[str, Any],
+    latency_app_s: Any,
+) -> Dict[str, str]:
+    """Format independent Torch-eager and NCU metrics for one live row."""
+    logical_mflop = _to_float_or_nan(profile.get(TORCH_LOGICAL_MFLOP_FIELD))
+    logical_mflops_app = _compute_mflops(logical_mflop, latency_app_s)
+
+    ncu_total_mflop = _to_float_or_nan(profile.get(NCU_TOTAL_MFLOP_FIELD))
+    ncu_mflops_app = _compute_mflops(ncu_total_mflop, latency_app_s)
+    return {
+        # Explicit Torch eager logical FLOPs.
+        TORCH_LOGICAL_MFLOP_FIELD: _fmt_float(logical_mflop),
+        "model_logical_mflops_app_torch_profiler_eager": _fmt_float(
+            logical_mflops_app
+        ),
+        # Packet latency is not known until merge_packet_latency runs, so use
+        # the application-denominator value until the packet merge completes.
+        "model_logical_mflops_packet_torch_profiler_eager": _fmt_float(
+            logical_mflops_app
+        ),
+        TORCH_ERROR_FIELD: str(profile.get(TORCH_ERROR_FIELD) or ""),
+        # Explicit NCU GPU-executed FLOPs and launch metadata.
+        NCU_TOTAL_MFLOP_FIELD: _fmt_float(ncu_total_mflop),
+        NCU_TENSOR_MFLOP_FIELD: _fmt_float(
+            _to_float_or_nan(profile.get(NCU_TENSOR_MFLOP_FIELD))
+        ),
+        NCU_SCALAR_MFLOP_FIELD: _fmt_float(
+            _to_float_or_nan(profile.get(NCU_SCALAR_MFLOP_FIELD))
+        ),
+        NCU_TENSOR_SHARE_FIELD: _fmt_float(
+            _to_float_or_nan(profile.get(NCU_TENSOR_SHARE_FIELD))
+        ),
+        "gpu_executed_mflops_app_ncu": _fmt_float(ncu_mflops_app),
+        "gpu_executed_mflops_packet_ncu": _fmt_float(ncu_mflops_app),
+        NCU_KERNEL_COUNT_FIELD: _fmt_float(
+            _to_float_or_nan(profile.get(NCU_KERNEL_COUNT_FIELD))
+        ),
+        NCU_KERNEL_TIME_FIELD: _fmt_float(
+            _to_float_or_nan(profile.get(NCU_KERNEL_TIME_FIELD))
+        ),
+        NCU_ERROR_FIELD: str(profile.get(NCU_ERROR_FIELD) or ""),
+    }
 
 
 class EnergyAbort(RuntimeError):
@@ -1371,20 +1425,12 @@ def main() -> None:
                     GPU_MODE,
                     row_scale,
                 )
-                model_mflop_per_request = _to_float_or_nan(
-                    compute_profile["model_mflop_per_request"]
+                row.update(
+                    _compute_profile_row_metrics(
+                        compute_profile,
+                        latency_app_s,
+                    )
                 )
-                compute_mflops_app = _compute_mflops(
-                    model_mflop_per_request,
-                    latency_app_s,
-                )
-                row.update({
-                    "compute_profile_tool": compute_profile["tool"],
-                    "model_mflop_per_request": _fmt_float(model_mflop_per_request),
-                    "compute_mflops_app": _fmt_float(compute_mflops_app),
-                    "compute_mflops": _fmt_float(compute_mflops_app),
-                    "compute_profile_error": compute_profile["error"],
-                })
                 idle_diag_record = None
                 if IDLE_DEBUG:
                     if idle_debug_snapshot is None:
