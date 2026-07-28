@@ -43,7 +43,8 @@ class NLPWorkloadGenerator(WorkloadGenerator):
         payload: Dict[str, Any] = {"text": text, "params": {}}
 
         if self.task_type == "fill-mask":
-            # fill-mask requires a [MASK] token in the input
+            # Portable placeholder: the container replaces it with the loaded
+            # tokenizer's native mask token (for example, RoBERTa uses <mask>).
             words = text.split()
             if len(words) > 1:
                 mask_pos = len(words) // 2

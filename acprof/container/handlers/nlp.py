@@ -20,6 +20,11 @@ _GENERATIVE_TASKS = {
 
 class NLPHandler(BaseHandler):
 
+    # Host workloads use one model-independent placeholder.  The container has
+    # the loaded tokenizer, so it is the only layer that can safely translate
+    # that placeholder to the model's native mask token.
+    _FILL_MASK_PLACEHOLDER = "[MASK]"
+
     @staticmethod
     def _get_tokenizer_max_length(tokenizer: Any) -> Optional[int]:
         max_len = getattr(tokenizer, "model_max_length", None)
@@ -29,6 +34,46 @@ class NLPHandler(BaseHandler):
             return int(max_len)
         except (TypeError, ValueError):
             return None
+
+    @classmethod
+    def _prepare_fill_mask_input(
+        cls,
+        tokenizer: Any,
+        text: str,
+    ) -> Tuple[str, list, Any]:
+        raw_mask_token = getattr(tokenizer, "mask_token", None)
+        if raw_mask_token is None or not str(raw_mask_token):
+            raise ValueError(
+                "fill-mask task requires a tokenizer with a configured mask_token"
+            )
+        mask_token = str(raw_mask_token)
+
+        mask_token_id = getattr(tokenizer, "mask_token_id", None)
+        if mask_token_id is None:
+            convert_tokens_to_ids = getattr(tokenizer, "convert_tokens_to_ids", None)
+            if callable(convert_tokens_to_ids):
+                mask_token_id = convert_tokens_to_ids(mask_token)
+        if mask_token_id is None:
+            raise ValueError(
+                "fill-mask task requires a tokenizer with a configured mask_token_id"
+            )
+
+        if mask_token != cls._FILL_MASK_PLACEHOLDER:
+            text = text.replace(cls._FILL_MASK_PLACEHOLDER, mask_token)
+
+        token_ids = tokenizer.encode(text, add_special_tokens=False)
+        if mask_token_id not in token_ids:
+            separator = "" if not text or text[-1].isspace() else " "
+            text = f"{text}{separator}{mask_token}"
+            token_ids = tokenizer.encode(text, add_special_tokens=False)
+
+        if mask_token_id not in token_ids:
+            raise ValueError(
+                "tokenizer could not encode its configured mask_token "
+                f"{mask_token!r} as mask_token_id={mask_token_id!r}"
+            )
+
+        return text, token_ids, mask_token_id
 
     def _truncate_single_text(
         self,
@@ -40,7 +85,15 @@ class NLPHandler(BaseHandler):
         if not tokenizer:
             return text, None, None, "tokenizer_missing"
 
-        token_ids = tokenizer.encode(text, add_special_tokens=False)
+        mask_token_id = None
+        if task_type == "fill-mask":
+            text, token_ids, mask_token_id = self._prepare_fill_mask_input(
+                tokenizer,
+                text,
+            )
+        else:
+            token_ids = tokenizer.encode(text, add_special_tokens=False)
+
         max_len = self._get_tokenizer_max_length(tokenizer)
         if max_len is None:
             return text, len(token_ids), None, "max_length_unknown"
@@ -50,23 +103,21 @@ class NLPHandler(BaseHandler):
         truncated_by_limit = len(token_ids) > available
         if truncated_by_limit:
             if task_type == "fill-mask":
-                mask_token = tokenizer.mask_token or "[MASK]"
-                mask_token_id = tokenizer.convert_tokens_to_ids(mask_token)
-                try:
-                    mask_pos = token_ids.index(mask_token_id)
-                except ValueError:
-                    mask_pos = len(token_ids) // 2
+                mask_pos = token_ids.index(mask_token_id)
                 if mask_pos < available:
                     token_ids = token_ids[:available]
                 else:
                     token_ids = token_ids[:available - 1] + [mask_token_id]
                 text = tokenizer.decode(token_ids, skip_special_tokens=False)
-                if mask_token not in text:
-                    text = text + " " + mask_token
             else:
                 token_ids = token_ids[:available]
                 text = tokenizer.decode(token_ids, skip_special_tokens=True)
             token_ids = tokenizer.encode(text, add_special_tokens=False)
+            if task_type == "fill-mask" and mask_token_id not in token_ids:
+                raise ValueError(
+                    "tokenizer decode/encode round trip removed the configured "
+                    "mask token while truncating fill-mask input"
+                )
 
         reason = (
             f"truncated_to_model_limit(max_length={max_len},available={available})"
