@@ -7,6 +7,7 @@ import json
 import math
 import os
 import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -264,6 +265,7 @@ PLOT_OUTPUT_DIRS = ("cpu", "gpu", "cpu+gpu")
 LATENCY_MODEL_REPORT = "latency_model_report.json"
 LATENCY_MODEL_RESIDUALS = "latency_model_residuals.csv"
 LATENCY_MODEL_RESIDUAL_PLOT = "latency_model_residuals.png"
+LATENCY_MODEL_FIT_CURVES_PLOT = "latency_model_fit_curves.png"
 LATENCY_MODEL_FEATURES = {
     "cpu": [
         "intercept",
@@ -1207,6 +1209,217 @@ def _predict_latency(row, model: dict) -> float:
     return float(math.exp(bounded_prediction))
 
 
+def plot_latency_model_fit_curves(
+    residuals_path: str,
+    report_path: str,
+    out_png: str | None,
+) -> bool:
+    """Plot full-fit latency curves for every CPU/memory configuration."""
+    if not os.path.exists(residuals_path):
+        print(f"[skip] Cannot find {residuals_path}")
+        return False
+    if not os.path.exists(report_path):
+        print(f"[skip] Cannot find {report_path}")
+        return False
+
+    residual_df = pd.read_csv(residuals_path, skipinitialspace=True)
+    required_columns = {
+        "hardware_model",
+        "cpu_cores",
+        "mem_cap_gb",
+        "input_scale",
+        "latency_s",
+    }
+    missing_columns = sorted(required_columns.difference(residual_df.columns))
+    if missing_columns:
+        print(
+            "[skip] Latency residual CSV missing fit-curve columns: "
+            f"{missing_columns}"
+        )
+        return False
+    if residual_df.empty:
+        print(f"[skip] No latency fit rows in {residuals_path}")
+        return False
+
+    with open(report_path, "r", encoding="utf-8") as f:
+        report = json.load(f)
+
+    for column in ("cpu_cores", "mem_cap_gb", "input_scale", "latency_s"):
+        residual_df[column] = pd.to_numeric(residual_df[column], errors="coerce")
+    residual_df["hardware_model"] = (
+        residual_df["hardware_model"].astype(str).str.strip().str.lower()
+    )
+    valid_mask = (
+        residual_df[
+            ["cpu_cores", "mem_cap_gb", "input_scale", "latency_s"]
+        ]
+        .apply(np.isfinite)
+        .all(axis=1)
+        & (residual_df["cpu_cores"] > 0.0)
+        & (residual_df["mem_cap_gb"] > 0.0)
+        & (residual_df["input_scale"] > 0.0)
+        & (residual_df["latency_s"] > 0.0)
+    )
+    residual_df = residual_df[valid_mask].copy()
+
+    fitted_models = {}
+    report_models = report.get("models", {})
+    for hardware_model in ("cpu", "gpu"):
+        model_report = report_models.get(hardware_model, {})
+        coefficient_map = model_report.get("coefficients", {})
+        feature_names = LATENCY_MODEL_FEATURES[hardware_model]
+        try:
+            coefficients = [
+                float(coefficient_map[feature_name])
+                for feature_name in feature_names
+            ]
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not np.isfinite(coefficients).all():
+            continue
+        fitted_models[hardware_model] = {
+            "hardware_model": hardware_model,
+            "coefficients": coefficients,
+        }
+
+    hardware_order = [
+        hardware_model
+        for hardware_model in ("cpu", "gpu")
+        if hardware_model in fitted_models
+        and hardware_model in set(residual_df["hardware_model"])
+    ]
+    if not hardware_order:
+        print("[skip] No fitted CPU/GPU latency models available for curve plot")
+        return False
+
+    cpu_values = sorted(int(value) for value in residual_df["cpu_cores"].unique())
+    mem_values = sorted(int(value) for value in residual_df["mem_cap_gb"].unique())
+    cpu_colors = build_cpu_base_colors(cpu_values)
+    mem_rank_map = {mem: index for index, mem in enumerate(mem_values)}
+    line_styles = ("-", "--", "-.", ":")
+
+    fig, axes = plt.subplots(
+        1,
+        len(hardware_order),
+        figsize=(7.5 * len(hardware_order), 8.5),
+        squeeze=False,
+    )
+    axes = list(axes.flat)
+    legend_entries = {}
+    hardware_titles = {
+        "cpu": "CPU-off model",
+        "gpu": "GPU-on model",
+    }
+
+    for axis, hardware_model in zip(axes, hardware_order):
+        hardware_df = residual_df[
+            residual_df["hardware_model"] == hardware_model
+        ]
+        model = fitted_models[hardware_model]
+        configurations = sorted(
+            {
+                (int(row.cpu_cores), int(row.mem_cap_gb))
+                for row in hardware_df.itertuples(index=False)
+            }
+        )
+
+        for cpu_cores, mem_cap_gb in configurations:
+            configuration_df = hardware_df[
+                (hardware_df["cpu_cores"] == cpu_cores)
+                & (hardware_df["mem_cap_gb"] == mem_cap_gb)
+            ].sort_values("input_scale")
+            min_scale = float(configuration_df["input_scale"].min())
+            max_scale = float(configuration_df["input_scale"].max())
+            if min_scale == max_scale:
+                curve_scales = np.asarray([min_scale], dtype=float)
+            else:
+                curve_scales = np.linspace(min_scale, max_scale, 240)
+            curve_predictions = [
+                _predict_latency(
+                    SimpleNamespace(
+                        input_scale=input_scale,
+                        cpu_cores=cpu_cores,
+                        mem_cap_gb=mem_cap_gb,
+                    ),
+                    model,
+                )
+                for input_scale in curve_scales
+            ]
+
+            color = cpu_colors[cpu_cores]
+            line_style = line_styles[
+                mem_rank_map[mem_cap_gb] % len(line_styles)
+            ]
+            label = f"{cpu_cores} CPU / {mem_cap_gb} GiB"
+            line, = axis.plot(
+                curve_scales,
+                curve_predictions,
+                color=color,
+                linestyle=line_style,
+                linewidth=1.8,
+                alpha=0.92,
+                label=label,
+            )
+            axis.scatter(
+                configuration_df["input_scale"],
+                configuration_df["latency_s"],
+                facecolor="white",
+                edgecolor=color,
+                marker="o",
+                linewidth=1.1,
+                s=30,
+                alpha=0.95,
+                zorder=3,
+            )
+            legend_entries.setdefault((cpu_cores, mem_cap_gb), line)
+
+        axis.set_title(hardware_titles[hardware_model])
+        axis.set_xlabel("Input scale")
+        axis.set_ylabel("Latency (s, log scale)")
+        axis.set_yscale("log")
+        axis.grid(True, which="both", linestyle="-", alpha=0.25)
+
+    input_scale_type = str(report.get("input_scale_type", "")).strip()
+    if input_scale_type and input_scale_type != "input_scale":
+        for axis in axes:
+            axis.set_xlabel(f"Input scale ({input_scale_type})")
+
+    ordered_legend_entries = sorted(legend_entries.items())
+    fig.legend(
+        [line for _, line in ordered_legend_entries],
+        [
+            f"{cpu_cores} CPU / {mem_cap_gb} GiB"
+            for (cpu_cores, mem_cap_gb), _ in ordered_legend_entries
+        ],
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.02),
+        ncol=min(4, len(ordered_legend_entries)),
+        fontsize=8,
+        title="Resource configuration",
+    )
+    fig.suptitle("Latency Model Full-Fit Curves", fontsize=15)
+    fig.text(
+        0.5,
+        0.935,
+        (
+            "Curves: full-data least-squares fit; "
+            "hollow markers: measured case medians"
+        ),
+        ha="center",
+        fontsize=9,
+    )
+    fig.tight_layout(rect=(0.0, 0.18, 1.0, 0.91))
+
+    if out_png:
+        fig.savefig(out_png, dpi=200)
+        print(f"[saved] {out_png}")
+
+    if SHOW_PLOTS:
+        plt.show()
+    plt.close(fig)
+    return True
+
+
 def _regression_metrics(
     actuals: list[float],
     predictions: list[float],
@@ -2125,11 +2338,21 @@ def main(argv=None):
         )
     write_latency_model_report(df, static_meta, output_dir)
     residuals_path = os.path.join(output_dir, LATENCY_MODEL_RESIDUALS)
+    report_path = os.path.join(output_dir, LATENCY_MODEL_REPORT)
     if os.path.exists(residuals_path):
         plot_latency_model_residuals(
             residuals_path,
             (
                 os.path.join(output_dir, LATENCY_MODEL_RESIDUAL_PLOT)
+                if SAVE_PNG
+                else None
+            ),
+        )
+        plot_latency_model_fit_curves(
+            residuals_path,
+            report_path,
+            (
+                os.path.join(output_dir, LATENCY_MODEL_FIT_CURVES_PLOT)
                 if SAVE_PNG
                 else None
             ),

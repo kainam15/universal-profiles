@@ -432,6 +432,38 @@ class LatencyModelReportTests(unittest.TestCase):
             self.assertTrue(os.path.isfile(out_png))
             self.assertGreater(os.path.getsize(out_png), 0)
 
+    def test_fit_curve_plot_writes_cpu_and_gpu_configuration_curves(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = self._write_fixture(tmp, self._rows())
+            df = pd.read_csv(csv_path)
+            plot.write_latency_model_report(
+                df,
+                plot.read_static_meta(csv_path),
+                tmp,
+            )
+            residuals_path = os.path.join(
+                tmp,
+                plot.LATENCY_MODEL_RESIDUALS,
+            )
+            report_path = os.path.join(
+                tmp,
+                plot.LATENCY_MODEL_REPORT,
+            )
+            out_png = os.path.join(
+                tmp,
+                plot.LATENCY_MODEL_FIT_CURVES_PLOT,
+            )
+
+            plotted = plot.plot_latency_model_fit_curves(
+                residuals_path,
+                report_path,
+                out_png,
+            )
+
+            self.assertTrue(plotted)
+            self.assertTrue(os.path.isfile(out_png))
+            self.assertGreater(os.path.getsize(out_png), 0)
+
     def test_residual_plot_skips_header_only_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             residuals_path = os.path.join(
