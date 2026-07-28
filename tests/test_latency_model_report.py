@@ -405,6 +405,63 @@ class LatencyModelReportTests(unittest.TestCase):
         self.assertNotIn("stale-marker", residual_text)
         self.assertIn("report_schema_version", residual_text.splitlines()[0])
 
+    def test_residual_plot_writes_diagnostic_png(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = self._write_fixture(tmp, self._rows())
+            df = pd.read_csv(csv_path)
+            plot.write_latency_model_report(
+                df,
+                plot.read_static_meta(csv_path),
+                tmp,
+            )
+            residuals_path = os.path.join(
+                tmp,
+                plot.LATENCY_MODEL_RESIDUALS,
+            )
+            out_png = os.path.join(
+                tmp,
+                plot.LATENCY_MODEL_RESIDUAL_PLOT,
+            )
+
+            plotted = plot.plot_latency_model_residuals(
+                residuals_path,
+                out_png,
+            )
+
+            self.assertTrue(plotted)
+            self.assertTrue(os.path.isfile(out_png))
+            self.assertGreater(os.path.getsize(out_png), 0)
+
+    def test_residual_plot_skips_header_only_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            residuals_path = os.path.join(
+                tmp,
+                plot.LATENCY_MODEL_RESIDUALS,
+            )
+            with open(
+                residuals_path,
+                "w",
+                encoding="utf-8",
+                newline="",
+            ) as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=plot.LATENCY_MODEL_RESIDUAL_FIELDS,
+                )
+                writer.writeheader()
+            out_png = os.path.join(
+                tmp,
+                plot.LATENCY_MODEL_RESIDUAL_PLOT,
+            )
+
+            plotted = plot.plot_latency_model_residuals(
+                residuals_path,
+                out_png,
+            )
+
+            self.assertFalse(plotted)
+            self.assertFalse(os.path.exists(out_png))
+
 
 if __name__ == "__main__":
     unittest.main()

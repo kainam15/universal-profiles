@@ -316,6 +316,7 @@ GPU: latency_s = exp(
 | `compute_profile_plan.json` | per-scale FLOP profiling 结果。默认 CPU 来自 PyTorch profiler、GPU 来自 ncu；显式 `--compute-profile-tool torch` 时全部来自 PyTorch profiler，显式 `vendor` 时来自 Intel Advisor / ncu。失败时也会写入错误信息，供 `result_all.csv` compute 字段引用。 |
 | `latency_model_report.json` | `plot.py` 生成的 latency 拟合报告。包含分 CPU/GPU 的正值模型、整配置留一与最大尺度外推指标、质量门槛、系数和训练范围。 |
 | `latency_model_residuals.csv` | `plot.py` 生成的 case-level residual。每个 `GPU mode × CPU × memory × input scale` 聚合 case 一行，包含重复数/离散度、full-fit、resource-config OOF 和最大尺度 holdout 预测。 |
+| `latency_model_residuals.png` | `plot.py` 在 residual CSV 有有效数据时生成的模型诊断图，包含 OOF 实际值/预测值、相对残差分布及残差随预测延迟和输入尺度的变化。 |
 | `debug_idle_diag/result_case_*.csv.idle_diag.jsonl` | 仅 `--idle-debug` 时生成。每行对应一个 workload window 的 idle 诊断记录，包含 GPU NVML idle power trace、`nvidia-smi` GPU/process 快照、CPU idle window 内 RAPL 子窗口功率、host/container CPU delta、top proc CPU delta，以及 after-idle 快照，用于定位 `gpu_idle_power_w` / `cpu_idle_power_w` case 内波动来源。 |
 | `cpu/*.png` | `plot.py` 生成的 CPU-only 图表。 |
 | `gpu/*.png` | `plot.py` 生成的 GPU-only 图表。 |

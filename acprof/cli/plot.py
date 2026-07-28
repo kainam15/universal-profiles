@@ -2,6 +2,7 @@
 
 import csv
 import colorsys
+import inspect
 import json
 import math
 import os
@@ -164,6 +165,7 @@ PLOT_METRICS = [
 PLOT_OUTPUT_DIRS = ("cpu", "gpu", "cpu+gpu")
 LATENCY_MODEL_REPORT = "latency_model_report.json"
 LATENCY_MODEL_RESIDUALS = "latency_model_residuals.csv"
+LATENCY_MODEL_RESIDUAL_PLOT = "latency_model_residuals.png"
 LATENCY_MODEL_FEATURES = {
     "cpu": [
         "intercept",
@@ -568,6 +570,365 @@ def plot_cold_start_bar(df: pd.DataFrame, title: str, ylabel: str, out_png: str 
     if SHOW_PLOTS:
         plt.show()
     plt.close()
+
+
+def _residual_plot_metrics(
+    actual: pd.Series,
+    predicted: pd.Series,
+) -> tuple[float | None, float]:
+    actual_values = actual.to_numpy(dtype=float)
+    predicted_values = predicted.to_numpy(dtype=float)
+    residual_values = actual_values - predicted_values
+    centered_values = actual_values - float(np.mean(actual_values))
+    total_sum_squares = float(np.dot(centered_values, centered_values))
+    if total_sum_squares > 0.0:
+        r2 = 1.0 - (
+            float(np.dot(residual_values, residual_values)) / total_sum_squares
+        )
+    else:
+        r2 = None
+
+    mean_actual = float(np.mean(np.abs(actual_values)))
+    relative_mae = (
+        float(np.mean(np.abs(residual_values))) / mean_actual
+        if mean_actual > 0.0
+        else math.nan
+    )
+    return r2, relative_mae
+
+
+def plot_latency_model_residuals(
+    residuals_path: str,
+    out_png: str | None,
+) -> bool:
+    """Plot OOF latency residual diagnostics from a model residual artifact."""
+    if not os.path.exists(residuals_path):
+        print(f"[skip] Cannot find {residuals_path}")
+        return False
+
+    residual_df = pd.read_csv(residuals_path, skipinitialspace=True)
+    required_columns = {
+        "hardware_model",
+        "input_scale",
+        "latency_s",
+        "predicted_latency_s",
+        "residual_s",
+    }
+    missing_columns = sorted(required_columns.difference(residual_df.columns))
+    if missing_columns:
+        print(
+            "[skip] Latency residual CSV missing required columns: "
+            f"{missing_columns}"
+        )
+        return False
+    if residual_df.empty:
+        print(f"[skip] No latency residual rows in {residuals_path}")
+        return False
+
+    numeric_columns = [
+        "input_scale",
+        "latency_s",
+        "predicted_latency_s",
+        "residual_s",
+        "max_scale_holdout_predicted_latency_s",
+        "max_scale_holdout_residual_s",
+    ]
+    for column in numeric_columns:
+        if column in residual_df.columns:
+            residual_df[column] = pd.to_numeric(
+                residual_df[column],
+                errors="coerce",
+            )
+
+    residual_df["hardware_model"] = (
+        residual_df["hardware_model"].astype(str).str.strip().str.lower()
+    )
+    valid_mask = (
+        residual_df[
+            [
+                "input_scale",
+                "latency_s",
+                "predicted_latency_s",
+                "residual_s",
+            ]
+        ]
+        .apply(np.isfinite)
+        .all(axis=1)
+        & (residual_df["input_scale"] > 0.0)
+        & (residual_df["latency_s"] > 0.0)
+        & (residual_df["predicted_latency_s"] > 0.0)
+    )
+    residual_df = residual_df[valid_mask].copy()
+    if residual_df.empty:
+        print(f"[skip] No valid latency residual rows in {residuals_path}")
+        return False
+
+    residual_df["relative_residual_pct"] = (
+        100.0 * residual_df["residual_s"] / residual_df["latency_s"]
+    )
+    hardware_order = [
+        hardware_model
+        for hardware_model in ("cpu", "gpu")
+        if hardware_model in set(residual_df["hardware_model"])
+    ]
+    hardware_order.extend(
+        sorted(set(residual_df["hardware_model"]).difference(hardware_order))
+    )
+    fallback_colors = plt.get_cmap("tab10")
+    hardware_styles = {
+        "cpu": {
+            "color": CPU_FIXED_COLORS[1],
+            "marker": "o",
+            "label": "CPU",
+        },
+        "gpu": {
+            "color": GPU_GREEN,
+            "marker": "s",
+            "label": "GPU",
+        },
+    }
+    for index, hardware_model in enumerate(hardware_order):
+        hardware_styles.setdefault(
+            hardware_model,
+            {
+                "color": fallback_colors(index % fallback_colors.N),
+                "marker": "^",
+                "label": hardware_model.upper(),
+            },
+        )
+
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+    parity_axis, prediction_axis, distribution_axis, scale_axis = axes.flat
+
+    for hardware_model in hardware_order:
+        hardware_df = residual_df[
+            residual_df["hardware_model"] == hardware_model
+        ]
+        style = hardware_styles[hardware_model]
+        parity_axis.scatter(
+            hardware_df["latency_s"],
+            hardware_df["predicted_latency_s"],
+            color=style["color"],
+            marker=style["marker"],
+            edgecolor="white",
+            linewidth=0.45,
+            alpha=0.8,
+            s=38,
+            label=style["label"],
+        )
+    parity_min = float(
+        min(
+            residual_df["latency_s"].min(),
+            residual_df["predicted_latency_s"].min(),
+        )
+    )
+    parity_max = float(
+        max(
+            residual_df["latency_s"].max(),
+            residual_df["predicted_latency_s"].max(),
+        )
+    )
+    parity_axis.plot(
+        [parity_min, parity_max],
+        [parity_min, parity_max],
+        color="black",
+        linestyle="--",
+        linewidth=1.2,
+        label="Ideal",
+    )
+    parity_axis.set_xscale("log")
+    parity_axis.set_yscale("log")
+    parity_axis.set_xlim(parity_min * 0.82, parity_max * 1.22)
+    parity_axis.set_ylim(parity_min * 0.82, parity_max * 1.22)
+    parity_axis.set_title("Resource-config OOF: actual vs. predicted")
+    parity_axis.set_xlabel("Actual latency (s)")
+    parity_axis.set_ylabel("Predicted latency (s)")
+    parity_axis.grid(True, which="both", linestyle="-", alpha=0.25)
+    parity_axis.legend(fontsize=8)
+    r2, relative_mae = _residual_plot_metrics(
+        residual_df["latency_s"],
+        residual_df["predicted_latency_s"],
+    )
+    metric_lines = [f"n = {len(residual_df)}"]
+    if r2 is not None:
+        metric_lines.append(f"R² = {r2:.4f}")
+    if math.isfinite(relative_mae):
+        metric_lines.append(f"Relative MAE = {100.0 * relative_mae:.1f}%")
+    parity_axis.text(
+        0.04,
+        0.96,
+        "\n".join(metric_lines),
+        transform=parity_axis.transAxes,
+        va="top",
+        fontsize=9,
+        bbox={
+            "boxstyle": "round,pad=0.35",
+            "facecolor": "white",
+            "edgecolor": "0.75",
+            "alpha": 0.9,
+        },
+    )
+
+    for hardware_model in hardware_order:
+        hardware_df = residual_df[
+            residual_df["hardware_model"] == hardware_model
+        ]
+        style = hardware_styles[hardware_model]
+        prediction_axis.scatter(
+            hardware_df["predicted_latency_s"],
+            hardware_df["relative_residual_pct"],
+            color=style["color"],
+            marker=style["marker"],
+            alpha=0.65,
+            s=32,
+            label=style["label"],
+        )
+    prediction_axis.axhline(0.0, color="black", linestyle="--", linewidth=1.1)
+    prediction_axis.set_xscale("log")
+    prediction_axis.set_title("OOF residual vs. predicted latency")
+    prediction_axis.set_xlabel("Predicted latency (s)")
+    prediction_axis.set_ylabel("Relative residual (%)")
+    prediction_axis.grid(True, which="both", linestyle="-", alpha=0.25)
+
+    distribution_values = []
+    distribution_labels = []
+    distribution_colors = []
+    for hardware_model in hardware_order:
+        values = residual_df.loc[
+            residual_df["hardware_model"] == hardware_model,
+            "relative_residual_pct",
+        ].to_numpy(dtype=float)
+        distribution_values.append(values)
+        distribution_labels.append(hardware_styles[hardware_model]["label"])
+        distribution_colors.append(hardware_styles[hardware_model]["color"])
+    boxplot_label_argument = (
+        {"tick_labels": distribution_labels}
+        if "tick_labels"
+        in inspect.signature(distribution_axis.boxplot).parameters
+        else {"labels": distribution_labels}
+    )
+    boxplot = distribution_axis.boxplot(
+        distribution_values,
+        patch_artist=True,
+        widths=0.5,
+        showfliers=False,
+        medianprops={"color": "black", "linewidth": 1.4},
+        **boxplot_label_argument,
+    )
+    for patch, color in zip(boxplot["boxes"], distribution_colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.45)
+    random_generator = np.random.default_rng(0)
+    for position, (values, color) in enumerate(
+        zip(distribution_values, distribution_colors),
+        start=1,
+    ):
+        jitter = random_generator.uniform(-0.13, 0.13, size=len(values))
+        distribution_axis.scatter(
+            np.full(len(values), position, dtype=float) + jitter,
+            values,
+            color=color,
+            alpha=0.45,
+            s=18,
+        )
+    distribution_axis.axhline(
+        0.0,
+        color="black",
+        linestyle="--",
+        linewidth=1.1,
+    )
+    distribution_axis.set_title("OOF residual distribution")
+    distribution_axis.set_xlabel("Hardware model")
+    distribution_axis.set_ylabel("Relative residual (%)")
+    distribution_axis.grid(True, axis="y", linestyle="-", alpha=0.25)
+
+    for hardware_model in hardware_order:
+        hardware_df = residual_df[
+            residual_df["hardware_model"] == hardware_model
+        ]
+        style = hardware_styles[hardware_model]
+        scale_axis.scatter(
+            hardware_df["input_scale"],
+            hardware_df["relative_residual_pct"],
+            color=style["color"],
+            marker=style["marker"],
+            alpha=0.4,
+            s=25,
+        )
+        median_by_scale = (
+            hardware_df.groupby("input_scale", as_index=False)[
+                "relative_residual_pct"
+            ]
+            .median()
+            .sort_values("input_scale")
+        )
+        scale_axis.plot(
+            median_by_scale["input_scale"],
+            median_by_scale["relative_residual_pct"],
+            color=style["color"],
+            marker=style["marker"],
+            linewidth=1.8,
+            label=f"{style['label']} OOF median",
+        )
+
+        holdout_columns = {
+            "max_scale_holdout_predicted_latency_s",
+            "max_scale_holdout_residual_s",
+        }
+        if holdout_columns.issubset(residual_df.columns):
+            holdout_df = hardware_df.dropna(subset=list(holdout_columns)).copy()
+            holdout_df = holdout_df[
+                np.isfinite(
+                    holdout_df["max_scale_holdout_predicted_latency_s"]
+                )
+                & np.isfinite(holdout_df["max_scale_holdout_residual_s"])
+                & (holdout_df["max_scale_holdout_predicted_latency_s"] > 0.0)
+            ]
+            if not holdout_df.empty:
+                holdout_relative_residual = (
+                    100.0
+                    * holdout_df["max_scale_holdout_residual_s"]
+                    / holdout_df["latency_s"]
+                )
+                scale_axis.scatter(
+                    holdout_df["input_scale"],
+                    holdout_relative_residual,
+                    color=style["color"],
+                    marker="*",
+                    edgecolor="black",
+                    linewidth=0.45,
+                    alpha=0.85,
+                    s=75,
+                    label=f"{style['label']} max-scale holdout",
+                )
+    scale_axis.axhline(0.0, color="black", linestyle="--", linewidth=1.1)
+    scale_axis.set_title("Residual vs. input scale")
+    scale_axis.set_xlabel("Input scale")
+    scale_axis.set_ylabel("Relative residual (%)")
+    scale_axis.grid(True, which="both", linestyle="-", alpha=0.25)
+    scale_axis.legend(fontsize=8, ncol=2)
+
+    fig.suptitle("Latency Model Residual Diagnostics", fontsize=15)
+    fig.text(
+        0.5,
+        0.015,
+        (
+            "Relative residual = (actual - predicted) / actual × 100; "
+            "positive values indicate underprediction."
+        ),
+        ha="center",
+        fontsize=9,
+    )
+    fig.tight_layout(rect=(0.0, 0.04, 1.0, 0.96))
+
+    if out_png:
+        fig.savefig(out_png, dpi=200)
+        print(f"[saved] {out_png}")
+
+    if SHOW_PLOTS:
+        plt.show()
+    plt.close(fig)
+    return True
 
 
 def _hardware_model_name(gpu_mode: object) -> str:
@@ -1633,6 +1994,16 @@ def main(argv=None):
             ),
         )
     write_latency_model_report(df, static_meta, output_dir)
+    residuals_path = os.path.join(output_dir, LATENCY_MODEL_RESIDUALS)
+    if os.path.exists(residuals_path):
+        plot_latency_model_residuals(
+            residuals_path,
+            (
+                os.path.join(output_dir, LATENCY_MODEL_RESIDUAL_PLOT)
+                if SAVE_PNG
+                else None
+            ),
+        )
 
 
 if __name__ == "__main__":
