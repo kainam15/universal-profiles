@@ -1,6 +1,6 @@
 # AC-Prof Universal Profiler
 
-AC-Prof 是一个面向 containerized HuggingFace inference service 的运行时 profiling 工具。它会把模型权重 bake 进 Docker image，在不同 CPU / Memory / GPU 资源限制和不同 input scale 下运行推理 workload，并输出 latency、throughput、cold start、GPU / CPU power 与 energy、container CPU / memory usage、CPU frequency、estimated CPU cycles、perf retired-instruction MIPS、packet-level latency 等指标。
+AC-Prof 是一个面向 containerized HuggingFace inference service 的运行时 profiling 工具。它会把模型权重 bake 进 Docker image，在不同 CPU / Memory / GPU 资源限制和不同 input scale 下运行推理 workload，并输出 latency、throughput、cold start、GPU / CPU power 与 energy、container CPU / memory usage、CPU frequency、estimated CPU cycles、perf retired-instruction MIPS、CPU cache / dTLB miss behavior、packet-level latency 等指标。
 
 本项目采用保守包化结构：核心代码位于 `acprof/`，根目录仅保留 [run.py](run.py) 和 [plot.py](plot.py) 两个用户入口；内部工具统一通过 `python -m acprof...` 调用。当前不引入 `pyproject.toml` / `setup.py`，仍通过 `.venv` + `requirements.txt` 运行。
 
@@ -39,7 +39,7 @@ acprof/
 - Linux RAPL powercap（`/sys/class/powercap/*/energy_uj`）：必需，用于 CPU package power / energy 和 estimated vCPU energy metrics；不可读时 preflight 会退出。
 - Docker cgroup CPU / memory files：用于 container CPU utilization、vCPU CPU time/share、memory footprint metrics，以及 estimated CPU cycles 的 CPU utilization 输入。
 - Linux CPU frequency sysfs 或 `/proc/cpuinfo`：用于 `cpu_freq_*` 和 estimated CPU cycles。优先读取 `/sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq` / `cpuinfo_cur_freq`，不可用时回退到 `/proc/cpuinfo` 的 `cpu MHz`。
-- Linux `perf` + hardware event `instructions`：必需，用于真实 retired-instruction MIPS。`run.py` 启动时会先做 preflight；如果 `perf_event_paranoid`、sudo 或 PMU 权限不足，会直接退出并给出修复命令。
+- Linux `perf` + PMU hardware events：`instructions` 用于真实 retired-instruction MIPS；`cache-references`、`cache-misses`、`dTLB-loads` 和 `dTLB-load-misses` 用于 CPU bandwidth behavior 的 cache / address-translation miss 计数和比例。`run.py` 启动时会先做 preflight；如果 `perf_event_paranoid`、sudo 或 PMU 权限不足，会直接退出并给出修复命令。generic cache 事件的具体硬件含义由 CPU 架构和 kernel PMU 映射决定，部分架构可能不支持全部事件。
 - `tcpdump` + `tshark`：必需，用于填充 `result_all.csv` 的 `latency_s` packet-level latency。`run.py` 启动时会先做 preflight；不满足条件会直接退出并给出恢复提示。
 - PyTorch profiler：默认独立采集 `torch_profiler_eager` 逻辑 FLOP。该 probe 会强制并验证 eager attention，只影响临时 profiler container，不改变正常 latency / energy workload 的运行时 attention 实现。
 - NVIDIA Nsight Compute CLI (`ncu`)：默认独立采集 `gpu_mode=on` 行的 GPU 实际执行 FLOP，并把 Tensor 与 Scalar FLOP 分列。通过 `--ncu-root` 挂载到临时 profiler container；不可用、不兼容当前 CUDA/driver、或性能计数器被限制时只会令 NCU 字段为 `nan`，不会影响 Torch probe 或主采集。Ubuntu multiverse 的 `nsight-compute` 可能过旧，推荐使用 NVIDIA CUDA apt 源里的版本化包，例如 `/opt/nvidia/nsight-compute/<version>/ncu`。
@@ -229,12 +229,18 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 - `vcpu_energy_vs_scale.png`
 - `throughput_vs_scale.png`
 - `container_cpu_util_vs_scale.png`
+- `cpu_cache_misses_per_request_vs_scale.png`
+- `cpu_cache_miss_rate_vs_scale.png`
+- `cpu_dtlb_load_misses_per_request_vs_scale.png`
+- `cpu_dtlb_load_miss_rate_vs_scale.png`
 - `container_mem_util_vs_scale.png`
 - `container_mem_usage_vs_scale.png`
 - `gpu_util_vs_scale.png`
 - `gpu_mem_util_vs_scale.png`
 - `gpu_mem_used_vs_scale.png`
 - `cold_start_bar.png`
+
+四张 CPU bandwidth behavior 图使用 Linux `perf` generic PMU event，只表示 cache / dTLB miss 的单 request 计数和 miss rate，用于观察访存局部性及地址转换开销；它们不是 DRAM read/write traffic，也不是实际内存带宽 GB/s。不同 CPU 架构、虚拟化环境或 kernel PMU 可能不提供相同事件；结果列不存在或整列为 `nan` 时，`plot.py` 会跳过对应图表。
 
 延迟建模产物仍直接写在结果目录：
 
@@ -425,6 +431,12 @@ python -m acprof.cli.backfill_compute \
 | `cpu_cycles_est_app` | 基于 application latency 的 estimated CPU cycles，公式为 `latency_app_s * cpu_freq_avg_hz * cpu_cores * container_cpu_util_avg_pct / 100`。这是利用率与频率推导值，不是硬件 PMU retired instructions / cycles 计数。 |
 | `cpu_cycles_est_packet` | 基于 packet-level `latency_s` 的 estimated CPU cycles，公式同 `cpu_cycles_est_app`，但在 `acprof.packet.merge_packet_latency` 成功回填 `latency_s` 后才会更新；merge 前或 packet latency 缺失时为 `nan`。 |
 | `cpu_instructions_per_request` | Linux `perf stat -e instructions` 采集到的 retired instructions，按本行 `repeat_in_window` 平均到单 request。MIPS 采集失败会中止实验而不是写入静默 `nan`。 |
+| `cpu_cache_references_per_request` | Linux `perf` generic event `cache-references` 的窗口计数，按本行 `repeat_in_window` 平均到单 request。其对应的 cache level 由 CPU 架构和 kernel PMU 映射决定。 |
+| `cpu_cache_misses_per_request` | Linux `perf` generic event `cache-misses` 的窗口计数，按本行 `repeat_in_window` 平均到单 request；不能跨架构固定解释为某一级 cache miss。 |
+| `cpu_cache_miss_rate_pct` | `cache-misses / cache-references * 100`。用于观察 cache access locality，不表示实际内存带宽；分母无效或为 0 时为 `nan`。 |
+| `cpu_dtlb_loads_per_request` | Linux `perf` event `dTLB-loads` 的窗口计数，按本行 `repeat_in_window` 平均到单 request。 |
+| `cpu_dtlb_load_misses_per_request` | Linux `perf` event `dTLB-load-misses` 的窗口计数，按本行 `repeat_in_window` 平均到单 request，用于观察数据地址转换未命中。 |
+| `cpu_dtlb_load_miss_rate_pct` | `dTLB-load-misses / dTLB-loads * 100`。用于观察数据地址转换开销；分母无效或为 0 时为 `nan`。 |
 | `cpu_mips_app` | 基于 `latency_app_s` 的真实 retired-instruction MIPS，公式为 `cpu_instructions_per_request / latency_app_s / 1e6`。 |
 | `cpu_mips_packet` | 基于 packet-level `latency_s` 的真实 retired-instruction MIPS，在 `acprof.packet.merge_packet_latency` 成功回填 `latency_s` 后更新；merge 前或 packet latency 缺失时为 `nan`。 |
 | `cpu_perf_elapsed_s` | perf 统计窗口报告的 elapsed time，单位秒，用于诊断 perf 窗口是否覆盖本行 workload。 |
@@ -628,9 +640,11 @@ GPU idle baseline 波动 warning：
 - `cpu_cycles_est_app` 依赖 `latency_app_s`、`cpu_freq_avg_hz`、`cpu_cores` 和 `container_cpu_util_avg_pct` 都有效；`cpu_cycles_est_packet` 还额外依赖 packet latency merge 成功回填 `latency_s`。
 - `gpu_*` utilization / VRAM 字段仅在 `gpu_mode=on` 且 NVML 可用时采集；口径是 NVML device-level，可能包含同一 GPU 上其他进程的占用。
 
-MIPS preflight 或采集失败：
+`perf` preflight 或采集失败：
 
 - `cpu_mips_*` 字段来自 Linux `perf` 的 `instructions` 硬件事件，不是 CPU frequency 推导值。`run.py` 会在 task detection 前检查 `perf` 权限，失败时打印 `[mips][ERROR]`、当前 `perf_event_paranoid`、sudo 状态和恢复步骤。
+- `cpu_cache_*` 和 `cpu_dtlb_*` 字段来自 Linux `perf` generic PMU events。可先用 `perf list` 和 `perf stat -e cache-references,cache-misses,dTLB-loads,dTLB-load-misses -- true` 检查当前 CPU / kernel 是否支持；事件不支持不表示 miss 为 0。
+- 这些 cache / dTLB 字段用于描述访存行为，不提供 DRAM GB/s。实际 read/write bandwidth 需要 uncore memory-controller、Intel PCM、AMD IBS/DF 或其他硬件专用计数器，不能由 miss 数直接换算。
 - 常见临时修复：`echo 0 | sudo tee /proc/sys/kernel/perf_event_paranoid`。如果不想手动调整，也可以在 `.env.local` 设置 `ACPROF_SUDO_PASSWORD`，让 AC-Prof 使用 `sudo -S perf`。
 - 不建议用 `sudo python run.py ...`，这会让结果文件可能变成 root 所有；修复 perf 权限后用普通用户重跑。
 

@@ -1,4 +1,4 @@
-"""Linux perf based retired-instruction MIPS monitoring."""
+"""Linux perf based retired-instruction and memory-behavior monitoring."""
 from __future__ import annotations
 
 import math
@@ -15,6 +15,13 @@ from typing import List, Optional
 
 MIPS_EXIT_CODE = 8
 PERF_EVENT = "instructions"
+PERF_OPTIONAL_EVENTS = (
+    "cache-references",
+    "cache-misses",
+    "dTLB-loads",
+    "dTLB-load-misses",
+)
+PERF_EVENTS = (PERF_EVENT, *PERF_OPTIONAL_EVENTS)
 PERF_TIMEOUT_MS = 86_400_000
 PERF_PROBE_TIMEOUT_S = 5.0
 PERF_STOP_TIMEOUT_S = 5.0
@@ -29,6 +36,10 @@ class MIPSProfilingError(RuntimeError):
 class PerfStatParsed:
     instructions_total: int
     perf_elapsed_s: float
+    cache_references_total: float = float("nan")
+    cache_misses_total: float = float("nan")
+    dtlb_loads_total: float = float("nan")
+    dtlb_load_misses_total: float = float("nan")
 
 
 @dataclass
@@ -37,6 +48,12 @@ class MIPSResult:
     instructions_per_request: float
     perf_elapsed_s: float
     cpu_mips_app: float
+    cache_references_per_request: float = float("nan")
+    cache_misses_per_request: float = float("nan")
+    cache_miss_rate_pct: float = float("nan")
+    dtlb_loads_per_request: float = float("nan")
+    dtlb_load_misses_per_request: float = float("nan")
+    dtlb_load_miss_rate_pct: float = float("nan")
 
 
 def _clean_numeric_text(value: object) -> str:
@@ -70,23 +87,43 @@ def _parse_elapsed_s(text: str) -> float:
     return float("nan")
 
 
+def _event_label_matches(label: str, event_name: str) -> bool:
+    """Match generic and hybrid-PMU perf CSV event labels."""
+    normalized = str(label or "").strip()
+    if normalized == event_name or normalized.startswith(f"{event_name}:"):
+        return True
+    return (
+        f"/{event_name}/" in normalized
+        or f"/{event_name}:" in normalized
+    )
+
+
 def parse_perf_stat_output(
     text: str,
     *,
     fallback_elapsed_s: Optional[float] = None,
     require_elapsed: bool = True,
 ) -> PerfStatParsed:
-    instructions = float("nan")
+    event_values = {event_name: float("nan") for event_name in PERF_EVENTS}
     for raw_line in text.splitlines():
         line = raw_line.strip()
-        if not line or PERF_EVENT not in line:
+        if not line:
             continue
         parts = [part.strip() for part in line.split(",")]
-        if not any(part == PERF_EVENT or part.endswith(f"/{PERF_EVENT}/") for part in parts):
+        if len(parts) < 3:
             continue
-        if parts:
-            instructions = _to_float(parts[0])
-            break
+        event_label = parts[2]
+        for event_name in PERF_EVENTS:
+            if _event_label_matches(event_label, event_name):
+                value = _to_float(parts[0])
+                if math.isfinite(value) and value >= 0.0:
+                    previous = event_values[event_name]
+                    event_values[event_name] = (
+                        previous + value
+                        if math.isfinite(previous)
+                        else value
+                    )
+                break
 
     elapsed_s = _parse_elapsed_s(text)
     if not math.isfinite(elapsed_s) or elapsed_s <= 0:
@@ -98,6 +135,7 @@ def parse_perf_stat_output(
         if math.isfinite(fallback_elapsed) and fallback_elapsed > 0:
             elapsed_s = fallback_elapsed
 
+    instructions = event_values[PERF_EVENT]
     if not math.isfinite(instructions) or instructions < 0:
         raise MIPSProfilingError(
             "perf did not report a valid retired-instructions count for event "
@@ -107,7 +145,14 @@ def parse_perf_stat_output(
         if require_elapsed:
             raise MIPSProfilingError("perf did not report a valid elapsed time.")
         elapsed_s = float("nan")
-    return PerfStatParsed(int(instructions), elapsed_s)
+    return PerfStatParsed(
+        instructions_total=int(instructions),
+        perf_elapsed_s=elapsed_s,
+        cache_references_total=event_values["cache-references"],
+        cache_misses_total=event_values["cache-misses"],
+        dtlb_loads_total=event_values["dTLB-loads"],
+        dtlb_load_misses_total=event_values["dTLB-load-misses"],
+    )
 
 
 def read_perf_event_paranoid(path: str = "/proc/sys/kernel/perf_event_paranoid") -> str:
@@ -330,6 +375,27 @@ def _prefix_uses_password(prefix: List[str]) -> bool:
     return len(prefix) >= 3 and prefix[0] == "sudo" and "-S" in prefix
 
 
+def _per_request(total: float, repeat: int) -> float:
+    return (
+        float(total) / float(repeat)
+        if math.isfinite(total) and total >= 0.0
+        else float("nan")
+    )
+
+
+def _miss_rate_pct(misses: float, references: float) -> float:
+    return (
+        float(misses) / float(references) * 100.0
+        if (
+            math.isfinite(misses)
+            and math.isfinite(references)
+            and misses >= 0.0
+            and references > 0.0
+        )
+        else float("nan")
+    )
+
+
 class PerfMIPSMonitor:
     def __init__(
         self,
@@ -363,7 +429,7 @@ class PerfMIPSMonitor:
             "-x",
             ",",
             "-e",
-            PERF_EVENT,
+            ",".join(PERF_EVENTS),
             "-p",
             str(pid),
             "--timeout",
@@ -417,6 +483,22 @@ class PerfMIPSMonitor:
 
         repeat = max(1, int(repeat_in_window))
         instructions_per_request = float(parsed.instructions_total) / float(repeat)
+        cache_references_per_request = _per_request(
+            parsed.cache_references_total,
+            repeat,
+        )
+        cache_misses_per_request = _per_request(
+            parsed.cache_misses_total,
+            repeat,
+        )
+        dtlb_loads_per_request = _per_request(
+            parsed.dtlb_loads_total,
+            repeat,
+        )
+        dtlb_load_misses_per_request = _per_request(
+            parsed.dtlb_load_misses_total,
+            repeat,
+        )
         latency = _to_float(latency_app_s)
         cpu_mips_app = (
             instructions_per_request / latency / 1_000_000.0
@@ -428,6 +510,18 @@ class PerfMIPSMonitor:
             instructions_per_request=instructions_per_request,
             perf_elapsed_s=parsed.perf_elapsed_s,
             cpu_mips_app=cpu_mips_app,
+            cache_references_per_request=cache_references_per_request,
+            cache_misses_per_request=cache_misses_per_request,
+            cache_miss_rate_pct=_miss_rate_pct(
+                parsed.cache_misses_total,
+                parsed.cache_references_total,
+            ),
+            dtlb_loads_per_request=dtlb_loads_per_request,
+            dtlb_load_misses_per_request=dtlb_load_misses_per_request,
+            dtlb_load_miss_rate_pct=_miss_rate_pct(
+                parsed.dtlb_load_misses_total,
+                parsed.dtlb_loads_total,
+            ),
         )
 
     def close(self) -> None:

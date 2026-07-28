@@ -180,6 +180,26 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
             CSV_FIELDS.index(ncu_fields[0]),
         )
 
+    def test_csv_schema_includes_cpu_memory_behavior_metrics(self) -> None:
+        fields = [
+            "cpu_cache_references_per_request",
+            "cpu_cache_misses_per_request",
+            "cpu_cache_miss_rate_pct",
+            "cpu_dtlb_loads_per_request",
+            "cpu_dtlb_load_misses_per_request",
+            "cpu_dtlb_load_miss_rate_pct",
+        ]
+
+        for field in fields:
+            self.assertIn(field, CSV_FIELDS)
+        self.assertEqual(
+            CSV_FIELDS[
+                CSV_FIELDS.index("cpu_perf_elapsed_s") + 1:
+                CSV_FIELDS.index("cpu_perf_elapsed_s") + 1 + len(fields)
+            ],
+            fields,
+        )
+
     def test_auto_repeat_window_prepares_each_scale_with_warmup_only(self) -> None:
         request_ids = []
 
@@ -1156,6 +1176,12 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                     instructions_per_request=500_000.0,
                     perf_elapsed_s=0.25,
                     cpu_mips_app=1.0,
+                    cache_references_per_request=10_000.0,
+                    cache_misses_per_request=500.0,
+                    cache_miss_rate_pct=5.0,
+                    dtlb_loads_per_request=2_000.0,
+                    dtlb_load_misses_per_request=20.0,
+                    dtlb_load_miss_rate_pct=1.0,
                 )
 
             def close(self):
@@ -1212,6 +1238,18 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(rows[0]["cpu_mips_app"], "1.000000")
         self.assertEqual(rows[0]["cpu_mips_packet"], "nan")
         self.assertEqual(rows[0]["cpu_perf_elapsed_s"], "0.250000")
+        self.assertEqual(
+            rows[0]["cpu_cache_references_per_request"],
+            "10000.000000",
+        )
+        self.assertEqual(rows[0]["cpu_cache_misses_per_request"], "500.000000")
+        self.assertEqual(rows[0]["cpu_cache_miss_rate_pct"], "5.000000")
+        self.assertEqual(rows[0]["cpu_dtlb_loads_per_request"], "2000.000000")
+        self.assertEqual(
+            rows[0]["cpu_dtlb_load_misses_per_request"],
+            "20.000000",
+        )
+        self.assertEqual(rows[0]["cpu_dtlb_load_miss_rate_pct"], "1.000000")
 
     def test_resource_usage_unavailable_keeps_successful_row_ok(self) -> None:
         class FakeUnavailableResourceUsageMonitor:

@@ -573,6 +573,12 @@ MIPS_METRIC_FIELDS = [
     "cpu_mips_app",
     "cpu_mips_packet",
     "cpu_perf_elapsed_s",
+    "cpu_cache_references_per_request",
+    "cpu_cache_misses_per_request",
+    "cpu_cache_miss_rate_pct",
+    "cpu_dtlb_loads_per_request",
+    "cpu_dtlb_load_misses_per_request",
+    "cpu_dtlb_load_miss_rate_pct",
 ]
 
 
@@ -653,6 +659,24 @@ def _mips_metrics_from_result(result: Any) -> Dict[str, float]:
         "cpu_mips_app": _to_float_or_nan(result.cpu_mips_app),
         "cpu_mips_packet": float("nan"),
         "cpu_perf_elapsed_s": _to_float_or_nan(result.perf_elapsed_s),
+        "cpu_cache_references_per_request": _to_float_or_nan(
+            getattr(result, "cache_references_per_request", float("nan"))
+        ),
+        "cpu_cache_misses_per_request": _to_float_or_nan(
+            getattr(result, "cache_misses_per_request", float("nan"))
+        ),
+        "cpu_cache_miss_rate_pct": _to_float_or_nan(
+            getattr(result, "cache_miss_rate_pct", float("nan"))
+        ),
+        "cpu_dtlb_loads_per_request": _to_float_or_nan(
+            getattr(result, "dtlb_loads_per_request", float("nan"))
+        ),
+        "cpu_dtlb_load_misses_per_request": _to_float_or_nan(
+            getattr(result, "dtlb_load_misses_per_request", float("nan"))
+        ),
+        "cpu_dtlb_load_miss_rate_pct": _to_float_or_nan(
+            getattr(result, "dtlb_load_miss_rate_pct", float("nan"))
+        ),
     }
 
 

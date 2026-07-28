@@ -26,6 +26,12 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             "cpu_mips_app",
             "cpu_mips_packet",
             "cpu_perf_elapsed_s",
+            "cpu_cache_references_per_request",
+            "cpu_cache_misses_per_request",
+            "cpu_cache_miss_rate_pct",
+            "cpu_dtlb_loads_per_request",
+            "cpu_dtlb_load_misses_per_request",
+            "cpu_dtlb_load_miss_rate_pct",
             "container_mem_usage_avg_bytes",
             "container_mem_usage_peak_bytes",
             "container_mem_util_avg_pct",
@@ -468,6 +474,90 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             metrics,
         )
 
+    def test_bandwidth_behavior_plot_metrics_are_registered(self) -> None:
+        metrics = {
+            metric: (title, ylabel, filename)
+            for metric, title, ylabel, filename in plot.PLOT_METRICS
+        }
+
+        self.assertEqual(
+            metrics["cpu_cache_misses_per_request"],
+            (
+                "CPU Cache Misses per Request vs. Input Scale",
+                "Cache misses/request",
+                "cpu_cache_misses_per_request_vs_scale.png",
+            ),
+        )
+        self.assertEqual(
+            metrics["cpu_cache_miss_rate_pct"],
+            (
+                "CPU Cache Miss Rate vs. Input Scale",
+                "Cache miss rate (%)",
+                "cpu_cache_miss_rate_vs_scale.png",
+            ),
+        )
+        self.assertEqual(
+            metrics["cpu_dtlb_load_misses_per_request"],
+            (
+                "CPU dTLB Load Misses per Request vs. Input Scale",
+                "dTLB load misses/request",
+                "cpu_dtlb_load_misses_per_request_vs_scale.png",
+            ),
+        )
+        self.assertEqual(
+            metrics["cpu_dtlb_load_miss_rate_pct"],
+            (
+                "CPU dTLB Load Miss Rate vs. Input Scale",
+                "dTLB load miss rate (%)",
+                "cpu_dtlb_load_miss_rate_vs_scale.png",
+            ),
+        )
+
+    def test_prepare_df_converts_bandwidth_behavior_fields_to_numeric(self) -> None:
+        bandwidth_fields = [
+            "cpu_cache_references_per_request",
+            "cpu_cache_misses_per_request",
+            "cpu_cache_miss_rate_pct",
+            "cpu_dtlb_loads_per_request",
+            "cpu_dtlb_load_misses_per_request",
+            "cpu_dtlb_load_miss_rate_pct",
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = os.path.join(tmp, "result_all.csv")
+            fieldnames = [
+                "cpu_cores",
+                "mem_cap_gb",
+                "gpu_mode",
+                "input_scale",
+                "warmup",
+                "status",
+                *bandwidth_fields,
+            ]
+            with open(csv_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerow({
+                    "cpu_cores": "1",
+                    "mem_cap_gb": "4",
+                    "gpu_mode": "off",
+                    "input_scale": "64",
+                    "warmup": "0",
+                    "status": "ok",
+                    "cpu_cache_references_per_request": "1000",
+                    "cpu_cache_misses_per_request": "125",
+                    "cpu_cache_miss_rate_pct": "12.5",
+                    "cpu_dtlb_loads_per_request": "800",
+                    "cpu_dtlb_load_misses_per_request": "20",
+                    "cpu_dtlb_load_miss_rate_pct": "2.5",
+                })
+
+            df = plot.prepare_df(csv_path)
+
+        for field in bandwidth_fields:
+            self.assertTrue(pd.api.types.is_numeric_dtype(df[field]), field)
+        self.assertEqual(float(df["cpu_cache_misses_per_request"].iloc[0]), 125.0)
+        self.assertEqual(float(df["cpu_dtlb_load_miss_rate_pct"].iloc[0]), 2.5)
+
     def test_prepare_df_aliases_legacy_gpu_energy_columns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             csv_path = os.path.join(tmp, "result_all.csv")
@@ -619,7 +709,7 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             for directory in ("cpu", "gpu", "cpu+gpu"):
                 self.assertTrue(os.path.isdir(os.path.join(tmp, directory)))
 
-    def test_main_plots_packet_cpu_metrics_vs_input_scale(self) -> None:
+    def test_main_plots_packet_and_bandwidth_cpu_metrics_vs_input_scale(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             csv_path = os.path.join(tmp, "result_all.csv")
             with open(csv_path, "w", encoding="utf-8", newline="") as f:
@@ -635,6 +725,10 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                         "cpu_mips_packet",
                         "cpu_instructions_per_request",
                         "cpu_cycles_est_packet",
+                        "cpu_cache_misses_per_request",
+                        "cpu_cache_miss_rate_pct",
+                        "cpu_dtlb_load_misses_per_request",
+                        "cpu_dtlb_load_miss_rate_pct",
                     ],
                 )
                 writer.writeheader()
@@ -648,6 +742,10 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                     "cpu_mips_packet": "2.5",
                     "cpu_instructions_per_request": "500000",
                     "cpu_cycles_est_packet": "750000000",
+                    "cpu_cache_misses_per_request": "125",
+                    "cpu_cache_miss_rate_pct": "12.5",
+                    "cpu_dtlb_load_misses_per_request": "20",
+                    "cpu_dtlb_load_miss_rate_pct": "2.5",
                 })
 
             out_pngs = []
@@ -663,6 +761,10 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
         self.assertIn("cpu_mips_packet_vs_scale.png", out_pngs)
         self.assertIn("cpu_instructions_per_request_vs_scale.png", out_pngs)
         self.assertIn("cpu_cycles_est_packet_vs_scale.png", out_pngs)
+        self.assertIn("cpu_cache_misses_per_request_vs_scale.png", out_pngs)
+        self.assertIn("cpu_cache_miss_rate_vs_scale.png", out_pngs)
+        self.assertIn("cpu_dtlb_load_misses_per_request_vs_scale.png", out_pngs)
+        self.assertIn("cpu_dtlb_load_miss_rate_vs_scale.png", out_pngs)
 
 
 if __name__ == "__main__":

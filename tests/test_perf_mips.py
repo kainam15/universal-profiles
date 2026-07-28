@@ -1,4 +1,5 @@
 import io
+import math
 import unittest
 from contextlib import redirect_stderr
 from types import SimpleNamespace
@@ -12,12 +13,61 @@ class PerfMIPSTests(unittest.TestCase):
         parsed = perf_mips.parse_perf_stat_output(
             """
 123456789,,instructions,100.00,,
+200000,,cache-references,100.00,,
+10000,,cache-misses,100.00,,
+50000,,dTLB-loads,100.00,,
+250,,dTLB-load-misses,100.00,,
 1.250000000 seconds time elapsed
 """
         )
 
         self.assertEqual(parsed.instructions_total, 123_456_789)
         self.assertAlmostEqual(parsed.perf_elapsed_s, 1.25)
+        self.assertEqual(parsed.cache_references_total, 200_000)
+        self.assertEqual(parsed.cache_misses_total, 10_000)
+        self.assertEqual(parsed.dtlb_loads_total, 50_000)
+        self.assertEqual(parsed.dtlb_load_misses_total, 250)
+
+    def test_parses_hybrid_pmu_event_labels(self) -> None:
+        parsed = perf_mips.parse_perf_stat_output(
+            """
+1000,,cpu_core/instructions/,100.00,,
+500,,cpu_atom/instructions/,100.00,,
+200,,cpu_core/cache-references/,100.00,,
+100,,cpu_atom/cache-references/,100.00,,
+20,,cpu_core/cache-misses/,100.00,,
+10,,cpu_atom/cache-misses/,100.00,,
+50,,cpu_core/dTLB-loads/,100.00,,
+25,,cpu_atom/dTLB-loads/,100.00,,
+5,,cpu_core/dTLB-load-misses/,100.00,,
+2,,cpu_atom/dTLB-load-misses/,100.00,,
+""",
+            fallback_elapsed_s=0.25,
+        )
+
+        self.assertEqual(parsed.instructions_total, 1_500)
+        self.assertEqual(parsed.cache_references_total, 300)
+        self.assertEqual(parsed.cache_misses_total, 30)
+        self.assertEqual(parsed.dtlb_loads_total, 75)
+        self.assertEqual(parsed.dtlb_load_misses_total, 7)
+
+    def test_optional_events_can_be_unsupported_or_zero(self) -> None:
+        parsed = perf_mips.parse_perf_stat_output(
+            """
+1000,,instructions,100.00,,
+<not supported>,,cache-references,0.00,,
+<not counted>,,cache-misses,0.00,,
+0,,dTLB-loads,100.00,,
+0,,dTLB-load-misses,100.00,,
+""",
+            fallback_elapsed_s=0.25,
+        )
+
+        self.assertTrue(math.isnan(parsed.cache_references_total))
+        self.assertTrue(math.isnan(parsed.cache_misses_total))
+        self.assertEqual(parsed.dtlb_loads_total, 0)
+        self.assertEqual(parsed.dtlb_load_misses_total, 0)
+        self.assertTrue(math.isnan(perf_mips._miss_rate_pct(0.0, 0.0)))
 
     def test_preflight_accepts_modern_perf_csv_without_elapsed_line(self) -> None:
         def fake_run(cmd, **kwargs):
@@ -47,6 +97,10 @@ class PerfMIPSTests(unittest.TestCase):
                 popen_cmds.append(cmd)
                 self.stderr = io.StringIO(
                     "500000,,instructions,100.00,,\n"
+                    "20000,,cache-references,100.00,,\n"
+                    "1000,,cache-misses,100.00,,\n"
+                    "4000,,dTLB-loads,100.00,,\n"
+                    "40,,dTLB-load-misses,100.00,,\n"
                     "0.250000000 seconds time elapsed\n"
                 )
 
@@ -78,9 +132,16 @@ class PerfMIPSTests(unittest.TestCase):
         self.assertEqual(popen_cmds[0][:5], ["perf", "stat", "--no-big-num", "-x", ","])
         self.assertIn("-p", popen_cmds[0])
         self.assertIn("1234", popen_cmds[0])
+        self.assertIn(",".join(perf_mips.PERF_EVENTS), popen_cmds[0])
         self.assertEqual(result.instructions_total, 500_000)
         self.assertEqual(result.instructions_per_request, 250_000.0)
         self.assertAlmostEqual(result.cpu_mips_app, 2.0)
+        self.assertEqual(result.cache_references_per_request, 10_000.0)
+        self.assertEqual(result.cache_misses_per_request, 500.0)
+        self.assertAlmostEqual(result.cache_miss_rate_pct, 5.0)
+        self.assertEqual(result.dtlb_loads_per_request, 2_000.0)
+        self.assertEqual(result.dtlb_load_misses_per_request, 20.0)
+        self.assertAlmostEqual(result.dtlb_load_miss_rate_pct, 1.0)
 
     def test_monitor_uses_password_sudo_when_pid_attach_needs_privilege(self) -> None:
         popen_cmds = []
