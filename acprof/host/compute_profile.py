@@ -18,7 +18,6 @@ from acprof.host.env_utils import hf_offline_docker_env_args
 
 COMPUTE_PROFILE_PLAN_NAME = "compute_profile_plan.json"
 CONTAINER_INPUT_SCALE_PLAN_FILE = "/payloads/input_scale_plan.json"
-COMPUTE_PROFILE_SCHEMA_VERSION = 2
 TORCH_PROFILER_TOOL = "torch_profiler_eager"
 NCU_TOOL = "ncu"
 COMPUTE_PROFILE_TOOL_MODES = {"auto", "both", "ncu", "torch", "vendor"}
@@ -129,7 +128,6 @@ def _ncu_error_entries(
         {
             "input_scale": float(entry["input_scale"]),
             "tool": NCU_TOOL,
-            "model_mflop_per_request": None,
             "gpu_executed_mflop_per_request_ncu": None,
             "gpu_executed_tensor_mflop_per_request_ncu": None,
             "gpu_executed_scalar_mflop_per_request_ncu": None,
@@ -150,7 +148,6 @@ def _torch_error_entries(
         {
             "input_scale": float(entry["input_scale"]),
             "tool": TORCH_PROFILER_TOOL,
-            "model_mflop_per_request": None,
             "model_logical_mflop_per_request_torch_profiler_eager": None,
             "error": error,
         }
@@ -1044,7 +1041,6 @@ def _run_ncu_for_entry(
     return {
         "input_scale": float(entry["input_scale"]),
         "tool": NCU_TOOL,
-        "model_mflop_per_request": total_mflop,
         "gpu_executed_mflop_per_request_ncu": total_mflop,
         "gpu_executed_tensor_mflop_per_request_ncu": tensor_mflop,
         "gpu_executed_scalar_mflop_per_request_ncu": scalar_mflop,
@@ -1107,10 +1103,7 @@ def _run_torch_profiler_for_entry(
             "attention_implementation_not_verified",
         )[0]
     mflop = _to_float(
-        payload.get(
-            "model_logical_mflop_per_request_torch_profiler_eager",
-            payload.get("model_mflop_per_request"),
-        )
+        payload.get("model_logical_mflop_per_request_torch_profiler_eager")
     )
     total_flops = _to_float(payload.get("total_flops"))
     if mflop != mflop and total_flops == total_flops:
@@ -1124,7 +1117,6 @@ def _run_torch_profiler_for_entry(
     return {
         "input_scale": float(entry["input_scale"]),
         "tool": TORCH_PROFILER_TOOL,
-        "model_mflop_per_request": mflop,
         "model_logical_mflop_per_request_torch_profiler_eager": mflop,
         "error": "",
         "total_flops": total_flops if total_flops == total_flops else None,
@@ -1357,20 +1349,6 @@ def _safe_profile_tool(
         )
 
 
-def _with_legacy_profile_alias(
-    tool_profiles: Dict[str, Dict[str, Any]],
-    preferred_tool: str,
-) -> Dict[str, Any]:
-    """Expose v2 nested tools plus the v1 selected-profile fields."""
-    result: Dict[str, Any] = dict(tool_profiles)
-    preferred = tool_profiles.get(preferred_tool)
-    if preferred is None and tool_profiles:
-        preferred = next(iter(tool_profiles.values()))
-    if preferred:
-        result.update(preferred)
-    return result
-
-
 def _executable_version(executable: Optional[str]) -> str:
     if not executable:
         return "unknown"
@@ -1552,15 +1530,7 @@ def collect_compute_profile_plan(
                 ),
             )
         if cpu_tools:
-            preferred_cpu_tool = (
-                "intel_advisor"
-                if collect_advisor_cpu
-                else TORCH_PROFILER_TOOL
-            )
-            profiles["cpu"] = _with_legacy_profile_alias(
-                cpu_tools,
-                preferred_cpu_tool,
-            )
+            profiles["cpu"] = cpu_tools
 
     if "on" in normalized_gpus:
         gpu_tools: Dict[str, Dict[str, Any]] = {}
@@ -1601,13 +1571,7 @@ def collect_compute_profile_plan(
                 ),
             )
         if gpu_tools:
-            preferred_gpu_tool = (
-                NCU_TOOL if collect_ncu_gpu else TORCH_PROFILER_TOOL
-            )
-            profiles["gpu"] = _with_legacy_profile_alias(
-                gpu_tools,
-                preferred_gpu_tool,
-            )
+            profiles["gpu"] = gpu_tools
 
     enabled_tools = [
         tool
@@ -1626,7 +1590,6 @@ def collect_compute_profile_plan(
             ncu_metrics = list(ncu_profile.get("metrics") or [])
 
     static_metadata = {
-        "compute_profile_schema_version": COMPUTE_PROFILE_SCHEMA_VERSION,
         "compute_profile_tools": enabled_tools,
         "torch_profiler_eager_flop_semantics": "logical_operator_shape_flops",
         "torch_profiler_eager_attention_implementation": "eager",
@@ -1668,7 +1631,6 @@ def collect_compute_profile_plan(
     }
 
     plan = {
-        "schema_version": COMPUTE_PROFILE_SCHEMA_VERSION,
         "model_id": task_info.model_id,
         "task_family": task_info.task_family,
         "pipeline_tag": task_info.pipeline_tag,

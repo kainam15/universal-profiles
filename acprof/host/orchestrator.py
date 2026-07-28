@@ -70,7 +70,6 @@ class StaticMeta:
     vcpu_power_method: str
     cpu_governor: str
     cpu_boost: str
-    compute_profile_schema_version: str = ""
     compute_profile_tools: str = ""
     torch_profiler_eager_flop_semantics: str = ""
     torch_profiler_eager_attention_implementation: str = ""
@@ -87,6 +86,16 @@ class StaticMeta:
     gpu_sm_count: str = ""
     compute_profiles_retained: str = ""
     compute_profile_provenance: str = ""
+    execution_profile_schema_version: str = ""
+    execution_profile_tools: str = ""
+    massif_peak_semantics: str = ""
+    massif_repeat: str = ""
+    massif_version: str = ""
+    nsys_timeline_semantics: str = ""
+    nsys_repeat: str = ""
+    nsys_version: str = ""
+    execution_profiles_retained: str = ""
+    execution_profile_provenance: str = ""
 
 
 @dataclass
@@ -1010,6 +1019,7 @@ def collect_static_meta(
     run_command: str = "",
     device_index: int = 0,
     compute_profile_enabled: bool = True,
+    execution_profile_enabled: bool = False,
 ) -> StaticMeta:
     """Collect static metadata for the current model/image pair."""
     cpu_power_source, vcpu_power_method = _cpu_power_metadata()
@@ -1035,12 +1045,9 @@ def collect_static_meta(
         cpu_governor=cpu_governor,
         cpu_boost=cpu_boost,
     )
-    if compute_profile_enabled:
-        return static_meta
-    return enrich_static_meta(
-        static_meta,
-        {
-            "compute_profile_schema_version": 2,
+    disabled_metadata: Dict[str, Any] = {}
+    if not compute_profile_enabled:
+        disabled_metadata.update({
             "compute_profile_tools": [],
             "torch_profiler_eager_flop_semantics": (
                 "logical_operator_shape_flops"
@@ -1058,7 +1065,24 @@ def collect_static_meta(
             "gpu_sm_count": "unknown",
             "compute_profiles_retained": False,
             "compute_profile_provenance": "disabled",
-        },
+        })
+    if not execution_profile_enabled:
+        disabled_metadata.update({
+            "execution_profile_schema_version": 1,
+            "execution_profile_tools": [],
+            "massif_peak_semantics": (
+                "process_lifetime_heap_peak_including_model_load_and_warmup"
+            ),
+            "massif_version": "unknown",
+            "nsys_timeline_semantics": "nvtx_acprof_compute_range",
+            "nsys_version": "unknown",
+            "execution_profiles_retained": False,
+            "execution_profile_provenance": "disabled",
+        })
+    return (
+        enrich_static_meta(static_meta, disabled_metadata)
+        if disabled_metadata
+        else static_meta
     )
 
 
@@ -1066,7 +1090,7 @@ def enrich_static_meta(
     static_meta: StaticMeta,
     metadata: Dict[str, Any],
 ) -> StaticMeta:
-    """Return static metadata enriched with recognized compute-profile fields."""
+    """Return static metadata enriched with recognized profiling fields."""
     updates: Dict[str, Any] = {}
     for field in STATIC_META_FIELDS:
         if field not in metadata:
@@ -1098,6 +1122,26 @@ def enrich_static_meta_from_compute_plan(
     metadata = plan.get("static_metadata", {})
     if not isinstance(metadata, dict):
         print("[meta][WARN] compute_profile_plan static_metadata is not an object")
+        return static_meta
+    return enrich_static_meta(static_meta, metadata)
+
+
+def enrich_static_meta_from_execution_plan(
+    static_meta: StaticMeta,
+    plan_path: str,
+) -> StaticMeta:
+    """Read execution-profile metadata without making a failed probe fatal."""
+    if not plan_path or not os.path.exists(plan_path):
+        return static_meta
+    try:
+        with open(plan_path, "r", encoding="utf-8") as f:
+            plan = json.load(f)
+    except (OSError, ValueError, TypeError) as exc:
+        print(f"[meta][WARN] Cannot read execution profile metadata: {exc}")
+        return static_meta
+    metadata = plan.get("static_metadata", {})
+    if not isinstance(metadata, dict):
+        print("[meta][WARN] execution_profile_plan static_metadata is not an object")
         return static_meta
     return enrich_static_meta(static_meta, metadata)
 
@@ -2107,6 +2151,7 @@ def run_single_case(
     input_scales: Optional[str] = None,
     input_scale_plan_file: Optional[str] = None,
     compute_profile_plan_file: Optional[str] = None,
+    execution_profile_plan_file: Optional[str] = None,
     require_packet_latency: bool = True,
 ) -> str:
     """Run one profiling case and return result CSV path."""
@@ -2227,6 +2272,7 @@ def run_single_case(
             "INPUT_SCALES": scales_str,
             "INPUT_SCALE_PLAN_FILE": input_scale_plan_file or "",
             "COMPUTE_PROFILE_PLAN_FILE": compute_profile_plan_file or "",
+            "EXECUTION_PROFILE_PLAN_FILE": execution_profile_plan_file or "",
         }
 
         client_result = _run(
@@ -2369,6 +2415,9 @@ def _write_case_error_csv(
         })
         if gpu == "on":
             row[NCU_ERROR_FIELD] = "not_run"
+            row["compute_profile_error_nsys"] = "not_run"
+        else:
+            row["compute_profile_error_massif"] = "not_run"
         return row
 
     rows = []
@@ -2407,6 +2456,7 @@ def run_matrix(
     input_scales: Optional[str] = None,
     input_scale_plan_file: Optional[str] = None,
     compute_profile_plan_file: Optional[str] = None,
+    execution_profile_plan_file: Optional[str] = None,
 ) -> List[str]:
     """Sweep all resource combinations."""
     os.makedirs(output_dir, exist_ok=True)
@@ -2444,6 +2494,7 @@ def run_matrix(
                     input_scales=input_scales,
                     input_scale_plan_file=input_scale_plan_file,
                     compute_profile_plan_file=compute_profile_plan_file,
+                    execution_profile_plan_file=execution_profile_plan_file,
                 )
                 if csv_path:
                     result_csvs.append(csv_path)

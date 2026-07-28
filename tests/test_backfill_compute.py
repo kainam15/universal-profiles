@@ -31,37 +31,40 @@ class BackfillComputeProfileTests(unittest.TestCase):
             writer.writeheader()
             writer.writerows(rows)
 
-    def _write_plan(self, path):
+    def _write_vendor_plan(self, path):
         plan = {
             "profiles": {
                 "cpu": {
-                    "tool": "intel_advisor",
-                    "entries": [
-                        {
-                            "input_scale": 64.0,
-                            "model_mflop_per_request": 200.0,
-                            "error": "",
-                        }
-                    ],
+                    "intel_advisor": {
+                        "tool": "intel_advisor",
+                        "entries": [
+                            {
+                                "input_scale": 64.0,
+                                "model_mflop_per_request": 200.0,
+                                "error": "",
+                            }
+                        ],
+                    }
                 },
                 "gpu": {
-                    "tool": "ncu",
-                    "entries": [
-                        {
-                            "input_scale": 64.0,
-                            "model_mflop_per_request": 100.0,
-                            "error": "",
-                        }
-                    ],
+                    "ncu": {
+                        "tool": "ncu",
+                        "entries": [
+                            {
+                                "input_scale": 64.0,
+                                "gpu_executed_mflop_per_request_ncu": 100.0,
+                                "error": "",
+                            }
+                        ],
+                    }
                 },
             }
         }
         with open(path, "w", encoding="utf-8") as f:
             json.dump(plan, f)
 
-    def _write_v2_plan(self, path):
+    def _write_dual_tool_plan(self, path):
         plan = {
-            "compute_profile_schema_version": 2,
             "profiles": {
                 "cpu": {
                     "torch_profiler_eager": {
@@ -107,9 +110,8 @@ class BackfillComputeProfileTests(unittest.TestCase):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(plan, f)
 
-    def test_v2_entry_error_does_not_inherit_another_scale_failure(self):
+    def test_entry_error_does_not_inherit_another_scale_failure(self):
         plan = {
-            "schema_version": 2,
             "profiles": {
                 "gpu": {
                     "torch_profiler_eager": {
@@ -152,9 +154,8 @@ class BackfillComputeProfileTests(unittest.TestCase):
             10.0,
         )
 
-    def test_v2_vendor_cpu_preserves_legacy_generic_profile(self):
+    def test_vendor_cpu_is_not_mislabeled_as_torch_profile(self):
         plan = {
-            "schema_version": 2,
             "compute_profile_tool_mode": "vendor",
             "profiles": {
                 "cpu": {
@@ -174,9 +175,9 @@ class BackfillComputeProfileTests(unittest.TestCase):
 
         profile = find_compute_profile_entry(plan, "off", 64)
 
-        self.assertEqual(profile["tool"], "intel_advisor")
-        self.assertEqual(profile["model_mflop_per_request"], 321.0)
-        self.assertEqual(profile["error"], "")
+        self.assertNotIn("tool", profile)
+        self.assertNotIn("model_mflop_per_request", profile)
+        self.assertNotIn("error", profile)
         logical = profile[
             "model_logical_mflop_per_request_torch_profiler_eager"
         ]
@@ -234,7 +235,7 @@ class BackfillComputeProfileTests(unittest.TestCase):
             plan_path = os.path.join(tmp, "compute_profile_plan.json")
             output_csv = os.path.join(tmp, "result_all.with_compute.csv")
             self._write_csv(input_csv, fields, input_rows)
-            self._write_plan(plan_path)
+            self._write_vendor_plan(plan_path)
             with open(input_csv, "rb") as f:
                 original_input = f.read()
 
@@ -288,7 +289,7 @@ class BackfillComputeProfileTests(unittest.TestCase):
             "250.000000",
         )
 
-    def test_v2_plan_backfills_only_explicit_dual_metrics(self):
+    def test_dual_tool_plan_backfills_only_explicit_metrics(self):
         fields = [
             "gpu_mode",
             "input_scale",
@@ -318,7 +319,7 @@ class BackfillComputeProfileTests(unittest.TestCase):
             plan_path = os.path.join(tmp, "compute_profile_plan.json")
             output_csv = os.path.join(tmp, "result_all.with_compute.csv")
             self._write_csv(input_csv, fields, rows)
-            self._write_v2_plan(plan_path)
+            self._write_dual_tool_plan(plan_path)
 
             summary = backfill_compute_profile_csv(
                 input_csv,
@@ -410,7 +411,7 @@ class BackfillComputeProfileTests(unittest.TestCase):
             ncu_summary = os.path.join(tmp, "gpu_hardware_flops_by_scale.csv")
             output_csv = os.path.join(tmp, "result_all.with_compute.csv")
             self._write_csv(input_csv, fields, rows)
-            self._write_v2_plan(plan_path)
+            self._write_dual_tool_plan(plan_path)
             self._write_csv(ncu_summary, ncu_fields, ncu_rows)
 
             summary = backfill_compute_profile_csv(
@@ -484,7 +485,7 @@ class BackfillComputeProfileTests(unittest.TestCase):
             plan_path = os.path.join(tmp, "compute_profile_plan.json")
             output_csv = os.path.join(tmp, "result_all.with_compute.csv")
             self._write_csv(input_csv, fields, rows)
-            self._write_v2_plan(plan_path)
+            self._write_dual_tool_plan(plan_path)
 
             summary = backfill_compute_profile_csv(
                 input_csv,
@@ -521,7 +522,7 @@ class BackfillComputeProfileTests(unittest.TestCase):
             plan_path = os.path.join(tmp, "compute_profile_plan.json")
             output_csv = os.path.join(tmp, "existing.csv")
             self._write_csv(input_csv, fields, rows)
-            self._write_plan(plan_path)
+            self._write_vendor_plan(plan_path)
             with open(output_csv, "w", encoding="utf-8") as f:
                 f.write("do not replace")
 
@@ -544,7 +545,7 @@ class BackfillComputeProfileTests(unittest.TestCase):
             input_csv = os.path.join(tmp, "result_all.csv")
             plan_path = os.path.join(tmp, "compute_profile_plan.json")
             self._write_csv(input_csv, fields, rows)
-            self._write_v2_plan(plan_path)
+            self._write_dual_tool_plan(plan_path)
 
             backfill_compute_profile_csv(
                 input_csv,

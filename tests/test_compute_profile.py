@@ -659,7 +659,7 @@ class ComputeProfileTests(unittest.TestCase):
             return_value={
                 "input_scale": 8.0,
                 "tool": "ncu",
-                "model_mflop_per_request": 1.0,
+                "gpu_executed_mflop_per_request_ncu": 1.0,
                 "error": "",
             },
         ):
@@ -729,14 +729,21 @@ class ComputeProfileTests(unittest.TestCase):
                 )
             )
 
-        self.assertIn("advisor_not_found", plan["profiles"]["cpu"]["error"])
-        self.assertIn("ncu_not_found", plan["profiles"]["gpu"]["error"])
+        self.assertIn(
+            "advisor_not_found",
+            plan["profiles"]["cpu"]["intel_advisor"]["error"],
+        )
+        self.assertIn("ncu_not_found", plan["profiles"]["gpu"]["ncu"]["error"])
         self.assertEqual(
-            plan["profiles"]["cpu"]["entries"][0]["model_mflop_per_request"],
+            plan["profiles"]["cpu"]["intel_advisor"]["entries"][0][
+                "model_mflop_per_request"
+            ],
             None,
         )
         self.assertEqual(
-            plan["profiles"]["gpu"]["entries"][0]["model_mflop_per_request"],
+            plan["profiles"]["gpu"]["ncu"]["entries"][0][
+                "gpu_executed_mflop_per_request_ncu"
+            ],
             None,
         )
 
@@ -768,7 +775,7 @@ class ComputeProfileTests(unittest.TestCase):
                     {
                         "input_scale": 8.0,
                         "tool": "torch_profiler_eager",
-                        "model_mflop_per_request": 123.0,
+                        "model_logical_mflop_per_request_torch_profiler_eager": 123.0,
                         "error": "",
                     }
                 ],
@@ -784,7 +791,7 @@ class ComputeProfileTests(unittest.TestCase):
                     {
                         "input_scale": 8.0,
                         "tool": "ncu",
-                        "model_mflop_per_request": 300.0,
+                        "gpu_executed_mflop_per_request_ncu": 300.0,
                         "error": "",
                     }
                 ],
@@ -831,8 +838,13 @@ class ComputeProfileTests(unittest.TestCase):
             ],
         )
         self.assertEqual(plan["compute_profile_tool_mode"], "both")
-        self.assertEqual(plan["profiles"]["cpu"]["tool"], "torch_profiler_eager")
-        self.assertEqual(plan["profiles"]["gpu"]["tool"], "ncu")
+        self.assertEqual(
+            plan["profiles"]["cpu"]["torch_profiler_eager"]["tool"],
+            "torch_profiler_eager",
+        )
+        self.assertEqual(plan["profiles"]["gpu"]["ncu"]["tool"], "ncu")
+        self.assertNotIn("tool", plan["profiles"]["cpu"])
+        self.assertNotIn("tool", plan["profiles"]["gpu"])
 
     def test_auto_compute_profile_is_alias_for_dual_collection(self) -> None:
         task_info = TaskInfo(
@@ -862,7 +874,7 @@ class ComputeProfileTests(unittest.TestCase):
                     {
                         "input_scale": 8.0,
                         "tool": "torch_profiler_eager",
-                        "model_mflop_per_request": 123.0,
+                        "model_logical_mflop_per_request_torch_profiler_eager": 123.0,
                         "error": "",
                     }
                 ],
@@ -878,7 +890,7 @@ class ComputeProfileTests(unittest.TestCase):
                     {
                         "input_scale": 8.0,
                         "tool": "ncu",
-                        "model_mflop_per_request": 456.0,
+                        "gpu_executed_mflop_per_request_ncu": 456.0,
                         "error": "",
                     }
                 ],
@@ -925,14 +937,21 @@ class ComputeProfileTests(unittest.TestCase):
                 ("gpu", "/usr/bin/ncu"),
             ],
         )
-        self.assertEqual(plan["profiles"]["cpu"]["tool"], "torch_profiler_eager")
-        self.assertEqual(plan["profiles"]["gpu"]["tool"], "ncu")
         self.assertEqual(
-            plan["profiles"]["cpu"]["entries"][0]["model_mflop_per_request"],
+            plan["profiles"]["cpu"]["torch_profiler_eager"]["tool"],
+            "torch_profiler_eager",
+        )
+        self.assertEqual(plan["profiles"]["gpu"]["ncu"]["tool"], "ncu")
+        self.assertEqual(
+            plan["profiles"]["cpu"]["torch_profiler_eager"]["entries"][0][
+                "model_logical_mflop_per_request_torch_profiler_eager"
+            ],
             123.0,
         )
         self.assertEqual(
-            plan["profiles"]["gpu"]["entries"][0]["model_mflop_per_request"],
+            plan["profiles"]["gpu"]["ncu"]["entries"][0][
+                "gpu_executed_mflop_per_request_ncu"
+            ],
             456.0,
         )
 
@@ -962,7 +981,6 @@ class ComputeProfileTests(unittest.TestCase):
                 "entries": [{
                     "input_scale": 8.0,
                     "tool": "ncu",
-                    "model_mflop_per_request": 42.0,
                     "gpu_executed_mflop_per_request_ncu": 42.0,
                     "error": "",
                 }],
@@ -998,7 +1016,7 @@ class ComputeProfileTests(unittest.TestCase):
                 plan = json.load(f)
 
         self.assertEqual(calls, [("torch", "cpu"), ("torch", "gpu"), ("ncu", 3)])
-        self.assertEqual(plan["schema_version"], 2)
+        self.assertNotIn("schema_version", plan)
         self.assertIn(
             "torch_profiler_eager_failed",
             plan["profiles"]["gpu"]["torch_profiler_eager"]["error"],
@@ -1010,6 +1028,7 @@ class ComputeProfileTests(unittest.TestCase):
             42.0,
         )
         metadata = plan["static_metadata"]
+        self.assertNotIn("compute_profile_schema_version", metadata)
         self.assertEqual(
             metadata["compute_profile_tools"],
             ["torch_profiler_eager", "ncu"],
@@ -1056,8 +1075,11 @@ class ComputeProfileTests(unittest.TestCase):
             with open(plan_path, "r", encoding="utf-8") as f:
                 plan = json.load(f)
 
-        self.assertIn("advisor_not_found", plan["profiles"]["cpu"]["error"])
-        self.assertIn("ncu_not_found", plan["profiles"]["gpu"]["error"])
+        self.assertIn(
+            "advisor_not_found",
+            plan["profiles"]["cpu"]["intel_advisor"]["error"],
+        )
+        self.assertIn("ncu_not_found", plan["profiles"]["gpu"]["ncu"]["error"])
 
     def test_compute_profile_resource_overrides_are_used(self) -> None:
         task_info = TaskInfo(

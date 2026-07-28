@@ -297,7 +297,6 @@ def main() -> None:
                 "repeat": repeat,
                 "elapsed_s": elapsed_s,
                 "total_flops": total_flops,
-                "model_mflop_per_request": (total_flops / 1_000_000.0) / float(repeat),
                 "model_logical_mflop_per_request_torch_profiler_eager": (
                     total_flops / 1_000_000.0
                 ) / float(repeat),
@@ -310,6 +309,7 @@ def main() -> None:
             }))
             return
 
+        profile_window_t0 = time.perf_counter()
         if args.profile_mode == "gpu":
             _cuda_synchronize()
             torch.cuda.nvtx.range_push("acprof_compute")
@@ -327,6 +327,9 @@ def main() -> None:
                     handler.predict(model_ctx, processed)
             finally:
                 itt.pause()
+        profile_window_wall_time_ms = (
+            time.perf_counter() - profile_window_t0
+        ) * 1000.0
 
     elapsed_s = time.perf_counter() - t_load
     print(json.dumps({
@@ -337,6 +340,10 @@ def main() -> None:
         "input_scale": args.input_scale,
         "repeat": max(1, int(args.repeat)),
         "elapsed_s": elapsed_s,
+        "profile_window_wall_time_ms": profile_window_wall_time_ms,
+        "profile_window_wall_time_ms_per_request": (
+            profile_window_wall_time_ms / float(repeat)
+        ),
         **_gpu_metadata(),
     }))
 

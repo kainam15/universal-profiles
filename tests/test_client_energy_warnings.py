@@ -200,6 +200,65 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
             fields,
         )
 
+    def test_csv_schema_includes_massif_and_nsys_execution_metrics(self) -> None:
+        massif_fields = [
+            "cpu_heap_peak_bytes_massif",
+            "cpu_heap_extra_peak_bytes_massif",
+            "cpu_stack_peak_bytes_massif",
+            "cpu_heap_peak_total_bytes_massif",
+            "cpu_heap_peak_at_ms_massif",
+            "compute_profile_error_massif",
+        ]
+        nsys_fields = [
+            "host_inference_wall_time_ms_per_request_nsys",
+            "cuda_api_time_sum_ms_per_request_nsys",
+            "cuda_api_call_count_per_request_nsys",
+            "gpu_kernel_time_sum_ms_per_request_nsys",
+            "gpu_kernel_launch_count_per_request_nsys",
+            "gpu_memcpy_time_sum_ms_per_request_nsys",
+            "gpu_memcpy_count_per_request_nsys",
+            "gpu_memcpy_bytes_per_request_nsys",
+            "compute_profile_error_nsys",
+        ]
+
+        for field in [*massif_fields, *nsys_fields]:
+            self.assertIn(field, CSV_FIELDS)
+        self.assertEqual(
+            CSV_FIELDS[
+                CSV_FIELDS.index("compute_profile_error_ncu") + 1:
+                CSV_FIELDS.index("gpu_idle_power_w")
+            ],
+            [*massif_fields, *nsys_fields],
+        )
+
+    def test_execution_profile_metrics_are_formatted_independently(self) -> None:
+        metrics = client._execution_profile_row_metrics({
+            "cpu_heap_peak_bytes_massif": 4096,
+            "compute_profile_error_massif": "",
+            "host_inference_wall_time_ms_per_request_nsys": 2.5,
+            "cuda_api_time_sum_ms_per_request_nsys": 1.25,
+            "compute_profile_error_nsys": "nsys_stats_failed",
+        })
+
+        self.assertEqual(metrics["cpu_heap_peak_bytes_massif"], "4096.000000")
+        self.assertEqual(
+            metrics["host_inference_wall_time_ms_per_request_nsys"],
+            "2.500000",
+        )
+        self.assertEqual(
+            metrics["cuda_api_time_sum_ms_per_request_nsys"],
+            "1.250000",
+        )
+        self.assertEqual(metrics["compute_profile_error_massif"], "")
+        self.assertEqual(
+            metrics["compute_profile_error_nsys"],
+            "nsys_stats_failed",
+        )
+        self.assertEqual(
+            metrics["gpu_kernel_time_sum_ms_per_request_nsys"],
+            "nan",
+        )
+
     def test_auto_repeat_window_prepares_each_scale_with_warmup_only(self) -> None:
         request_ids = []
 
@@ -1324,7 +1383,9 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(rows[0]["container_cpu_util_avg_pct"], "nan")
         self.assertEqual(rows[0]["gpu_util_avg_pct"], "nan")
 
-    def test_legacy_advisor_plan_does_not_emit_removed_generic_columns(self) -> None:
+    def test_flat_compute_plan_is_rejected_without_emitting_generic_columns(
+        self,
+    ) -> None:
         plan = {
             "profiles": {
                 "cpu": {
@@ -1394,10 +1455,13 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
             rows[0]["model_logical_mflop_per_request_torch_profiler_eager"],
             "nan",
         )
+        self.assertIn(
+            "unsupported_profile_layout:cpu",
+            rows[0]["compute_profile_error_torch_profiler_eager"],
+        )
 
-    def test_v2_compute_plan_writes_independent_torch_and_ncu_metrics(self) -> None:
+    def test_compute_plan_writes_independent_torch_and_ncu_metrics(self) -> None:
         plan = {
-            "compute_profile_schema_version": 2,
             "profiles": {
                 "gpu": {
                     "torch_profiler_eager": {
@@ -1500,11 +1564,8 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(row["compute_profile_error_torch_profiler_eager"], "")
         self.assertEqual(row["compute_profile_error_ncu"], "")
 
-    def test_v2_compute_profile_failures_are_isolated(self) -> None:
+    def test_compute_profile_failures_are_isolated(self) -> None:
         profile = {
-            "tool": "torch_profiler_eager",
-            "model_mflop_per_request": float("nan"),
-            "error": "torch_failed",
             "model_logical_mflop_per_request_torch_profiler_eager": float("nan"),
             "compute_profile_error_torch_profiler_eager": "torch_failed",
             "gpu_executed_mflop_per_request_ncu": 100.0,

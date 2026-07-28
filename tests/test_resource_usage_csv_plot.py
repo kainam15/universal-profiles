@@ -266,6 +266,70 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             802.0,
         )
 
+    def test_prepare_df_converts_execution_profile_fields_and_derives_gib(
+        self,
+    ) -> None:
+        execution_values = {
+            "cpu_heap_peak_bytes_massif": str(2 * 1024 ** 3),
+            "cpu_heap_extra_peak_bytes_massif": "4096",
+            "cpu_stack_peak_bytes_massif": "8192",
+            "cpu_heap_peak_total_bytes_massif": str(3 * 1024 ** 3),
+            "cpu_heap_peak_at_ms_massif": "1234.5",
+            "host_inference_wall_time_ms_per_request_nsys": "20.5",
+            "cuda_api_time_sum_ms_per_request_nsys": "7.25",
+            "cuda_api_call_count_per_request_nsys": "12",
+            "gpu_kernel_time_sum_ms_per_request_nsys": "5.5",
+            "gpu_kernel_launch_count_per_request_nsys": "8",
+            "gpu_memcpy_time_sum_ms_per_request_nsys": "1.25",
+            "gpu_memcpy_count_per_request_nsys": "3",
+            "gpu_memcpy_bytes_per_request_nsys": "1048576",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = os.path.join(tmp, "result_all.csv")
+            fieldnames = [
+                "cpu_cores",
+                "mem_cap_gb",
+                "gpu_mode",
+                "input_scale",
+                "warmup",
+                "status",
+                *execution_values,
+                "compute_profile_error_massif",
+                "compute_profile_error_nsys",
+            ]
+            with open(csv_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerow({
+                    "cpu_cores": "1",
+                    "mem_cap_gb": "4",
+                    "gpu_mode": "on",
+                    "input_scale": "64",
+                    "warmup": "0",
+                    "status": "ok",
+                    **execution_values,
+                    "compute_profile_error_massif": "massif diagnostic",
+                    "compute_profile_error_nsys": "nsys diagnostic",
+                })
+
+            df = plot.prepare_df(csv_path)
+
+        for field, expected in execution_values.items():
+            self.assertTrue(pd.api.types.is_numeric_dtype(df[field]), field)
+            self.assertEqual(float(df[field].iloc[0]), float(expected), field)
+        self.assertEqual(
+            float(df["cpu_heap_peak_total_gib_massif"].iloc[0]),
+            3.0,
+        )
+        self.assertEqual(
+            df["compute_profile_error_massif"].iloc[0],
+            "massif diagnostic",
+        )
+        self.assertEqual(
+            df["compute_profile_error_nsys"].iloc[0],
+            "nsys diagnostic",
+        )
+
     def test_prepare_df_prefers_new_compute_fields_and_parses_ncu_fields(
         self,
     ) -> None:
@@ -473,6 +537,66 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             "gpu_kernel_time_sum_ms_per_request_ncu",
             metrics,
         )
+
+    def test_execution_profile_plot_metrics_are_registered(self) -> None:
+        metrics = {
+            metric: (title, ylabel, filename)
+            for metric, title, ylabel, filename in plot.PLOT_METRICS
+        }
+
+        self.assertEqual(
+            metrics["cpu_heap_peak_total_gib_massif"],
+            (
+                "Massif Process-Lifetime Peak Memory vs. Input Scale",
+                "Peak heap + extra + stack (GiB)",
+                "massif_cpu_heap_peak_total_vs_scale.png",
+            ),
+        )
+        self.assertEqual(
+            metrics["host_inference_wall_time_ms_per_request_nsys"],
+            (
+                "Nsight Systems Host Inference Wall Time vs. Input Scale",
+                "Host wall time (ms/request)",
+                "nsys_host_inference_wall_time_per_request_vs_scale.png",
+            ),
+        )
+        self.assertEqual(
+            metrics["cuda_api_time_sum_ms_per_request_nsys"][2],
+            "nsys_cuda_api_time_sum_per_request_vs_scale.png",
+        )
+        self.assertEqual(
+            metrics["gpu_kernel_time_sum_ms_per_request_nsys"][2],
+            "nsys_gpu_kernel_time_sum_per_request_vs_scale.png",
+        )
+        self.assertEqual(
+            metrics["gpu_memcpy_time_sum_ms_per_request_nsys"][2],
+            "nsys_gpu_memcpy_time_sum_per_request_vs_scale.png",
+        )
+
+    def test_execution_profile_plot_skips_all_nan_column(self) -> None:
+        df = pd.DataFrame([{
+            "cpu_cores": 1,
+            "mem_cap_gb": 4,
+            "gpu_mode": "on",
+            "input_scale": 64,
+            "gpu_kernel_time_sum_ms_per_request_nsys": float("nan"),
+        }])
+
+        with patch.object(plot.plt, "figure") as figure, patch.object(
+            plot.plt,
+            "savefig",
+        ) as savefig:
+            plot.plot_metric(
+                df,
+                metric="gpu_kernel_time_sum_ms_per_request_nsys",
+                title="Nsight Systems GPU Kernel Time vs. Input Scale",
+                ylabel="Summed GPU kernel time (ms/request)",
+                xlabel="input_scale",
+                out_png="unused.png",
+            )
+
+        figure.assert_not_called()
+        savefig.assert_not_called()
 
     def test_bandwidth_behavior_plot_metrics_are_registered(self) -> None:
         metrics = {

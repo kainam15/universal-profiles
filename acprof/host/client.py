@@ -54,6 +54,10 @@ from acprof.host.compute_profile_plan import (
     find_compute_profile_entry as _find_compute_profile_entry,
     load_compute_profile_plan as _load_compute_profile_plan,
 )
+from acprof.host.execution_profile_plan import (
+    find_execution_profile_entry as _find_execution_profile_entry,
+    load_execution_profile_plan as _load_execution_profile_plan,
+)
 
 # ─────────────────────────────────────────────
 # Config from env
@@ -102,6 +106,10 @@ IDLE_COOLDOWN_SECONDS = float(
 INPUT_SCALES_STR = os.getenv("INPUT_SCALES", "")
 INPUT_SCALE_PLAN_FILE = os.getenv("INPUT_SCALE_PLAN_FILE", "").strip()
 COMPUTE_PROFILE_PLAN_FILE = os.getenv("COMPUTE_PROFILE_PLAN_FILE", "").strip()
+EXECUTION_PROFILE_PLAN_FILE = os.getenv(
+    "EXECUTION_PROFILE_PLAN_FILE",
+    "",
+).strip()
 TASK_PARAM_STR = os.getenv("TASK_PARAM", "")
 
 
@@ -202,6 +210,42 @@ def _compute_profile_row_metrics(
         ),
         NCU_ERROR_FIELD: str(profile.get(NCU_ERROR_FIELD) or ""),
     }
+
+
+EXECUTION_PROFILE_NUMERIC_FIELDS = (
+    "cpu_heap_peak_bytes_massif",
+    "cpu_heap_extra_peak_bytes_massif",
+    "cpu_stack_peak_bytes_massif",
+    "cpu_heap_peak_total_bytes_massif",
+    "cpu_heap_peak_at_ms_massif",
+    "host_inference_wall_time_ms_per_request_nsys",
+    "cuda_api_time_sum_ms_per_request_nsys",
+    "cuda_api_call_count_per_request_nsys",
+    "gpu_kernel_time_sum_ms_per_request_nsys",
+    "gpu_kernel_launch_count_per_request_nsys",
+    "gpu_memcpy_time_sum_ms_per_request_nsys",
+    "gpu_memcpy_count_per_request_nsys",
+    "gpu_memcpy_bytes_per_request_nsys",
+)
+EXECUTION_PROFILE_ERROR_FIELDS = (
+    "compute_profile_error_massif",
+    "compute_profile_error_nsys",
+)
+
+
+def _execution_profile_row_metrics(
+    profile: Dict[str, Any],
+) -> Dict[str, str]:
+    """Format intrusive profiler summaries without changing their semantics."""
+    result = {
+        field: _fmt_float(_to_float_or_nan(profile.get(field)))
+        for field in EXECUTION_PROFILE_NUMERIC_FIELDS
+    }
+    result.update({
+        field: str(profile.get(field) or "")
+        for field in EXECUTION_PROFILE_ERROR_FIELDS
+    })
+    return result
 
 
 class EnergyAbort(RuntimeError):
@@ -1095,6 +1139,9 @@ def main() -> None:
         )
 
     compute_profile_plan = _load_compute_profile_plan(COMPUTE_PROFILE_PLAN_FILE)
+    execution_profile_plan = _load_execution_profile_plan(
+        EXECUTION_PROFILE_PLAN_FILE
+    )
     need_header = _is_file_empty(OUT_CSV)
     sidecar_mode = "w" if need_header else "a"
     if IDLE_DEBUG:
@@ -1454,6 +1501,16 @@ def main() -> None:
                         compute_profile,
                         latency_app_s,
                     )
+                )
+                execution_profile = _find_execution_profile_entry(
+                    execution_profile_plan,
+                    CPU_CORES,
+                    MEM_CAP_GB,
+                    GPU_MODE,
+                    row_scale,
+                )
+                row.update(
+                    _execution_profile_row_metrics(execution_profile)
                 )
                 idle_diag_record = None
                 if IDLE_DEBUG:

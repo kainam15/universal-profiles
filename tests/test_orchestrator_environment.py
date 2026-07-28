@@ -262,10 +262,13 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(meta.vcpu_power_method, "rapl_cgroup_cpu_share")
         self.assertEqual(meta.cpu_governor, "performance")
         self.assertEqual(meta.cpu_boost, "on")
-        self.assertEqual(disabled_meta.compute_profile_schema_version, "2")
         self.assertEqual(disabled_meta.compute_profile_tools, "[]")
         self.assertEqual(disabled_meta.compute_profiles_retained, "false")
         self.assertEqual(disabled_meta.compute_profile_provenance, "disabled")
+        self.assertEqual(meta.execution_profile_schema_version, "1")
+        self.assertEqual(meta.execution_profile_tools, "[]")
+        self.assertEqual(meta.execution_profiles_retained, "false")
+        self.assertEqual(meta.execution_profile_provenance, "disabled")
 
     def test_static_meta_compute_profile_fields_follow_host_metadata(self) -> None:
         self.assertIn("gpu_mem_total_bytes", STATIC_META_FIELDS)
@@ -275,9 +278,14 @@ class DetectEnvironmentTests(unittest.TestCase):
         )
         self.assertLess(
             STATIC_META_FIELDS.index("cpu_boost"),
-            STATIC_META_FIELDS.index("compute_profile_schema_version"),
+            STATIC_META_FIELDS.index("compute_profile_tools"),
         )
-        self.assertEqual(STATIC_META_FIELDS[-1], "compute_profile_provenance")
+        self.assertNotIn("compute_profile_schema_version", STATIC_META_FIELDS)
+        self.assertLess(
+            STATIC_META_FIELDS.index("compute_profile_provenance"),
+            STATIC_META_FIELDS.index("execution_profile_schema_version"),
+        )
+        self.assertEqual(STATIC_META_FIELDS[-1], "execution_profile_provenance")
 
     def test_enrich_static_meta_serializes_compute_profile_metadata(self) -> None:
         base = orchestrator.StaticMeta(
@@ -305,14 +313,12 @@ class DetectEnvironmentTests(unittest.TestCase):
         enriched = orchestrator.enrich_static_meta(
             base,
             {
-                "compute_profile_schema_version": 2,
                 "compute_profile_tools": ["torch_profiler_eager", "ncu"],
                 "ncu_metrics": ["gpu__time_duration.sum", "metric.sum"],
                 "compute_profiles_retained": True,
             },
         )
 
-        self.assertEqual(enriched.compute_profile_schema_version, "2")
         self.assertEqual(
             enriched.compute_profile_tools,
             '["torch_profiler_eager","ncu"]',
@@ -323,6 +329,26 @@ class DetectEnvironmentTests(unittest.TestCase):
         )
         self.assertEqual(enriched.compute_profiles_retained, "true")
         self.assertEqual(enriched.run_command, base.run_command)
+
+        execution_enriched = orchestrator.enrich_static_meta(
+            enriched,
+            {
+                "execution_profile_schema_version": 1,
+                "execution_profile_tools": ["massif", "nsys"],
+                "execution_profiles_retained": True,
+                "execution_profile_provenance": "collected",
+            },
+        )
+        self.assertEqual(execution_enriched.execution_profile_schema_version, "1")
+        self.assertEqual(
+            execution_enriched.execution_profile_tools,
+            '["massif","nsys"]',
+        )
+        self.assertEqual(execution_enriched.execution_profiles_retained, "true")
+        self.assertEqual(
+            execution_enriched.execution_profile_provenance,
+            "collected",
+        )
 
     def test_write_static_meta_csv_includes_enriched_fields_atomically(self) -> None:
         meta = orchestrator.StaticMeta(
@@ -345,7 +371,6 @@ class DetectEnvironmentTests(unittest.TestCase):
             vcpu_power_method="rapl_cgroup_cpu_share",
             cpu_governor="performance",
             cpu_boost="off",
-            compute_profile_schema_version="2",
             compute_profile_tools='["torch_profiler_eager","ncu"]',
             compute_profile_provenance="direct",
         )
@@ -363,7 +388,7 @@ class DetectEnvironmentTests(unittest.TestCase):
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(list(rows[0]), STATIC_META_FIELDS)
-        self.assertEqual(rows[0]["compute_profile_schema_version"], "2")
+        self.assertNotIn("compute_profile_schema_version", rows[0])
         self.assertEqual(rows[0]["compute_profile_provenance"], "direct")
         self.assertEqual(leftovers, [])
 
@@ -661,6 +686,64 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(
             captured_env["COMPUTE_PROFILE_PLAN_FILE"],
             "results/test-unit/compute_profile_plan.json",
+        )
+
+    def test_run_single_case_passes_execution_profile_plan_to_client(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+        captured_env = {}
+
+        def fake_run(cmd, check=True, capture=True, **kwargs):
+            if cmd and cmd[-2:] == ["-m", "acprof.host.client"]:
+                captured_env.update(kwargs.get("env", {}))
+                _write_cpu_case_csv(captured_env["OUT_CSV"], [5.0])
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch(
+            "acprof.host.orchestrator._start_container_session",
+            return_value=orchestrator.RunningContainer(
+                name="case_google-bert--bert-base-uncased_1c_4g_off",
+                base_url="http://127.0.0.1:8106",
+                host_port=8106,
+                cold_start_s=1.0,
+            ),
+        ), patch(
+            "acprof.host.orchestrator._resolve_packet_latency_runtime",
+            return_value=None,
+        ), patch(
+            "acprof.host.orchestrator._stop_container_session"
+        ), patch(
+            "acprof.host.orchestrator._run",
+            side_effect=fake_run,
+        ):
+            orchestrator.run_single_case(
+                task_info=task_info,
+                cpu=1,
+                mem=4,
+                gpu="off",
+                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                output_dir="results/test-unit",
+                project_dir=".",
+                warmup=0,
+                repeat=1,
+                repeat_in_window=1,
+                input_scales="64",
+                execution_profile_plan_file=(
+                    "results/test-unit/execution_profile_plan.json"
+                ),
+                require_packet_latency=False,
+            )
+
+        self.assertEqual(
+            captured_env["EXECUTION_PROFILE_PLAN_FILE"],
+            "results/test-unit/execution_profile_plan.json",
         )
 
     def test_run_single_case_passes_idle_debug_settings_to_client(self) -> None:

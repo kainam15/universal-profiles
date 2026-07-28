@@ -43,6 +43,8 @@ acprof/
 - `tcpdump` + `tshark`：必需，用于填充 `result_all.csv` 的 `latency_s` packet-level latency。`run.py` 启动时会先做 preflight；不满足条件会直接退出并给出恢复提示。
 - PyTorch profiler：默认独立采集 `torch_profiler_eager` 逻辑 FLOP。该 probe 会强制并验证 eager attention，只影响临时 profiler container，不改变正常 latency / energy workload 的运行时 attention 实现。
 - NVIDIA Nsight Compute CLI (`ncu`)：默认独立采集 `gpu_mode=on` 行的 GPU 实际执行 FLOP，并把 Tensor 与 Scalar FLOP 分列。通过 `--ncu-root` 挂载到临时 profiler container；不可用、不兼容当前 CUDA/driver、或性能计数器被限制时只会令 NCU 字段为 `nan`，不会影响 Torch probe 或主采集。Ubuntu multiverse 的 `nsight-compute` 可能过旧，推荐使用 NVIDIA CUDA apt 源里的版本化包，例如 `/opt/nvidia/nsight-compute/<version>/ncu`。
+- Valgrind Massif (`valgrind`)：仅在显式启用 execution profiling 时用于 `gpu_mode=off` 的 process-lifetime CPU memory peak。AC-Prof 会基于模型镜像构建 `dockerfiles/massif.Dockerfile` 派生镜像并在其中安装 Valgrind，不要求 host 预装；首次启用需要 Docker build 的 apt 网络访问。未启用或 probe 失败不会影响主采集。
+- NVIDIA Nsight Systems CLI (`nsys`)：仅在显式启用 execution profiling 时用于 `gpu_mode=on` 的 CUDA API、kernel 和 memcpy timeline 汇总。可通过 `--nsys-root` 指定 host 安装根目录或 executable；需要 NVIDIA driver、NVIDIA Container Toolkit 与被测 CUDA workload 兼容。
 - Intel Advisor：只保留给显式 `--compute-profile-tool vendor` 的兼容/诊断流程，用于 `gpu_mode=off` 行。通过 `--advisor-root` 挂载到临时 profiler container。
 - 原生 Docker 的 `docker0` bridge：packet sniffing 默认监听 `docker0`。如果抓包条件不足、PCAP 为空或 merge 后仍有 `latency_s=nan`，程序会退出，不会产出看似完整但缺少 packet latency 的结果。
 
@@ -110,6 +112,22 @@ python run.py --model google-bert/bert-base-uncased \
 ```
 
 `--compute-profile-tool auto` 是 `both` 的弃用兼容别名。`torch`、`ncu` 和 `vendor` 只用于单工具诊断或旧流程兼容；如需 CPU 行使用 Intel Advisor，可显式传 `--compute-profile-tool vendor --advisor-root /opt/intel/oneapi/advisor/latest`。
+
+Massif / Nsight Systems execution profiling 与上述 FLOP profiling 相互独立，并且默认关闭。需要时显式 opt in：
+
+```bash
+python run.py --model google-bert/bert-base-uncased \
+  --execution-profile-tool both \
+  --massif-repeat 1 --nsys-repeat 1 \
+  --nsys-root /opt/nvidia/nsight-systems \
+  --cpus 1,2 --mems 4,8 --gpus off,on
+```
+
+`massif` 只匹配 CPU-only 配置，`nsys` 只匹配 GPU 配置，`both` 同时选择两者。与按 device/input scale 共用结果的 FLOP probe 不同，execution probe 会按每一个完整的 `CPU × memory × GPU mode × input scale` 资源配置另起 profiler container，因此显著增加运行时间。
+
+Massif 的 peak 是被剖析进程整个生命周期的峰值，包含模型加载、预热和随后执行的 inference，不能解释成“单次 request 新增了多少内存”，`--massif-repeat` 也不会把 peak bytes 除回单 request。Nsight Systems 在 `acprof_compute` NVTX range 内汇总 CUDA API、GPU kernel 和 memcpy，并用 `--nsys-repeat` 归一化为单 request；不同 host/device timeline 和 CUDA stream 上的活动可能重叠，因此各项 `*_time_sum_*` 彼此相加不要求等于 host wall time。
+
+两个 execution probe 的失败互不影响，也不影响 FLOP probe 或正常 latency / energy / resource-usage 窗口。raw Massif / Nsight Systems artifacts（包括 stats 导出的 SQLite 缓存）默认保留；只有显式传入 `--discard-execution-profiles` 才在汇总后删除。
 
 ### 原生 Ubuntu 下采集 `latency_s` 的推荐启动方式
 
@@ -238,9 +256,16 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 - `gpu_util_vs_scale.png`
 - `gpu_mem_util_vs_scale.png`
 - `gpu_mem_used_vs_scale.png`
+- `massif_cpu_heap_peak_total_vs_scale.png`
+- `nsys_host_inference_wall_time_per_request_vs_scale.png`
+- `nsys_cuda_api_time_sum_per_request_vs_scale.png`
+- `nsys_gpu_kernel_time_sum_per_request_vs_scale.png`
+- `nsys_gpu_memcpy_time_sum_per_request_vs_scale.png`
 - `cold_start_bar.png`
 
 四张 CPU bandwidth behavior 图使用 Linux `perf` generic PMU event，只表示 cache / dTLB miss 的单 request 计数和 miss rate，用于观察访存局部性及地址转换开销；它们不是 DRAM read/write traffic，也不是实际内存带宽 GB/s。不同 CPU 架构、虚拟化环境或 kernel PMU 可能不提供相同事件；结果列不存在或整列为 `nan` 时，`plot.py` 会跳过对应图表。
+
+Massif 图使用 `cpu_heap_peak_total_bytes_massif / 1024^3` 得到绘图期派生列 `cpu_heap_peak_total_gib_massif`；不会改写原始 CSV。Nsight Systems 四张时间图分别展示 host wall、CUDA API sum、GPU kernel sum 和 GPU memcpy sum。未启用对应 probe、字段不存在或该分组内整列为 `nan` 时，这些图与其他可选指标一样自动跳过。
 
 延迟建模产物仍直接写在结果目录：
 
@@ -301,6 +326,12 @@ GPU: latency_s = exp(
 | `--compute-profile-mem` | 75% host memory | 临时 compute profiler container 的 memory cap，单位 GB。 |
 | `--keep-compute-profiles` | true | 保留 raw profiler artifacts；这是默认行为。artifact 位于模型结果目录的 `compute_profiles/`，路径不写入结果行。 |
 | `--discard-compute-profiles` | false | 汇总完成后删除 raw profiler artifacts。 |
+| `--execution-profile-tool` | `none` | 显式启用高开销 execution profiler：`massif` 用于 CPU-only、`nsys` 用于 GPU，`both` 同时选择两者；默认 `none` 不运行。probe 按完整资源配置和 input scale 采集。 |
+| `--massif-repeat` | `1` | 每个 Massif probe 内执行的 inference 次数。Massif peak 仍是包含加载和预热的 process-lifetime peak，不按此值归一化。 |
+| `--nsys-repeat` | `1` | 每个 Nsight Systems `acprof_compute` NVTX range 内的 inference 次数；time、count 和 bytes 汇总会除回单 request。 |
+| `--nsys-root` | auto | Host Nsight Systems install root 或 `nsys` executable；显式值优先于自动检测。 |
+| `--keep-execution-profiles` | true | 保留 `execution_profiles/` 下的 raw Massif `.out`、Nsight Systems `.nsys-rep` 及 stats 导出的 `.sqlite` artifacts；这是默认行为。 |
+| `--discard-execution-profiles` | false | 汇总成功后删除 raw execution-profiler artifacts，保留 plan、CSV 数值与错误诊断。 |
 | `--sniff-iface` | `docker0` | 本机 Docker 默认 bridge 对应的 `tcpdump` 抓包网卡。只有 daemon 改过 bridge 名时才覆盖。 |
 | `--output-dir` | `results` | 输出根目录。最终还会追加 model name 子目录。 |
 | `--skip-build` | false | 跳过 Docker build，直接使用已存在的 image tag。 |
@@ -333,7 +364,9 @@ GPU: latency_s = exp(
 | `result_all.csv` | 动态测量结果。每一行对应一个 resource config、一个 input scale、一次 warmup/repeat iteration。 |
 | `static_meta.csv` | 一行静态元数据。记录模型、镜像、batch、input scale 语义、GPU、环境和大小信息。 |
 | `input_scale_plan.json` | 所有任务族共用的 input scale/payload 计划。自动与手动 `--input-scales` 都会生成，主采集和 compute profiler 复用同一份内容。 |
-| `compute_profile_plan.json` | schema v2 的 per-scale FLOP profiling 结果。每个 CPU/GPU scale 可同时记录独立的 `torch_profiler_eager` 与 `ncu` profile；NCU 只存在于 GPU profile。失败信息按工具保存，读取端仍兼容旧版 plan。 |
+| `compute_profile_plan.json` | per-scale FLOP profiling 结果。每个 CPU/GPU scale 可同时记录独立的 `torch_profiler_eager` 与 `ncu` profile；NCU 只存在于 GPU profile。失败信息按工具保存，只读取当前按 profiler 分层的 plan 结构。 |
+| `execution_profile_plan.json` | 显式 execution profiling 的 per-resource-config/per-scale 计划与汇总。Massif 条目对应 `gpu_mode=off`，Nsight Systems 条目对应 `gpu_mode=on`；失败按工具记录且不阻断主实验。 |
+| `execution_profiles/` | 默认保留的 raw Massif `.out`、Nsight Systems `.nsys-rep` 与 stats 导出的 `.sqlite` artifacts；传入 `--discard-execution-profiles` 时汇总后删除。 |
 | `tmux_all.log` | 在 tmux pane 内运行 `run.py` 时自动记录的完整终端显示。实验正常结束或报错退出时落盘，不受 tmux 历史行数上限影响。 |
 | `latency_model_report.json` | `plot.py` 生成的 latency 拟合报告。包含分 CPU/GPU 的正值模型、整配置留一与最大尺度外推指标、质量门槛、系数和训练范围。 |
 | `latency_model_residuals.csv` | `plot.py` 生成的 case-level residual。每个 `GPU mode × CPU × memory × input scale` 聚合 case 一行，包含重复数/离散度、full-fit、resource-config OOF 和最大尺度 holdout 预测。 |
@@ -395,6 +428,21 @@ python -m acprof.cli.backfill_compute \
 | `gpu_kernel_launch_count_per_request_ncu` | NCU 报告中的 kernel launch 数，按 `--ncu-repeat` 归一化到单 request。 |
 | `gpu_kernel_time_sum_ms_per_request_ncu` | NCU 报告中的 kernel duration 总和，换算为 ms 并按 `--ncu-repeat` 归一化到单 request。 |
 | `compute_profile_error_ncu` | NCU probe 的独立诊断；正常为空，工具缺失、性能计数器受限或报告解析失败时记录原因。 |
+| `cpu_heap_peak_bytes_massif` | CPU-only Massif 全部 snapshot 中 useful heap 的独立最大值，单位 bytes。该 process lifetime 包含模型加载、预热与 inference，不是单 request 内存增量。 |
+| `cpu_heap_extra_peak_bytes_massif` | 全部 Massif snapshot 中 allocator bookkeeping、alignment 等 heap extra 的独立最大值，单位 bytes。 |
+| `cpu_stack_peak_bytes_massif` | 全部 Massif snapshot 中 stack 的独立最大值，单位 bytes。 |
+| `cpu_heap_peak_total_bytes_massif` | 全部 Massif snapshot 中 `heap + heap extra + stack` 总量的最大值，单位 bytes。三个 component 的独立 maxima 可能来自不同 snapshot，不保证三者相加等于该 total。`plot.py` 会据此派生 GiB 图，但不改写 CSV。 |
+| `cpu_heap_peak_at_ms_massif` | 上述 total 最大值 snapshot 相对被剖析进程启动的时间，单位 ms；包含加载/预热阶段，不能当作单 request latency。 |
+| `compute_profile_error_massif` | Massif execution probe 的独立诊断；正常为空，未安装、执行失败或输出解析失败时记录原因。虽然沿用 `compute_profile_error_*` CSV 命名，它与 FLOP compute probe 独立。 |
+| `host_inference_wall_time_ms_per_request_nsys` | Nsight Systems probe 中同步 inference window 的 host wall time，按 `--nsys-repeat` 归一化为 ms/request。 |
+| `cuda_api_time_sum_ms_per_request_nsys` | `acprof_compute` NVTX range 内 CUDA API activity duration 总和，单位 ms/request。它是 activity sum，不是 wall time。 |
+| `cuda_api_call_count_per_request_nsys` | 同一 NVTX range 内 CUDA API call 数，按 request 归一化。 |
+| `gpu_kernel_time_sum_ms_per_request_nsys` | 同一 NVTX range 内 GPU kernel duration 总和，单位 ms/request。并行 stream 上的 kernel 可能重叠。 |
+| `gpu_kernel_launch_count_per_request_nsys` | 同一 NVTX range 内 GPU kernel launch 数，按 request 归一化。 |
+| `gpu_memcpy_time_sum_ms_per_request_nsys` | 同一 NVTX range 内 GPU memcpy duration 总和，单位 ms/request；copy 与 kernel 或其他 copy 可能重叠。 |
+| `gpu_memcpy_count_per_request_nsys` | 同一 NVTX range 内 GPU memcpy activity 数，按 request 归一化。 |
+| `gpu_memcpy_bytes_per_request_nsys` | 同一 NVTX range 内 GPU memcpy bytes 总量，按 request 归一化。 |
+| `compute_profile_error_nsys` | Nsight Systems execution probe 的独立诊断；正常为空，工具/driver 不兼容、capture 失败或 SQLite report 解析失败时记录原因。 |
 | `gpu_idle_power_w` | GPU matched-control baseline power，单位 W。仅 `gpu_mode=on` 且 NVML 可用时有值；使用与 workload 相同的 NVML monitor 生命周期，由 control samples 梯形积分后的能量 / 实际 duration 得到。 |
 | `gpu_idle_measured_at` | `--idle-debug` 开启且 `gpu_mode=on` 时，matched control window 测量完成时的本地 ISO-8601 时间戳；未开启或 GPU 不可用时为 `nan`。CPU/GPU control 同时采集，因此两者共用同一时间戳。 |
 | `gpu_idle_rel_range_so_far` | `--idle-debug` 开启时，截至本行为止当前 case 内有效 `gpu_idle_power_w` 的相对极差，公式为 `(max - min) / mean`；`0.05` 表示 5%。未开启时为 `nan`。 |
@@ -485,7 +533,6 @@ python -m acprof.cli.backfill_compute \
 | `vcpu_power_method` | estimated vCPU 功耗计算方法。`rapl_cgroup_cpu_share` 表示用 RAPL package energy 乘以 container cgroup CPU share；`unavailable` 表示无法估算。 |
 | `cpu_governor` | Host CPU frequency governor 汇总值，例如 `performance`、`powersave`、`schedutil`；如果各 CPU policy 不一致，会写成 `mixed:<governor>=<count>,...`；无法读取时为 `unavailable`。 |
 | `cpu_boost` | Host CPU boost / turbo 状态。`on` 表示 boost 可用，`off` 表示关闭；无法读取时为 `unavailable`。 |
-| `compute_profile_schema_version` | compute profile schema 版本；双工具 plan 为 `2`。 |
 | `compute_profile_tools` | 本次启用/实际记录的 profiler 列表，例如 `["torch_profiler_eager","ncu"]`。 |
 | `torch_profiler_eager_flop_semantics` | Torch eager FLOP 的统计口径说明。 |
 | `torch_profiler_eager_attention_implementation` | 独立 Torch probe 强制并验证的 attention 实现，当前为 `eager`。 |
@@ -502,8 +549,18 @@ python -m acprof.cli.backfill_compute \
 | `gpu_sm_count` | profile 使用 GPU 的 SM 数。 |
 | `compute_profiles_retained` | raw profiler artifact 是否保留。 |
 | `compute_profile_provenance` | profile 来源，例如本次直接采集或历史 `posthoc_backfill`。 |
+| `execution_profile_schema_version` | execution profile plan schema 版本。 |
+| `execution_profile_tools` | 本次显式启用且适用于所选 GPU modes 的 execution profiler 列表，例如 `["massif","nsys"]`；工具缺失时仍列出，并通过对应 error 字段诊断；默认关闭时为空列表。 |
+| `massif_peak_semantics` | Massif peak 的 process-lifetime 口径，明确包含模型加载与预热。 |
+| `massif_repeat` | 每个 Massif probe 内的 inference repeat；peak bytes 不按 repeat 归一化。 |
+| `massif_version` | Massif 派生 container image 中的 Valgrind/Massif 版本；未启用或无法确认时为 `unknown`。 |
+| `nsys_timeline_semantics` | Nsight Systems timeline 的 NVTX range 与汇总口径。 |
+| `nsys_repeat` | 每个 Nsight Systems NVTX range 内的 inference repeat；动态汇总据此归一化到单 request。 |
+| `nsys_version` | Host Nsight Systems 版本；未启用或无法确认时为 `unknown`。 |
+| `execution_profiles_retained` | raw Massif / Nsight Systems artifacts 是否保留。 |
+| `execution_profile_provenance` | execution profile 的来源；默认关闭时为 `disabled`。 |
 
-这些字段在 profiling 后原子补写，原始 `run_command` 保持不变。随 `input_scale` 变化的 FLOP 数值只存放在 `result_all.csv`，不会进入单行 `static_meta.csv`。
+这些字段在 profiling 后原子补写，原始 `run_command` 保持不变。随完整资源配置和 `input_scale` 变化的 FLOP / execution 数值只存放在 `result_all.csv`，不会进入单行 `static_meta.csv`。
 
 ## 10. 结果行数和时间成本估算
 
@@ -597,6 +654,17 @@ compute_profile_s ~= len(input_scales) * (
 
 probe 次数按 input scale 和启用的 GPU mode 增长，不按 CPU × memory 主矩阵展开；`--torch-profiler-repeat` 与 `--ncu-repeat` 会进一步增加各自 workload，NCU 还可能对 kernel 做 replay，因此常是最昂贵的 probe，在部分模型上可能从数分钟增加到更久。默认保留 raw NCU report 也会增加磁盘占用。`--no-compute-profile` 可完全去掉这部分成本，单工具模式只去掉未选择的 probe。
 
+Execution profiling 默认 `none`，所以不进入上述默认时间预算。显式启用后，它与 FLOP probe 的复用策略不同，会按完整资源矩阵展开：
+
+```text
+execution_profile_s ~= len(input_scales) * len(cpus) * len(mems) * (
+  [gpu off enabled and Massif selected] * massif_probe_s
+  + [gpu on enabled and Nsys selected] * nsys_probe_s
+)
+```
+
+Massif 会放慢整个被剖析进程生命周期，Nsight Systems 还需要生成和解析 timeline；`--massif-repeat` / `--nsys-repeat` 会增加每个 probe 的 workload。默认保留 `execution_profiles/` raw artifacts 也会增加磁盘占用。大矩阵启用前建议先用一个 CPU、一个 memory cap 和一个 input scale 做 smoke。
+
 ## 11. 常见判断
 
 `run.py` 启动时报 `[sniff][ERROR]`，或 case 阶段因 packet latency 失败退出：
@@ -660,6 +728,13 @@ MFLOPS / compute profiling 字段全是 `nan`：
 - `gpu_mode=on` 时检查 `ncu` 是否安装、`--ncu-root` 是否正确、NVIDIA driver 是否允许 performance counters。若 `ncu` 下 CUDA 初始化报 `Error 36` 或没有 kernel，被测镜像裸跑 CUDA 正常但 ncu 下不正常，通常是 Nsight Compute 版本过旧；安装 NVIDIA CUDA apt 源里的较新版本后再试。
 - 如果显式使用 `--compute-profile-tool vendor`，`gpu_mode=off` 时检查 Intel Advisor 是否安装，以及 `--advisor-root` 是否指向可在容器中 bind mount 的 Advisor root 或 executable。
 - compute profiling 与正常 workload 分离；失败不会影响 latency / energy / resource usage 采集。完整状态与静态口径见 `compute_profile_plan.json` 和 `static_meta.csv`。
+
+Massif / Nsight Systems execution profiling 字段全是 `nan`：
+
+- 默认 `--execution-profile-tool none` 不采 execution profile，这是预期结果；需要显式选择 `massif`、`nsys` 或 `both`。
+- Massif 字段只填充 `gpu_mode=off` 行，Nsight Systems 字段只填充 `gpu_mode=on` 行；不适用的另一组字段保持 `nan`。
+- 分别查看 `compute_profile_error_massif` 和 `compute_profile_error_nsys`。Massif 检查派生镜像的 Docker build/apt 网络与 `dockerfiles/massif.Dockerfile` 日志，不要求 host 安装 `valgrind`；Nsight Systems 检查 `nsys`、`--nsys-root`、NVIDIA driver / Container Toolkit 兼容性，以及 raw `.nsys-rep` 是否可导出。
+- 两者是显式 opt-in 的独立 probe；一个失败不会影响另一个 execution probe、FLOP compute profiling 或主实验。完整状态与静态口径见 `execution_profile_plan.json` 和 `static_meta.csv`。
 
 `--skip-build` 后 `/scale_meta` 或 `/probe` 报错：
 

@@ -566,6 +566,50 @@ Examples:
     )
     parser.set_defaults(keep_compute_profiles=True)
 
+    # High-overhead execution profiling. These probes are intentionally
+    # opt-in because Massif and Nsight Systems launch an additional profiler
+    # container for every matching resource configuration and input scale.
+    parser.add_argument(
+        "--execution-profile-tool",
+        choices=("none", "both", "massif", "nsys"),
+        default="none",
+        help=(
+            "Optional execution profiler: Massif for CPU heap peaks, Nsight "
+            "Systems for CUDA/GPU timelines, both, or none (default)"
+        ),
+    )
+    parser.add_argument(
+        "--massif-repeat",
+        type=int,
+        default=1,
+        help="Inference repetitions inside each Valgrind Massif probe",
+    )
+    parser.add_argument(
+        "--nsys-repeat",
+        type=int,
+        default=1,
+        help="Inference repetitions inside each Nsight Systems capture range",
+    )
+    parser.add_argument(
+        "--nsys-root",
+        default=None,
+        help="Host Nsight Systems install root or nsys executable",
+    )
+    execution_artifact_group = parser.add_mutually_exclusive_group()
+    execution_artifact_group.add_argument(
+        "--keep-execution-profiles",
+        dest="keep_execution_profiles",
+        action="store_true",
+        help="Keep raw Massif and Nsight Systems artifacts (default)",
+    )
+    execution_artifact_group.add_argument(
+        "--discard-execution-profiles",
+        dest="keep_execution_profiles",
+        action="store_false",
+        help="Discard raw execution-profiler artifacts after summaries are recorded",
+    )
+    parser.set_defaults(keep_execution_profiles=True)
+
     # Infrastructure
     parser.add_argument("--sniff-iface", default="docker0", help="Network interface for tcpdump")
     parser.add_argument("--output-dir", default="results", help="Output directory")
@@ -581,6 +625,10 @@ Examples:
         parser.error("--torch-profiler-repeat must be > 0")
     if args.ncu_repeat <= 0:
         parser.error("--ncu-repeat must be > 0")
+    if args.massif_repeat <= 0:
+        parser.error("--massif-repeat must be > 0")
+    if args.nsys_repeat <= 0:
+        parser.error("--nsys-repeat must be > 0")
 
     terminal_output_dir = os.path.join(
         PROJECT_DIR,
@@ -633,6 +681,7 @@ Examples:
         build_image,
         collect_static_meta,
         enrich_static_meta_from_compute_plan,
+        enrich_static_meta_from_execution_plan,
         merge_all_csvs,
         plan_input_scales,
         run_matrix,
@@ -668,6 +717,7 @@ Examples:
         input_scale_type=input_scale_type,
         run_command=run_command,
         compute_profile_enabled=not args.no_compute_profile,
+        execution_profile_enabled=args.execution_profile_tool != "none",
     )
     write_static_meta_csv(static_meta, static_meta_csv)
 
@@ -721,6 +771,44 @@ Examples:
         except Exception as exc:
             print(f"[compute][WARN] Compute profiling unavailable: {exc}")
 
+    execution_profile_plan_file = ""
+    if args.execution_profile_tool == "none":
+        print(
+            "[execution-profile] Massif/Nsight Systems profiling disabled "
+            "(enable with --execution-profile-tool)"
+        )
+    else:
+        try:
+            from acprof.host.execution_profile import (
+                collect_execution_profile_plan,
+            )
+
+            execution_profile_plan_file = collect_execution_profile_plan(
+                task_info=task_info,
+                image_tag=image_info.tag,
+                cpu_list=cpu_list,
+                mem_list=mem_list,
+                gpu_list=gpu_list,
+                output_dir=output_dir,
+                input_scale_plan_file=planned_input_scales.plan_file,
+                project_dir=PROJECT_DIR,
+                tool_mode=args.execution_profile_tool,
+                massif_repeat=args.massif_repeat,
+                nsys_repeat=args.nsys_repeat,
+                nsys_root=args.nsys_root,
+                keep_profiles=args.keep_execution_profiles,
+            )
+            static_meta = enrich_static_meta_from_execution_plan(
+                static_meta,
+                execution_profile_plan_file,
+            )
+            write_static_meta_csv(static_meta, static_meta_csv)
+        except Exception as exc:
+            print(
+                "[execution-profile][WARN] Execution profiling unavailable: "
+                f"{exc}"
+            )
+
     total_cases = len(cpu_list) * len(mem_list) * len(gpu_list)
     n_scales = len(planned_input_scales.scales)
     total_iters = total_cases * n_scales * (args.warmup + args.repeat)
@@ -761,6 +849,7 @@ Examples:
             input_scales=input_scales_arg,
             input_scale_plan_file=planned_input_scales.plan_file,
             compute_profile_plan_file=compute_profile_plan_file,
+            execution_profile_plan_file=execution_profile_plan_file,
         )
     except PacketLatencyError as exc:
         print(f"\n[sniff][ERROR] {exc}", file=sys.stderr)

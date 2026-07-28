@@ -73,6 +73,21 @@ COMPUTE_NUMERIC_COLUMNS = [
     "gpu_kernel_launch_count_per_request_ncu",
     "gpu_kernel_time_sum_ms_per_request_ncu",
 ]
+EXECUTION_PROFILE_NUMERIC_COLUMNS = [
+    "cpu_heap_peak_bytes_massif",
+    "cpu_heap_extra_peak_bytes_massif",
+    "cpu_stack_peak_bytes_massif",
+    "cpu_heap_peak_total_bytes_massif",
+    "cpu_heap_peak_at_ms_massif",
+    "host_inference_wall_time_ms_per_request_nsys",
+    "cuda_api_time_sum_ms_per_request_nsys",
+    "cuda_api_call_count_per_request_nsys",
+    "gpu_kernel_time_sum_ms_per_request_nsys",
+    "gpu_kernel_launch_count_per_request_nsys",
+    "gpu_memcpy_time_sum_ms_per_request_nsys",
+    "gpu_memcpy_count_per_request_nsys",
+    "gpu_memcpy_bytes_per_request_nsys",
+]
 PLOT_METRICS = [
     (
         "latency_s",
@@ -205,6 +220,36 @@ PLOT_METRICS = [
         "NCU GPU Kernel Time per Request vs. Input Scale",
         "Summed kernel time (ms/request)",
         "ncu_gpu_kernel_time_sum_ms_per_request_vs_scale.png",
+    ),
+    (
+        "cpu_heap_peak_total_gib_massif",
+        "Massif Process-Lifetime Peak Memory vs. Input Scale",
+        "Peak heap + extra + stack (GiB)",
+        "massif_cpu_heap_peak_total_vs_scale.png",
+    ),
+    (
+        "host_inference_wall_time_ms_per_request_nsys",
+        "Nsight Systems Host Inference Wall Time vs. Input Scale",
+        "Host wall time (ms/request)",
+        "nsys_host_inference_wall_time_per_request_vs_scale.png",
+    ),
+    (
+        "cuda_api_time_sum_ms_per_request_nsys",
+        "Nsight Systems CUDA API Time vs. Input Scale",
+        "Summed CUDA API time (ms/request)",
+        "nsys_cuda_api_time_sum_per_request_vs_scale.png",
+    ),
+    (
+        "gpu_kernel_time_sum_ms_per_request_nsys",
+        "Nsight Systems GPU Kernel Time vs. Input Scale",
+        "Summed GPU kernel time (ms/request)",
+        "nsys_gpu_kernel_time_sum_per_request_vs_scale.png",
+    ),
+    (
+        "gpu_memcpy_time_sum_ms_per_request_nsys",
+        "Nsight Systems GPU Memcpy Time vs. Input Scale",
+        "Summed GPU memcpy time (ms/request)",
+        "nsys_gpu_memcpy_time_sum_per_request_vs_scale.png",
     ),
     (
         "container_cpu_util_avg_pct",
@@ -429,6 +474,7 @@ def prepare_df(csv_path: str) -> pd.DataFrame:
         "cpu_cores", "mem_cap_gb", "warmup", "cold_start_s",
         "throughput_samples_per_s",
         *COMPUTE_NUMERIC_COLUMNS,
+        *EXECUTION_PROFILE_NUMERIC_COLUMNS,
     ]
     for c in num_cols:
         if c in df.columns:
@@ -472,6 +518,7 @@ def prepare_df(csv_path: str) -> pd.DataFrame:
         "gpu_mem_used_avg_bytes": "gpu_mem_used_avg_gib",
         "gpu_mem_used_peak_bytes": "gpu_mem_used_peak_gib",
         "gpu_mem_total_bytes": "gpu_mem_total_gib",
+        "cpu_heap_peak_total_bytes_massif": "cpu_heap_peak_total_gib_massif",
     }
     for source_col, target_col in bytes_to_gib.items():
         if source_col in df.columns:
