@@ -34,6 +34,8 @@ from acprof.monitors.perf_mips import require_mips_prerequisites
 
 PROJECT_DIR = str(Path(__file__).resolve().parents[2])
 NATIVE_DOCKER_SOCKET = "/var/run/docker.sock"
+TMUX_TERMINAL_LOG_FILENAME = "tmux_all.log"
+_ACTIVE_TMUX_TERMINAL_LOG: tuple[str, str, str] | None = None
 
 
 def _parse_int_list(s: str) -> list:
@@ -61,6 +63,135 @@ def _format_run_command(argv: list[str]) -> str:
     if not argv:
         return "python run.py"
     return shlex.join(["python", *argv])
+
+
+def _start_tmux_terminal_log(
+    output_dir: str,
+    argv: list[str],
+) -> tuple[str, str, str] | None:
+    """Pipe all future output from the current tmux pane to a temporary log."""
+    pane_id = os.environ.get("TMUX_PANE", "").strip()
+    if not os.environ.get("TMUX") or not pane_id:
+        return None
+
+    try:
+        pipe_status = subprocess.run(
+            [
+                "tmux",
+                "display-message",
+                "-p",
+                "-t",
+                pane_id,
+                "#{pane_pipe}",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        print(f"[terminal-log][WARN] Cannot inspect tmux pane {pane_id}: {exc}")
+        return None
+
+    if pipe_status.returncode != 0:
+        detail = (pipe_status.stderr or pipe_status.stdout or "").strip()
+        print(
+            f"[terminal-log][WARN] Cannot inspect tmux pane {pane_id}: "
+            f"{detail or f'exit {pipe_status.returncode}'}"
+        )
+        return None
+    if pipe_status.stdout.strip().lower() in {"1", "on", "true", "yes"}:
+        print(
+            f"[terminal-log][WARN] tmux pane {pane_id} already has an active "
+            "pipe; leaving it unchanged and skipping automatic tmux_all.log"
+        )
+        return None
+
+    os.makedirs(output_dir, exist_ok=True)
+    log_path = os.path.join(output_dir, TMUX_TERMINAL_LOG_FILENAME)
+    partial_path = f"{log_path}.part"
+    try:
+        with open(partial_path, "w", encoding="utf-8") as f:
+            f.write(f"$ {_format_run_command(argv)}\n")
+    except OSError as exc:
+        print(f"[terminal-log][WARN] Cannot initialize {partial_path}: {exc}")
+        return None
+
+    pipe_command = f"cat >> {shlex.quote(partial_path)}"
+    try:
+        pipe_result = subprocess.run(
+            [
+                "tmux",
+                "pipe-pane",
+                "-O",
+                "-t",
+                pane_id,
+                pipe_command,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        print(f"[terminal-log][WARN] Cannot start tmux pane logging: {exc}")
+        return None
+
+    if pipe_result.returncode != 0:
+        detail = (pipe_result.stderr or pipe_result.stdout or "").strip()
+        print(
+            "[terminal-log][WARN] Cannot start tmux pane logging: "
+            f"{detail or f'exit {pipe_result.returncode}'}"
+        )
+        return None
+
+    print(f"[terminal-log] Recording tmux pane {pane_id}: {log_path}")
+    return pane_id, partial_path, log_path
+
+
+def _stop_tmux_terminal_log(
+    terminal_log: tuple[str, str, str],
+) -> bool:
+    """Stop the pane pipe and atomically publish the completed terminal log."""
+    pane_id, partial_path, log_path = terminal_log
+    try:
+        close_result = subprocess.run(
+            ["tmux", "pipe-pane", "-t", pane_id],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        print(
+            f"[terminal-log][WARN] Cannot stop tmux pane logging; "
+            f"partial log remains at {partial_path}: {exc}"
+        )
+        return False
+
+    if close_result.returncode != 0:
+        detail = (close_result.stderr or close_result.stdout or "").strip()
+        print(
+            f"[terminal-log][WARN] Cannot stop tmux pane logging; "
+            f"partial log remains at {partial_path}: "
+            f"{detail or f'exit {close_result.returncode}'}"
+        )
+        return False
+
+    try:
+        os.replace(partial_path, log_path)
+    except OSError as exc:
+        print(
+            f"[terminal-log][WARN] Cannot finalize {log_path}; "
+            f"partial log remains at {partial_path}: {exc}"
+        )
+        return False
+
+    print(f"[terminal-log] Saved terminal display: {log_path}")
+    return True
 
 
 def _docker_info_is_docker_desktop(info: str) -> bool:
@@ -330,7 +461,9 @@ def _cleanup_intermediate_results(csv_paths: list[str], output_dir: str, final_c
     print(f"[cleanup] Done. removed={removed}, missing={missing}, failed={failed}")
 
 
-def main():
+def _run_main():
+    global _ACTIVE_TMUX_TERMINAL_LOG
+
     start_time = time.perf_counter()
     bootstrap_project_env(PROJECT_DIR)
 
@@ -448,6 +581,16 @@ Examples:
         parser.error("--torch-profiler-repeat must be > 0")
     if args.ncu_repeat <= 0:
         parser.error("--ncu-repeat must be > 0")
+
+    terminal_output_dir = os.path.join(
+        PROJECT_DIR,
+        args.output_dir,
+        args.model.replace("/", "--"),
+    )
+    _ACTIVE_TMUX_TERMINAL_LOG = _start_tmux_terminal_log(
+        terminal_output_dir,
+        sys.argv,
+    )
 
     require_native_linux_host()
     require_native_docker()
@@ -645,6 +788,20 @@ Examples:
     else:
         elapsed = _format_elapsed(time.perf_counter() - start_time)
         print(f"\n[WARN] No results produced after {elapsed}. Static meta is still available: {static_meta_csv}")
+
+
+def main():
+    """Run profiling and always finalize an active tmux terminal recording."""
+    global _ACTIVE_TMUX_TERMINAL_LOG
+
+    _ACTIVE_TMUX_TERMINAL_LOG = None
+    try:
+        return _run_main()
+    finally:
+        terminal_log = _ACTIVE_TMUX_TERMINAL_LOG
+        _ACTIVE_TMUX_TERMINAL_LOG = None
+        if terminal_log is not None:
+            _stop_tmux_terminal_log(terminal_log)
 
 
 if __name__ == "__main__":

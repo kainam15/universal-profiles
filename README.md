@@ -179,6 +179,12 @@ results/google-bert--bert-base-uncased/
 results/test/google-bert--bert-base-uncased/
 ```
 
+在 tmux pane 内启动实验时，`run.py` 会从 preflight 开始持续记录该 pane
+的全部显示输出，并在实验正常结束或报错退出时自动关闭记录，将文件原子保存为
+结果目录下的 `tmux_all.log`。该机制不依赖 tmux 的 `history-limit`，无需再手动
+执行 `tmux capture-pane`。如果当前 pane 已经配置了其他 `pipe-pane`，程序会保留
+原有 pipe 并打印警告，不会擅自覆盖。
+
 ## 4. 常用命令
 
 指定资源矩阵：
@@ -322,6 +328,7 @@ GPU: latency_s = exp(
 | `static_meta.csv` | 一行静态元数据。记录模型、镜像、batch、input scale 语义、GPU、环境和大小信息。 |
 | `input_scale_plan.json` | 所有任务族共用的 input scale/payload 计划。自动与手动 `--input-scales` 都会生成，主采集和 compute profiler 复用同一份内容。 |
 | `compute_profile_plan.json` | schema v2 的 per-scale FLOP profiling 结果。每个 CPU/GPU scale 可同时记录独立的 `torch_profiler_eager` 与 `ncu` profile；NCU 只存在于 GPU profile。失败信息按工具保存，读取端仍兼容旧版 plan。 |
+| `tmux_all.log` | 在 tmux pane 内运行 `run.py` 时自动记录的完整终端显示。实验正常结束或报错退出时落盘，不受 tmux 历史行数上限影响。 |
 | `latency_model_report.json` | `plot.py` 生成的 latency 拟合报告。包含分 CPU/GPU 的正值模型、整配置留一与最大尺度外推指标、质量门槛、系数和训练范围。 |
 | `latency_model_residuals.csv` | `plot.py` 生成的 case-level residual。每个 `GPU mode × CPU × memory × input scale` 聚合 case 一行，包含重复数/离散度、full-fit、resource-config OOF 和最大尺度 holdout 预测。 |
 | `latency_model_fit_curves.png` | `plot.py` 生成的 full-fit 曲线图。横轴为 input scale，CPU-off 与 GPU-on 分面展示，每个 `CPU × memory` 资源配置一条拟合曲线，并叠加实测 case 中位数。 |

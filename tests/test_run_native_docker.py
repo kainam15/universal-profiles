@@ -1,4 +1,5 @@
 import io
+import os
 import sys
 import tempfile
 import unittest
@@ -9,6 +10,90 @@ from unittest.mock import patch
 from acprof.host import orchestrator
 from acprof.cli import run
 from acprof.host.detect import TaskInfo
+
+
+class TmuxTerminalLogTests(unittest.TestCase):
+    def test_terminal_log_is_not_started_outside_tmux(self) -> None:
+        with patch.dict(
+            "acprof.cli.run.os.environ",
+            {},
+            clear=True,
+        ), patch("acprof.cli.run.subprocess.run") as mock_run:
+            terminal_log = run._start_tmux_terminal_log(
+                "/tmp/acprof-results",
+                ["run.py", "--model", "dummy-model"],
+            )
+
+        self.assertIsNone(terminal_log)
+        mock_run.assert_not_called()
+
+    def test_terminal_log_records_and_atomically_finalizes_tmux_output(self) -> None:
+        completed = SimpleNamespace(returncode=0, stdout="", stderr="")
+        pipe_status = SimpleNamespace(returncode=0, stdout="0\n", stderr="")
+        commands = []
+
+        def fake_run(command, **_kwargs):
+            commands.append(command)
+            if command[1] == "display-message":
+                return pipe_status
+            return completed
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "acprof.cli.run.os.environ",
+            {
+                "TMUX": "/tmp/tmux-1000/default,123,0",
+                "TMUX_PANE": "%7",
+            },
+            clear=True,
+        ), patch(
+            "acprof.cli.run.subprocess.run",
+            side_effect=fake_run,
+        ):
+            output_dir = os.path.join(tmp, "results", "org--model")
+            terminal_log = run._start_tmux_terminal_log(
+                output_dir,
+                ["run.py", "--model", "org/model"],
+            )
+            self.assertIsNotNone(terminal_log)
+            pane_id, partial_path, log_path = terminal_log
+
+            with open(partial_path, "a", encoding="utf-8") as f:
+                f.write("experiment output\n")
+
+            finalized = run._stop_tmux_terminal_log(terminal_log)
+
+            self.assertTrue(finalized)
+            self.assertEqual(pane_id, "%7")
+            self.assertFalse(os.path.exists(partial_path))
+            with open(log_path, "r", encoding="utf-8") as f:
+                terminal_text = f.read()
+
+        self.assertIn("$ python run.py --model org/model", terminal_text)
+        self.assertIn("experiment output", terminal_text)
+        self.assertEqual(commands[0][1], "display-message")
+        self.assertEqual(commands[1][1], "pipe-pane")
+        self.assertIn("-O", commands[1])
+        self.assertEqual(commands[2], ["tmux", "pipe-pane", "-t", "%7"])
+
+    def test_main_finalizes_tmux_log_when_profiling_raises(self) -> None:
+        terminal_log = ("%3", "/tmp/tmux_all.log.part", "/tmp/tmux_all.log")
+
+        def fail_after_starting_log():
+            run._ACTIVE_TMUX_TERMINAL_LOG = terminal_log
+            raise RuntimeError("profiling failed")
+
+        with patch(
+            "acprof.cli.run._run_main",
+            side_effect=fail_after_starting_log,
+        ), patch(
+            "acprof.cli.run._stop_tmux_terminal_log",
+            return_value=True,
+        ) as stop_log:
+            with self.assertRaisesRegex(RuntimeError, "profiling failed"):
+                run.main()
+
+        stop_log.assert_called_once_with(terminal_log)
+        self.assertIsNone(run._ACTIVE_TMUX_TERMINAL_LOG)
 
 
 class NativeDockerGuardTests(unittest.TestCase):
