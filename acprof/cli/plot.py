@@ -331,6 +331,7 @@ PLOT_METRICS = [
     ),
 ]
 PLOT_OUTPUT_DIRS = ("cpu", "gpu", "cpu+gpu")
+LATENCY_MODEL_DIR = "latency_model"
 LATENCY_MODEL_REPORT = "latency_model_report.json"
 LATENCY_MODEL_RESIDUALS = "latency_model_residuals.csv"
 LATENCY_MODEL_RESIDUAL_PLOT = "latency_model_residuals.png"
@@ -339,6 +340,7 @@ LATENCY_MODEL_FEATURES = {
     "cpu": [
         "intercept",
         "log_input_scale",
+        "log_input_scale_squared",
         "log_cpu_cores",
         "log_mem_cap_gb",
         "log_input_scale_x_log_cpu_cores",
@@ -347,20 +349,24 @@ LATENCY_MODEL_FEATURES = {
         "intercept",
         "log_input_scale",
         "inverse_cpu_cores",
+        "inverse_cpu_cores_squared",
         "log_mem_cap_gb",
         "log_input_scale_x_inverse_cpu_cores",
+        "log_input_scale_x_inverse_cpu_cores_squared",
     ],
 }
 LATENCY_MODEL_FORMULAS = {
     "cpu": (
         "latency_s = exp(intercept + log_input_scale "
+        "+ log_input_scale_squared "
         "+ log_cpu_cores + log_mem_cap_gb "
         "+ log_input_scale_x_log_cpu_cores)"
     ),
     "gpu": (
         "latency_s = exp(intercept + log_input_scale "
-        "+ inverse_cpu_cores + log_mem_cap_gb "
-        "+ log_input_scale_x_inverse_cpu_cores)"
+        "+ inverse_cpu_cores + inverse_cpu_cores_squared "
+        "+ log_mem_cap_gb + log_input_scale_x_inverse_cpu_cores "
+        "+ log_input_scale_x_inverse_cpu_cores_squared)"
     ),
 }
 LATENCY_MODEL_MIN_VALIDATION_R2 = 0.80
@@ -1162,18 +1168,22 @@ def _model_features(row, hardware_model: str) -> list[float]:
         return [
             1.0,
             log_input_scale,
+            log_input_scale**2,
             log_cpu_cores,
             log_mem_cap_gb,
             log_input_scale * log_cpu_cores,
         ]
     if hardware_model == "gpu":
         inverse_cpu_cores = 1.0 / cpu_cores
+        inverse_cpu_cores_squared = inverse_cpu_cores**2
         return [
             1.0,
             log_input_scale,
             inverse_cpu_cores,
+            inverse_cpu_cores_squared,
             log_mem_cap_gb,
             log_input_scale * inverse_cpu_cores,
+            log_input_scale * inverse_cpu_cores_squared,
         ]
     raise ValueError(f"unknown latency hardware model: {hardware_model}")
 
@@ -2021,19 +2031,30 @@ def write_latency_model_report(
     output_dir: str,
 ) -> None:
     """Fit validated positive latency models and write report/residual artifacts."""
+    model_output_dir = os.path.join(output_dir, LATENCY_MODEL_DIR)
+    os.makedirs(model_output_dir, exist_ok=True)
+
     if "latency_s" not in df.columns:
-        _write_skipped_latency_model_report(output_dir, static_meta, "latency_s column missing")
+        _write_skipped_latency_model_report(
+            model_output_dir,
+            static_meta,
+            "latency_s column missing",
+        )
         return
 
     try:
         model_df = _latency_model_frame(df)
     except ValueError as exc:
-        _write_skipped_latency_model_report(output_dir, static_meta, str(exc))
+        _write_skipped_latency_model_report(
+            model_output_dir,
+            static_meta,
+            str(exc),
+        )
         return
 
     if len(model_df) < 3:
         _write_skipped_latency_model_report(
-            output_dir,
+            model_output_dir,
             static_meta,
             f"need at least 3 valid raw rows, got {len(model_df)}",
         )
@@ -2042,7 +2063,7 @@ def write_latency_model_report(
     points = _aggregate_latency_model_points(model_df)
     if len(points) < 3:
         _write_skipped_latency_model_report(
-            output_dir,
+            model_output_dir,
             static_meta,
             f"need at least 3 unique configuration-scale cases, got {len(points)}",
         )
@@ -2188,7 +2209,10 @@ def write_latency_model_report(
             [predictions[_point_key(row)] for row in predicted_rows],
         )
 
-    residuals_path = os.path.join(output_dir, LATENCY_MODEL_RESIDUALS)
+    residuals_path = os.path.join(
+        model_output_dir,
+        LATENCY_MODEL_RESIDUALS,
+    )
     with open(residuals_path, "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=LATENCY_MODEL_RESIDUAL_FIELDS)
         writer.writeheader()
@@ -2344,7 +2368,10 @@ def write_latency_model_report(
             "one median-aggregated hardware/cpu/memory/input-scale case per row"
         ),
     }
-    report_path = os.path.join(output_dir, LATENCY_MODEL_REPORT)
+    report_path = os.path.join(
+        model_output_dir,
+        LATENCY_MODEL_REPORT,
+    )
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(_clean_json_value(report), f, ensure_ascii=True, indent=2)
         f.write("\n")
@@ -2413,13 +2440,23 @@ def main(argv=None):
             ),
         )
     write_latency_model_report(df, static_meta, output_dir)
-    residuals_path = os.path.join(output_dir, LATENCY_MODEL_RESIDUALS)
-    report_path = os.path.join(output_dir, LATENCY_MODEL_REPORT)
+    model_output_dir = os.path.join(output_dir, LATENCY_MODEL_DIR)
+    residuals_path = os.path.join(
+        model_output_dir,
+        LATENCY_MODEL_RESIDUALS,
+    )
+    report_path = os.path.join(
+        model_output_dir,
+        LATENCY_MODEL_REPORT,
+    )
     if os.path.exists(residuals_path):
         plot_latency_model_residuals(
             residuals_path,
             (
-                os.path.join(output_dir, LATENCY_MODEL_RESIDUAL_PLOT)
+                os.path.join(
+                    model_output_dir,
+                    LATENCY_MODEL_RESIDUAL_PLOT,
+                )
                 if SAVE_PNG
                 else None
             ),
@@ -2428,7 +2465,10 @@ def main(argv=None):
             residuals_path,
             report_path,
             (
-                os.path.join(output_dir, LATENCY_MODEL_FIT_CURVES_PLOT)
+                os.path.join(
+                    model_output_dir,
+                    LATENCY_MODEL_FIT_CURVES_PLOT,
+                )
                 if SAVE_PNG
                 else None
             ),

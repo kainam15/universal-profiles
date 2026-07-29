@@ -267,27 +267,30 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 
 Massif 图使用 `cpu_heap_peak_total_bytes_massif / 1024^3` 得到绘图期派生列 `cpu_heap_peak_total_gib_massif`；不会改写原始 CSV。Nsight Systems 四张时间图分别展示 host wall、CUDA API sum、GPU kernel sum 和 GPU memcpy sum。未启用对应 probe、字段不存在或该分组内整列为 `nan` 时，这些图与其他可选指标一样自动跳过。
 
-延迟建模产物仍直接写在结果目录：
+延迟建模产物统一写入结果目录下的 `latency_model/`：
 
-- `latency_model_report.json`
-- `latency_model_residuals.csv`
-- `latency_model_fit_curves.png`
+- `latency_model/latency_model_report.json`
+- `latency_model/latency_model_residuals.csv`
+- `latency_model/latency_model_fit_curves.png`
+- `latency_model/latency_model_residuals.png`
 
 建模前会先按 `GPU mode × CPU × memory × input scale` 对正式测量重复取中位数，确保同一个 case 的重复不会被拆到训练与测试两侧。CPU-off 与 GPU-on 使用两套独立的 log-linear least-squares 模型：
 
 ```text
 CPU: latency_s = exp(
-  intercept + log(input_scale) + log(cpu_cores) + log(mem_cap_gb)
+  intercept + log(input_scale) + log(input_scale)²
+  + log(cpu_cores) + log(mem_cap_gb)
   + log(input_scale) × log(cpu_cores)
 )
 
 GPU: latency_s = exp(
-  intercept + log(input_scale) + 1/cpu_cores + log(mem_cap_gb)
-  + log(input_scale) × 1/cpu_cores
+  intercept + log(input_scale) + 1/cpu_cores + 1/cpu_cores²
+  + log(mem_cap_gb) + log(input_scale) × 1/cpu_cores
+  + log(input_scale) × 1/cpu_cores²
 )
 ```
 
-指数链接保证预测为正；CPU/GPU 独立系数等价于在联合模型中加入 GPU 相关交互。报告分别执行两种组外验证：
+CPU 模型使用共同的二次 log input-scale 项表达各资源配置共有的输入规模曲率，避免强制延迟在 log-log 空间中保持直线。GPU 模型同时使用一阶和二阶逆 CPU 特征，以表达主机侧开销随 CPU 增加快速下降、随后进入 GPU 主导平台区的形状，避免单一 `1/cpu_cores` 项在中高核数间强行平滑。指数链接保证预测为正；CPU/GPU 独立系数等价于在联合模型中加入 GPU 相关交互。报告分别执行两种组外验证：
 
 - resource configuration holdout：逐次完整留出一个 `(cpu_cores, mem_cap_gb)` 配置及其全部 input scale；
 - input scale holdout：仅使用较小尺度训练，完整留出最大 input scale，检验向前外推；至少需要 3 个尺度，保证留出最大值后训练侧仍有 2 个不同尺度。
@@ -368,10 +371,10 @@ GPU: latency_s = exp(
 | `execution_profile_plan.json` | 显式 execution profiling 的 per-resource-config/per-scale 计划与汇总。Massif 条目对应 `gpu_mode=off`，Nsight Systems 条目对应 `gpu_mode=on`；失败按工具记录且不阻断主实验。 |
 | `execution_profiles/` | 默认保留的 raw Massif `.out`、Nsight Systems `.nsys-rep` 与 stats 导出的 `.sqlite` artifacts；传入 `--discard-execution-profiles` 时汇总后删除。 |
 | `tmux_all.log` | 在 tmux pane 内运行 `run.py` 时自动记录的完整终端显示。实验正常结束或报错退出时落盘，不受 tmux 历史行数上限影响。 |
-| `latency_model_report.json` | `plot.py` 生成的 latency 拟合报告。包含分 CPU/GPU 的正值模型、整配置留一与最大尺度外推指标、质量门槛、系数和训练范围。 |
-| `latency_model_residuals.csv` | `plot.py` 生成的 case-level residual。每个 `GPU mode × CPU × memory × input scale` 聚合 case 一行，包含重复数/离散度、full-fit、resource-config OOF 和最大尺度 holdout 预测。 |
-| `latency_model_fit_curves.png` | `plot.py` 生成的 full-fit 曲线图。横轴为 input scale，CPU-off 与 GPU-on 分面展示，每个 `CPU × memory` 资源配置一条拟合曲线，并叠加实测 case 中位数。 |
-| `latency_model_residuals.png` | `plot.py` 在 residual CSV 有有效数据时生成的模型诊断图，包含 OOF 实际值/预测值、相对残差分布及残差随预测延迟和输入尺度的变化。 |
+| `latency_model/latency_model_report.json` | `plot.py` 生成的 latency 拟合报告。包含分 CPU/GPU 的正值模型、整配置留一与最大尺度外推指标、质量门槛、系数和训练范围。 |
+| `latency_model/latency_model_residuals.csv` | `plot.py` 生成的 case-level residual。每个 `GPU mode × CPU × memory × input scale` 聚合 case 一行，包含重复数/离散度、full-fit、resource-config OOF 和最大尺度 holdout 预测。 |
+| `latency_model/latency_model_fit_curves.png` | `plot.py` 生成的 full-fit 曲线图。横轴为 input scale，CPU-off 与 GPU-on 分面展示，每个 `CPU × memory` 资源配置一条拟合曲线，并叠加实测 case 中位数。 |
+| `latency_model/latency_model_residuals.png` | `plot.py` 在 residual CSV 有有效数据时生成的模型诊断图，包含 OOF 实际值/预测值、相对残差分布及残差随预测延迟和输入尺度的变化。 |
 | `debug_idle_diag/result_case_*.csv.idle_diag.jsonl` | 仅 `--idle-debug` 时生成。每行对应一个 workload window 的 idle 诊断记录，包含 GPU NVML idle power trace、`nvidia-smi` GPU/process 快照、CPU idle window 内 RAPL 子窗口功率、host/container CPU delta、top proc CPU delta，以及 after-idle 快照，用于定位 `gpu_idle_power_w` / `cpu_idle_power_w` case 内波动来源。 |
 | `cpu/*.png` | `plot.py` 生成的 CPU-only 图表。 |
 | `gpu/*.png` | `plot.py` 生成的 GPU-only 图表。 |

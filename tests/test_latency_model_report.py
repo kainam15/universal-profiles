@@ -129,14 +129,18 @@ class LatencyModelReportTests(unittest.TestCase):
 
     @staticmethod
     def _read_artifacts(output_dir: str) -> tuple[dict, list[dict[str, str]]]:
+        model_output_dir = os.path.join(
+            output_dir,
+            plot.LATENCY_MODEL_DIR,
+        )
         with open(
-            os.path.join(output_dir, "latency_model_report.json"),
+            os.path.join(model_output_dir, plot.LATENCY_MODEL_REPORT),
             "r",
             encoding="utf-8",
         ) as f:
             report = json.load(f)
         with open(
-            os.path.join(output_dir, "latency_model_residuals.csv"),
+            os.path.join(model_output_dir, plot.LATENCY_MODEL_RESIDUALS),
             "r",
             encoding="utf-8",
             newline="",
@@ -153,6 +157,23 @@ class LatencyModelReportTests(unittest.TestCase):
                 "plot_metric",
             ), patch.object(plot, "plot_cold_start_bar"):
                 plot.main()
+
+            model_output_dir = os.path.join(tmp, plot.LATENCY_MODEL_DIR)
+            self.assertTrue(os.path.isdir(model_output_dir))
+            for artifact_name in (
+                plot.LATENCY_MODEL_REPORT,
+                plot.LATENCY_MODEL_RESIDUALS,
+                plot.LATENCY_MODEL_RESIDUAL_PLOT,
+                plot.LATENCY_MODEL_FIT_CURVES_PLOT,
+            ):
+                self.assertTrue(
+                    os.path.isfile(
+                        os.path.join(model_output_dir, artifact_name)
+                    )
+                )
+                self.assertFalse(
+                    os.path.exists(os.path.join(tmp, artifact_name))
+                )
 
             report, residual_rows = self._read_artifacts(tmp)
 
@@ -292,6 +313,103 @@ class LatencyModelReportTests(unittest.TestCase):
             all(float(row["fitted_predicted_latency_s"]) > 0.0 for row in residual_rows)
         )
 
+    def test_cpu_log_scale_squared_feature_captures_curvature(self) -> None:
+        rows = self._rows(gpu_modes=("off",))
+        repeat_factors = (0.99, 1.0, 1.01)
+        for row in rows:
+            cpu = int(row["cpu_cores"])
+            mem = int(row["mem_cap_gb"])
+            input_scale = int(row["input_scale"])
+            log_scale = math.log(input_scale)
+            log_cpu = math.log(cpu)
+            log_latency = (
+                -4.50
+                + 0.40 * log_scale
+                + 0.08 * log_scale**2
+                - 0.70 * log_cpu
+                + 0.01 * math.log(mem)
+                - 0.04 * log_scale * log_cpu
+            )
+            repeat_factor = repeat_factors[int(row["repeat_idx"])]
+            row["latency_s"] = f"{math.exp(log_latency) * repeat_factor:.12f}"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = self._write_fixture(tmp, rows)
+            df = pd.read_csv(csv_path)
+            plot.write_latency_model_report(
+                df,
+                plot.read_static_meta(csv_path),
+                tmp,
+            )
+            report, residual_rows = self._read_artifacts(tmp)
+
+        cpu_report = report["models"]["cpu"]
+        self.assertIn(
+            "log_input_scale_squared",
+            cpu_report["selected_feature_columns"],
+        )
+        self.assertLess(cpu_report["metrics"]["fit"]["relative_mae"], 1e-6)
+        fitted_relative_errors = [
+            abs(
+                float(row["fitted_predicted_latency_s"])
+                - float(row["latency_s"])
+            )
+            / float(row["latency_s"])
+            for row in residual_rows
+        ]
+        self.assertLess(max(fitted_relative_errors), 1e-6)
+
+    def test_gpu_inverse_square_feature_captures_cpu_saturation(self) -> None:
+        rows = self._rows(gpu_modes=("on",))
+        repeat_factors = (0.99, 1.0, 1.01)
+        for row in rows:
+            cpu = int(row["cpu_cores"])
+            mem = int(row["mem_cap_gb"])
+            input_scale = int(row["input_scale"])
+            inverse_cpu = 1.0 / cpu
+            log_scale = math.log(input_scale)
+            log_latency = (
+                -6.85
+                + 0.39 * log_scale
+                - 1.80 * inverse_cpu
+                + 2.38 * inverse_cpu**2
+                + 0.01 * math.log(mem)
+                + 0.24 * log_scale * inverse_cpu
+                - 0.16 * log_scale * inverse_cpu**2
+            )
+            repeat_factor = repeat_factors[int(row["repeat_idx"])]
+            row["latency_s"] = f"{math.exp(log_latency) * repeat_factor:.12f}"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = self._write_fixture(tmp, rows)
+            df = pd.read_csv(csv_path)
+            plot.write_latency_model_report(
+                df,
+                plot.read_static_meta(csv_path),
+                tmp,
+            )
+            report, residual_rows = self._read_artifacts(tmp)
+
+        gpu_report = report["models"]["gpu"]
+        self.assertIn(
+            "inverse_cpu_cores_squared",
+            gpu_report["selected_feature_columns"],
+        )
+        self.assertIn(
+            "log_input_scale_x_inverse_cpu_cores_squared",
+            gpu_report["selected_feature_columns"],
+        )
+        self.assertLess(gpu_report["metrics"]["fit"]["relative_mae"], 1e-6)
+        fitted_relative_errors = [
+            abs(
+                float(row["fitted_predicted_latency_s"])
+                - float(row["latency_s"])
+            )
+            / float(row["latency_s"])
+            for row in residual_rows
+        ]
+        self.assertLess(max(fitted_relative_errors), 1e-6)
+
     def test_bad_gpu_extrapolation_cannot_hide_behind_cpu_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             rows = self._rows(break_one_gpu_max_scale_case=True)
@@ -388,7 +506,12 @@ class LatencyModelReportTests(unittest.TestCase):
             for row in rows:
                 row["gpu_mode"] = "mystery-device"
             csv_path = self._write_fixture(tmp, rows)
-            residuals_path = os.path.join(tmp, "latency_model_residuals.csv")
+            model_output_dir = os.path.join(tmp, plot.LATENCY_MODEL_DIR)
+            os.makedirs(model_output_dir, exist_ok=True)
+            residuals_path = os.path.join(
+                model_output_dir,
+                plot.LATENCY_MODEL_RESIDUALS,
+            )
             with open(residuals_path, "w", encoding="utf-8") as f:
                 f.write("stale-marker\n")
 
@@ -414,12 +537,13 @@ class LatencyModelReportTests(unittest.TestCase):
                 plot.read_static_meta(csv_path),
                 tmp,
             )
+            model_output_dir = os.path.join(tmp, plot.LATENCY_MODEL_DIR)
             residuals_path = os.path.join(
-                tmp,
+                model_output_dir,
                 plot.LATENCY_MODEL_RESIDUALS,
             )
             out_png = os.path.join(
-                tmp,
+                model_output_dir,
                 plot.LATENCY_MODEL_RESIDUAL_PLOT,
             )
 
@@ -441,16 +565,17 @@ class LatencyModelReportTests(unittest.TestCase):
                 plot.read_static_meta(csv_path),
                 tmp,
             )
+            model_output_dir = os.path.join(tmp, plot.LATENCY_MODEL_DIR)
             residuals_path = os.path.join(
-                tmp,
+                model_output_dir,
                 plot.LATENCY_MODEL_RESIDUALS,
             )
             report_path = os.path.join(
-                tmp,
+                model_output_dir,
                 plot.LATENCY_MODEL_REPORT,
             )
             out_png = os.path.join(
-                tmp,
+                model_output_dir,
                 plot.LATENCY_MODEL_FIT_CURVES_PLOT,
             )
 
