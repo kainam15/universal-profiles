@@ -254,6 +254,40 @@ heap_tree=peak
             os.path.realpath(version_root),
         )
 
+    def test_nsys_container_runtime_preflight_runs_importer(self) -> None:
+        commands = []
+        with tempfile.TemporaryDirectory() as tmp:
+            importer_dir = os.path.join(tmp, "host-linux-x64")
+            os.makedirs(importer_dir)
+            importer = os.path.join(importer_dir, "QdstrmImporter")
+            with open(importer, "w", encoding="utf-8") as executable:
+                executable.write("#!/bin/sh\n")
+            os.chmod(importer, 0o755)
+
+            def fake_run(command, check=False):
+                commands.append(command)
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="NVIDIA Nsight Systems test importer\n",
+                    stderr="",
+                )
+
+            with patch(
+                "acprof.host.execution_profile._run",
+                side_effect=fake_run,
+            ):
+                version = (
+                    execution_profile._validate_nsys_container_runtime(
+                        "acprof-nsys-test:latest",
+                        tmp,
+                    )
+                )
+
+        self.assertEqual(version, "NVIDIA Nsight Systems test importer")
+        self.assertEqual(commands[0][0:3], ["docker", "run", "--rm"])
+        self.assertIn(f"{tmp}:{tmp}:ro", commands[0])
+        self.assertEqual(commands[0][-2:], [importer, "--version"])
+
     def test_execution_probe_does_not_force_compute_profiler_threads(
         self,
     ) -> None:
@@ -339,6 +373,8 @@ heap_tree=peak
         with tempfile.TemporaryDirectory() as tmp, patch(
             "acprof.host.execution_profile._build_massif_image",
         ) as build_massif, patch(
+            "acprof.host.execution_profile._build_nsys_image",
+        ) as build_nsys, patch(
             "acprof.host.execution_profile._find_nsys_executable",
         ) as find_nsys:
             plan_path = execution_profile.collect_execution_profile_plan(
@@ -366,6 +402,7 @@ heap_tree=peak
             )
 
         build_massif.assert_not_called()
+        build_nsys.assert_not_called()
         find_nsys.assert_not_called()
         self.assertEqual(plan["profiles"], [])
         self.assertEqual(
@@ -450,7 +487,8 @@ heap_tree=peak
 
         command = commands[0]
         self.assertIn("NSYS_NVTX_PROFILER_REGISTER_ONLY=0", command)
-        self.assertIn("--trace=cuda,nvtx,osrt", command)
+        self.assertIn("--trace=cuda,nvtx", command)
+        self.assertNotIn("--trace=cuda,nvtx,osrt", command)
         self.assertIn("--capture-range=nvtx", command)
         self.assertIn("--nvtx-capture=acprof_compute", command)
         self.assertIn("--capture-range-end=stop", command)
@@ -466,6 +504,58 @@ heap_tree=peak
                 "execution_profiles",
                 "nsys_cpu_2_mem_4_scale_8.nsys-rep",
             ),
+        )
+
+    def test_nsys_missing_report_discards_large_raw_stream(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_root = os.path.join(tmp, "execution_profiles")
+            os.makedirs(profile_root)
+            raw_stream = os.path.join(
+                profile_root,
+                "nsys_cpu_2_mem_4_scale_8.qdstrm",
+            )
+
+            def fake_run(command, check=False):
+                with open(raw_stream, "wb") as stream:
+                    stream.write(b"x" * 4096)
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=json.dumps(
+                        {
+                            "profile_window_wall_time_ms": 20.0,
+                            "profile_window_wall_time_ms_per_request": 20.0,
+                        }
+                    ),
+                    stderr="",
+                )
+
+            with patch(
+                "acprof.host.execution_profile._base_docker_cmd",
+                return_value=["docker", "run", "acprof-test:latest"],
+            ), patch(
+                "acprof.host.execution_profile._run",
+                side_effect=fake_run,
+            ):
+                result = execution_profile._collect_nsys_entry(
+                    task_info=_task_info(),
+                    image_tag="acprof-test:latest",
+                    nsys_bin="/opt/nsight/2026/target-linux-x64/nsys",
+                    nsys_mount_root="/opt/nsight/2026",
+                    cpu=2,
+                    mem=4,
+                    payload_file=os.path.join(tmp, "input_scale_plan.json"),
+                    profile_root=profile_root,
+                    output_dir=tmp,
+                    entry={"input_scale": 8.0},
+                    repeat=1,
+                )
+            raw_stream_exists_after = os.path.exists(raw_stream)
+
+        self.assertFalse(raw_stream_exists_after)
+        self.assertEqual(
+            result["compute_profile_error_nsys"],
+            "nsys_import_failed:report_not_found:"
+            "discarded_qdstrm_bytes=4096",
         )
 
 

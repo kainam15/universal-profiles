@@ -34,6 +34,8 @@ NSYS_REPORTS = (
     "cuda_gpu_mem_time_sum",
     "cuda_gpu_mem_size_sum",
 )
+NSYS_TRACE_DOMAINS = "cuda,nvtx"
+NSYS_RAW_STREAM_SUFFIX = ".qdstrm"
 COMPUTE_THREAD_ENV_NAMES = {
     "OMP_NUM_THREADS",
     "MKL_NUM_THREADS",
@@ -43,6 +45,7 @@ COMPUTE_THREAD_ENV_NAMES = {
 }
 NSYS_DEFAULT_SEARCH_ROOTS = (
     "/opt/nvidia/nsight-systems",
+    "/opt/nvidia/nsight-compute",
     "/usr/local/NVIDIA-Nsight-Systems",
     "/usr/local/cuda",
     "/usr/local/cuda-*",
@@ -536,6 +539,45 @@ def _build_massif_image(image_tag: str, project_dir: str) -> str:
     return derived_tag
 
 
+def _build_nsys_image(image_tag: str, project_dir: str) -> str:
+    """Build a model image with the runtime libraries required by Nsys.
+
+    The host Nsys installation is mounted into the profiler container.  Its
+    QdstrmImporter still links against the container's elfutils runtime
+    (notably libdw.so.1), which is absent from python:*slim images.
+    """
+    dockerfile = os.path.join(
+        os.path.abspath(os.fspath(project_dir)),
+        "dockerfiles",
+        "nsys.Dockerfile",
+    )
+    if not os.path.isfile(dockerfile):
+        raise FileNotFoundError(
+            f"nsys_image_build_failed:dockerfile_not_found:{dockerfile}"
+        )
+    digest = hashlib.sha256(str(image_tag).encode("utf-8")).hexdigest()[:12]
+    derived_tag = f"acprof-nsys-{digest}:latest"
+    result = _run(
+        [
+            "docker",
+            "build",
+            "--file",
+            dockerfile,
+            "--build-arg",
+            f"BASE_IMAGE={image_tag}",
+            "--tag",
+            derived_tag,
+            os.path.abspath(os.fspath(project_dir)),
+        ],
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"nsys_image_build_failed:{_command_detail(result)}"
+        )
+    return derived_tag
+
+
 def _massif_version(derived_image: Optional[str]) -> str:
     if not derived_image:
         return "unknown"
@@ -635,6 +677,65 @@ def _nsys_version(nsys_bin: Optional[str]) -> str:
         return "unknown"
     if result.returncode != 0:
         return "unknown"
+    output = str(result.stdout or result.stderr or "").strip()
+    return output.splitlines()[-1].strip() if output else "unknown"
+
+
+def _find_nsys_importer(nsys_mount_root: str) -> Optional[str]:
+    """Find the QDSTRM importer shipped beside the selected Nsys CLI."""
+    root = os.path.realpath(os.path.abspath(os.fspath(nsys_mount_root)))
+    candidates: List[str] = []
+    for candidate in glob.iglob(
+        os.path.join(root, "**", "QdstrmImporter"),
+        recursive=True,
+    ):
+        real = os.path.realpath(candidate)
+        try:
+            inside_root = os.path.commonpath((root, real)) == root
+        except ValueError:
+            inside_root = False
+        if (
+            inside_root
+            and os.path.isfile(real)
+            and os.access(real, os.X_OK)
+        ):
+            candidates.append(real)
+    return max(candidates, key=_nsys_path_rank) if candidates else None
+
+
+def _validate_nsys_container_runtime(
+    image_tag: str,
+    nsys_mount_root: str,
+) -> str:
+    """Fail before the resource sweep if QdstrmImporter cannot run.
+
+    Without this preflight, Nsys can leave a multi-gigabyte .qdstrm for every
+    resource/scale pair while never producing the required .nsys-rep.
+    """
+    importer = _find_nsys_importer(nsys_mount_root)
+    if not importer:
+        raise RuntimeError(
+            "nsys_importer_not_found:"
+            f"root={os.path.abspath(os.fspath(nsys_mount_root))}"
+        )
+    result = _run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{nsys_mount_root}:{nsys_mount_root}:ro",
+            image_tag,
+            importer,
+            "--version",
+        ],
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "nsys_importer_unavailable:"
+            f"{_command_detail(result)}"
+        )
     output = str(result.stdout or result.stderr or "").strip()
     return output.splitlines()[-1].strip() if output else "unknown"
 
@@ -763,6 +864,19 @@ def _run_nsys_stats(nsys_bin: str, report_path: str) -> Dict[str, str]:
     return outputs
 
 
+def _discard_nsys_raw_stream(path: str) -> int:
+    """Remove an intermediate QDSTRM and return its former byte size."""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        size = 0
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    return size
+
+
 def _collect_nsys_entry(
     *,
     task_info: TaskInfo,
@@ -783,7 +897,13 @@ def _collect_nsys_entry(
     stem = f"nsys_cpu_{cpu}_mem_{mem}_scale_{scale_label}"
     filename = f"{stem}.nsys-rep"
     host_report = os.path.join(profile_root, filename)
+    host_raw_stream = os.path.join(
+        profile_root,
+        f"{stem}{NSYS_RAW_STREAM_SUFFIX}",
+    )
     relative_report = _relative_artifact(host_report, output_dir)
+    # A failed importer may have left a huge stream from an earlier attempt.
+    _discard_nsys_raw_stream(host_raw_stream)
     base_cmd = _base_docker_cmd(
         task_info=task_info,
         image_tag=image_tag,
@@ -804,7 +924,7 @@ def _collect_nsys_entry(
         *base_cmd,
         nsys_bin,
         "profile",
-        "--trace=cuda,nvtx,osrt",
+        f"--trace={NSYS_TRACE_DOMAINS}",
         "--capture-range=nvtx",
         f"--nvtx-capture={NSYS_NVTX_RANGE}",
         "--capture-range-end=stop",
@@ -814,18 +934,35 @@ def _collect_nsys_entry(
         f"--output=/profiles/{stem}",
         *_runner_args(dict(entry), repeat, "gpu"),
     ]
-    result = _run(command, check=False)
+    try:
+        result = _run(command, check=False)
+    except Exception:
+        _discard_nsys_raw_stream(host_raw_stream)
+        raise
     if result.returncode != 0:
+        discarded_bytes = _discard_nsys_raw_stream(host_raw_stream)
+        discarded = (
+            f":discarded_qdstrm_bytes={discarded_bytes}"
+            if discarded_bytes
+            else ""
+        )
         return _nsys_error_entry(
             entry,
-            f"nsys_failed:{_command_detail(result)}",
+            f"nsys_failed:{_command_detail(result)}{discarded}",
             report=relative_report if os.path.isfile(host_report) else None,
         )
     if not os.path.isfile(host_report):
+        discarded_bytes = _discard_nsys_raw_stream(host_raw_stream)
+        discarded = (
+            f":discarded_qdstrm_bytes={discarded_bytes}"
+            if discarded_bytes
+            else ""
+        )
         return _nsys_error_entry(
             entry,
-            "nsys_parse_failed:report_not_found",
+            f"nsys_import_failed:report_not_found{discarded}",
         )
+    _discard_nsys_raw_stream(host_raw_stream)
 
     runner_payload = _parse_last_json_line(str(result.stdout or ""))
     wall_time = _finite_float(
@@ -1039,6 +1176,17 @@ def collect_execution_profile_plan(
     )
     if collect_massif or collect_nsys:
         os.makedirs(profile_root, exist_ok=True)
+        probe_count = (
+            len(entries)
+            * len(cpus)
+            * len(memories)
+            * (int(collect_massif) + int(collect_nsys))
+        )
+        print(
+            "[execution-profile] Collecting "
+            f"{probe_count} isolated probe(s) before the normal CSV sweep; "
+            "result CSV files appear after this stage completes."
+        )
 
     derived_image: Optional[str] = None
     massif_error = ""
@@ -1055,6 +1203,7 @@ def collect_execution_profile_plan(
 
     nsys_bin: Optional[str] = None
     nsys_mount_root: Optional[str] = None
+    nsys_profile_image = image_tag
     nsys_error = ""
     nsys_version = "unknown"
     if collect_nsys:
@@ -1068,6 +1217,27 @@ def collect_execution_profile_plan(
             except Exception as exc:
                 nsys_error = f"nsys_mount_failed:{exc!r}"
             nsys_version = _nsys_version(nsys_bin)
+            if nsys_mount_root and not nsys_error:
+                try:
+                    nsys_profile_image = _build_nsys_image(
+                        image_tag,
+                        project_dir,
+                    )
+                    _validate_nsys_container_runtime(
+                        nsys_profile_image,
+                        nsys_mount_root,
+                    )
+                    print(
+                        "[execution-profile][nsys] QdstrmImporter preflight "
+                        f"passed in {nsys_profile_image}"
+                    )
+                except Exception as exc:
+                    detail = str(exc)
+                    nsys_error = (
+                        detail
+                        if detail.startswith("nsys_")
+                        else f"nsys_runtime_preflight_failed:{exc!r}"
+                    )
         elif not nsys_error:
             nsys_error = "nsys_not_found"
 
@@ -1094,7 +1264,7 @@ def collect_execution_profile_plan(
                         entries=entries,
                         global_error=nsys_error,
                         task_info=task_info,
-                        image_tag=image_tag,
+                        image_tag=nsys_profile_image,
                         nsys_bin=nsys_bin,
                         nsys_mount_root=nsys_mount_root,
                         cpu=cpu,

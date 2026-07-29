@@ -44,7 +44,7 @@ acprof/
 - PyTorch profiler：默认独立采集 `torch_profiler_eager` 逻辑 FLOP。该 probe 会强制并验证 eager attention，只影响临时 profiler container，不改变正常 latency / energy workload 的运行时 attention 实现。
 - NVIDIA Nsight Compute CLI (`ncu`)：默认独立采集 `gpu_mode=on` 行的 GPU 实际执行 FLOP，并把 Tensor 与 Scalar FLOP 分列。通过 `--ncu-root` 挂载到临时 profiler container；不可用、不兼容当前 CUDA/driver、或性能计数器被限制时只会令 NCU 字段为 `nan`，不会影响 Torch probe 或主采集。Ubuntu multiverse 的 `nsight-compute` 可能过旧，推荐使用 NVIDIA CUDA apt 源里的版本化包，例如 `/opt/nvidia/nsight-compute/<version>/ncu`。
 - Valgrind Massif (`valgrind`)：仅在显式启用 execution profiling 时用于 `gpu_mode=off` 的 process-lifetime CPU memory peak。AC-Prof 会基于模型镜像构建 `dockerfiles/massif.Dockerfile` 派生镜像并在其中安装 Valgrind，不要求 host 预装；首次启用需要 Docker build 的 apt 网络访问。未启用或 probe 失败不会影响主采集。
-- NVIDIA Nsight Systems CLI (`nsys`)：仅在显式启用 execution profiling 时用于 `gpu_mode=on` 的 CUDA API、kernel 和 memcpy timeline 汇总。可通过 `--nsys-root` 指定 host 安装根目录或 executable；需要 NVIDIA driver、NVIDIA Container Toolkit 与被测 CUDA workload 兼容。
+- NVIDIA Nsight Systems CLI (`nsys`)：仅在显式启用 execution profiling 时用于 `gpu_mode=on` 的 CUDA API、kernel 和 memcpy timeline 汇总。可通过 `--nsys-root` 指定 host 安装根目录或 executable；也会自动搜索 `/opt/nvidia/nsight-systems` 与 NVIDIA Nsight Compute 安装中附带的 `nsys`。AC-Prof 会基于模型镜像构建 `dockerfiles/nsys.Dockerfile` 派生镜像，补齐 host `QdstrmImporter` 在 slim container 中需要的 `libdw.so.1`，并在资源矩阵开始前验证 importer；首次启用需要 Docker build 的 apt 网络访问。需要 NVIDIA driver、NVIDIA Container Toolkit 与被测 CUDA workload 兼容。
 - Intel Advisor：只保留给显式 `--compute-profile-tool vendor` 的兼容/诊断流程，用于 `gpu_mode=off` 行。通过 `--advisor-root` 挂载到临时 profiler container。
 - 原生 Docker 的 `docker0` bridge：packet sniffing 默认监听 `docker0`。如果抓包条件不足、PCAP 为空或 merge 后仍有 `latency_s=nan`，程序会退出，不会产出看似完整但缺少 packet latency 的结果。
 
@@ -125,7 +125,7 @@ python run.py --model google-bert/bert-base-uncased \
 
 `massif` 只匹配 CPU-only 配置，`nsys` 只匹配 GPU 配置，`both` 同时选择两者。与按 device/input scale 共用结果的 FLOP probe 不同，execution probe 会按每一个完整的 `CPU × memory × GPU mode × input scale` 资源配置另起 profiler container，因此显著增加运行时间。
 
-Massif 的 peak 是被剖析进程整个生命周期的峰值，包含模型加载、预热和随后执行的 inference，不能解释成“单次 request 新增了多少内存”，`--massif-repeat` 也不会把 peak bytes 除回单 request。Nsight Systems 在 `acprof_compute` NVTX range 内汇总 CUDA API、GPU kernel 和 memcpy，并用 `--nsys-repeat` 归一化为单 request；不同 host/device timeline 和 CUDA stream 上的活动可能重叠，因此各项 `*_time_sum_*` 彼此相加不要求等于 host wall time。
+Massif 的 peak 是被剖析进程整个生命周期的峰值，包含模型加载、预热和随后执行的 inference，不能解释成“单次 request 新增了多少内存”，`--massif-repeat` 也不会把 peak bytes 除回单 request。Nsight Systems 只在 `acprof_compute` NVTX range 内追踪 CUDA 与 NVTX，汇总 CUDA API、GPU kernel 和 memcpy，并用 `--nsys-repeat` 归一化为单 request；host inference wall timer 只包围正式推理循环与其末尾 CUDA synchronize，不计入 NVTX capture 的启动/停止握手。不同 host/device timeline 和 CUDA stream 上的活动可能重叠，因此各项 `*_time_sum_*` 彼此相加不要求等于 host wall time。中间 `.qdstrm` 不属于保留产物；若 importer 失败，程序会删除该中间文件并记录 `nsys_import_failed`，避免完整矩阵反复堆积巨型 raw stream。
 
 两个 execution probe 的失败互不影响，也不影响 FLOP probe 或正常 latency / energy / resource-usage 窗口。raw Massif / Nsight Systems artifacts（包括 stats 导出的 SQLite 缓存）默认保留；只有显式传入 `--discard-execution-profiles` 才在汇总后删除。
 
@@ -733,7 +733,7 @@ Massif / Nsight Systems execution profiling 字段全是 `nan`：
 
 - 默认 `--execution-profile-tool none` 不采 execution profile，这是预期结果；需要显式选择 `massif`、`nsys` 或 `both`。
 - Massif 字段只填充 `gpu_mode=off` 行，Nsight Systems 字段只填充 `gpu_mode=on` 行；不适用的另一组字段保持 `nan`。
-- 分别查看 `compute_profile_error_massif` 和 `compute_profile_error_nsys`。Massif 检查派生镜像的 Docker build/apt 网络与 `dockerfiles/massif.Dockerfile` 日志，不要求 host 安装 `valgrind`；Nsight Systems 检查 `nsys`、`--nsys-root`、NVIDIA driver / Container Toolkit 兼容性，以及 raw `.nsys-rep` 是否可导出。
+- 分别查看 `compute_profile_error_massif` 和 `compute_profile_error_nsys`。Massif 检查派生镜像的 Docker build/apt 网络与 `dockerfiles/massif.Dockerfile` 日志，不要求 host 安装 `valgrind`；Nsight Systems 检查 `nsys`、`--nsys-root`、`dockerfiles/nsys.Dockerfile` 的 importer runtime preflight、NVIDIA driver / Container Toolkit 兼容性，以及 raw `.nsys-rep` 是否可导出。出现 `nsys_importer_unavailable` 时，优先检查派生镜像中 `libdw.so.1` 等动态库；probe 阶段只出现 `.qdstrm` 而没有 `.nsys-rep` 属于 importer 失败。
 - 两者是显式 opt-in 的独立 probe；一个失败不会影响另一个 execution probe、FLOP compute profiling 或主实验。完整状态与静态口径见 `execution_profile_plan.json` 和 `static_meta.csv`。
 
 `--skip-build` 后 `/scale_meta` 或 `/probe` 报错：

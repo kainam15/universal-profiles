@@ -309,27 +309,34 @@ def main() -> None:
             }))
             return
 
-        profile_window_t0 = time.perf_counter()
         if args.profile_mode == "gpu":
             _cuda_synchronize()
             torch.cuda.nvtx.range_push("acprof_compute")
             try:
+                # Nsys may spend substantial time activating and stopping an
+                # NVTX-triggered capture.  Keep that profiler control overhead
+                # outside the host inference wall-time metric.
+                profile_window_t0 = time.perf_counter()
                 for _ in range(repeat):
                     handler.predict(model_ctx, processed)
                 _cuda_synchronize()
+                profile_window_wall_time_ms = (
+                    time.perf_counter() - profile_window_t0
+                ) * 1000.0
             finally:
                 torch.cuda.nvtx.range_pop()
         else:
             itt = _ITTControl()
+            profile_window_t0 = time.perf_counter()
             itt.resume()
             try:
                 for _ in range(repeat):
                     handler.predict(model_ctx, processed)
             finally:
                 itt.pause()
-        profile_window_wall_time_ms = (
-            time.perf_counter() - profile_window_t0
-        ) * 1000.0
+            profile_window_wall_time_ms = (
+                time.perf_counter() - profile_window_t0
+            ) * 1000.0
 
     elapsed_s = time.perf_counter() - t_load
     print(json.dumps({
