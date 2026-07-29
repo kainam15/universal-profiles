@@ -127,7 +127,7 @@ python run.py --model google-bert/bert-base-uncased \
 
 Massif 的 peak 是被剖析进程整个生命周期的峰值，包含模型加载、预热和随后执行的 inference，不能解释成“单次 request 新增了多少内存”，`--massif-repeat` 也不会把 peak bytes 除回单 request。Nsight Systems 只在 `acprof_compute` NVTX range 内追踪 CUDA 与 NVTX，汇总 CUDA API、GPU kernel 和 memcpy，并用 `--nsys-repeat` 归一化为单 request；host inference wall timer 只包围正式推理循环与其末尾 CUDA synchronize，不计入 NVTX capture 的启动/停止握手。不同 host/device timeline 和 CUDA stream 上的活动可能重叠，因此各项 `*_time_sum_*` 彼此相加不要求等于 host wall time。中间 `.qdstrm` 不属于保留产物；若 importer 失败，程序会删除该中间文件并记录 `nsys_import_failed`，避免完整矩阵反复堆积巨型 raw stream。
 
-两个 execution probe 的失败互不影响，也不影响 FLOP probe 或正常 latency / energy / resource-usage 窗口。raw Massif / Nsight Systems artifacts（包括 stats 导出的 SQLite 缓存）默认保留；只有显式传入 `--discard-execution-profiles` 才在汇总后删除。
+两个 execution probe 的失败互不影响，也不影响 FLOP probe 或正常 latency / energy / resource-usage 窗口。raw Massif `.out` 与 Nsight Systems `.nsys-rep` 默认保留；`nsys stats` 导出的 `.sqlite` 只作为解析缓存，在指标汇总完成或 stats 报错后自动删除。显式传入 `--discard-execution-profiles` 会在汇总后连同 raw artifacts 一并删除。
 
 ### 原生 Ubuntu 下采集 `latency_s` 的推荐启动方式
 
@@ -333,7 +333,7 @@ CPU 模型使用共同的二次 log input-scale 项表达各资源配置共有�
 | `--massif-repeat` | `1` | 每个 Massif probe 内执行的 inference 次数。Massif peak 仍是包含加载和预热的 process-lifetime peak，不按此值归一化。 |
 | `--nsys-repeat` | `1` | 每个 Nsight Systems `acprof_compute` NVTX range 内的 inference 次数；time、count 和 bytes 汇总会除回单 request。 |
 | `--nsys-root` | auto | Host Nsight Systems install root 或 `nsys` executable；显式值优先于自动检测。 |
-| `--keep-execution-profiles` | true | 保留 `execution_profiles/` 下的 raw Massif `.out`、Nsight Systems `.nsys-rep` 及 stats 导出的 `.sqlite` artifacts；这是默认行为。 |
+| `--keep-execution-profiles` | true | 保留 `execution_profiles/` 下的 raw Massif `.out` 与 Nsight Systems `.nsys-rep`；这是默认行为。stats 导出的 `.sqlite` 缓存会自动删除。 |
 | `--discard-execution-profiles` | false | 汇总成功后删除 raw execution-profiler artifacts，保留 plan、CSV 数值与错误诊断。 |
 | `--sniff-iface` | `docker0` | 本机 Docker 默认 bridge 对应的 `tcpdump` 抓包网卡。只有 daemon 改过 bridge 名时才覆盖。 |
 | `--output-dir` | `results` | 输出根目录。最终还会追加 model name 子目录。 |
@@ -369,7 +369,7 @@ CPU 模型使用共同的二次 log input-scale 项表达各资源配置共有�
 | `input_scale_plan.json` | 所有任务族共用的 input scale/payload 计划。自动与手动 `--input-scales` 都会生成，主采集和 compute profiler 复用同一份内容。 |
 | `compute_profile_plan.json` | per-scale FLOP profiling 结果。每个 CPU/GPU scale 可同时记录独立的 `torch_profiler_eager` 与 `ncu` profile；NCU 只存在于 GPU profile。失败信息按工具保存，只读取当前按 profiler 分层的 plan 结构。 |
 | `execution_profile_plan.json` | 显式 execution profiling 的 per-resource-config/per-scale 计划与汇总。Massif 条目对应 `gpu_mode=off`，Nsight Systems 条目对应 `gpu_mode=on`；失败按工具记录且不阻断主实验。 |
-| `execution_profiles/` | 默认保留的 raw Massif `.out`、Nsight Systems `.nsys-rep` 与 stats 导出的 `.sqlite` artifacts；传入 `--discard-execution-profiles` 时汇总后删除。 |
+| `execution_profiles/` | 默认保留 raw Massif `.out` 与 Nsight Systems `.nsys-rep`；stats 导出的 `.sqlite` 缓存会自动删除。传入 `--discard-execution-profiles` 时 raw artifacts 也会在汇总后删除。 |
 | `tmux_all.log` | 在 tmux pane 内运行 `run.py` 时自动记录的完整终端显示。实验正常结束或报错退出时落盘，不受 tmux 历史行数上限影响。 |
 | `latency_model/latency_model_report.json` | `plot.py` 生成的 latency 拟合报告。包含分 CPU/GPU 的正值模型、整配置留一与最大尺度外推指标、质量门槛、系数和训练范围。 |
 | `latency_model/latency_model_residuals.csv` | `plot.py` 生成的 case-level residual。每个 `GPU mode × CPU × memory × input scale` 聚合 case 一行，包含重复数/离散度、full-fit、resource-config OOF 和最大尺度 holdout 预测。 |

@@ -156,23 +156,29 @@ heap_tree=peak
             1024.0,
         )
 
-    def test_run_nsys_stats_requests_csv_with_explicit_nanoseconds(
+    def test_run_nsys_stats_requests_csv_and_discards_sqlite_cache(
         self,
     ) -> None:
         commands = []
 
         def fake_run(command, check=False):
             commands.append(command)
+            with open(sqlite_path, "wb") as sqlite_file:
+                sqlite_file.write(b"cache")
             return SimpleNamespace(returncode=0, stdout="report", stderr="")
 
-        with patch(
-            "acprof.host.execution_profile._run",
-            side_effect=fake_run,
-        ):
-            outputs = execution_profile._run_nsys_stats(
-                "/opt/nsight/bin/nsys",
-                "/tmp/report.nsys-rep",
-            )
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = os.path.join(tmp, "report.nsys-rep")
+            sqlite_path = os.path.join(tmp, "report.sqlite")
+            with patch(
+                "acprof.host.execution_profile._run",
+                side_effect=fake_run,
+            ):
+                outputs = execution_profile._run_nsys_stats(
+                    "/opt/nsight/bin/nsys",
+                    report_path,
+                )
+            self.assertFalse(os.path.exists(sqlite_path))
 
         self.assertEqual(set(outputs), set(execution_profile.NSYS_REPORTS))
         self.assertEqual(len(commands), len(execution_profile.NSYS_REPORTS))
@@ -183,6 +189,31 @@ heap_tree=peak
         self.assertIn("--force-export=true", commands[0])
         for command in commands[1:]:
             self.assertNotIn("--force-export=true", command)
+
+    def test_run_nsys_stats_discards_sqlite_cache_after_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = os.path.join(tmp, "report.nsys-rep")
+            sqlite_path = os.path.join(tmp, "report.sqlite")
+
+            def fake_run(command, check=False):
+                with open(sqlite_path, "wb") as sqlite_file:
+                    sqlite_file.write(b"cache")
+                return SimpleNamespace(
+                    returncode=1,
+                    stdout="",
+                    stderr="stats failed",
+                )
+
+            with patch(
+                "acprof.host.execution_profile._run",
+                side_effect=fake_run,
+            ), self.assertRaisesRegex(RuntimeError, "nsys_stats_failed"):
+                execution_profile._run_nsys_stats(
+                    "/opt/nsight/bin/nsys",
+                    report_path,
+                )
+
+            self.assertFalse(os.path.exists(sqlite_path))
 
     def test_nsys_no_memops_keeps_api_and_kernel_metrics(self) -> None:
         reports = {

@@ -600,7 +600,10 @@ Examples:
         "--keep-execution-profiles",
         dest="keep_execution_profiles",
         action="store_true",
-        help="Keep raw Massif and Nsight Systems artifacts (default)",
+        help=(
+            "Keep raw Massif .out and Nsight Systems .nsys-rep artifacts "
+            "(default); derived Nsight SQLite caches are always discarded"
+        ),
     )
     execution_artifact_group.add_argument(
         "--discard-execution-profiles",
