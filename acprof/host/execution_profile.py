@@ -846,9 +846,16 @@ def _discard_nsys_sqlite(report_path: str) -> None:
 
 def _run_nsys_stats(nsys_bin: str, report_path: str) -> Dict[str, str]:
     outputs: Dict[str, str] = {}
+    sqlite_path = _nsys_sqlite_path(report_path)
     try:
         for index, report_name in enumerate(NSYS_REPORTS):
             refresh_export = ["--force-export=true"] if index == 0 else []
+            # Nsys 2026.1 can report a freshly exported SQLite cache as older
+            # than its .nsys-rep when both files were written in the same
+            # second.  Export once from the raw report, then pass the SQLite
+            # file directly so later reports do not repeat that freshness
+            # check.
+            stats_input = report_path if index == 0 else sqlite_path
             result = _run(
                 [
                     nsys_bin,
@@ -862,7 +869,7 @@ def _run_nsys_stats(nsys_bin: str, report_path: str) -> Dict[str, str]:
                     "--output",
                     "-",
                     *refresh_export,
-                    report_path,
+                    stats_input,
                 ],
                 check=False,
             )

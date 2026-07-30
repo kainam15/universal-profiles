@@ -187,8 +187,10 @@ heap_tree=peak
             self.assertEqual(command[command.index("--timeunit") + 1], "nsec")
             self.assertEqual(command[command.index("--output") + 1], "-")
         self.assertIn("--force-export=true", commands[0])
+        self.assertEqual(commands[0][-1], report_path)
         for command in commands[1:]:
             self.assertNotIn("--force-export=true", command)
+            self.assertEqual(command[-1], sqlite_path)
 
     def test_run_nsys_stats_discards_sqlite_cache_after_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
