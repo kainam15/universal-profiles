@@ -826,10 +826,10 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 {
                     "cpu": {"off"},
                     "gpu": {"on"},
-                    "cpu+gpu": {"off", "on"},
+                    "gpu+cpu": {"off", "on"},
                 },
             )
-            for directory in ("cpu", "gpu", "cpu+gpu"):
+            for directory in ("cpu", "gpu", "gpu+cpu"):
                 self.assertTrue(os.path.isdir(os.path.join(tmp, directory)))
 
     def test_main_plots_packet_and_bandwidth_cpu_metrics_vs_input_scale(self) -> None:

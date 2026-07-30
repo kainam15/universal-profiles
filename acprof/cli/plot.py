@@ -330,7 +330,7 @@ PLOT_METRICS = [
         "gpu_mem_used_vs_scale.png",
     ),
 ]
-PLOT_OUTPUT_DIRS = ("cpu", "gpu", "cpu+gpu")
+PLOT_OUTPUT_DIRS = ("cpu", "gpu", "gpu+cpu")
 LATENCY_MODEL_DIR = "latency_model"
 LATENCY_MODEL_REPORT = "latency_model_report.json"
 LATENCY_MODEL_RESIDUALS = "latency_model_residuals.csv"

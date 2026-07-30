@@ -233,7 +233,7 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 
 - `cpu/`：只使用 `gpu_mode=off` 的 CPU 数据
 - `gpu/`：只使用 `gpu_mode=on` 的 GPU 数据
-- `cpu+gpu/`：同时包含 CPU 和 GPU 数据，用于对比
+- `gpu+cpu/`：同时包含 GPU 和 CPU 数据，用于对比
 
 每个有对应数据的目录会按可用指标生成以下图表（整列为空的指标会跳过）：
 
@@ -378,7 +378,7 @@ CPU 模型使用共同的二次 log input-scale 项表达各资源配置共有�
 | `debug_idle_diag/result_case_*.csv.idle_diag.jsonl` | 仅 `--idle-debug` 时生成。每行对应一个 workload window 的 idle 诊断记录，包含 GPU NVML idle power trace、`nvidia-smi` GPU/process 快照、CPU idle window 内 RAPL 子窗口功率、host/container CPU delta、top proc CPU delta，以及 after-idle 快照，用于定位 `gpu_idle_power_w` / `cpu_idle_power_w` case 内波动来源。 |
 | `cpu/*.png` | `plot.py` 生成的 CPU-only 图表。 |
 | `gpu/*.png` | `plot.py` 生成的 GPU-only 图表。 |
-| `cpu+gpu/*.png` | `plot.py` 生成的 CPU/GPU 对比图表。 |
+| `gpu+cpu/*.png` | `plot.py` 生成的 GPU/CPU 对比图表。 |
 
 中间文件 `result_case_*.csv`、`result_case_*.csv.sniff_groups.jsonl`、`lat_case_*.json`、`sniff_case_*.pcap` 会在 `result_all.csv` 成功 merge 后自动清理。若运行被中断，这些中间文件可能保留。
 
