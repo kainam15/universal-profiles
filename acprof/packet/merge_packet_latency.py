@@ -11,12 +11,19 @@ SLOW_LATENCY_THRESHOLD_S = float(os.getenv("SLOW_LATENCY_THRESHOLD_S", "0.06"))
 
 
 def _read_static_batch_size(csv_path: str) -> float:
-    static_meta_path = os.path.join(os.path.dirname(csv_path) or ".", "static_meta.csv")
-    if not os.path.exists(static_meta_path):
-        return float("nan")
-
-    with open(static_meta_path, "r", encoding="utf-8", newline="") as f:
-        row = next(csv.DictReader(f), None)
+    result_dir = os.path.dirname(csv_path) or "."
+    static_meta_json = os.path.join(result_dir, "static_meta.json")
+    row = None
+    if os.path.exists(static_meta_json):
+        with open(static_meta_json, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if isinstance(payload, dict):
+            row = payload
+    else:
+        legacy_csv = os.path.join(result_dir, "static_meta.csv")
+        if os.path.exists(legacy_csv):
+            with open(legacy_csv, "r", encoding="utf-8", newline="") as f:
+                row = next(csv.DictReader(f), None)
 
     if not row:
         return float("nan")

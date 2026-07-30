@@ -249,8 +249,22 @@ CSV_FIELDS = [
 ]
 
 STATIC_META_FIELDS = [
+    "schema_version",
     "model_name",
     "model_revision",
+    "parameter_count",
+    "precision_dtype",
+    "parameter_dtype_counts",
+    "inference_precision_by_device",
+    "static_flops",
+    "static_macs",
+    "input_format",
+    "output_format",
+    "quantized",
+    "quantization_method",
+    "quantization_config",
+    "model_license",
+    "model_metadata_source",
     "task_family",
     "pipeline_tag",
     "runtime_backend",
@@ -295,6 +309,7 @@ STATIC_META_FIELDS = [
     "execution_profiles_retained",
     "execution_profile_provenance",
 ]
+STATIC_META_SCHEMA_VERSION = 1
 
 # ─────────────────────────────────────────────
 # Docker 镜像命名

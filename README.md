@@ -229,7 +229,7 @@ python run.py --model google-bert/bert-base-uncased --input-scales 64,128,256,51
 python plot.py results/google-bert--bert-base-uncased/result_all.csv
 ```
 
-`plot.py` 默认读取同目录下的 `static_meta.csv`，用其中的 `input_scale_type` 作为横轴语义名。图片会写入结果目录下的三个子目录：
+`plot.py` 默认读取同目录下的 `static_meta.json`，用其中的 `input_scale_type` 作为横轴语义名；读取历史结果时仍兼容旧的 `static_meta.csv`。图片会写入结果目录下的三个子目录：
 
 - `cpu/`：只使用 `gpu_mode=off` 的 CPU 数据
 - `gpu/`：只使用 `gpu_mode=on` 的 GPU 数据
@@ -341,7 +341,7 @@ CPU 模型使用共同的二次 log input-scale 项表达各资源配置共有�
 
 ## 6. Input Scale 规则
 
-`input_scale` 是每个任务族的主输入尺度，语义由 `static_meta.csv` 的 `input_scale_type` 决定：
+`input_scale` 是每个任务族的主输入尺度，语义由 `static_meta.json` 的 `input_scale_type` 决定：
 
 | task family | `input_scale_type` | 含义 |
 | --- | --- | --- |
@@ -365,7 +365,7 @@ CPU 模型使用共同的二次 log input-scale 项表达各资源配置共有�
 | 文件 | 说明 |
 | --- | --- |
 | `result_all.csv` | 动态测量结果。每一行对应一个 resource config、一个 input scale、一次 warmup/repeat iteration。 |
-| `static_meta.csv` | 一行静态元数据。记录模型、镜像、batch、input scale 语义、GPU、环境和大小信息。 |
+| `static_meta.json` | 单个 JSON object 的静态元数据。记录模型版本、参数/精度/量化/许可证、输入输出格式、per-scale 静态逻辑 FLOPs、推理后端、镜像、硬件和环境信息。 |
 | `input_scale_plan.json` | 所有任务族共用的 input scale/payload 计划。自动与手动 `--input-scales` 都会生成，主采集和 compute profiler 复用同一份内容。 |
 | `compute_profile_plan.json` | per-scale FLOP profiling 结果。每个 CPU/GPU scale 可同时记录独立的 `torch_profiler_eager` 与 `ncu` profile；NCU 只存在于 GPU profile。失败信息按工具保存，只读取当前按 profiler 分层的 plan 结构。 |
 | `execution_profile_plan.json` | 显式 execution profiling 的 per-resource-config/per-scale 计划与汇总。Massif 条目对应 `gpu_mode=off`，Nsight Systems 条目对应 `gpu_mode=on`；失败按工具记录且不阻断主实验。 |
@@ -406,7 +406,7 @@ python -m acprof.cli.backfill_compute \
 | `cpu_cores` | 当前 Docker container 的 CPU core 限制，来自 `--cpus`。 |
 | `mem_cap_gb` | 当前 Docker container 的 memory cap，单位 GB，来自 `--mems`。 |
 | `gpu_mode` | `on` 或 `off`。`on` 表示容器使用 Docker `--gpus all`。 |
-| `input_scale` | 本行实际执行的主输入尺度。语义见 `static_meta.csv/input_scale_type`。 |
+| `input_scale` | 本行实际执行的主输入尺度。语义见 `static_meta.json/input_scale_type`。 |
 | `task_param` | 任务族的 secondary parameter，通常是 JSON 字符串。生成式 NLP 常见为 `{"max_new_tokens": 64}`，timeseries 常见为 `{"prediction_length": 64}`；不适用时为空。 |
 | `repeat_idx` | 当前 warmup 或 repeat phase 内的 0-based iteration index。 |
 | `warmup` | `1` 表示 warmup 行，`0` 表示正式测量行。`plot.py` 默认排除 warmup 行。 |
@@ -511,14 +511,28 @@ python -m acprof.cli.backfill_compute \
 - `latency_s` 是 packet-level 计时，需要完整完成 `tcpdump` capture、`acprof.packet.sniff_parse_pcap` parse、`acprof.packet.merge_packet_latency` merge。
 - 当前默认行为是严格模式：如果无法保证 `latency_s` 有值，`run.py` 会退出，不继续 merge 最终结果。
 
-## 9. `static_meta.csv` 字段解释
+## 9. `static_meta.json` 字段解释
 
-`static_meta.csv` 是一行 model/image/run-level 静态元数据。
+`static_meta.json` 是一个 model/image/run-level JSON object。数组、布尔值、数字和 `null` 均保留 JSON 原生类型，不再编码成 CSV 字符串。
 
 | 字段 | 含义 |
 | --- | --- |
+| `schema_version` | `static_meta.json` schema 版本。 |
 | `model_name` | Hugging Face model ID，例如 `google-bert/bert-base-uncased`。 |
 | `model_revision` | 实际解析到的 model revision / commit hash。 |
+| `parameter_count` | Hugging Face Hub SafeTensors metadata 的参数总数；Hub 未提供时为 `null`。 |
+| `precision_dtype` | SafeTensors 参数中数量占主导的权重精度，例如 `FP32`、`FP16`、`BF16`、`INT8`；无法确认时为 `null`。 |
+| `parameter_dtype_counts` | 按 dtype 统计的参数/张量元素数量，保留混合精度与少量整型 buffer 信息。 |
+| `inference_precision_by_device` | 当前 handler 明确请求的 CPU/GPU 推理精度。Transformers NLP/CV/audio handler 当前为 `{"cpu":"FP32","gpu":"FP16"}`。 |
+| `static_flops` | Torch eager profiler 得到的逻辑 shape FLOPs，按 `input_scale` 保存 `flops_per_request`；未采集成功时为 `null`。 |
+| `static_macs` | 静态 MACs。当前不做不可靠的 FLOPs/2 推断，因此未单独采集时为 `null`。 |
+| `input_format` | 实际 `/predict` HTTP JSON 输入协议及其 JSON Schema。 |
+| `output_format` | 实际 `/predict` HTTP JSON 响应协议及其 JSON Schema。 |
+| `quantized` | 是否检测到量化配置、量化 tag 或量化权重 dtype；无法确认时为 `null`。 |
+| `quantization_method` | 量化方法，例如 `gptq`、`awq`；不适用或未知时为 `null`。 |
+| `quantization_config` | Hub model config 中的完整量化配置；没有时为空 object。 |
+| `model_license` | Hugging Face model card 许可证，例如 `apache-2.0`、`mit`；无法确认时为 `null`。 |
+| `model_metadata_source` | 参数量、精度、量化和许可证的元数据来源，当前在线 Hub 检测成功时为 `huggingface_hub`。 |
 | `task_family` | 任务族：`nlp`、`cv`、`audio`、`timeseries`。 |
 | `pipeline_tag` | Hugging Face pipeline tag，例如 `fill-mask`、`image-classification`。 |
 | `runtime_backend` | 容器内使用的 runtime backend，例如 `transformers_pipeline`、`chronos`。 |
@@ -528,7 +542,7 @@ python -m acprof.cli.backfill_compute \
 | `run_command` | 启动本次 profiling 的 `python run.py ...` 命令，便于复现实验参数。 |
 | `model_download_url` | Hugging Face model page URL。 |
 | `gpu` | host device 0 的 GPU 名称；没有可见 NVIDIA GPU 时为 `unknown`。 |
-| `gpu_mem_total_bytes` | host device 0 的 total VRAM，单位 bytes；无法读取时为空。 |
+| `gpu_mem_total_bytes` | host device 0 的 total VRAM，单位 bytes；无法读取时为 `null`。 |
 | `model_weight_bytes` | Docker image 内 `/models/hf` 下 Hugging Face cache artifacts 的总字节数，不是严格的单一权重文件大小。 |
 | `docker_image_bytes` | `docker image inspect <image_tag> --format "{{.Size}}"` 返回的本地 image size，单位 bytes。 |
 | `environment` | 自动检测的运行环境标签，例如 `windows11+wsl`、`ubuntu24.04+wsl`、`ubuntu24.04`、`macos15`。 |
@@ -539,8 +553,8 @@ python -m acprof.cli.backfill_compute \
 | `compute_profile_tools` | 本次启用/实际记录的 profiler 列表，例如 `["torch_profiler_eager","ncu"]`。 |
 | `torch_profiler_eager_flop_semantics` | Torch eager FLOP 的统计口径说明。 |
 | `torch_profiler_eager_attention_implementation` | 独立 Torch probe 强制并验证的 attention 实现，当前为 `eager`。 |
-| `torch_profiler_eager_repeat_cpu` | CPU Torch eager probe 的 repeat；未采 CPU profile 时为空。 |
-| `torch_profiler_eager_repeat_gpu` | GPU Torch eager probe 的 repeat；未采 GPU profile 时为空。 |
+| `torch_profiler_eager_repeat_cpu` | CPU Torch eager probe 的 repeat；未采 CPU profile 时为 `null`。 |
+| `torch_profiler_eager_repeat_gpu` | GPU Torch eager probe 的 repeat；未采 GPU profile 时为 `null`。 |
 | `ncu_flop_semantics` | NCU GPU 实际执行 FLOP 的计数器、Tensor/Scalar 分类口径说明。 |
 | `ncu_repeat` | NCU probe repeat；所有 NCU per-request 指标据此归一化。 |
 | `ncu_fma_flop_weight` | NCU FMA 指令的 FLOP 权重，当前为 `2`。 |
@@ -563,7 +577,7 @@ python -m acprof.cli.backfill_compute \
 | `execution_profiles_retained` | raw Massif / Nsight Systems artifacts 是否保留。 |
 | `execution_profile_provenance` | execution profile 的来源；默认关闭时为 `disabled`。 |
 
-这些字段在 profiling 后原子补写，原始 `run_command` 保持不变。随完整资源配置和 `input_scale` 变化的 FLOP / execution 数值只存放在 `result_all.csv`，不会进入单行 `static_meta.csv`。
+这些字段在 profiling 后原子补写，原始 `run_command` 保持不变。`static_flops` 只保存不依赖硬件计数器的 Torch 逻辑 shape FLOPs，并按 input scale 展开；NCU 实际执行 FLOPs、吞吐率以及随完整资源配置变化的 execution 数值仍保存在 `result_all.csv`。
 
 ## 10. 结果行数和时间成本估算
 
@@ -695,7 +709,7 @@ CPU / vCPU energy 字段全是 `nan`：
 CPU idle baseline 波动 warning：
 
 - `cpu_idle_power_w` 的 case 级相对极差达到或超过 5% 时，case 结束后会输出 warning，实验继续运行。常见原因是 host 后台进程、IDE/远程桌面、Docker 其他容器、系统索引或 CPU 温度/频率策略变化。
-- 可先增大 `--idle-cooldown-seconds` 让上一轮 workload 的瞬态结束；如果单次 idle 窗口本身仍然抖动，再增大 `--idle-seconds`。同时关闭非必要后台进程，并检查 `static_meta.csv` 中的 `cpu_governor` / `cpu_boost` 是否符合实验设置。
+- 可先增大 `--idle-cooldown-seconds` 让上一轮 workload 的瞬态结束；如果单次 idle 窗口本身仍然抖动，再增大 `--idle-seconds`。同时关闭非必要后台进程，并检查 `static_meta.json` 中的 `cpu_governor` / `cpu_boost` 是否符合实验设置。
 - 需要定位具体时间点和进程时，加 `--idle-debug` 重跑；优先查看 `debug_idle_diag/result_case_*.csv.idle_diag.jsonl` 中同一 row 的 `rapl_trace.top_power_windows`、`idle_host_active_delta_s`、`idle_container_cpu_delta_s`，再结合 control window 结束后采集的 loadavg、top CPU processes 和 Docker 快照。`idle_proc_cpu_top` 在 matched control 模式下保持为空，避免 `/proc` 全量遍历进入 baseline 能量。
 
 GPU idle baseline 波动 warning：
@@ -730,14 +744,14 @@ MFLOPS / compute profiling 字段全是 `nan`：
 - NCU 字段只在 `gpu_mode=on` 行有值；CPU-only 行为 `nan` 是预期行为。
 - `gpu_mode=on` 时检查 `ncu` 是否安装、`--ncu-root` 是否正确、NVIDIA driver 是否允许 performance counters。若 `ncu` 下 CUDA 初始化报 `Error 36` 或没有 kernel，被测镜像裸跑 CUDA 正常但 ncu 下不正常，通常是 Nsight Compute 版本过旧；安装 NVIDIA CUDA apt 源里的较新版本后再试。
 - 如果显式使用 `--compute-profile-tool vendor`，`gpu_mode=off` 时检查 Intel Advisor 是否安装，以及 `--advisor-root` 是否指向可在容器中 bind mount 的 Advisor root 或 executable。
-- compute profiling 与正常 workload 分离；失败不会影响 latency / energy / resource usage 采集。完整状态与静态口径见 `compute_profile_plan.json` 和 `static_meta.csv`。
+- compute profiling 与正常 workload 分离；失败不会影响 latency / energy / resource usage 采集。完整状态与静态口径见 `compute_profile_plan.json` 和 `static_meta.json`。
 
 Massif / Nsight Systems execution profiling 字段全是 `nan`：
 
 - 默认 `--execution-profile-tool none` 不采 execution profile，这是预期结果；需要显式选择 `massif`、`nsys` 或 `both`。
 - Massif 字段只填充 `gpu_mode=off` 行，Nsight Systems 字段只填充 `gpu_mode=on` 行；不适用的另一组字段保持 `nan`。
 - 分别查看 `compute_profile_error_massif` 和 `compute_profile_error_nsys`。Massif 检查派生镜像的 Docker build/apt 网络与 `dockerfiles/massif.Dockerfile` 日志，不要求 host 安装 `valgrind`；Nsight Systems 检查 `nsys`、`--nsys-root`、`dockerfiles/nsys.Dockerfile` 的 importer runtime preflight、NVIDIA driver / Container Toolkit 兼容性，以及 raw `.nsys-rep` 是否可导出。出现 `nsys_importer_unavailable` 时，优先检查派生镜像中 `libdw.so.1` 等动态库；probe 阶段只出现 `.qdstrm` 而没有 `.nsys-rep` 属于 importer 失败。
-- 两者是显式 opt-in 的独立 probe；一个失败不会影响另一个 execution probe、FLOP compute profiling 或主实验。完整状态与静态口径见 `execution_profile_plan.json` 和 `static_meta.csv`。
+- 两者是显式 opt-in 的独立 probe；一个失败不会影响另一个 execution probe、FLOP compute profiling 或主实验。完整状态与静态口径见 `execution_profile_plan.json` 和 `static_meta.json`。
 
 `--skip-build` 后 `/scale_meta` 或 `/probe` 报错：
 

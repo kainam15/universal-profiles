@@ -547,14 +547,24 @@ def prepare_df(csv_path: str) -> pd.DataFrame:
     return df
 
 
-def read_static_meta(csv_path: str) -> dict[str, str]:
-    static_meta_path = os.path.join(os.path.dirname(csv_path) or ".", "static_meta.csv")
-    if not os.path.exists(static_meta_path):
-        return {}
+def read_static_meta(csv_path: str) -> dict[str, object]:
+    result_dir = os.path.dirname(csv_path) or "."
+    static_meta_json = os.path.join(result_dir, "static_meta.json")
+    if os.path.exists(static_meta_json):
+        with open(static_meta_json, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if not isinstance(payload, dict):
+            raise ValueError(
+                f"static metadata must be a JSON object: {static_meta_json}"
+            )
+        return payload
 
-    with open(static_meta_path, "r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        row = next(reader, None)
+    # Historical result directories used a one-row CSV.
+    legacy_csv = os.path.join(result_dir, "static_meta.csv")
+    if not os.path.exists(legacy_csv):
+        return {}
+    with open(legacy_csv, "r", encoding="utf-8", newline="") as f:
+        row = next(csv.DictReader(f), None)
     return row or {}
 
 
@@ -1998,7 +2008,7 @@ def _format_optional_float(value: float | None) -> str:
 
 def _write_skipped_latency_model_report(
     output_dir: str,
-    static_meta: dict[str, str],
+    static_meta: dict[str, object],
     reason: str,
 ) -> None:
     report_path = os.path.join(output_dir, LATENCY_MODEL_REPORT)
@@ -2027,7 +2037,7 @@ def _write_skipped_latency_model_report(
 
 def write_latency_model_report(
     df: pd.DataFrame,
-    static_meta: dict[str, str],
+    static_meta: dict[str, object],
     output_dir: str,
 ) -> None:
     """Fit validated positive latency models and write report/residual artifacts."""

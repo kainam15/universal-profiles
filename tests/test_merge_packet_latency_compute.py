@@ -85,12 +85,10 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
             in_csv = os.path.join(tmp, "result.csv")
             lat_json = os.path.join(tmp, "lat.json")
             out_csv = os.path.join(tmp, "result.merged.csv")
-            static_meta = os.path.join(tmp, "static_meta.csv")
+            static_meta = os.path.join(tmp, "static_meta.json")
 
-            with open(static_meta, "w", encoding="utf-8", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=["batch_size"])
-                writer.writeheader()
-                writer.writerow({"batch_size": "1"})
+            with open(static_meta, "w", encoding="utf-8") as f:
+                json.dump({"batch_size": 1}, f)
 
             fieldnames = [
                 "sniff_group_id",
@@ -224,13 +222,11 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
             in_csv = os.path.join(tmp, "result.csv")
             lat_json = os.path.join(tmp, "lat.json")
             out_csv = os.path.join(tmp, "result.merged.csv")
-            static_meta = os.path.join(tmp, "static_meta.csv")
+            static_meta = os.path.join(tmp, "static_meta.json")
             sidecar = f"{in_csv}.sniff_groups.jsonl"
 
-            with open(static_meta, "w", encoding="utf-8", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=["batch_size"])
-                writer.writeheader()
-                writer.writerow({"batch_size": "2"})
+            with open(static_meta, "w", encoding="utf-8") as f:
+                json.dump({"batch_size": 2}, f)
 
             fieldnames = [
                 "latency_s",

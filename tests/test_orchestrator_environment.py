@@ -115,6 +115,12 @@ class DetectEnvironmentTests(unittest.TestCase):
             library_name="transformers",
             model_revision="main",
             detection_method="hub_api",
+            parameter_count=110_106_428,
+            precision_dtype="FP32",
+            parameter_dtype_counts={"FP32": 110_106_428},
+            quantized=False,
+            model_license="apache-2.0",
+            model_metadata_source="huggingface_hub",
         )
         commands = []
 
@@ -218,6 +224,12 @@ class DetectEnvironmentTests(unittest.TestCase):
             library_name="transformers",
             model_revision="main",
             detection_method="hub_api",
+            parameter_count=110_106_428,
+            precision_dtype="FP32",
+            parameter_dtype_counts={"FP32": 110_106_428},
+            quantized=False,
+            model_license="apache-2.0",
+            model_metadata_source="huggingface_hub",
         )
 
         with patch("acprof.host.orchestrator._detect_environment", return_value="windows11+wsl"), patch(
@@ -262,12 +274,28 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(meta.vcpu_power_method, "rapl_cgroup_cpu_share")
         self.assertEqual(meta.cpu_governor, "performance")
         self.assertEqual(meta.cpu_boost, "on")
-        self.assertEqual(disabled_meta.compute_profile_tools, "[]")
-        self.assertEqual(disabled_meta.compute_profiles_retained, "false")
+        self.assertEqual(meta.parameter_count, 110_106_428)
+        self.assertEqual(meta.precision_dtype, "FP32")
+        self.assertEqual(
+            meta.inference_precision_by_device,
+            {"cpu": "FP32", "gpu": "FP16"},
+        )
+        self.assertFalse(meta.quantized)
+        self.assertEqual(meta.model_license, "apache-2.0")
+        self.assertEqual(
+            meta.input_format["json_schema"]["required"],
+            ["text"],
+        )
+        self.assertIn(
+            "n_results",
+            meta.output_format["json_schema"]["properties"],
+        )
+        self.assertEqual(disabled_meta.compute_profile_tools, [])
+        self.assertFalse(disabled_meta.compute_profiles_retained)
         self.assertEqual(disabled_meta.compute_profile_provenance, "disabled")
-        self.assertEqual(meta.execution_profile_schema_version, "1")
-        self.assertEqual(meta.execution_profile_tools, "[]")
-        self.assertEqual(meta.execution_profiles_retained, "false")
+        self.assertEqual(meta.execution_profile_schema_version, 1)
+        self.assertEqual(meta.execution_profile_tools, [])
+        self.assertFalse(meta.execution_profiles_retained)
         self.assertEqual(meta.execution_profile_provenance, "disabled")
 
     def test_static_meta_compute_profile_fields_follow_host_metadata(self) -> None:
@@ -287,7 +315,7 @@ class DetectEnvironmentTests(unittest.TestCase):
         )
         self.assertEqual(STATIC_META_FIELDS[-1], "execution_profile_provenance")
 
-    def test_enrich_static_meta_serializes_compute_profile_metadata(self) -> None:
+    def test_enrich_static_meta_preserves_native_json_types(self) -> None:
         base = orchestrator.StaticMeta(
             model_name="model",
             model_revision="main",
@@ -321,13 +349,13 @@ class DetectEnvironmentTests(unittest.TestCase):
 
         self.assertEqual(
             enriched.compute_profile_tools,
-            '["torch_profiler_eager","ncu"]',
+            ["torch_profiler_eager", "ncu"],
         )
         self.assertEqual(
             enriched.ncu_metrics,
-            '["gpu__time_duration.sum","metric.sum"]',
+            ["gpu__time_duration.sum", "metric.sum"],
         )
-        self.assertEqual(enriched.compute_profiles_retained, "true")
+        self.assertTrue(enriched.compute_profiles_retained)
         self.assertEqual(enriched.run_command, base.run_command)
 
         execution_enriched = orchestrator.enrich_static_meta(
@@ -339,18 +367,18 @@ class DetectEnvironmentTests(unittest.TestCase):
                 "execution_profile_provenance": "collected",
             },
         )
-        self.assertEqual(execution_enriched.execution_profile_schema_version, "1")
+        self.assertEqual(execution_enriched.execution_profile_schema_version, 1)
         self.assertEqual(
             execution_enriched.execution_profile_tools,
-            '["massif","nsys"]',
+            ["massif", "nsys"],
         )
-        self.assertEqual(execution_enriched.execution_profiles_retained, "true")
+        self.assertTrue(execution_enriched.execution_profiles_retained)
         self.assertEqual(
             execution_enriched.execution_profile_provenance,
             "collected",
         )
 
-    def test_write_static_meta_csv_includes_enriched_fields_atomically(self) -> None:
+    def test_write_static_meta_json_includes_enriched_fields_atomically(self) -> None:
         meta = orchestrator.StaticMeta(
             model_name="model",
             model_revision="main",
@@ -371,26 +399,115 @@ class DetectEnvironmentTests(unittest.TestCase):
             vcpu_power_method="rapl_cgroup_cpu_share",
             cpu_governor="performance",
             cpu_boost="off",
-            compute_profile_tools='["torch_profiler_eager","ncu"]',
+            parameter_count=42,
+            precision_dtype="FP32",
+            parameter_dtype_counts={"FP32": 42},
+            input_format={"media_type": "application/json"},
+            output_format={"media_type": "application/json"},
+            quantized=False,
+            model_license="mit",
+            compute_profile_tools=["torch_profiler_eager", "ncu"],
             compute_profile_provenance="direct",
         )
 
         with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "static_meta.csv")
-            orchestrator.write_static_meta_csv(meta, path)
-            with open(path, "r", encoding="utf-8", newline="") as f:
-                rows = list(csv.DictReader(f))
+            path = os.path.join(tmp, "static_meta.json")
+            orchestrator.write_static_meta_json(meta, path)
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
             leftovers = [
                 name
                 for name in os.listdir(tmp)
-                if name.startswith(".static_meta.csv.")
+                if name.startswith(".static_meta.json.")
             ]
 
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(list(rows[0]), STATIC_META_FIELDS)
-        self.assertNotIn("compute_profile_schema_version", rows[0])
-        self.assertEqual(rows[0]["compute_profile_provenance"], "direct")
+        self.assertEqual(list(payload), STATIC_META_FIELDS)
+        self.assertNotIn("compute_profile_schema_version", payload)
+        self.assertEqual(payload["parameter_count"], 42)
+        self.assertEqual(payload["parameter_dtype_counts"], {"FP32": 42})
+        self.assertFalse(payload["quantized"])
+        self.assertEqual(
+            payload["compute_profile_tools"],
+            ["torch_profiler_eager", "ncu"],
+        )
+        self.assertEqual(payload["compute_profile_provenance"], "direct")
         self.assertEqual(leftovers, [])
+
+    def test_compute_plan_adds_static_flops_by_input_scale(self) -> None:
+        meta = orchestrator.StaticMeta(
+            model_name="model",
+            model_revision="main",
+            task_family="nlp",
+            pipeline_tag="fill-mask",
+            runtime_backend="transformers_pipeline",
+            image_tag="image",
+            batch_size=1,
+            input_scale_type="seq_length",
+            run_command="python run.py",
+            model_download_url="https://example.invalid/model",
+            gpu="GPU",
+            gpu_mem_total_bytes=123,
+            model_weight_bytes=456,
+            docker_image_bytes=789,
+            environment="ubuntu24.04",
+            cpu_power_source="rapl",
+            vcpu_power_method="rapl_cgroup_cpu_share",
+            cpu_governor="performance",
+            cpu_boost="off",
+        )
+        plan = {
+            "static_metadata": {
+                "compute_profile_tools": ["torch_profiler_eager"],
+                "torch_profiler_eager_flop_semantics": (
+                    "logical_operator_shape_flops"
+                ),
+            },
+            "profiles": {
+                "gpu": {
+                    "torch_profiler_eager": {
+                        "flop_semantics": "logical_operator_shape_flops",
+                        "entries": [
+                            {
+                                "input_scale": 64,
+                                "model_logical_mflop_per_request_torch_profiler_eager": 12.5,
+                                "error": "",
+                            },
+                            {
+                                "input_scale": 128,
+                                "model_logical_mflop_per_request_torch_profiler_eager": 25.25,
+                                "error": "",
+                            },
+                        ],
+                    }
+                }
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "compute_profile_plan.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(plan, f)
+            enriched = orchestrator.enrich_static_meta_from_compute_plan(
+                meta,
+                path,
+            )
+
+        self.assertEqual(
+            enriched.static_flops,
+            {
+                "source": "torch_profiler_eager",
+                "profile": "gpu",
+                "semantics": "logical_operator_shape_flops",
+                "unit": "FLOP/request",
+                "input_scale_type": "seq_length",
+                "batch_size": 1,
+                "values": [
+                    {"input_scale": 64, "flops_per_request": 12_500_000},
+                    {"input_scale": 128, "flops_per_request": 25_250_000},
+                ],
+            },
+        )
+        self.assertIsNone(enriched.static_macs)
 
     def test_cpu_frequency_policy_metadata_reads_governor_and_boost(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

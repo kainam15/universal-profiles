@@ -412,7 +412,7 @@ class NativeDockerGuardTests(unittest.TestCase):
             "acprof.host.orchestrator.collect_static_meta",
             return_value=SimpleNamespace(),
         ), patch(
-            "acprof.host.orchestrator.write_static_meta_csv"
+            "acprof.host.orchestrator.write_static_meta_json"
         ), patch(
             "acprof.host.orchestrator.plan_input_scales",
             return_value=orchestrator.PlannedInputScales(
@@ -480,7 +480,7 @@ class NativeDockerGuardTests(unittest.TestCase):
             "acprof.host.orchestrator.collect_static_meta",
             return_value=SimpleNamespace(),
         ), patch(
-            "acprof.host.orchestrator.write_static_meta_csv"
+            "acprof.host.orchestrator.write_static_meta_json"
         ), patch(
             "acprof.host.orchestrator.plan_input_scales",
             return_value=orchestrator.PlannedInputScales(
@@ -552,8 +552,8 @@ class NativeDockerGuardTests(unittest.TestCase):
             "acprof.host.orchestrator.collect_static_meta",
             return_value=SimpleNamespace(),
         ) as collect_static_meta, patch(
-            "acprof.host.orchestrator.write_static_meta_csv"
-        ), patch(
+            "acprof.host.orchestrator.write_static_meta_json"
+        ) as write_static_meta_json, patch(
             "acprof.host.orchestrator.plan_input_scales",
             return_value=orchestrator.PlannedInputScales(
                 scales=[1.0],
@@ -572,6 +572,11 @@ class NativeDockerGuardTests(unittest.TestCase):
             "python run.py --model dummy-model --skip-build --no-compute-profile "
             "--cpus 1 --mems 2 --gpus off --output-dir "
             + tmp_dir,
+        )
+        self.assertTrue(write_static_meta_json.called)
+        self.assertEqual(
+            write_static_meta_json.call_args_list[0].args[1],
+            os.path.join(tmp_dir, "dummy-model", "static_meta.json"),
         )
 
 

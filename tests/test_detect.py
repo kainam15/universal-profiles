@@ -3,12 +3,78 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from acprof.host import detect
 
 
 class DetectTaskTests(unittest.TestCase):
+    def test_hub_detection_collects_model_metadata(self) -> None:
+        hub_info = SimpleNamespace(
+            pipeline_tag="fill-mask",
+            library_name="transformers",
+            sha="0123456789abcdef",
+            safetensors=SimpleNamespace(
+                parameters={"F32": 110_106_428},
+                total=110_106_428,
+            ),
+            card_data={"license": "apache-2.0"},
+            config={"architectures": ["BertForMaskedLM"]},
+            tags=["transformers", "license:apache-2.0"],
+        )
+
+        with patch("huggingface_hub.model_info", return_value=hub_info):
+            info = detect._detect_from_hub(
+                "google-bert/bert-base-uncased"
+            )
+
+        self.assertIsNotNone(info)
+        assert info is not None
+        self.assertEqual(info.parameter_count, 110_106_428)
+        self.assertEqual(info.precision_dtype, "FP32")
+        self.assertEqual(
+            info.parameter_dtype_counts,
+            {"FP32": 110_106_428},
+        )
+        self.assertFalse(info.quantized)
+        self.assertEqual(info.model_license, "apache-2.0")
+        self.assertEqual(info.model_metadata_source, "huggingface_hub")
+
+    def test_hub_detection_preserves_quantization_metadata(self) -> None:
+        hub_info = SimpleNamespace(
+            pipeline_tag="text-generation",
+            library_name="transformers",
+            sha="fedcba9876543210",
+            safetensors=SimpleNamespace(
+                parameters={"I8": 7_000_000_000},
+                total=7_000_000_000,
+            ),
+            card_data={},
+            config={
+                "architectures": ["ExampleForCausalLM"],
+                "quantization_config": {
+                    "quant_method": "gptq",
+                    "bits": 8,
+                },
+            },
+            tags=["gptq", "license:mit"],
+        )
+
+        with patch("huggingface_hub.model_info", return_value=hub_info):
+            info = detect._detect_from_hub("example/quantized-model")
+
+        self.assertIsNotNone(info)
+        assert info is not None
+        self.assertEqual(info.precision_dtype, "INT8")
+        self.assertTrue(info.quantized)
+        self.assertEqual(info.quantization_method, "gptq")
+        self.assertEqual(
+            info.quantization_config,
+            {"quant_method": "gptq", "bits": 8},
+        )
+        self.assertEqual(info.model_license, "mit")
+
     def test_config_fallback_reads_config_json_without_transformers_dependency(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = Path(tmp_dir, "config.json")

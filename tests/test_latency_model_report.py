@@ -110,21 +110,15 @@ class LatencyModelReportTests(unittest.TestCase):
             writer.writerows(rows)
 
         with open(
-            os.path.join(output_dir, "static_meta.csv"),
+            os.path.join(output_dir, "static_meta.json"),
             "w",
             encoding="utf-8",
-            newline="",
         ) as f:
-            writer = csv.DictWriter(
-                f,
-                fieldnames=["model_name", "task_family", "input_scale_type"],
-            )
-            writer.writeheader()
-            writer.writerow({
+            json.dump({
                 "model_name": "google-bert/bert-base-uncased",
                 "task_family": "nlp",
                 "input_scale_type": "seq_length",
-            })
+            }, f)
         return csv_path
 
     @staticmethod

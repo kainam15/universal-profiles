@@ -1,5 +1,6 @@
 import csv
 import colorsys
+import json
 import os
 import sys
 import tempfile
@@ -169,11 +170,9 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                     "container_mem_usage_avg_bytes": str(2 * 1024 ** 3),
                     "gpu_mem_used_avg_bytes": str(3 * 1024 ** 3),
                 })
-            static_meta_path = os.path.join(tmp, "static_meta.csv")
-            with open(static_meta_path, "w", encoding="utf-8", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=["gpu_mem_total_bytes"])
-                writer.writeheader()
-                writer.writerow({"gpu_mem_total_bytes": str(8 * 1024 ** 3)})
+            static_meta_path = os.path.join(tmp, "static_meta.json")
+            with open(static_meta_path, "w", encoding="utf-8") as f:
+                json.dump({"gpu_mem_total_bytes": 8 * 1024 ** 3}, f)
 
             df = plot.prepare_df(csv_path)
 

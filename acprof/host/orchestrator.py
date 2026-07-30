@@ -16,7 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -34,6 +34,7 @@ from acprof.config import (
     READY_POLL_INTERVAL_S,
     READY_TIMEOUT_S,
     STATIC_META_FIELDS,
+    STATIC_META_SCHEMA_VERSION,
 )
 from acprof.host.detect import TaskInfo
 from acprof.host.env_utils import hf_offline_docker_env_args
@@ -70,31 +71,45 @@ class StaticMeta:
     vcpu_power_method: str
     cpu_governor: str
     cpu_boost: str
-    compute_profile_tools: str = ""
+    schema_version: int = STATIC_META_SCHEMA_VERSION
+    parameter_count: Optional[int] = None
+    precision_dtype: Optional[str] = None
+    parameter_dtype_counts: Dict[str, int] = field(default_factory=dict)
+    inference_precision_by_device: Dict[str, str] = field(default_factory=dict)
+    static_flops: Optional[Dict[str, Any]] = None
+    static_macs: Optional[Dict[str, Any]] = None
+    input_format: Dict[str, Any] = field(default_factory=dict)
+    output_format: Dict[str, Any] = field(default_factory=dict)
+    quantized: Optional[bool] = None
+    quantization_method: Optional[str] = None
+    quantization_config: Dict[str, Any] = field(default_factory=dict)
+    model_license: Optional[str] = None
+    model_metadata_source: Optional[str] = None
+    compute_profile_tools: List[str] = field(default_factory=list)
     torch_profiler_eager_flop_semantics: str = ""
     torch_profiler_eager_attention_implementation: str = ""
-    torch_profiler_eager_repeat_cpu: str = ""
-    torch_profiler_eager_repeat_gpu: str = ""
+    torch_profiler_eager_repeat_cpu: Optional[int] = None
+    torch_profiler_eager_repeat_gpu: Optional[int] = None
     ncu_flop_semantics: str = ""
-    ncu_repeat: str = ""
-    ncu_fma_flop_weight: str = ""
-    ncu_metrics: str = ""
+    ncu_repeat: Optional[int] = None
+    ncu_fma_flop_weight: Optional[float] = None
+    ncu_metrics: List[str] = field(default_factory=list)
     torch_version: str = ""
     transformers_version: str = ""
     ncu_version: str = ""
     gpu_compute_capability: str = ""
-    gpu_sm_count: str = ""
-    compute_profiles_retained: str = ""
+    gpu_sm_count: Any = None
+    compute_profiles_retained: bool = False
     compute_profile_provenance: str = ""
-    execution_profile_schema_version: str = ""
-    execution_profile_tools: str = ""
+    execution_profile_schema_version: Optional[int] = None
+    execution_profile_tools: List[str] = field(default_factory=list)
     massif_peak_semantics: str = ""
-    massif_repeat: str = ""
+    massif_repeat: Optional[int] = None
     massif_version: str = ""
     nsys_timeline_semantics: str = ""
-    nsys_repeat: str = ""
+    nsys_repeat: Optional[int] = None
     nsys_version: str = ""
-    execution_profiles_retained: str = ""
+    execution_profiles_retained: bool = False
     execution_profile_provenance: str = ""
 
 
@@ -1011,6 +1026,153 @@ def _docker_model_weight_bytes(image_tag: str, cache_root: str = "/models/hf") -
         ) from exc
 
 
+def _json_object_schema(
+    properties: Dict[str, Any],
+    required: List[str],
+) -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "required": required,
+        "properties": properties,
+    }
+
+
+def _model_io_formats(task_info: TaskInfo) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Describe the actual /predict JSON contract used by the selected handler."""
+    string_schema = {"type": "string"}
+    params_schema = {"type": "object"}
+    input_properties: Dict[str, Any]
+    input_required: List[str]
+    output_properties: Dict[str, Any]
+    output_required = ["task"]
+
+    if task_info.task_family == "nlp":
+        if task_info.pipeline_tag == "question-answering":
+            input_properties = {
+                "question": string_schema,
+                "context": string_schema,
+                "params": params_schema,
+            }
+            input_required = ["question", "context"]
+        else:
+            input_properties = {
+                "text": string_schema,
+                "params": params_schema,
+            }
+            input_required = ["text"]
+        output_properties = {
+            "task": string_schema,
+            "output_type": {
+                "type": "string",
+                "enum": ["text", "label"],
+            },
+            "n_results": {"type": "integer"},
+            "effective_input_scale": {"type": "number"},
+        }
+        output_required.extend(["output_type", "n_results"])
+    elif task_info.task_family == "cv":
+        input_properties = {
+            "image_base64": {
+                "type": "string",
+                "contentEncoding": "base64",
+                "contentMediaType": "image/png",
+            },
+            "params": params_schema,
+        }
+        input_required = ["image_base64"]
+        output_properties = {
+            "task": string_schema,
+            "output_type": {
+                "type": "string",
+                "enum": ["classification", "detection"],
+            },
+            "n_results": {"type": "integer"},
+        }
+        output_required.extend(["output_type", "n_results"])
+    elif task_info.task_family == "audio":
+        input_properties = {
+            "audio_samples": {
+                "type": "array",
+                "items": {"type": "number", "format": "float32"},
+            },
+            "sample_rate": {"type": "integer", "unit": "Hz"},
+            "params": params_schema,
+        }
+        input_required = ["audio_samples", "sample_rate"]
+        output_properties = {
+            "task": string_schema,
+            "output_type": {
+                "type": "string",
+                "enum": ["transcription", "classification", "unknown"],
+            },
+            "output_length": {"type": "integer"},
+            "n_results": {"type": "integer"},
+        }
+        output_required.append("output_type")
+    elif task_info.task_family == "timeseries":
+        input_properties = {
+            "context": {
+                "type": "array",
+                "items": {
+                    "type": "array",
+                    "items": {"type": "number", "format": "float32"},
+                },
+            },
+            "prediction_length": {"type": "integer"},
+        }
+        input_required = ["context", "prediction_length"]
+        output_properties = {
+            "task": string_schema,
+            "forecast_shape": {
+                "type": "array",
+                "items": {"type": "integer"},
+            },
+            "output_type": {
+                "type": "string",
+                "enum": ["forecast"],
+            },
+        }
+    else:
+        input_properties = {}
+        input_required = []
+        output_properties = {}
+        output_required = []
+
+    common = {
+        "transport": "HTTP",
+        "media_type": "application/json",
+    }
+    input_format = {
+        **common,
+        "method": "POST",
+        "endpoint": "/predict",
+        "json_schema": _json_object_schema(input_properties, input_required),
+    }
+    output_format = {
+        **common,
+        "status": 200,
+        "json_schema": _json_object_schema(
+            output_properties,
+            output_required,
+        ),
+    }
+    return input_format, output_format
+
+
+def _inference_precision_by_device(task_info: TaskInfo) -> Dict[str, str]:
+    if (
+        task_info.runtime_backend in {"transformers_pipeline", "transformers_model"}
+        and task_info.task_family in {"nlp", "cv", "audio"}
+    ):
+        return {"cpu": "FP32", "gpu": "FP16"}
+    if task_info.precision_dtype:
+        return {
+            "cpu": task_info.precision_dtype,
+            "gpu": task_info.precision_dtype,
+        }
+    return {}
+
+
 def collect_static_meta(
     task_info: TaskInfo,
     image_info: ImageInfo,
@@ -1024,9 +1186,21 @@ def collect_static_meta(
     """Collect static metadata for the current model/image pair."""
     cpu_power_source, vcpu_power_method = _cpu_power_metadata()
     cpu_governor, cpu_boost = _cpu_frequency_policy_metadata()
+    input_format, output_format = _model_io_formats(task_info)
     static_meta = StaticMeta(
         model_name=task_info.model_id,
         model_revision=task_info.model_revision,
+        parameter_count=task_info.parameter_count,
+        precision_dtype=task_info.precision_dtype,
+        parameter_dtype_counts=dict(task_info.parameter_dtype_counts),
+        inference_precision_by_device=_inference_precision_by_device(task_info),
+        input_format=input_format,
+        output_format=output_format,
+        quantized=task_info.quantized,
+        quantization_method=task_info.quantization_method,
+        quantization_config=dict(task_info.quantization_config),
+        model_license=task_info.model_license,
+        model_metadata_source=task_info.model_metadata_source,
         task_family=task_info.task_family,
         pipeline_tag=task_info.pipeline_tag,
         runtime_backend=task_info.runtime_backend,
@@ -1096,14 +1270,80 @@ def enrich_static_meta(
         if field not in metadata:
             continue
         value = metadata[field]
-        if isinstance(value, (dict, list, tuple)):
-            value = json.dumps(value, ensure_ascii=True, separators=(",", ":"))
-        elif isinstance(value, bool):
-            value = "true" if value else "false"
-        elif value is None:
-            value = ""
-        updates[field] = str(value)
+        if isinstance(value, tuple):
+            value = list(value)
+        updates[field] = value
     return replace(static_meta, **updates) if updates else static_meta
+
+
+def _static_flops_from_compute_plan(
+    plan: Dict[str, Any],
+    static_meta: StaticMeta,
+) -> Optional[Dict[str, Any]]:
+    profiles = plan.get("profiles", {})
+    if not isinstance(profiles, dict):
+        return None
+
+    for profile_name in ("gpu", "cpu"):
+        profile_group = profiles.get(profile_name, {})
+        if not isinstance(profile_group, dict):
+            continue
+        torch_profile = profile_group.get("torch_profiler_eager", {})
+        if not isinstance(torch_profile, dict):
+            continue
+        entries = torch_profile.get("entries", [])
+        if not isinstance(entries, list):
+            continue
+
+        values: List[Dict[str, Any]] = []
+        seen_scales = set()
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("error"):
+                continue
+            try:
+                input_scale = float(entry["input_scale"])
+                mflop_per_request = float(
+                    entry[
+                        "model_logical_mflop_per_request_torch_profiler_eager"
+                    ]
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            if (
+                not math.isfinite(input_scale)
+                or not math.isfinite(mflop_per_request)
+                or mflop_per_request < 0
+            ):
+                continue
+            normalized_scale: Any = (
+                int(input_scale) if input_scale.is_integer() else input_scale
+            )
+            if normalized_scale in seen_scales:
+                continue
+            seen_scales.add(normalized_scale)
+            values.append({
+                "input_scale": normalized_scale,
+                "flops_per_request": int(round(mflop_per_request * 1_000_000)),
+            })
+
+        if values:
+            values.sort(key=lambda item: float(item["input_scale"]))
+            static_metadata = plan.get("static_metadata", {})
+            semantics = torch_profile.get("flop_semantics")
+            if not semantics and isinstance(static_metadata, dict):
+                semantics = static_metadata.get(
+                    "torch_profiler_eager_flop_semantics"
+                )
+            return {
+                "source": "torch_profiler_eager",
+                "profile": profile_name,
+                "semantics": semantics or "logical_operator_shape_flops",
+                "unit": "FLOP/request",
+                "input_scale_type": static_meta.input_scale_type,
+                "batch_size": static_meta.batch_size,
+                "values": values,
+            }
+    return None
 
 
 def enrich_static_meta_from_compute_plan(
@@ -1123,7 +1363,11 @@ def enrich_static_meta_from_compute_plan(
     if not isinstance(metadata, dict):
         print("[meta][WARN] compute_profile_plan static_metadata is not an object")
         return static_meta
-    return enrich_static_meta(static_meta, metadata)
+    enriched = enrich_static_meta(static_meta, metadata)
+    static_flops = _static_flops_from_compute_plan(plan, enriched)
+    if static_flops is not None:
+        enriched = replace(enriched, static_flops=static_flops)
+    return enriched
 
 
 def enrich_static_meta_from_execution_plan(
@@ -1146,18 +1390,12 @@ def enrich_static_meta_from_execution_plan(
     return enrich_static_meta(static_meta, metadata)
 
 
-def write_static_meta_csv(static_meta: StaticMeta, output_path: str) -> None:
-    """Write static metadata to a single-row CSV."""
-    import csv
-
-    row = {field: getattr(static_meta, field) for field in STATIC_META_FIELDS}
-
-    def _serialize_csv_value(value: Any, *, force_quote: bool = False) -> str:
-        text = "" if value is None else str(value)
-        escaped = text.replace('"', '""')
-        needs_quote = force_quote or any(ch in text for ch in [",", '"', "\n", "\r"])
-        return f'"{escaped}"' if needs_quote else escaped
-
+def write_static_meta_json(static_meta: StaticMeta, output_path: str) -> None:
+    """Atomically write static metadata as one JSON object."""
+    payload = {
+        field: getattr(static_meta, field)
+        for field in STATIC_META_FIELDS
+    }
     output_dir = os.path.dirname(os.path.abspath(output_path))
     os.makedirs(output_dir, exist_ok=True)
     fd, temporary_path = tempfile.mkstemp(
@@ -1166,19 +1404,14 @@ def write_static_meta_csv(static_meta: StaticMeta, output_path: str) -> None:
         suffix=".tmp",
     )
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
-            header = ",".join(
-                _serialize_csv_value(field) for field in STATIC_META_FIELDS
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(
+                payload,
+                f,
+                ensure_ascii=False,
+                indent=2,
             )
-            values = ",".join(
-                _serialize_csv_value(
-                    row[field],
-                    force_quote=field == "model_download_url",
-                )
-                for field in STATIC_META_FIELDS
-            )
-            f.write(header + "\n")
-            f.write(values + "\n")
+            f.write("\n")
             f.flush()
             os.fsync(f.fileno())
         output_mode = (
@@ -1196,7 +1429,7 @@ def write_static_meta_csv(static_meta: StaticMeta, output_path: str) -> None:
             except FileNotFoundError:
                 pass
 
-    print(f"[meta] Static meta CSV: {output_path}")
+    print(f"[meta] Static meta JSON: {output_path}")
 
 
 # ─────────────────────────────────────────────

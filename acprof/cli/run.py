@@ -689,7 +689,7 @@ Examples:
         plan_input_scales,
         run_matrix,
         serialize_input_scales,
-        write_static_meta_csv,
+        write_static_meta_json,
     )
 
     if args.skip_build:
@@ -709,7 +709,7 @@ Examples:
     output_dir = os.path.join(PROJECT_DIR, args.output_dir, task_info.model_id.replace("/", "--"))
     os.makedirs(output_dir, exist_ok=True)
 
-    static_meta_csv = os.path.join(output_dir, "static_meta.csv")
+    static_meta_json = os.path.join(output_dir, "static_meta.json")
     scaling_cfg = SCALING_DIMENSIONS.get(task_info.task_family)
     input_scale_type = scaling_cfg.param_name if scaling_cfg else ""
 
@@ -722,7 +722,7 @@ Examples:
         compute_profile_enabled=not args.no_compute_profile,
         execution_profile_enabled=args.execution_profile_tool != "none",
     )
-    write_static_meta_csv(static_meta, static_meta_csv)
+    write_static_meta_json(static_meta, static_meta_json)
 
     # ── Step 4: Run profiling matrix ──
     try:
@@ -770,7 +770,7 @@ Examples:
                 static_meta,
                 compute_profile_plan_file,
             )
-            write_static_meta_csv(static_meta, static_meta_csv)
+            write_static_meta_json(static_meta, static_meta_json)
         except Exception as exc:
             print(f"[compute][WARN] Compute profiling unavailable: {exc}")
 
@@ -805,7 +805,7 @@ Examples:
                 static_meta,
                 execution_profile_plan_file,
             )
-            write_static_meta_csv(static_meta, static_meta_csv)
+            write_static_meta_json(static_meta, static_meta_json)
         except Exception as exc:
             print(
                 "[execution-profile][WARN] Execution profiling unavailable: "
@@ -872,14 +872,14 @@ Examples:
         elapsed = _format_elapsed(time.perf_counter() - start_time)
         print(f"\n{'='*60}")
         print(f"Profiling complete!")
-        print(f"  Static meta:      {static_meta_csv}")
+        print(f"  Static meta:      {static_meta_json}")
         print(f"  Merged results:   {final_csv}")
         print(f"  Total elapsed:    {elapsed}")
         print(f"  Intermediate files from this run were cleaned up.")
         print(f"{'='*60}")
     else:
         elapsed = _format_elapsed(time.perf_counter() - start_time)
-        print(f"\n[WARN] No results produced after {elapsed}. Static meta is still available: {static_meta_csv}")
+        print(f"\n[WARN] No results produced after {elapsed}. Static meta is still available: {static_meta_json}")
 
 
 def main():
