@@ -355,6 +355,20 @@ LATENCY_MODEL_FEATURES = {
         "log_input_scale_x_inverse_cpu_cores_squared",
     ],
 }
+LATENCY_MODEL_RESOURCE_FEATURES = {
+    "cpu": {
+        "log_cpu_cores",
+        "log_mem_cap_gb",
+        "log_input_scale_x_log_cpu_cores",
+    },
+    "gpu": {
+        "inverse_cpu_cores",
+        "inverse_cpu_cores_squared",
+        "log_mem_cap_gb",
+        "log_input_scale_x_inverse_cpu_cores",
+        "log_input_scale_x_inverse_cpu_cores_squared",
+    },
+}
 LATENCY_MODEL_FORMULAS = {
     "cpu": (
         "latency_s = exp(intercept + log_input_scale "
@@ -364,6 +378,7 @@ LATENCY_MODEL_FORMULAS = {
     ),
     "gpu": (
         "latency_s = exp(intercept + log_input_scale "
+        "+ piecewise_linear_log_input_scale_hinges "
         "+ inverse_cpu_cores + inverse_cpu_cores_squared "
         "+ log_mem_cap_gb + log_input_scale_x_inverse_cpu_cores "
         "+ log_input_scale_x_inverse_cpu_cores_squared)"
@@ -371,8 +386,15 @@ LATENCY_MODEL_FORMULAS = {
 }
 LATENCY_MODEL_MIN_VALIDATION_R2 = 0.80
 LATENCY_MODEL_MAX_VALIDATION_RELATIVE_MAE = 0.20
+LATENCY_MODEL_MAX_VALIDATION_MAPE = 0.20
 LATENCY_MODEL_MAX_CONFIGURATION_FOLD_RELATIVE_MAE = 0.30
-LATENCY_MODEL_MAX_SCALE_CASE_RELATIVE_ERROR = 0.30
+LATENCY_MODEL_MAX_CONFIGURATION_FOLD_MAPE = 0.30
+LATENCY_MODEL_MAX_VALIDATION_CASE_RELATIVE_ERROR = 0.30
+# Compatibility alias retained for callers that used the original max-scale-only
+# threshold name.
+LATENCY_MODEL_MAX_SCALE_CASE_RELATIVE_ERROR = (
+    LATENCY_MODEL_MAX_VALIDATION_CASE_RELATIVE_ERROR
+)
 LATENCY_MODEL_MIN_VALIDATION_POINTS = 4
 LATENCY_MODEL_RESIDUAL_FIELDS = [
     "report_schema_version",
@@ -799,7 +821,7 @@ def plot_cold_start_bar(df: pd.DataFrame, title: str, ylabel: str, out_png: str 
 def _residual_plot_metrics(
     actual: pd.Series,
     predicted: pd.Series,
-) -> tuple[float | None, float]:
+) -> tuple[float | None, float, float]:
     actual_values = actual.to_numpy(dtype=float)
     predicted_values = predicted.to_numpy(dtype=float)
     residual_values = actual_values - predicted_values
@@ -818,7 +840,10 @@ def _residual_plot_metrics(
         if mean_actual > 0.0
         else math.nan
     )
-    return r2, relative_mae
+    mean_absolute_percentage_error = float(
+        np.mean(np.abs(residual_values) / np.abs(actual_values))
+    )
+    return r2, relative_mae, mean_absolute_percentage_error
 
 
 def plot_latency_model_residuals(
@@ -969,7 +994,7 @@ def plot_latency_model_residuals(
     parity_axis.set_ylabel("Predicted latency (s)")
     parity_axis.grid(True, which="both", linestyle="-", alpha=0.25)
     parity_axis.legend(fontsize=8)
-    r2, relative_mae = _residual_plot_metrics(
+    r2, relative_mae, mean_absolute_percentage_error = _residual_plot_metrics(
         residual_df["latency_s"],
         residual_df["predicted_latency_s"],
     )
@@ -978,6 +1003,23 @@ def plot_latency_model_residuals(
         metric_lines.append(f"R² = {r2:.4f}")
     if math.isfinite(relative_mae):
         metric_lines.append(f"Relative MAE = {100.0 * relative_mae:.1f}%")
+    if math.isfinite(mean_absolute_percentage_error):
+        metric_lines.append(
+            f"Overall MAPE = {100.0 * mean_absolute_percentage_error:.1f}%"
+        )
+    for hardware_model in hardware_order:
+        hardware_df = residual_df[
+            residual_df["hardware_model"] == hardware_model
+        ]
+        _, _, hardware_mape = _residual_plot_metrics(
+            hardware_df["latency_s"],
+            hardware_df["predicted_latency_s"],
+        )
+        if math.isfinite(hardware_mape):
+            metric_lines.append(
+                f"{hardware_styles[hardware_model]['label']} MAPE = "
+                f"{100.0 * hardware_mape:.1f}%"
+            )
     parity_axis.text(
         0.04,
         0.96,
@@ -1166,7 +1208,45 @@ def _hardware_model_name(gpu_mode: object) -> str:
     raise ValueError(f"unsupported gpu_mode value: {gpu_mode!r}")
 
 
-def _model_features(row, hardware_model: str) -> list[float]:
+def _format_input_scale_knot(input_scale: float) -> str:
+    return (
+        format(float(input_scale), ".12g")
+        .replace("-", "neg_")
+        .replace(".", "p")
+    )
+
+
+def _model_feature_names(
+    hardware_model: str,
+    input_scale_spline_knots: list[float] | None = None,
+) -> list[str]:
+    if hardware_model == "cpu":
+        return list(LATENCY_MODEL_FEATURES[hardware_model])
+    if hardware_model == "gpu":
+        knots = input_scale_spline_knots or []
+        return [
+            "intercept",
+            "log_input_scale",
+            *[
+                f"log_input_scale_hinge_at_{_format_input_scale_knot(knot)}"
+                for knot in knots
+            ],
+            *LATENCY_MODEL_FEATURES[hardware_model][2:],
+        ]
+    raise ValueError(f"unknown latency hardware model: {hardware_model}")
+
+
+def _gpu_input_scale_spline_knots(rows: list) -> list[float]:
+    """Use every interior observed scale as a shared log-scale spline knot."""
+    input_scales = sorted({float(row.input_scale) for row in rows})
+    return input_scales[1:-1]
+
+
+def _model_features(
+    row,
+    hardware_model: str,
+    input_scale_spline_knots: list[float] | None = None,
+) -> list[float]:
     input_scale = float(row.input_scale)
     cpu_cores = float(row.cpu_cores)
     mem_cap_gb = float(row.mem_cap_gb)
@@ -1186,9 +1266,14 @@ def _model_features(row, hardware_model: str) -> list[float]:
     if hardware_model == "gpu":
         inverse_cpu_cores = 1.0 / cpu_cores
         inverse_cpu_cores_squared = inverse_cpu_cores**2
+        spline_knots = input_scale_spline_knots or []
         return [
             1.0,
             log_input_scale,
+            *[
+                max(0.0, log_input_scale - math.log(float(knot)))
+                for knot in spline_knots
+            ],
             inverse_cpu_cores,
             inverse_cpu_cores_squared,
             log_mem_cap_gb,
@@ -1208,9 +1293,24 @@ def _fit_log_latency_model(rows: list, hardware_model: str) -> dict:
     if len(rows) < 3:
         raise ValueError(f"need at least 3 case rows, got {len(rows)}")
 
-    feature_names = LATENCY_MODEL_FEATURES[hardware_model]
+    input_scale_spline_knots = (
+        _gpu_input_scale_spline_knots(rows)
+        if hardware_model == "gpu"
+        else []
+    )
+    feature_names = _model_feature_names(
+        hardware_model,
+        input_scale_spline_knots,
+    )
     feature_matrix = np.asarray(
-        [_model_features(row, hardware_model) for row in rows],
+        [
+            _model_features(
+                row,
+                hardware_model,
+                input_scale_spline_knots,
+            )
+            for row in rows
+        ],
         dtype=float,
     )
     target = np.log(np.asarray([float(row.latency_s) for row in rows], dtype=float))
@@ -1274,6 +1374,7 @@ def _fit_log_latency_model(rows: list, hardware_model: str) -> dict:
     )
     return {
         "hardware_model": hardware_model,
+        "input_scale_spline_knots": input_scale_spline_knots,
         "feature_names": feature_names,
         "selected_indices": selected_indices,
         "selected_feature_names": [
@@ -1296,7 +1397,11 @@ def _predict_latency(row, model: dict) -> float:
         coefficient * feature
         for coefficient, feature in zip(
             model["coefficients"],
-            _model_features(row, model["hardware_model"]),
+            _model_features(
+                row,
+                model["hardware_model"],
+                model.get("input_scale_spline_knots", []),
+            ),
         )
     )
     # The exponential link makes predictions positive. Clipping only protects
@@ -1363,7 +1468,25 @@ def plot_latency_model_fit_curves(
     for hardware_model in ("cpu", "gpu"):
         model_report = report_models.get(hardware_model, {})
         coefficient_map = model_report.get("coefficients", {})
-        feature_names = LATENCY_MODEL_FEATURES[hardware_model]
+        input_scale_basis = model_report.get("input_scale_basis", {})
+        input_scale_spline_knots = input_scale_basis.get("knots", [])
+        if not isinstance(input_scale_spline_knots, list):
+            continue
+        try:
+            input_scale_spline_knots = [
+                float(knot) for knot in input_scale_spline_knots
+            ]
+        except (TypeError, ValueError):
+            continue
+        feature_names = model_report.get(
+            "feature_columns",
+            LATENCY_MODEL_FEATURES[hardware_model],
+        )
+        if feature_names != _model_feature_names(
+            hardware_model,
+            input_scale_spline_knots,
+        ):
+            continue
         try:
             coefficients = [
                 float(coefficient_map[feature_name])
@@ -1375,6 +1498,7 @@ def plot_latency_model_fit_curves(
             continue
         fitted_models[hardware_model] = {
             "hardware_model": hardware_model,
+            "input_scale_spline_knots": input_scale_spline_knots,
             "coefficients": coefficients,
         }
 
@@ -1539,6 +1663,8 @@ def _regression_metrics(
             "mae": None,
             "rmse": None,
             "relative_mae": None,
+            "mean_absolute_percentage_error": None,
+            "maximum_absolute_percentage_error": None,
             "smape": None,
             "p95_absolute_error": None,
             "mean_actual": None,
@@ -1563,6 +1689,21 @@ def _regression_metrics(
     ss_res = sum(error * error for error in errors)
     r2 = None if ss_tot <= 1e-24 else 1.0 - (ss_res / ss_tot)
     relative_mae = None if mean_actual <= 0.0 else mae / mean_actual
+    absolute_percentage_errors = [
+        abs(actual - predicted) / abs(actual)
+        for actual, predicted in zip(valid_actuals, valid_predictions)
+        if abs(actual) > 0.0
+    ]
+    mean_absolute_percentage_error = (
+        None
+        if not absolute_percentage_errors
+        else sum(absolute_percentage_errors) / len(absolute_percentage_errors)
+    )
+    maximum_absolute_percentage_error = (
+        None
+        if not absolute_percentage_errors
+        else max(absolute_percentage_errors)
+    )
     smape_terms = [
         2.0 * abs(actual - predicted) / (abs(actual) + abs(predicted))
         for actual, predicted in zip(valid_actuals, valid_predictions)
@@ -1574,6 +1715,8 @@ def _regression_metrics(
         "mae": mae,
         "rmse": rmse,
         "relative_mae": relative_mae,
+        "mean_absolute_percentage_error": mean_absolute_percentage_error,
+        "maximum_absolute_percentage_error": maximum_absolute_percentage_error,
         "smape": smape,
         "p95_absolute_error": float(np.percentile(absolute_errors, 95)),
         "mean_actual": mean_actual,
@@ -1711,12 +1854,8 @@ def _resource_configuration_validation(
         }
         try:
             fold_model = _fit_log_latency_model(train_rows, hardware_model)
-            resource_feature_names = (
-                set(LATENCY_MODEL_FEATURES[hardware_model])
-                - {"intercept", "log_input_scale"}
-            )
             if not (
-                resource_feature_names
+                LATENCY_MODEL_RESOURCE_FEATURES[hardware_model]
                 & set(fold_model["selected_feature_names"])
             ):
                 raise ValueError(
@@ -1749,6 +1888,21 @@ def _resource_configuration_validation(
     predicted_rows = [row for row in rows if _point_key(row) in predictions]
     actuals = [float(row.latency_s) for row in predicted_rows]
     predicted = [predictions[_point_key(row)] for row in predicted_rows]
+    case_relative_errors = [
+        abs(actual - prediction) / actual
+        for actual, prediction in zip(actuals, predicted)
+    ]
+    worst_case_idx = (
+        None
+        if not predicted_rows
+        else max(
+            range(len(predicted_rows)),
+            key=lambda idx: case_relative_errors[idx],
+        )
+    )
+    worst_case = (
+        None if worst_case_idx is None else predicted_rows[worst_case_idx]
+    )
     completed_fold_details = [
         fold_detail
         for fold_detail in fold_details
@@ -1788,6 +1942,20 @@ def _resource_configuration_validation(
             else {
                 "cpu_cores": worst_relative_mae_fold["held_out_cpu_cores"],
                 "mem_cap_gb": worst_relative_mae_fold["held_out_mem_cap_gb"],
+            }
+        ),
+        "worst_case_relative_error": (
+            None
+            if worst_case_idx is None
+            else case_relative_errors[worst_case_idx]
+        ),
+        "worst_case_configuration": (
+            None
+            if worst_case is None
+            else {
+                "cpu_cores": float(worst_case.cpu_cores),
+                "mem_cap_gb": float(worst_case.mem_cap_gb),
+                "input_scale": float(worst_case.input_scale),
             }
         ),
         "metrics": _regression_metrics(actuals, predicted),
@@ -1899,11 +2067,15 @@ def _validation_quality_failures(validation_name: str, validation: dict) -> list
             continue
         fold_metrics = fold_detail["metrics"]
         fold_relative_mae = fold_metrics.get("relative_mae")
+        fold_mape = fold_metrics.get("mean_absolute_percentage_error")
         if (
             fold_relative_mae is None
             or not math.isfinite(float(fold_relative_mae))
             or float(fold_relative_mae)
             > LATENCY_MODEL_MAX_CONFIGURATION_FOLD_RELATIVE_MAE
+            or fold_mape is None
+            or not math.isfinite(float(fold_mape))
+            or float(fold_mape) > LATENCY_MODEL_MAX_CONFIGURATION_FOLD_MAPE
             or int(fold_metrics.get("nonfinite_prediction_count") or 0) > 0
             or int(fold_metrics.get("nonpositive_prediction_count") or 0) > 0
         ):
@@ -1911,7 +2083,7 @@ def _validation_quality_failures(validation_name: str, validation: dict) -> list
     if failed_quality_folds:
         worst_fold = max(
             failed_quality_folds,
-            key=lambda fold_detail: (
+            key=lambda fold_detail: max(
                 math.inf
                 if (
                     fold_detail["metrics"].get("relative_mae") is None
@@ -1919,15 +2091,43 @@ def _validation_quality_failures(validation_name: str, validation: dict) -> list
                         float(fold_detail["metrics"]["relative_mae"])
                     )
                 )
-                else float(fold_detail["metrics"]["relative_mae"])
+                else (
+                    float(fold_detail["metrics"]["relative_mae"])
+                    / LATENCY_MODEL_MAX_CONFIGURATION_FOLD_RELATIVE_MAE
+                ),
+                math.inf
+                if (
+                    fold_detail["metrics"].get(
+                        "mean_absolute_percentage_error"
+                    )
+                    is None
+                    or not math.isfinite(
+                        float(
+                            fold_detail["metrics"][
+                                "mean_absolute_percentage_error"
+                            ]
+                        )
+                    )
+                )
+                else (
+                    float(
+                        fold_detail["metrics"][
+                            "mean_absolute_percentage_error"
+                        ]
+                    )
+                    / LATENCY_MODEL_MAX_CONFIGURATION_FOLD_MAPE
+                ),
             ),
         )
         failures.append(
             f"{validation_name} has {len(failed_quality_folds)} held-out "
-            "configuration fold(s) above the relative-MAE/validity threshold; "
+            "configuration fold(s) above the relative-MAE/MAPE/validity "
+            "threshold; "
             f"worst=(cpu_cores={worst_fold['held_out_cpu_cores']},"
             f"mem_cap_gb={worst_fold['held_out_mem_cap_gb']}), "
-            f"relative_mae={worst_fold['metrics'].get('relative_mae')!r}"
+            f"relative_mae={worst_fold['metrics'].get('relative_mae')!r}, "
+            "mean_absolute_percentage_error="
+            f"{worst_fold['metrics'].get('mean_absolute_percentage_error')!r}"
         )
     worst_case_relative_error = validation.get("worst_case_relative_error")
     if (
@@ -1935,13 +2135,13 @@ def _validation_quality_failures(validation_name: str, validation: dict) -> list
         and (
             not math.isfinite(float(worst_case_relative_error))
             or float(worst_case_relative_error)
-            > LATENCY_MODEL_MAX_SCALE_CASE_RELATIVE_ERROR
+            > LATENCY_MODEL_MAX_VALIDATION_CASE_RELATIVE_ERROR
         )
     ):
         failures.append(
             f"{validation_name} worst case relative_error="
             f"{worst_case_relative_error!r} exceeds "
-            f"{LATENCY_MODEL_MAX_SCALE_CASE_RELATIVE_ERROR}; "
+            f"{LATENCY_MODEL_MAX_VALIDATION_CASE_RELATIVE_ERROR}; "
             f"configuration={validation.get('worst_case_configuration')!r}"
         )
     r2 = metrics.get("r2")
@@ -1963,6 +2163,19 @@ def _validation_quality_failures(validation_name: str, validation: dict) -> list
         failures.append(
             f"{validation_name} relative_mae={relative_mae!r} exceeds "
             f"{LATENCY_MODEL_MAX_VALIDATION_RELATIVE_MAE}"
+        )
+    mean_absolute_percentage_error = metrics.get(
+        "mean_absolute_percentage_error"
+    )
+    if (
+        mean_absolute_percentage_error is None
+        or not math.isfinite(float(mean_absolute_percentage_error))
+        or float(mean_absolute_percentage_error) > LATENCY_MODEL_MAX_VALIDATION_MAPE
+    ):
+        failures.append(
+            f"{validation_name} mean_absolute_percentage_error="
+            f"{mean_absolute_percentage_error!r} exceeds "
+            f"{LATENCY_MODEL_MAX_VALIDATION_MAPE}"
         )
     if int(metrics.get("nonfinite_prediction_count") or 0) > 0:
         failures.append(f"{validation_name} contains non-finite predictions")
@@ -2166,6 +2379,24 @@ def write_latency_model_report(
             "selected_feature_columns": fitted_model["selected_feature_names"],
             "dropped_feature_columns": fitted_model["dropped_feature_names"],
             "coefficients": coefficients,
+            "input_scale_basis": (
+                {
+                    "type": "continuous_piecewise_linear_spline_in_log_space",
+                    "knots": fitted_model["input_scale_spline_knots"],
+                    "knot_rule": "all interior observed training input scales",
+                    "interpolation": (
+                        "piecewise linear in log(input_scale) and log(latency_s)"
+                    ),
+                    "extrapolation": (
+                        "continue the nearest boundary segment in log-log space"
+                    ),
+                }
+                if hardware_model == "gpu"
+                else {
+                    "type": "quadratic_polynomial_in_log_input_scale",
+                    "knots": [],
+                }
+            ),
             "prediction_estimand": (
                 "exponentiated fitted log latency for the median-aggregated case"
             ),
@@ -2294,10 +2525,18 @@ def write_latency_model_report(
         "model_name": static_meta.get("model_name", ""),
         "task_family": static_meta.get("task_family", ""),
         "input_scale_type": static_meta.get("input_scale_type", "input_scale"),
-        "model_type": "separate_cpu_gpu_log_linear_least_squares",
+        "model_type": (
+            "separate_cpu_parametric_gpu_piecewise_log_least_squares"
+        ),
         "positive_prediction_form": True,
         "formula": LATENCY_MODEL_FORMULAS,
-        "feature_columns": LATENCY_MODEL_FEATURES,
+        "feature_columns": {
+            hardware_model: model_reports.get(hardware_model, {}).get(
+                "feature_columns",
+                LATENCY_MODEL_FEATURES[hardware_model],
+            )
+            for hardware_model in ("cpu", "gpu")
+        },
         "separation_note": (
             "CPU-off and GPU-on use independent coefficients. Their separate "
             "input-scale/CPU interaction terms are the split-model equivalent "
@@ -2350,8 +2589,17 @@ def write_latency_model_report(
                 "maximum_validation_relative_mae": (
                     LATENCY_MODEL_MAX_VALIDATION_RELATIVE_MAE
                 ),
+                "maximum_validation_mean_absolute_percentage_error": (
+                    LATENCY_MODEL_MAX_VALIDATION_MAPE
+                ),
                 "maximum_single_configuration_fold_relative_mae": (
                     LATENCY_MODEL_MAX_CONFIGURATION_FOLD_RELATIVE_MAE
+                ),
+                "maximum_single_configuration_fold_mean_absolute_percentage_error": (
+                    LATENCY_MODEL_MAX_CONFIGURATION_FOLD_MAPE
+                ),
+                "maximum_single_validation_case_relative_error": (
+                    LATENCY_MODEL_MAX_VALIDATION_CASE_RELATIVE_ERROR
                 ),
                 "maximum_single_scale_holdout_case_relative_error": (
                     LATENCY_MODEL_MAX_SCALE_CASE_RELATIVE_ERROR
@@ -2366,6 +2614,7 @@ def write_latency_model_report(
         "prediction_scope": {
             "supported": (
                 "interpolation within each hardware model's training_range; "
+                "GPU input-scale interpolation uses a continuous log-log spline; "
                 "the maximum observed input scale is separately forward-validated"
             ),
             "warning": (

@@ -404,6 +404,77 @@ class LatencyModelReportTests(unittest.TestCase):
         ]
         self.assertLess(max(fitted_relative_errors), 1e-6)
 
+    def test_gpu_log_spline_captures_shared_input_scale_regime_change(self) -> None:
+        rows = []
+        repeat_factors = (0.99, 1.0, 1.01)
+        for cpu in (1, 2, 4, 8):
+            for mem in (4, 8, 16):
+                for input_scale in (80, 160, 240, 320, 400, 480):
+                    inverse_cpu = 1.0 / cpu
+                    log_scale = math.log(input_scale)
+                    # A shared GPU execution-regime change after scale 240.
+                    # The post-change slope remains stable, so a forward
+                    # maximum-scale holdout can validate the spline boundary.
+                    regime_shift = 0.75 if input_scale > 240 else 0.0
+                    log_latency = (
+                        -7.0
+                        + 0.55 * log_scale
+                        + regime_shift
+                        + 1.20 * inverse_cpu
+                        + 0.01 * math.log(mem)
+                        - 0.06 * log_scale * inverse_cpu
+                    )
+                    latency = math.exp(log_latency)
+                    for repeat_idx, repeat_factor in enumerate(repeat_factors):
+                        rows.append({
+                            "cpu_cores": str(cpu),
+                            "mem_cap_gb": str(mem),
+                            "gpu_mode": "on",
+                            "input_scale": str(input_scale),
+                            "repeat_idx": str(repeat_idx),
+                            "warmup": "0",
+                            "status": "ok",
+                            "latency_s": (
+                                f"{latency * repeat_factor:.12f}"
+                            ),
+                        })
+
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = self._write_fixture(tmp, rows)
+            df = pd.read_csv(csv_path)
+            plot.write_latency_model_report(
+                df,
+                plot.read_static_meta(csv_path),
+                tmp,
+            )
+            report, _ = self._read_artifacts(tmp)
+
+        gpu_report = report["models"]["gpu"]
+        self.assertEqual(
+            gpu_report["input_scale_basis"]["type"],
+            "continuous_piecewise_linear_spline_in_log_space",
+        )
+        self.assertEqual(
+            gpu_report["input_scale_basis"]["knots"],
+            [160.0, 240.0, 320.0, 400.0],
+        )
+        self.assertIn(
+            "log_input_scale_hinge_at_240",
+            gpu_report["selected_feature_columns"],
+        )
+        for metric_name in (
+            "fit",
+            "resource_configuration_holdout",
+            "input_scale_holdout",
+        ):
+            self.assertLess(
+                gpu_report["metrics"][metric_name][
+                    "mean_absolute_percentage_error"
+                ],
+                1e-6,
+            )
+        self.assertEqual(gpu_report["status"], "ok")
+
     def test_bad_gpu_extrapolation_cannot_hide_behind_cpu_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             rows = self._rows(break_one_gpu_max_scale_case=True)
