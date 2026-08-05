@@ -1478,8 +1478,12 @@ def build_image(task_info: TaskInfo, project_dir: str) -> ImageInfo:
         "--build-arg", f"BASE_IMAGE={base_tag}",
         "--build-arg", f"MODEL_ID={task_info.model_id}",
         "--build-arg", f"MODEL_REVISION={task_info.model_revision or 'main'}",
-        "--build-arg", "HF_TOKEN",
     ]
+    if (os.environ.get("HF_TOKEN") or "").strip():
+        family_build_args.extend([
+            "--secret",
+            "id=hf_token,env=HF_TOKEN",
+        ])
     if task_info.task_family == "nlp":
         torch_index_url = _select_nlp_torch_index_url()
         torch_spec = _select_nlp_torch_spec(torch_index_url)

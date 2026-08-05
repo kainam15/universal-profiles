@@ -56,7 +56,7 @@ HF_TOKEN=hf_xxx
 ACPROF_SUDO_PASSWORD=your_sudo_password
 ```
 
-`run.py` 会自动读取 `.env` 和 `.env.local`，并把 `HF_TOKEN` / `HUGGING_FACE_HUB_TOKEN` 用于 host 检测和 Docker build。正式 inference、scale probe 和 compute profiling 容器不会接收 Hugging Face token。`ACPROF_SUDO_PASSWORD` 只在 host 侧用于 `sudo -S perf` / `setcap tcpdump` 这类 preflight，不会传入被测容器。
+`run.py` 会自动读取 `.env` 和 `.env.local`，并把 `HF_TOKEN` / `HUGGING_FACE_HUB_TOKEN` 用于 host 检测；Docker build 通过 BuildKit secret 临时挂载令牌，不会把令牌写入构建参数或镜像历史。正式 inference、scale probe 和 compute profiling 容器不会接收 Hugging Face token。`ACPROF_SUDO_PASSWORD` 只在 host 侧用于 `sudo -S perf` / `setcap tcpdump` 这类 preflight，不会传入被测容器。
 
 模型 snapshot 会在镜像构建阶段下载并通过 `/models/model-snapshot` 暴露为稳定本地路径。正式 inference、scale probe 和 compute profiling 容器统一启用 `HF_HUB_OFFLINE=1` 与 `TRANSFORMERS_OFFLINE=1`，因此资源矩阵运行阶段不会向 Hugging Face Hub 或镜像站查询模型文件。使用 `--skip-build` 的旧镜像如果还没有稳定路径，会回退到镜像内 Hugging Face cache，但仍保持离线解析。
 

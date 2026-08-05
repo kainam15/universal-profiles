@@ -146,6 +146,50 @@ class DetectEnvironmentTests(unittest.TestCase):
             commands[1],
         )
 
+    def test_build_image_passes_hf_token_as_buildkit_secret(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+        commands = []
+
+        def fake_run(cmd, check=True, capture=True, **kwargs):
+            del check, capture, kwargs
+            commands.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch.dict(
+            "acprof.host.orchestrator.os.environ",
+            {"HF_TOKEN": "test-secret-value"},
+            clear=True,
+        ), patch(
+            "acprof.host.orchestrator.os.path.exists",
+            return_value=True,
+        ), patch(
+            "acprof.host.orchestrator._run",
+            side_effect=fake_run,
+        ), patch(
+            "acprof.host.orchestrator._select_nlp_torch_index_url",
+            return_value=orchestrator.CUDA124_NLP_TORCH_INDEX_URL,
+        ):
+            orchestrator.build_image(task_info, ".")
+
+        family_build = commands[1]
+        self.assertIn("--secret", family_build)
+        self.assertIn("id=hf_token,env=HF_TOKEN", family_build)
+        self.assertNotIn("test-secret-value", family_build)
+        self.assertFalse(
+            any(
+                arg == "HF_TOKEN" or arg.startswith("HF_TOKEN=")
+                for arg in family_build
+            )
+        )
+
     def test_runtime_container_is_offline_and_does_not_receive_hf_token(self) -> None:
         task_info = TaskInfo(
             model_id="google-bert/bert-base-uncased",
