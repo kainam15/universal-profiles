@@ -400,6 +400,49 @@ python run.py --model openai/whisper-large-v3 \
 
 中间文件 `result_case_*.csv`、`result_case_*.csv.sniff_groups.jsonl`、`lat_case_*.json`、`sniff_case_*.pcap` 会在 `result_all.csv` 成功 merge 后自动清理。若运行被中断，这些中间文件可能保留。
 
+### 已有结果后补采 NCU / Nsight Systems / Massif
+
+高开销 profiler 可以与正常 latency / energy / resource-usage 矩阵分开执行。推荐先保留 Torch logical FLOP、关闭 NCU 与 execution profiling：
+
+```bash
+python run.py \
+  --model openai/whisper-large-v3 \
+  --gpus off,on \
+  --compute-profile-tool torch \
+  --execution-profile-tool none
+```
+
+正常运行结束且结果目录中已经同时存在 `result_all.csv`、`static_meta.json`、`input_scale_plan.json` 后，在项目根目录执行：
+
+```bash
+python posthoc.py results/openai--whisper-large-v3
+```
+
+命令默认补采所有适用且尚未成功的 `ncu,nsys,massif`：NCU 与 Nsys 只匹配 `gpu_mode=on` 行，Massif 只匹配 `gpu_mode=off` 行。它不会启动主 workload matrix，不会重新采 latency、energy、MIPS、resource usage 或 packet latency。也可以只选部分工具：
+
+```bash
+python posthoc.py results/openai--whisper-large-v3 --tools ncu,nsys
+python posthoc.py results/openai--whisper-large-v3 --tools massif
+```
+
+Massif 默认使用 `--massif-sampling per-scale`：自动选择结果矩阵中最大的 CPU/memory case，每个 input scale 运行一个探针，再把带有明确 representative provenance 的结果用于同尺度 CPU 行。需要严格按完整 CPU × memory 矩阵采集时使用：
+
+```bash
+python posthoc.py results/<model> --tools massif --massif-sampling full
+```
+
+常用安全/诊断选项：
+
+```bash
+# 只检查适用工具、输入计划和缺失字段，不启动 profiler、不修改文件
+python posthoc.py results/<model> --dry-run
+
+# 显式重新采集并替换已有成功 profiler 字段
+python posthoc.py results/<model> --force-reprofile
+```
+
+回填后仍使用原文件名 `result_all.csv` 与 `static_meta.json`。发布新文件前，命令会把旧版本复制到 `posthoc_backups/<timestamp>/`，临时文件验证通过后才原子替换；非 profiler 字段原样保留。raw report 与补采 plan 位于 `posthoc_profiles/`。若检测到 `run.py`、NCU/Nsys/Massif 或另一个 `posthoc.py` 正在使用相同结果目录，命令会拒绝启动。完整成功的已有 plan 会直接复用；已有成功 CSV 行默认不会被覆盖。
+
 ### 已有 CSV 回填 compute profile
 
 如果 latency 已采集完成、之后才生成 `compute_profile_plan.json`，可以写出一份带 FLOP/MFLOPS 的新 CSV：
