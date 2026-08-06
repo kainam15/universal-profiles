@@ -1,4 +1,4 @@
-"""Post-hoc NCU, Nsight Systems, and Massif collection and CSV backfill.
+"""Profile-only Torch, NCU, Nsight Systems, and Massif CSV backfill.
 
 The normal benchmark and the high-overhead profiler probes are intentionally
 separate.  This command reuses an existing result directory, collects only
@@ -29,10 +29,14 @@ from acprof.host.compute_profile_plan import (
     NCU_ERROR_FIELD,
     NCU_KERNEL_COUNT_FIELD,
     NCU_KERNEL_TIME_FIELD,
+    NCU_PROFILE_KEY,
     NCU_SCALAR_MFLOP_FIELD,
     NCU_TENSOR_MFLOP_FIELD,
     NCU_TENSOR_SHARE_FIELD,
     NCU_TOTAL_MFLOP_FIELD,
+    TORCH_ERROR_FIELD,
+    TORCH_LOGICAL_MFLOP_FIELD,
+    TORCH_PROFILE_KEY,
     compute_mflops,
     find_compute_profile_entry,
 )
@@ -67,8 +71,9 @@ INPUT_SCALE_PLAN_NAME = "input_scale_plan.json"
 POSTHOC_DIRNAME = "posthoc_profiles"
 BACKUP_DIRNAME = "posthoc_backups"
 LOCK_FILENAME = ".posthoc.lock"
-SUPPORTED_TOOLS = ("ncu", "nsys", "massif")
+SUPPORTED_TOOLS = ("torch", "ncu", "nsys", "massif")
 
+TORCH_FIELDS = (TORCH_LOGICAL_MFLOP_FIELD, TORCH_ERROR_FIELD)
 NCU_DERIVED_APP_FIELD = "gpu_executed_mflops_app_ncu"
 NCU_DERIVED_PACKET_FIELD = "gpu_executed_mflops_packet_ncu"
 NCU_FIELDS = (
@@ -85,21 +90,41 @@ NCU_FIELDS = (
 MASSIF_FIELDS = (*MASSIF_METRIC_FIELDS, MASSIF_ERROR_FIELD)
 NSYS_FIELDS = (*NSYS_METRIC_FIELDS, NSYS_ERROR_FIELD)
 TOOL_FIELDS = {
+    "torch": TORCH_FIELDS,
     "ncu": NCU_FIELDS,
     "massif": MASSIF_FIELDS,
     "nsys": NSYS_FIELDS,
 }
 TOOL_METRIC_FIELDS = {
+    "torch": (TORCH_LOGICAL_MFLOP_FIELD,),
     "ncu": NCU_FIELDS[:-1],
     "massif": MASSIF_METRIC_FIELDS,
     "nsys": NSYS_METRIC_FIELDS,
 }
 TOOL_ERROR_FIELD = {
+    "torch": TORCH_ERROR_FIELD,
     "ncu": NCU_ERROR_FIELD,
     "massif": MASSIF_ERROR_FIELD,
     "nsys": NSYS_ERROR_FIELD,
 }
-TOOL_GPU_MODE = {"ncu": "on", "nsys": "on", "massif": "off"}
+TOOL_GPU_MODES = {
+    "torch": ("off", "on"),
+    "ncu": ("on",),
+    "nsys": ("on",),
+    "massif": ("off",),
+}
+
+COMPUTE_PLAN_METRIC_FIELDS = {
+    "torch": (TORCH_LOGICAL_MFLOP_FIELD,),
+    "ncu": (
+        NCU_TOTAL_MFLOP_FIELD,
+        NCU_TENSOR_MFLOP_FIELD,
+        NCU_SCALAR_MFLOP_FIELD,
+        NCU_TENSOR_SHARE_FIELD,
+        NCU_KERNEL_COUNT_FIELD,
+        NCU_KERNEL_TIME_FIELD,
+    ),
+}
 
 
 class PosthocError(RuntimeError):
@@ -389,7 +414,7 @@ def applicable_tools(
     applicable: List[str] = []
     skipped: List[str] = []
     for tool in tools:
-        if TOOL_GPU_MODE[tool] in modes:
+        if modes.intersection(TOOL_GPU_MODES[tool]):
             applicable.append(tool)
         else:
             skipped.append(tool)
@@ -405,11 +430,11 @@ def _row_tool_complete(row: Mapping[str, Any], tool: str) -> bool:
 
 
 def csv_tool_complete(context: ResultContext, tool: str) -> bool:
-    mode = TOOL_GPU_MODE[tool]
+    modes = set(TOOL_GPU_MODES[tool])
     applicable_rows = [
         row
         for row in context.rows
-        if str(row.get("gpu_mode") or "").strip().lower() == mode
+        if str(row.get("gpu_mode") or "").strip().lower() in modes
     ]
     return bool(applicable_rows) and all(
         _row_tool_complete(row, tool) for row in applicable_rows
@@ -442,6 +467,31 @@ def compute_plan_covers_ncu(
     return True
 
 
+def compute_plan_covers_tool(
+    plan: Mapping[str, Any],
+    context: ResultContext,
+    tool: str,
+) -> bool:
+    if tool not in {"torch", "ncu"} or not isinstance(plan, Mapping):
+        return False
+    found_mode = False
+    for mode in TOOL_GPU_MODES[tool]:
+        scales = context.scales_by_mode.get(mode, [])
+        if not scales:
+            continue
+        found_mode = True
+        for scale in scales:
+            profile = find_compute_profile_entry(dict(plan), mode, scale)
+            if not all(
+                math.isfinite(_finite_float(profile.get(field)))
+                for field in COMPUTE_PLAN_METRIC_FIELDS[tool]
+            ):
+                return False
+            if str(profile.get(TOOL_ERROR_FIELD[tool]) or "").strip():
+                return False
+    return found_mode
+
+
 def execution_plan_covers_tool(
     plan: Mapping[str, Any],
     context: ResultContext,
@@ -449,7 +499,7 @@ def execution_plan_covers_tool(
 ) -> bool:
     if tool not in {"massif", "nsys"} or not isinstance(plan, Mapping):
         return False
-    mode = TOOL_GPU_MODE[tool]
+    mode = TOOL_GPU_MODES[tool][0]
     cases = context.cases_for_mode(mode)
     scales = context.scales_by_mode.get(mode, [])
     if not cases or not scales:
@@ -476,6 +526,19 @@ def _packet_mflops(total_mflop: Any, row: Mapping[str, Any]) -> float:
         if math.isfinite(packet)
         else compute_mflops(total_mflop, row.get("latency_app_s"))
     )
+
+
+def _backfill_torch_row(
+    row: Dict[str, str],
+    plan: Mapping[str, Any],
+) -> None:
+    mode = str(row.get("gpu_mode") or "").strip().lower()
+    scale = _finite_float(row.get("input_scale"))
+    profile = find_compute_profile_entry(dict(plan), mode, scale)
+    row[TORCH_LOGICAL_MFLOP_FIELD] = _fmt_float(
+        profile.get(TORCH_LOGICAL_MFLOP_FIELD)
+    )
+    row[TORCH_ERROR_FIELD] = str(profile.get(TORCH_ERROR_FIELD) or "")
 
 
 def _backfill_ncu_row(
@@ -553,14 +616,19 @@ def backfill_rows(
     for row in rows:
         mode = str(row.get("gpu_mode") or "").strip().lower()
         for tool in selected:
-            if mode != TOOL_GPU_MODE[tool]:
+            if mode not in TOOL_GPU_MODES[tool]:
                 continue
             if not force and _row_tool_complete(row, tool):
                 continue
-            if tool == "ncu":
+            if tool in {"torch", "ncu"}:
                 if compute_plan is None:
-                    raise PosthocError("NCU plan is required for NCU backfill")
-                _backfill_ncu_row(row, compute_plan)
+                    raise PosthocError(
+                        f"compute plan is required for {tool} backfill"
+                    )
+                if tool == "torch":
+                    _backfill_torch_row(row, compute_plan)
+                else:
+                    _backfill_ncu_row(row, compute_plan)
             else:
                 if execution_plan is None:
                     raise PosthocError(
@@ -626,11 +694,15 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
         raise
 
 
-def _compute_plan_candidates(context: ResultContext, workspace: Path) -> List[Path]:
+def _compute_plan_candidates(
+    context: ResultContext,
+    workspace: Path,
+    tool: str,
+) -> List[Path]:
     return [
         context.result_dir / "compute_profile_plan.json",
         workspace / "compute_profile_plan.json",
-        workspace / "ncu" / "compute_profile_plan.json",
+        workspace / tool / "compute_profile_plan.json",
     ]
 
 
@@ -650,16 +722,16 @@ def _execution_plan_candidates(
 def _find_reusable_compute_plan(
     context: ResultContext,
     workspace: Path,
+    tool: str,
 ) -> Optional[Dict[str, Any]]:
-    scales = context.scales_by_mode.get("on", [])
-    for path in _compute_plan_candidates(context, workspace):
+    for path in _compute_plan_candidates(context, workspace, tool):
         plan = _read_plan(path)
         if (
             plan is not None
             and _plan_matches_context(plan, context)
-            and compute_plan_covers_ncu(plan, scales)
+            and compute_plan_covers_tool(plan, context, tool)
         ):
-            print(f"[posthoc][ncu] Reusing complete plan: {path}")
+            print(f"[profile][{tool}] Reusing complete plan: {path}")
             return plan
     return None
 
@@ -676,7 +748,7 @@ def _find_reusable_execution_plan(
             and _plan_matches_context(plan, context)
             and execution_plan_covers_tool(plan, context, tool)
         ):
-            print(f"[posthoc][{tool}] Reusing complete plan: {path}")
+            print(f"[profile][{tool}] Reusing complete plan: {path}")
             return plan
     return None
 
@@ -703,42 +775,51 @@ def _validate_profiler_runtime(context: ResultContext) -> None:
         )
 
 
-def _collect_ncu_plan(
+def _collect_compute_plan(
     context: ResultContext,
     output_dir: Path,
     *,
+    tool: str,
     ncu_root: Optional[str],
+    torch_repeat: int,
     ncu_repeat: int,
     compute_profile_cpus: Optional[int],
     compute_profile_mem: Optional[int],
 ) -> Dict[str, Any]:
     from acprof.host.compute_profile import collect_compute_profile_plan
 
-    gpu_cases = context.cases_for_mode("on")
-    cpus = sorted({case[0] for case in gpu_cases}) or [1]
-    mems = sorted({case[1] for case in gpu_cases}) or [1]
+    modes = [
+        mode
+        for mode in ("off", "on")
+        if mode in TOOL_GPU_MODES[tool] and context.cases_for_mode(mode)
+    ]
+    cases = [case for case in context.resource_cases if case[2] in modes]
+    cpus = sorted({case[0] for case in cases}) or [1]
+    mems = sorted({case[1] for case in cases}) or [1]
     output_dir.mkdir(parents=True, exist_ok=True)
     plan_path = collect_compute_profile_plan(
         task_info=context.task_info,
         image_tag=context.image_tag,
         cpu_list=cpus,
         mem_list=mems,
-        gpu_list=["on"],
+        gpu_list=modes,
         output_dir=str(output_dir),
         input_scale_plan_file=str(context.input_scale_plan_path),
         advisor_root=None,
         ncu_root=ncu_root,
         advisor_repeat=1,
-        torch_profiler_repeat=1,
+        torch_profiler_repeat=torch_repeat,
         ncu_repeat=ncu_repeat,
         keep_profiles=True,
         compute_profile_cpus=compute_profile_cpus,
         compute_profile_mem=compute_profile_mem,
-        compute_profile_tool="ncu",
+        compute_profile_tool=tool,
     )
     plan = _read_plan(Path(plan_path))
     if plan is None:
-        raise PosthocError(f"NCU collector did not produce a valid plan: {plan_path}")
+        raise PosthocError(
+            f"{tool} collector did not produce a valid compute plan: {plan_path}"
+        )
     return plan
 
 
@@ -834,7 +915,7 @@ def _collect_execution_plan(
 ) -> Dict[str, Any]:
     from acprof.host.execution_profile import collect_execution_profile_plan
 
-    mode = TOOL_GPU_MODE[tool]
+    mode = TOOL_GPU_MODES[tool][0]
     cases = context.cases_for_mode(mode)
     cpus = sorted({case[0] for case in cases})
     mems = sorted({case[1] for case in cases})
@@ -846,7 +927,7 @@ def _collect_execution_plan(
         cpus = [reference[0]]
         mems = [reference[1]]
         print(
-            "[posthoc][massif] Representative per-scale sampling: "
+            "[profile][massif] Representative per-scale sampling: "
             f"CPU={reference[0]}, MEM={reference[1]}GB"
         )
 
@@ -883,6 +964,71 @@ def _collect_execution_plan(
             plan,
         )
     return plan
+
+
+def merge_compute_plans(
+    context: ResultContext,
+    plans_by_tool: Mapping[str, Mapping[str, Any]],
+) -> Dict[str, Any]:
+    profiles: Dict[str, Dict[str, Any]] = {}
+    static_metadata: Dict[str, Any] = {}
+    enabled_tools: List[str] = []
+    plan_keys = {"torch": TORCH_PROFILE_KEY, "ncu": NCU_PROFILE_KEY}
+
+    for requested_tool, plan in plans_by_tool.items():
+        plan_key = plan_keys[requested_tool]
+        metadata = plan.get("static_metadata")
+        if isinstance(metadata, Mapping):
+            metadata_keys = ["compute_profiles_retained"]
+            if requested_tool == "torch":
+                metadata_keys.extend(
+                    key
+                    for key in metadata
+                    if str(key).startswith("torch_profiler_eager_")
+                )
+                metadata_keys.extend(["torch_version", "transformers_version"])
+            else:
+                metadata_keys.extend(
+                    key for key in metadata if str(key).startswith("ncu_")
+                )
+            metadata_keys.extend(["gpu_compute_capability", "gpu_sm_count"])
+            for key in metadata_keys:
+                if key in metadata:
+                    static_metadata[key] = copy.deepcopy(metadata[key])
+
+        source_profiles = plan.get("profiles")
+        if isinstance(source_profiles, Mapping):
+            for profile_name in ("cpu", "gpu"):
+                source_group = source_profiles.get(profile_name)
+                tool_profile = (
+                    source_group.get(plan_key)
+                    if isinstance(source_group, Mapping)
+                    else None
+                )
+                if isinstance(tool_profile, Mapping):
+                    profiles.setdefault(profile_name, {})[plan_key] = copy.deepcopy(
+                        dict(tool_profile)
+                    )
+        if plan_key not in enabled_tools:
+            enabled_tools.append(plan_key)
+
+    static_metadata["compute_profile_tools"] = [
+        tool
+        for tool in (TORCH_PROFILE_KEY, NCU_PROFILE_KEY)
+        if tool in enabled_tools
+    ]
+    static_metadata["compute_profiles_retained"] = True
+    static_metadata["compute_profile_provenance"] = "posthoc_backfill"
+    return {
+        "model_id": context.task_info.model_id,
+        "model_revision": context.task_info.model_revision or "main",
+        "task_family": context.task_info.task_family,
+        "pipeline_tag": context.task_info.pipeline_tag,
+        "runtime_backend": context.task_info.runtime_backend,
+        "compute_profile_tool_mode": "posthoc",
+        "static_metadata": static_metadata,
+        "profiles": profiles,
+    }
 
 
 def merge_execution_plans(
@@ -985,6 +1131,71 @@ def _merge_provenance(existing: Any, new_value: str) -> str:
     return "+".join(parts)
 
 
+def _static_flops_from_compute_plan(
+    plan: Mapping[str, Any],
+    context: ResultContext,
+) -> Optional[Dict[str, Any]]:
+    profiles = plan.get("profiles")
+    if not isinstance(profiles, Mapping):
+        return None
+    metadata = plan.get("static_metadata")
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+
+    # Match the normal run.py metadata rule: prefer the GPU Torch profile when
+    # present, otherwise use CPU. Logical FLOP is then keyed only by input scale.
+    for profile_name in ("gpu", "cpu"):
+        profile_group = profiles.get(profile_name)
+        torch_profile = (
+            profile_group.get(TORCH_PROFILE_KEY)
+            if isinstance(profile_group, Mapping)
+            else None
+        )
+        if not isinstance(torch_profile, Mapping):
+            continue
+        entries = torch_profile.get("entries")
+        if not isinstance(entries, list):
+            continue
+
+        values: List[Dict[str, Any]] = []
+        seen_scales: set[float] = set()
+        for entry in entries:
+            if not isinstance(entry, Mapping) or entry.get("error"):
+                continue
+            scale = _finite_float(entry.get("input_scale"))
+            mflop = _finite_float(entry.get(TORCH_LOGICAL_MFLOP_FIELD))
+            if not math.isfinite(scale) or not math.isfinite(mflop) or mflop < 0:
+                continue
+            normalized_scale: int | float = (
+                int(scale) if scale.is_integer() else scale
+            )
+            if normalized_scale in seen_scales:
+                continue
+            seen_scales.add(normalized_scale)
+            values.append(
+                {
+                    "input_scale": normalized_scale,
+                    "flops_per_request": int(round(mflop * 1_000_000)),
+                }
+            )
+        if values:
+            values.sort(key=lambda item: float(item["input_scale"]))
+            semantics = (
+                torch_profile.get("flop_semantics")
+                or metadata.get("torch_profiler_eager_flop_semantics")
+                or "logical_operator_shape_flops"
+            )
+            return {
+                "source": TORCH_PROFILE_KEY,
+                "profile": profile_name,
+                "semantics": semantics,
+                "unit": "FLOP/request",
+                "input_scale_type": context.static_meta.get("input_scale_type", ""),
+                "batch_size": context.static_meta.get("batch_size", 1),
+                "values": values,
+            }
+    return None
+
+
 def update_static_meta(
     context: ResultContext,
     *,
@@ -997,25 +1208,46 @@ def update_static_meta(
     updated = copy.deepcopy(context.static_meta)
     selected = tuple(tools)
 
-    if "ncu" in selected and compute_plan is not None:
+    compute_selected = [tool for tool in selected if tool in {"torch", "ncu"}]
+    if compute_selected and compute_plan is not None:
         metadata = compute_plan.get("static_metadata")
         metadata = metadata if isinstance(metadata, Mapping) else {}
         compute_tools = _normalize_tool_metadata(updated.get("compute_profile_tools"))
-        if "ncu" not in compute_tools:
-            compute_tools.append("ncu")
+        for tool in compute_selected:
+            metadata_name = TORCH_PROFILE_KEY if tool == "torch" else NCU_PROFILE_KEY
+            if metadata_name not in compute_tools:
+                compute_tools.append(metadata_name)
         updated["compute_profile_tools"] = compute_tools
-        for key in (
-            "ncu_flop_semantics",
-            "ncu_repeat",
-            "ncu_fma_flop_weight",
-            "ncu_metrics",
-            "ncu_version",
-            "gpu_compute_capability",
-            "gpu_sm_count",
-        ):
+        metadata_keys: List[str] = ["gpu_compute_capability", "gpu_sm_count"]
+        if "torch" in compute_selected:
+            metadata_keys.extend(
+                [
+                    "torch_profiler_eager_flop_semantics",
+                    "torch_profiler_eager_attention_implementation",
+                    "torch_profiler_eager_repeat_cpu",
+                    "torch_profiler_eager_repeat_gpu",
+                    "torch_version",
+                    "transformers_version",
+                ]
+            )
+        if "ncu" in compute_selected:
+            metadata_keys.extend(
+                [
+                    "ncu_flop_semantics",
+                    "ncu_repeat",
+                    "ncu_fma_flop_weight",
+                    "ncu_metrics",
+                    "ncu_version",
+                ]
+            )
+        for key in metadata_keys:
             value = metadata.get(key)
             if value not in (None, "", "unknown"):
                 updated[key] = copy.deepcopy(value)
+        if "torch" in compute_selected:
+            static_flops = _static_flops_from_compute_plan(compute_plan, context)
+            if static_flops is not None:
+                updated["static_flops"] = static_flops
         updated["compute_profiles_retained"] = True
         updated["compute_profile_provenance"] = _merge_provenance(
             updated.get("compute_profile_provenance"), "posthoc_backfill"
@@ -1273,6 +1505,7 @@ def find_active_processes(
                 "nsys",
                 "massif",
                 "posthoc.py",
+                "profile.py",
                 "acprof.cli.posthoc",
             )
         )
@@ -1318,7 +1551,7 @@ class PosthocLock:
                     pid = -1
                 if pid > 0 and Path(f"/proc/{pid}").exists():
                     raise PosthocError(
-                        f"another posthoc process is active (pid={pid}): {self.path}"
+                        f"another profile.py process is active (pid={pid}): {self.path}"
                     )
                 try:
                     self.path.unlink()
@@ -1331,7 +1564,7 @@ class PosthocLock:
                 os.fsync(f.fileno())
             self._owned = True
             return self
-        raise PosthocError(f"cannot acquire posthoc lock: {self.path}")
+        raise PosthocError(f"cannot acquire profile lock: {self.path}")
 
     def __exit__(self, _exc_type, _exc, _traceback) -> None:
         if self._owned:
@@ -1351,6 +1584,7 @@ def run_posthoc(
     massif_reference_mem: Optional[int] = None,
     ncu_root: Optional[str] = None,
     nsys_root: Optional[str] = None,
+    torch_repeat: int = 1,
     ncu_repeat: int = 1,
     nsys_repeat: int = 1,
     massif_repeat: int = 1,
@@ -1362,6 +1596,7 @@ def run_posthoc(
     if massif_sampling not in {"per-scale", "full"}:
         raise PosthocError("massif_sampling must be 'per-scale' or 'full'")
     for name, value in (
+        ("torch_repeat", torch_repeat),
         ("ncu_repeat", ncu_repeat),
         ("nsys_repeat", nsys_repeat),
         ("massif_repeat", massif_repeat),
@@ -1384,12 +1619,12 @@ def run_posthoc(
     context = load_result_context(directory)
     applicable, inapplicable = applicable_tools(context, selected)
     for tool in inapplicable:
-        mode = TOOL_GPU_MODE[tool]
+        mode = "/".join(TOOL_GPU_MODES[tool])
         print(
-            f"[posthoc][{tool}] Skipped: result_all.csv has no gpu_mode={mode} rows"
+            f"[profile][{tool}] Skipped: result_all.csv has no gpu_mode={mode} rows"
         )
     if not applicable:
-        print("[posthoc] No requested profiler applies to this result CSV.")
+        print("[profile] No requested profiler applies to this result CSV.")
         return PosthocSummary(
             result_csv=str(context.result_csv),
             static_meta=str(context.static_meta_path),
@@ -1407,19 +1642,19 @@ def run_posthoc(
     )
     needed = tuple(tool for tool in applicable if tool not in already_complete)
     for tool in already_complete:
-        print(f"[posthoc][{tool}] Skipped: CSV already has successful values")
+        print(f"[profile][{tool}] Skipped: CSV already has successful values")
 
-    print(f"[posthoc] Result directory: {context.result_dir}")
-    print(f"[posthoc] Model: {context.task_info.model_id}")
+    print(f"[profile] Result directory: {context.result_dir}")
+    print(f"[profile] Model: {context.task_info.model_id}")
     print(
-        "[posthoc] Resource cases: "
+        "[profile] Resource cases: "
         f"CPU-only={len(context.cases_for_mode('off'))}, "
         f"GPU={len(context.cases_for_mode('on'))}"
     )
-    print(f"[posthoc] Tools requiring work: {', '.join(needed) or 'none'}")
+    print(f"[profile] Tools requiring work: {', '.join(needed) or 'none'}")
     if dry_run or not needed:
         if dry_run:
-            print("[posthoc] Dry run: no profiler was started and no file was changed.")
+            print("[profile] Dry run: no profiler was started and no file was changed.")
         return PosthocSummary(
             result_csv=str(context.result_csv),
             static_meta=str(context.static_meta_path),
@@ -1442,8 +1677,8 @@ def run_posthoc(
             reusable: Optional[Dict[str, Any]] = None
             if not force_reprofile:
                 reusable = (
-                    _find_reusable_compute_plan(context, workspace)
-                    if tool == "ncu"
+                    _find_reusable_compute_plan(context, workspace, tool)
+                    if tool in {"torch", "ncu"}
                     else _find_reusable_execution_plan(context, workspace, tool)
                 )
             if reusable is not None:
@@ -1454,12 +1689,14 @@ def run_posthoc(
             if not runtime_validated:
                 _validate_profiler_runtime(context)
                 runtime_validated = True
-            print(f"[posthoc][{tool}] Collecting isolated profiler probes...")
-            if tool == "ncu":
-                plan = _collect_ncu_plan(
+            print(f"[profile][{tool}] Collecting isolated profiler probes...")
+            if tool in {"torch", "ncu"}:
+                plan = _collect_compute_plan(
                     context,
-                    workspace / "ncu",
+                    workspace / tool,
+                    tool=tool,
                     ncu_root=ncu_root,
+                    torch_repeat=torch_repeat,
                     ncu_repeat=ncu_repeat,
                     compute_profile_cpus=compute_profile_cpus,
                     compute_profile_mem=compute_profile_mem,
@@ -1479,7 +1716,16 @@ def run_posthoc(
             plans_by_tool[tool] = plan
             collected.append(tool)
 
-        compute_plan = plans_by_tool.get("ncu")
+        compute_tool_plans = {
+            tool: plan
+            for tool, plan in plans_by_tool.items()
+            if tool in {"torch", "ncu"}
+        }
+        compute_plan = (
+            merge_compute_plans(context, compute_tool_plans)
+            if compute_tool_plans
+            else None
+        )
         execution_tool_plans = {
             tool: plan
             for tool, plan in plans_by_tool.items()
@@ -1521,11 +1767,11 @@ def run_posthoc(
             backup_dir=backup_dir,
         )
 
-    print(f"[posthoc] Updated in place: {context.result_csv}")
-    print(f"[posthoc] Updated in place: {context.static_meta_path}")
-    print(f"[posthoc] Original files backed up to: {backup_dir}")
+    print(f"[profile] Updated in place: {context.result_csv}")
+    print(f"[profile] Updated in place: {context.static_meta_path}")
+    print(f"[profile] Original files backed up to: {backup_dir}")
     for tool, count in updated_rows.items():
-        print(f"[posthoc][{tool}] Backfilled rows: {count}")
+        print(f"[profile][{tool}] Backfilled rows: {count}")
     return PosthocSummary(
         result_csv=str(context.result_csv),
         static_meta=str(context.static_meta_path),
@@ -1540,7 +1786,7 @@ def run_posthoc(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Collect missing NCU/Nsys/Massif metrics for an existing AC-Prof "
+            "Collect missing Torch/NCU/Nsys/Massif metrics for an existing AC-Prof "
             "result directory and safely backfill result_all.csv in place."
         )
     )
@@ -1554,7 +1800,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--tools",
         default=",".join(SUPPORTED_TOOLS),
-        help="Comma-separated tools (default: ncu,nsys,massif)",
+        help="Comma-separated tools (default: torch,ncu,nsys,massif)",
     )
     parser.add_argument(
         "--massif-sampling",
@@ -1570,6 +1816,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--massif-reference-mem", type=int, default=None)
     parser.add_argument("--ncu-root", default=None)
     parser.add_argument("--nsys-root", default=None)
+    parser.add_argument(
+        "--torch-profiler-repeat",
+        "--torch-repeat",
+        dest="torch_repeat",
+        type=int,
+        default=1,
+    )
     parser.add_argument("--ncu-repeat", type=int, default=1)
     parser.add_argument("--nsys-repeat", type=int, default=1)
     parser.add_argument("--massif-repeat", type=int, default=1)
@@ -1601,6 +1854,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             massif_reference_mem=args.massif_reference_mem,
             ncu_root=args.ncu_root,
             nsys_root=args.nsys_root,
+            torch_repeat=args.torch_repeat,
             ncu_repeat=args.ncu_repeat,
             nsys_repeat=args.nsys_repeat,
             massif_repeat=args.massif_repeat,
@@ -1610,7 +1864,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             dry_run=args.dry_run,
         )
     except (OSError, PosthocError) as exc:
-        parser.exit(2, f"[posthoc][ERROR] {exc}\n")
+        parser.exit(2, f"[profile][ERROR] {exc}\n")
 
 
 if __name__ == "__main__":

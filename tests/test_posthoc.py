@@ -13,7 +13,14 @@ from acprof.host.compute_profile_plan import TORCH_LOGICAL_MFLOP_FIELD
 
 
 class PosthocProfileTests(unittest.TestCase):
-    def _write_fixture(self, root: Path, *, include_cpu=True, include_gpu=True):
+    def _write_fixture(
+        self,
+        root: Path,
+        *,
+        include_cpu=True,
+        include_gpu=True,
+        torch_complete=True,
+    ):
         root.mkdir(parents=True, exist_ok=True)
         input_plan = {
             "schema_version": 2,
@@ -39,9 +46,13 @@ class PosthocProfileTests(unittest.TestCase):
             "pipeline_tag": "fill-mask",
             "runtime_backend": "transformers_pipeline",
             "image_tag": "acprof-nlp-example--model:latest",
+            "batch_size": 1,
+            "input_scale_type": "seq_length",
             "input_scale_plan_sha256": plan_hash,
             "run_command": "python run.py --model example/model",
-            "compute_profile_tools": ["torch_profiler_eager"],
+            "compute_profile_tools": (
+                ["torch_profiler_eager"] if torch_complete else []
+            ),
             "execution_profile_tools": [],
         }
         (root / posthoc.STATIC_META_NAME).write_text(
@@ -56,7 +67,7 @@ class PosthocProfileTests(unittest.TestCase):
             "input_scale",
             "latency_s",
             "latency_app_s",
-            TORCH_LOGICAL_MFLOP_FIELD,
+            *posthoc.TORCH_FIELDS,
             *posthoc.NCU_FIELDS,
             *posthoc.MASSIF_FIELDS,
             *posthoc.NSYS_FIELDS,
@@ -75,7 +86,12 @@ class PosthocProfileTests(unittest.TestCase):
                     "input_scale": "8",
                     "latency_s": "2.0",
                     "latency_app_s": "2.5",
-                    TORCH_LOGICAL_MFLOP_FIELD: "123.000000",
+                    TORCH_LOGICAL_MFLOP_FIELD: (
+                        "123.000000" if torch_complete else "nan"
+                    ),
+                    posthoc.TORCH_ERROR_FIELD: (
+                        "" if torch_complete else "compute_profile_disabled"
+                    ),
                     posthoc.MASSIF_HEAP_PEAK_TOTAL_FIELD: "nan",
                     "status": "ok",
                 }
@@ -90,7 +106,12 @@ class PosthocProfileTests(unittest.TestCase):
                     "input_scale": "8",
                     "latency_s": "0.5",
                     "latency_app_s": "0.4",
-                    TORCH_LOGICAL_MFLOP_FIELD: "456.000000",
+                    TORCH_LOGICAL_MFLOP_FIELD: (
+                        "456.000000" if torch_complete else "nan"
+                    ),
+                    posthoc.TORCH_ERROR_FIELD: (
+                        "" if torch_complete else "compute_profile_disabled"
+                    ),
                     posthoc.NCU_TOTAL_MFLOP_FIELD: "nan",
                     posthoc.NSYS_HOST_WALL_TIME_FIELD: "nan",
                     "status": "ok",
@@ -133,6 +154,42 @@ class PosthocProfileTests(unittest.TestCase):
                         ],
                     }
                 }
+            },
+        }
+
+    def _torch_plan(self):
+        def profile(value):
+            return {
+                "tool": "torch_profiler_eager",
+                "flop_semantics": "logical_operator_shape_flops",
+                "error": "",
+                "entries": [
+                    {
+                        "input_scale": 8.0,
+                        posthoc.TORCH_LOGICAL_MFLOP_FIELD: value,
+                        "error": "",
+                    }
+                ],
+            }
+
+        return {
+            "model_id": "example/model",
+            "task_family": "nlp",
+            "pipeline_tag": "fill-mask",
+            "runtime_backend": "transformers_pipeline",
+            "static_metadata": {
+                "compute_profile_tools": ["torch_profiler_eager"],
+                "torch_profiler_eager_flop_semantics": (
+                    "logical_operator_shape_flops"
+                ),
+                "torch_profiler_eager_repeat_cpu": 1,
+                "torch_profiler_eager_repeat_gpu": 1,
+                "torch_version": "test-torch",
+                "transformers_version": "test-transformers",
+            },
+            "profiles": {
+                "cpu": {"torch_profiler_eager": profile(111.0)},
+                "gpu": {"torch_profiler_eager": profile(222.0)},
             },
         }
 
@@ -216,9 +273,9 @@ class PosthocProfileTests(unittest.TestCase):
         self.assertEqual(context.task_info.model_id, "example/model")
         self.assertEqual(context.resource_cases, [(2, 4, "off"), (2, 4, "on")])
         applicable, skipped = posthoc.applicable_tools(
-            context, ("ncu", "nsys", "massif")
+            context, ("torch", "ncu", "nsys", "massif")
         )
-        self.assertEqual(applicable, ("ncu", "nsys", "massif"))
+        self.assertEqual(applicable, ("torch", "ncu", "nsys", "massif"))
         self.assertEqual(skipped, ())
 
     def test_backfill_updates_only_profiler_fields_for_applicable_rows(self):
@@ -262,6 +319,93 @@ class PosthocProfileTests(unittest.TestCase):
 
         self.assertEqual(rows[0][posthoc.NCU_TOTAL_MFLOP_FIELD], "777.000000")
         self.assertEqual(updated, {"ncu": 0})
+
+    def test_torch_plan_backfills_cpu_gpu_rows_and_static_flops(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "example--model"
+            self._write_fixture(root, torch_complete=False)
+            (root / "compute_profile_plan.json").write_text(
+                json.dumps(self._torch_plan()), encoding="utf-8"
+            )
+            with patch(
+                "acprof.cli.posthoc.find_active_processes", return_value=[]
+            ), patch(
+                "acprof.cli.posthoc._validate_profiler_runtime",
+                side_effect=AssertionError("complete Torch plan should be reused"),
+            ):
+                summary = posthoc.run_posthoc(root, tools="torch")
+
+            rows = self._read_rows(root / "result_all.csv")
+            cpu = next(row for row in rows if row["gpu_mode"] == "off")
+            gpu = next(row for row in rows if row["gpu_mode"] == "on")
+            self.assertEqual(cpu[posthoc.TORCH_LOGICAL_MFLOP_FIELD], "111.000000")
+            self.assertEqual(gpu[posthoc.TORCH_LOGICAL_MFLOP_FIELD], "222.000000")
+            self.assertEqual(summary.reused_tools, ("torch",))
+            self.assertEqual(summary.updated_rows_by_tool, {"torch": 2})
+
+            metadata = json.loads((root / "static_meta.json").read_text())
+            self.assertIn("torch_profiler_eager", metadata["compute_profile_tools"])
+            self.assertEqual(metadata["torch_version"], "test-torch")
+            self.assertEqual(metadata["static_flops"]["profile"], "gpu")
+            self.assertEqual(
+                metadata["static_flops"]["values"],
+                [{"input_scale": 8, "flops_per_request": 222_000_000}],
+            )
+
+    def test_torch_collector_uses_available_cpu_and_gpu_modes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "example--model"
+            self._write_fixture(root, torch_complete=False)
+            context = posthoc.load_result_context(root)
+
+            def fake_collect(**kwargs):
+                plan_path = Path(kwargs["output_dir"]) / "compute_profile_plan.json"
+                plan_path.parent.mkdir(parents=True, exist_ok=True)
+                plan_path.write_text(json.dumps(self._torch_plan()), encoding="utf-8")
+                return str(plan_path)
+
+            with patch(
+                "acprof.host.compute_profile.collect_compute_profile_plan",
+                side_effect=fake_collect,
+            ) as collect:
+                plan = posthoc._collect_compute_plan(
+                    context,
+                    root / "posthoc_profiles" / "torch",
+                    tool="torch",
+                    ncu_root=None,
+                    torch_repeat=3,
+                    ncu_repeat=1,
+                    compute_profile_cpus=8,
+                    compute_profile_mem=16,
+                )
+
+        kwargs = collect.call_args.kwargs
+        self.assertEqual(kwargs["compute_profile_tool"], "torch")
+        self.assertEqual(kwargs["gpu_list"], ["off", "on"])
+        self.assertEqual(kwargs["torch_profiler_repeat"], 3)
+        self.assertEqual(kwargs["compute_profile_cpus"], 8)
+        self.assertEqual(kwargs["compute_profile_mem"], 16)
+        self.assertTrue(posthoc.compute_plan_covers_tool(plan, context, "torch"))
+
+    def test_torch_and_ncu_plans_merge_without_overwriting_each_other(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "example--model"
+            self._write_fixture(root, torch_complete=False)
+            context = posthoc.load_result_context(root)
+            merged = posthoc.merge_compute_plans(
+                context,
+                {"torch": self._torch_plan(), "ncu": self._compute_plan()},
+            )
+
+        self.assertEqual(
+            merged["static_metadata"]["compute_profile_tools"],
+            ["torch_profiler_eager", "ncu"],
+        )
+        self.assertIn("torch_profiler_eager", merged["profiles"]["cpu"])
+        self.assertIn("torch_profiler_eager", merged["profiles"]["gpu"])
+        self.assertIn("ncu", merged["profiles"]["gpu"])
+        self.assertTrue(posthoc.compute_plan_covers_tool(merged, context, "torch"))
+        self.assertTrue(posthoc.compute_plan_covers_tool(merged, context, "ncu"))
 
     def test_representative_massif_plan_expands_to_all_cpu_cases(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -344,9 +488,9 @@ class PosthocProfileTests(unittest.TestCase):
             ), patch(
                 "acprof.cli.posthoc._validate_profiler_runtime"
             ) as validate_runtime, patch(
-                "acprof.cli.posthoc._collect_ncu_plan",
+                "acprof.cli.posthoc._collect_compute_plan",
                 return_value=self._compute_plan(),
-            ) as collect_ncu, patch(
+            ) as collect_compute, patch(
                 "acprof.cli.posthoc._collect_execution_plan",
                 return_value=self._execution_plan(),
             ) as collect_execution:
@@ -355,7 +499,8 @@ class PosthocProfileTests(unittest.TestCase):
             self.assertEqual(set(summary.collected_tools), {"ncu", "nsys"})
             self.assertIn("massif", summary.skipped_tools)
             validate_runtime.assert_called_once()
-            collect_ncu.assert_called_once()
+            collect_compute.assert_called_once()
+            self.assertEqual(collect_compute.call_args.kwargs["tool"], "ncu")
             collect_execution.assert_called_once()
             self.assertEqual(collect_execution.call_args.kwargs["tool"], "nsys")
 

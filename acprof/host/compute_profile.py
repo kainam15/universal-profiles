@@ -20,7 +20,7 @@ COMPUTE_PROFILE_PLAN_NAME = "compute_profile_plan.json"
 CONTAINER_INPUT_SCALE_PLAN_FILE = "/payloads/input_scale_plan.json"
 TORCH_PROFILER_TOOL = "torch_profiler_eager"
 NCU_TOOL = "ncu"
-COMPUTE_PROFILE_TOOL_MODES = {"auto", "both", "ncu", "torch", "vendor"}
+COMPUTE_PROFILE_TOOL_MODES = {"none", "auto", "both", "ncu", "torch", "vendor"}
 NCU_FLOAT_TYPE_PATTERN = r"(?:bf\d+|fp\d+|tf\d+)"
 NCU_TENSOR_METRIC_RE = re.compile(
     rf"^sm__ops_path_tensor_src_{NCU_FLOAT_TYPE_PATTERN}"
@@ -1454,7 +1454,6 @@ def collect_compute_profile_plan(
         )
 
     profile_root = os.path.join(output_dir, "compute_profiles")
-    os.makedirs(profile_root, exist_ok=True)
     entries = _load_input_scale_plan_entries(input_scale_plan_file)
     payload_file = input_scale_plan_file
 
@@ -1475,6 +1474,13 @@ def collect_compute_profile_plan(
         "on" in normalized_gpus
         and tool_mode in {"auto", "both", "ncu", "vendor"}
     )
+    if (
+        collect_torch_cpu
+        or collect_torch_gpu
+        or collect_advisor_cpu
+        or collect_ncu_gpu
+    ):
+        os.makedirs(profile_root, exist_ok=True)
     advisor_bin = (
         _find_executable(advisor_root, ("advisor", "advixe-cl"))
         if collect_advisor_cpu
@@ -1626,8 +1632,10 @@ def collect_compute_profile_plan(
             "gpu_sm_count",
             "unknown",
         ),
-        "compute_profiles_retained": bool(keep_profiles),
-        "compute_profile_provenance": "collected",
+        "compute_profiles_retained": bool(keep_profiles and enabled_tools),
+        "compute_profile_provenance": (
+            "collected" if enabled_tools else "disabled"
+        ),
     }
 
     plan = {

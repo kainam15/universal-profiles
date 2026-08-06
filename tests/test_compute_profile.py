@@ -758,6 +758,7 @@ class ComputeProfileTests(unittest.TestCase):
 
             with open(plan_path, "r", encoding="utf-8") as f:
                 plan = json.load(f)
+            self.assertFalse(os.path.exists(os.path.join(tmp, "compute_profiles")))
             self.assertFalse(
                 os.path.exists(
                     os.path.join(tmp, "compute_profile_payloads.json")
@@ -780,6 +781,53 @@ class ComputeProfileTests(unittest.TestCase):
                 "gpu_executed_mflop_per_request_ncu"
             ],
             None,
+        )
+
+    def test_none_compute_profile_mode_writes_disabled_plan_without_probes(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "acprof.host.compute_profile._find_executable",
+            side_effect=AssertionError("none mode must not discover tools"),
+        ), patch(
+            "acprof.host.compute_profile._profile_torch_entries",
+            side_effect=AssertionError("none mode must not run Torch"),
+        ), patch(
+            "acprof.host.compute_profile._profile_gpu_entries",
+            side_effect=AssertionError("none mode must not run NCU"),
+        ):
+            plan_path = compute_profile.collect_compute_profile_plan(
+                task_info=task_info,
+                image_tag="acprof-test:latest",
+                cpu_list=[1],
+                mem_list=[4],
+                gpu_list=["off", "on"],
+                output_dir=tmp,
+                input_scale_plan_file=_write_input_scale_plan(tmp),
+                advisor_root=None,
+                ncu_root=None,
+                advisor_repeat=1,
+                ncu_repeat=1,
+                keep_profiles=True,
+                compute_profile_tool="none",
+            )
+            with open(plan_path, "r", encoding="utf-8") as f:
+                plan = json.load(f)
+            self.assertFalse(os.path.exists(os.path.join(tmp, "compute_profiles")))
+
+        self.assertEqual(plan["compute_profile_tool_mode"], "none")
+        self.assertEqual(plan["profiles"], {})
+        self.assertEqual(plan["static_metadata"]["compute_profile_tools"], [])
+        self.assertFalse(plan["static_metadata"]["compute_profiles_retained"])
+        self.assertEqual(
+            plan["static_metadata"]["compute_profile_provenance"], "disabled"
         )
 
     def test_default_compute_profile_uses_torch_on_each_device_and_gpu_ncu(self) -> None:

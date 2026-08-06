@@ -536,15 +536,21 @@ Examples:
     )
 
     # Compute profiling
-    parser.add_argument("--no-compute-profile", action="store_true", help="Disable MFLOPS compute profiling")
+    # Kept as a hidden compatibility alias for existing scripts. New commands
+    # should use --compute-profile-tool none, matching execution profiling.
+    parser.add_argument(
+        "--no-compute-profile",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument(
         "--compute-profile-tool",
-        choices=("both", "auto", "torch", "ncu", "vendor"),
+        choices=("none", "both", "auto", "torch", "ncu", "vendor"),
         default="both",
         help=(
-            "Compute FLOP profiler: both (default) independently collects "
-            "torch_profiler_eager logical FLOP and ncu GPU executed FLOP; "
-            "auto is a deprecated alias for both"
+            "Compute FLOP profiler: none skips all compute probes; both "
+            "(default) independently collects torch_profiler_eager logical "
+            "FLOP and ncu GPU executed FLOP; auto is a deprecated alias for both"
         ),
     )
     parser.add_argument("--advisor-root", default=None, help="Host Intel Advisor install root or advisor executable")
@@ -628,6 +634,9 @@ Examples:
 
     args = parser.parse_args()
     run_command = _format_run_command(sys.argv)
+    compute_profile_disabled = (
+        args.no_compute_profile or args.compute_profile_tool == "none"
+    )
     if args.repeat_in_window < 0:
         parser.error("--repeat-in-window must be >= 0")
     if args.repeat_window_seconds <= 0.0:
@@ -728,7 +737,7 @@ Examples:
         batch_size=args.batch_size,
         input_scale_type=input_scale_type,
         run_command=run_command,
-        compute_profile_enabled=not args.no_compute_profile,
+        compute_profile_enabled=not compute_profile_disabled,
         execution_profile_enabled=args.execution_profile_tool != "none",
     )
     write_static_meta_json(static_meta, static_meta_json)
@@ -757,8 +766,13 @@ Examples:
     )
     write_static_meta_json(static_meta, static_meta_json)
     compute_profile_plan_file = ""
-    if args.no_compute_profile:
-        print("[compute] Compute profiling disabled by --no-compute-profile")
+    if compute_profile_disabled:
+        reason = (
+            "--no-compute-profile (compatibility alias)"
+            if args.no_compute_profile
+            else "--compute-profile-tool none"
+        )
+        print(f"[compute] Compute profiling disabled by {reason}")
     else:
         try:
             from acprof.host.compute_profile import collect_compute_profile_plan

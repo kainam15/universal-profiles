@@ -382,7 +382,8 @@ class NativeDockerGuardTests(unittest.TestCase):
                 "--model",
                 "dummy-model",
                 "--skip-build",
-                "--no-compute-profile",
+                "--compute-profile-tool",
+                "none",
                 "--cpus",
                 "1",
                 "--mems",
@@ -411,7 +412,7 @@ class NativeDockerGuardTests(unittest.TestCase):
         ), patch(
             "acprof.host.orchestrator.collect_static_meta",
             return_value=SimpleNamespace(),
-        ), patch(
+        ) as collect_static_meta, patch(
             "acprof.host.orchestrator.write_static_meta_json"
         ), patch(
             "acprof.host.orchestrator.plan_input_scales",
@@ -431,6 +432,10 @@ class NativeDockerGuardTests(unittest.TestCase):
         _, kwargs = run_matrix.call_args
         self.assertEqual(kwargs["repeat_in_window"], 0)
         self.assertEqual(kwargs["repeat_window_seconds"], 10.0)
+        self.assertEqual(kwargs["compute_profile_plan_file"], "")
+        self.assertFalse(
+            collect_static_meta.call_args.kwargs["compute_profile_enabled"]
+        )
 
     def test_main_defaults_to_dual_compute_profiles_and_keeps_artifacts(self) -> None:
         task_info = TaskInfo(

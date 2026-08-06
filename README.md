@@ -100,7 +100,7 @@ FLOP profiling 默认启用，默认 `--compute-profile-tool both`。每个适�
 - `torch_profiler_eager` 根据 eager operator shape 统计模型逻辑 FLOP；CPU/GPU 行分别使用对应 device 的独立 eager probe。它回答“模型按 eager 算子形状应执行多少计算”。
 - `ncu` 只用于 `gpu_mode=on`，根据 GPU 性能计数器统计实际执行的 Tensor / Scalar FLOP。它会受 kernel 实现、Tensor Core tile 和 padding 影响，不能与逻辑 FLOP 混作同一口径。
 
-两套采集不会污染正常 latency / energy window，也不会互相覆盖。任一 probe 失败时只写对应的错误列和 `nan`，另一套 probe 与主实验仍继续。临时 profiler container 默认使用 host 逻辑 CPU 全量和 host memory 的 75%；可用 `--compute-profile-cpus` / `--compute-profile-mem` 覆盖。raw NCU/Advisor artifact 默认保留，只有显式传入 `--discard-compute-profiles` 才删除；开发 smoke 或只采 latency/energy 时可用 `--no-compute-profile`。
+两套采集不会污染正常 latency / energy window，也不会互相覆盖。任一 probe 失败时只写对应的错误列和 `nan`，另一套 probe 与主实验仍继续。临时 profiler container 默认使用 host 逻辑 CPU 全量和 host memory 的 75%；可用 `--compute-profile-cpus` / `--compute-profile-mem` 覆盖。raw NCU/Advisor artifact 默认保留，只有显式传入 `--discard-compute-profiles` 才删除；开发 smoke、只采 latency/energy 或准备之后统一补采时可用 `--compute-profile-tool none`。
 
 默认 GPU profiling 会自动查找 `ncu`；如果工具不在默认 `PATH`，显式指定安装根目录：
 
@@ -111,7 +111,7 @@ python run.py --model google-bert/bert-base-uncased \
   --cpus 1 --mems 4 --gpus off,on
 ```
 
-`--compute-profile-tool auto` 是 `both` 的弃用兼容别名。`torch`、`ncu` 和 `vendor` 只用于单工具诊断或旧流程兼容；如需 CPU 行使用 Intel Advisor，可显式传 `--compute-profile-tool vendor --advisor-root /opt/intel/oneapi/advisor/latest`。
+`--compute-profile-tool none` 跳过全部 compute probe；`auto` 是 `both` 的弃用兼容别名。`torch`、`ncu` 和 `vendor` 只用于单工具诊断或旧流程兼容；如需 CPU 行使用 Intel Advisor，可显式传 `--compute-profile-tool vendor --advisor-root /opt/intel/oneapi/advisor/latest`。
 
 Massif / Nsight Systems execution profiling 与上述 FLOP profiling 相互独立，并且默认关闭。需要时显式 opt in：
 
@@ -321,8 +321,7 @@ CPU 模型使用共同的二次 log input-scale 项表达各资源配置共有�
 | `--idle-debug` | false | 开启 baseline 调试输出。主 CSV 会填充 GPU 的 `gpu_idle_measured_at` / `gpu_idle_rel_range_so_far` 和 CPU 的 `cpu_idle_measured_at` / `cpu_idle_rel_range_so_far`，并写出 `debug_idle_diag/result_case_*.csv.idle_diag.jsonl`。诊断文件记录 matched control window 的 GPU NVML trace、CPU RAPL 子窗口、host/container CPU delta，以及 control 结束后的 `nvidia-smi`、loadavg、top CPU processes、Docker 容器和 `docker stats` 快照。为避免诊断本身污染 baseline，逐进程 `/proc` 快照移到 control window 外，不再归入 RAPL control 能量。 |
 | `--input-scales` | auto | 手动覆盖 input scale 列表。未提供时自动规划 6 档。 |
 | `--workload-spec` | task default | workload 清单 JSON。ASR 默认使用仓库内置的 LibriSpeech 英文短音频清单；其他音频任务必须显式提供清单。 |
-| `--no-compute-profile` | false | 禁用 MFLOPS compute profiling。 |
-| `--compute-profile-tool` | `both` | `both` 独立采集 `torch_profiler_eager` 逻辑 FLOP，并在 `gpu_mode=on` 时采集 NCU GPU 实际执行 FLOP。`auto` 是 `both` 的弃用别名；`torch`、`ncu`、`vendor` 用于单工具诊断或旧流程兼容。 |
+| `--compute-profile-tool` | `both` | `none` 跳过全部 compute probe；`both` 独立采集 `torch_profiler_eager` 逻辑 FLOP，并在 `gpu_mode=on` 时采集 NCU GPU 实际执行 FLOP。`auto` 是 `both` 的弃用别名；`torch`、`ncu`、`vendor` 用于单工具诊断或旧流程兼容。 |
 | `--advisor-root` | auto | Host Intel Advisor install root or executable；显式值优先于自动检测。 |
 | `--ncu-root` | auto | Host Nsight Compute install root or `ncu` executable；显式值优先于自动检测。 |
 | `--advisor-repeat` | `20` | 旧 `vendor` CPU Advisor probe 的推理重复次数；最终 FLOP 会除回单 request。 |
@@ -400,48 +399,52 @@ python run.py --model openai/whisper-large-v3 \
 
 中间文件 `result_case_*.csv`、`result_case_*.csv.sniff_groups.jsonl`、`lat_case_*.json`、`sniff_case_*.pcap` 会在 `result_all.csv` 成功 merge 后自动清理。若运行被中断，这些中间文件可能保留。
 
-### 已有结果后补采 NCU / Nsight Systems / Massif
+### 已有结果后补采 Torch / NCU / Nsight Systems / Massif
 
-高开销 profiler 可以与正常 latency / energy / resource-usage 矩阵分开执行。推荐先保留 Torch logical FLOP、关闭 NCU 与 execution profiling：
+高开销 profiler 可以与正常 latency / energy / resource-usage 矩阵分开执行。若希望 input-scale 计划生成后直接进入正常矩阵，先关闭全部 compute profiling 与 execution profiling：
 
 ```bash
 python run.py \
   --model openai/whisper-large-v3 \
   --gpus off,on \
-  --compute-profile-tool torch \
+  --compute-profile-tool none \
   --execution-profile-tool none
 ```
+
+`--compute-profile-tool torch` 仍会在正常矩阵之前逐个 input scale 运行 Torch eager probe，因此不能用于“直接进入 result CSV 矩阵”。使用 `none` 后，Torch logical FLOP 与 NCU 字段暂时为空，下面的独立命令会与 Nsys、Massif 一起补采。
+
+正常矩阵运行期间会先写 `result_case_*.csv`。只有全部 case 完成后，`run.py` 才把这些中间文件合并成最终的 `result_all.csv`，因此启动主矩阵并不代表目录中会立刻出现 `result_all.csv`。
 
 正常运行结束且结果目录中已经同时存在 `result_all.csv`、`static_meta.json`、`input_scale_plan.json` 后，在项目根目录执行：
 
 ```bash
-python posthoc.py results/openai--whisper-large-v3
+python profile.py results/openai--whisper-large-v3
 ```
 
-命令默认补采所有适用且尚未成功的 `ncu,nsys,massif`：NCU 与 Nsys 只匹配 `gpu_mode=on` 行，Massif 只匹配 `gpu_mode=off` 行。它不会启动主 workload matrix，不会重新采 latency、energy、MIPS、resource usage 或 packet latency。也可以只选部分工具：
+命令默认补采所有适用且尚未成功的 `torch,ncu,nsys,massif`：Torch 按已有的 CPU/GPU device class 和 input scale 采集，NCU 与 Nsys 只匹配 `gpu_mode=on` 行，Massif 只匹配 `gpu_mode=off` 行。它不会启动主 workload matrix，不会重新采 latency、energy、MIPS、resource usage 或 packet latency。也可以只选部分工具：
 
 ```bash
-python posthoc.py results/openai--whisper-large-v3 --tools ncu,nsys
-python posthoc.py results/openai--whisper-large-v3 --tools massif
+python profile.py results/openai--whisper-large-v3 --tools torch,ncu,nsys
+python profile.py results/openai--whisper-large-v3 --tools massif
 ```
 
 Massif 默认使用 `--massif-sampling per-scale`：自动选择结果矩阵中最大的 CPU/memory case，每个 input scale 运行一个探针，再把带有明确 representative provenance 的结果用于同尺度 CPU 行。需要严格按完整 CPU × memory 矩阵采集时使用：
 
 ```bash
-python posthoc.py results/<model> --tools massif --massif-sampling full
+python profile.py results/<model> --tools massif --massif-sampling full
 ```
 
 常用安全/诊断选项：
 
 ```bash
 # 只检查适用工具、输入计划和缺失字段，不启动 profiler、不修改文件
-python posthoc.py results/<model> --dry-run
+python profile.py results/<model> --dry-run
 
 # 显式重新采集并替换已有成功 profiler 字段
-python posthoc.py results/<model> --force-reprofile
+python profile.py results/<model> --force-reprofile
 ```
 
-回填后仍使用原文件名 `result_all.csv` 与 `static_meta.json`。发布新文件前，命令会把旧版本复制到 `posthoc_backups/<timestamp>/`，临时文件验证通过后才原子替换；非 profiler 字段原样保留。raw report 与补采 plan 位于 `posthoc_profiles/`。若检测到 `run.py`、NCU/Nsys/Massif 或另一个 `posthoc.py` 正在使用相同结果目录，命令会拒绝启动。完整成功的已有 plan 会直接复用；已有成功 CSV 行默认不会被覆盖。
+回填后仍使用原文件名 `result_all.csv` 与 `static_meta.json`。发布新文件前，命令会把旧版本复制到 `posthoc_backups/<timestamp>/`，临时文件验证通过后才原子替换；非 profiler 字段原样保留。raw report 与补采 plan 位于 `posthoc_profiles/`。若检测到 `run.py`、Torch/NCU/Nsys/Massif 或另一个 `profile.py` 正在使用相同结果目录，命令会拒绝启动。完整成功的已有 plan 会直接复用；已有成功 CSV 行默认不会被覆盖。
 
 ### 已有 CSV 回填 compute profile
 
@@ -736,7 +739,7 @@ compute_profile_s ~= len(input_scales) * (
 )
 ```
 
-probe 次数按 input scale 和启用的 GPU mode 增长，不按 CPU × memory 主矩阵展开；`--torch-profiler-repeat` 与 `--ncu-repeat` 会进一步增加各自 workload，NCU 还可能对 kernel 做 replay，因此常是最昂贵的 probe，在部分模型上可能从数分钟增加到更久。默认保留 raw NCU report 也会增加磁盘占用。`--no-compute-profile` 可完全去掉这部分成本，单工具模式只去掉未选择的 probe。
+probe 次数按 input scale 和启用的 GPU mode 增长，不按 CPU × memory 主矩阵展开；`--torch-profiler-repeat` 与 `--ncu-repeat` 会进一步增加各自 workload，NCU 还可能对 kernel 做 replay，因此常是最昂贵的 probe，在部分模型上可能从数分钟增加到更久。默认保留 raw NCU report 也会增加磁盘占用。`--compute-profile-tool none` 可从主流程完全去掉这部分成本，之后再用 `profile.py` 补采；单工具模式只去掉未选择的 probe。
 
 Execution profiling 默认 `none`，所以不进入上述默认时间预算。显式启用后，它与 FLOP probe 的复用策略不同，会按完整资源矩阵展开：
 
