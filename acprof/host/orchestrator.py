@@ -5,6 +5,7 @@ Python replacement for run_case.sh / run_matrix.sh.
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import math
 import os
@@ -71,6 +72,8 @@ class StaticMeta:
     vcpu_power_method: str
     cpu_governor: str
     cpu_boost: str
+    workload: Dict[str, Any] = field(default_factory=dict)
+    input_scale_plan_sha256: str = ""
     schema_version: int = STATIC_META_SCHEMA_VERSION
     parameter_count: Optional[int] = None
     precision_dtype: Optional[str] = None
@@ -126,6 +129,8 @@ class PlannedInputScales:
     scales: List[float]
     source: str
     plan_file: Optional[str] = None
+    workload: Dict[str, Any] = field(default_factory=dict)
+    plan_sha256: str = ""
 
 
 @dataclass
@@ -209,15 +214,24 @@ def _write_scale_plan_file(
     path: str,
     task_info: TaskInfo,
     entries: List[Dict[str, Any]],
-) -> None:
+    *,
+    workload: Optional[Dict[str, Any]] = None,
+    model_constraints: Optional[Dict[str, Any]] = None,
+) -> str:
     payload = {
+        "schema_version": 2,
         "model_id": task_info.model_id,
         "task_family": task_info.task_family,
         "pipeline_tag": task_info.pipeline_tag,
+        "workload": dict(workload or {}),
+        "model_constraints": dict(model_constraints or {}),
         "entries": entries,
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=True, indent=2)
+        f.write("\n")
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
 
 
 def _materialize_scale_plan(
@@ -227,6 +241,8 @@ def _materialize_scale_plan(
     batch_size: int,
     output_dir: str,
     source: str,
+    workload_spec_path: Optional[str] = None,
+    model_constraints: Optional[Dict[str, Any]] = None,
 ) -> PlannedInputScales:
     """Generate one reusable payload plan for non-NLP task families."""
     from acprof.workloads import get_generator
@@ -236,6 +252,7 @@ def _materialize_scale_plan(
         task_info.model_id,
         task_info.pipeline_tag,
         batch_size,
+        workload_spec_path=workload_spec_path,
     )
     entries: List[Dict[str, Any]] = []
     effective_scales: List[float] = []
@@ -271,18 +288,52 @@ def _materialize_scale_plan(
             )
 
         effective_scales.append(actual_scale)
+        input_metadata: Dict[str, Any] = {}
+        metadata_fn = getattr(workload_gen, "input_metadata", None)
+        if callable(metadata_fn):
+            candidate_metadata = metadata_fn(actual_scale, payload)
+            if candidate_metadata is not None:
+                if not isinstance(candidate_metadata, dict):
+                    raise RuntimeError(
+                        "workload generator returned non-object input metadata "
+                        f"for input_scale={_format_scale_value(actual_scale)}"
+                    )
+                input_metadata = candidate_metadata
+
         entries.append({
             "input_scale": actual_scale,
             "scale_label": workload_gen.scale_label(actual_scale),
+            "input_metadata": input_metadata,
             "payload": payload,
         })
 
+    workload_metadata: Dict[str, Any] = {}
+    metadata_fn = getattr(workload_gen, "plan_metadata", None)
+    if callable(metadata_fn):
+        candidate_metadata = metadata_fn()
+        if candidate_metadata is not None:
+            if not isinstance(candidate_metadata, dict):
+                raise RuntimeError("workload generator returned non-object plan metadata")
+            workload_metadata = candidate_metadata
+
     plan_file = _scale_plan_file_path(output_dir)
-    _write_scale_plan_file(plan_file, task_info, entries)
+    constraints = dict(model_constraints or {})
+    plan_sha256 = _write_scale_plan_file(
+        plan_file,
+        task_info,
+        entries,
+        workload=workload_metadata,
+        model_constraints=constraints,
+    )
+    static_workload = dict(workload_metadata)
+    if constraints:
+        static_workload["model_constraints"] = constraints
     return PlannedInputScales(
         scales=effective_scales,
         source=source,
         plan_file=plan_file,
+        workload=static_workload,
+        plan_sha256=plan_sha256,
     )
 
 
@@ -1091,22 +1142,27 @@ def _model_io_formats(task_info: TaskInfo) -> Tuple[Dict[str, Any], Dict[str, An
         output_required.extend(["output_type", "n_results"])
     elif task_info.task_family == "audio":
         input_properties = {
-            "audio_samples": {
-                "type": "array",
-                "items": {"type": "number", "format": "float32"},
+            "audio_base64": {
+                "type": "string",
+                "contentEncoding": "base64",
+                "contentMediaType": "audio/wav",
             },
+            "audio_format": {"type": "string", "enum": ["wav"]},
             "sample_rate": {"type": "integer", "unit": "Hz"},
             "params": params_schema,
         }
-        input_required = ["audio_samples", "sample_rate"]
+        input_required = ["audio_base64", "audio_format", "sample_rate"]
         output_properties = {
             "task": string_schema,
             "output_type": {
                 "type": "string",
                 "enum": ["transcription", "classification", "unknown"],
             },
+            "text": string_schema,
             "output_length": {"type": "integer"},
+            "output_token_count": {"type": ["integer", "null"]},
             "n_results": {"type": "integer"},
+            "effective_input_scale": {"type": "number"},
         }
         output_required.append("output_type")
     elif task_info.task_family == "timeseries":
@@ -1274,6 +1330,22 @@ def enrich_static_meta(
             value = list(value)
         updates[field] = value
     return replace(static_meta, **updates) if updates else static_meta
+
+
+def enrich_static_meta_from_input_plan(
+    static_meta: StaticMeta,
+    planned: PlannedInputScales,
+) -> StaticMeta:
+    """Attach the exact workload provenance used to build the payload plan."""
+    # CLI orchestration tests and third-party integrations may supply a metadata
+    # stand-in while mocking collection. Preserve that compatibility boundary.
+    if not isinstance(static_meta, StaticMeta):
+        return static_meta
+    return replace(
+        static_meta,
+        workload=dict(planned.workload),
+        input_scale_plan_sha256=str(planned.plan_sha256 or ""),
+    )
 
 
 def _static_flops_from_compute_plan(
@@ -1708,7 +1780,7 @@ def _post_probe_payload(
     return parsed
 
 
-def _request_nlp_scale_meta(
+def _request_scale_meta(
     session: RunningContainer,
     payload: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -1733,6 +1805,16 @@ def _request_nlp_scale_meta(
     except Exception as exc:
         raise RuntimeError("/scale_meta returned non-JSON response") from exc
 
+    if not isinstance(data, dict):
+        raise RuntimeError("/scale_meta returned a non-object response")
+    return data
+
+
+def _request_nlp_scale_meta(
+    session: RunningContainer,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    data = _request_scale_meta(session, payload)
     reason = str(data.get("reason", "")).strip()
     if not reason:
         raise RuntimeError("/scale_meta returned empty reason")
@@ -1758,6 +1840,62 @@ def _request_nlp_scale_meta(
         "max_effective_input_scale": max_effective_input_scale,
         "reason": reason,
     }
+
+
+def _request_audio_scale_meta(
+    session: RunningContainer,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    data = _request_scale_meta(session, payload)
+    reason = str(data.get("reason", "")).strip()
+    if not reason:
+        raise RuntimeError(
+            "cannot determine audio input constraints from /scale_meta; "
+            "rebuild the audio image without --skip-build"
+        )
+
+    result: Dict[str, Any] = {
+        "input_scale_type": str(data.get("input_scale_type") or "duration_s"),
+        "reason": reason,
+    }
+    numeric_fields = (
+        "required_sampling_rate",
+        "max_short_form_duration_s",
+        "model_input_num_samples",
+        "model_input_frames",
+        "fixed_frontend_num_samples",
+        "fixed_frontend_num_frames",
+        "frontend_feature_bins",
+        "encoder_positions",
+        "decoder_output_token_limit",
+    )
+    for field_name in numeric_fields:
+        raw_value = data.get(field_name)
+        if raw_value is None:
+            result[field_name] = None
+            continue
+        try:
+            number = float(raw_value)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"/scale_meta returned invalid {field_name}: {raw_value!r}"
+            ) from exc
+        if not math.isfinite(number) or number <= 0:
+            raise RuntimeError(
+                f"/scale_meta returned non-positive/non-finite "
+                f"{field_name}: {raw_value!r}"
+            )
+        result[field_name] = int(number) if number.is_integer() else number
+
+    result["model_type"] = str(data.get("model_type") or "unknown")
+    raw_fixed_padding = data.get("short_form_fixed_padding")
+    if not isinstance(raw_fixed_padding, bool):
+        raise RuntimeError(
+            "/scale_meta returned invalid short_form_fixed_padding: "
+            f"{raw_fixed_padding!r}"
+        )
+    result["short_form_fixed_padding"] = raw_fixed_padding
+    return result
 
 
 def _assert_manual_timeseries_scales_legal(
@@ -1894,14 +2032,19 @@ def _plan_manual_nlp_scales(
             _stop_container_session(session.name, log_prefix="[probe]")
 
     plan_file = _scale_plan_file_path(output_dir)
-    _write_scale_plan_file(plan_file, task_info, entries)
+    plan_sha256 = _write_scale_plan_file(plan_file, task_info, entries)
 
     print(
         "[scale] Using manual input scales: "
         f"{serialize_input_scales(scales)}; effective scales: "
         f"{serialize_input_scales(actual_scales)}"
     )
-    return PlannedInputScales(scales=actual_scales, source="manual", plan_file=plan_file)
+    return PlannedInputScales(
+        scales=actual_scales,
+        source="manual",
+        plan_file=plan_file,
+        plan_sha256=plan_sha256,
+    )
 
 
 def _plan_nlp_auto_scales(
@@ -2018,7 +2161,7 @@ def _plan_nlp_auto_scales(
             })
 
         plan_file = _scale_plan_file_path(output_dir)
-        _write_scale_plan_file(plan_file, task_info, entries)
+        plan_sha256 = _write_scale_plan_file(plan_file, task_info, entries)
 
         print(
             "[scale] Auto-planned NLP scales from tokenizer limit "
@@ -2029,6 +2172,7 @@ def _plan_nlp_auto_scales(
             scales=actual_scales,
             source="auto",
             plan_file=plan_file,
+            plan_sha256=plan_sha256,
         )
     finally:
         if session is not None:
@@ -2052,6 +2196,113 @@ def _default_family_max_scale(task_info: TaskInfo, batch_size: int) -> float:
     raise RuntimeError(f"cannot determine default max input scale for task_family={task_info.task_family}")
 
 
+def _plan_audio_scales(
+    *,
+    task_info: TaskInfo,
+    image_info: ImageInfo,
+    cpu_list: List[int],
+    mem_list: List[int],
+    gpu_list: List[str],
+    scales: List[float],
+    batch_size: int,
+    output_dir: str,
+    source: str,
+    workload_spec_path: Optional[str],
+) -> PlannedInputScales:
+    """Validate real audio payloads against the loaded model before a sweep."""
+    from acprof.workloads import get_generator
+
+    workload_gen = get_generator(
+        task_info.task_family,
+        task_info.model_id,
+        task_info.pipeline_tag,
+        batch_size,
+        workload_spec_path=workload_spec_path,
+    )
+    normalized_scales = sorted(set(float(scale) for scale in scales))
+    if not normalized_scales or normalized_scales[0] <= 0:
+        raise RuntimeError("audio input scales must be finite positive durations")
+    if any(not math.isfinite(scale) for scale in normalized_scales):
+        raise RuntimeError("audio input scales must be finite positive durations")
+
+    # Validate manifest/asset limits before paying the cost of loading a large
+    # model in the probe container (for example, reject Whisper 31s directly).
+    materialized_payloads = [
+        (scale, workload_gen.generate(scale)) for scale in normalized_scales
+    ]
+
+    session: Optional[RunningContainer] = None
+    model_constraints: Dict[str, Any] = {}
+    try:
+        session = _start_probe_session(
+            task_info,
+            image_info,
+            cpu_list,
+            mem_list,
+            gpu_list,
+        )
+        first_payload = materialized_payloads[0][1]
+        model_constraints = _request_audio_scale_meta(session, first_payload)
+
+        expected_rate = model_constraints.get("required_sampling_rate")
+        payload_rate = first_payload.get("sample_rate")
+        if expected_rate is not None and payload_rate is not None:
+            if int(expected_rate) != int(payload_rate):
+                raise RuntimeError(
+                    "audio workload sampling rate does not match the model: "
+                    f"payload={payload_rate}Hz, model={expected_rate}Hz"
+                )
+
+        max_short = model_constraints.get("max_short_form_duration_s")
+        if max_short is not None:
+            invalid = [scale for scale in normalized_scales if scale > float(max_short) + 1e-9]
+            if invalid:
+                raise RuntimeError(
+                    "audio input scales exceed the model short-form limit "
+                    f"of {_format_scale_value(float(max_short))} seconds: "
+                    f"{serialize_input_scales(invalid)}. Use a separate long-form workload."
+                )
+
+        for scale, payload in materialized_payloads:
+            result = _post_probe_payload(
+                session,
+                payload,
+                f"audio scale {_format_scale_value(scale)}s",
+            )
+            if result["truncated_by_limit"]:
+                raise RuntimeError(
+                    "audio input scale is not valid for short-form inference: "
+                    f"{_format_scale_value(scale)}s ({result['reason']})"
+                )
+            if not math.isclose(
+                float(result["effective_input_scale"]),
+                float(scale),
+                rel_tol=0.0,
+                abs_tol=(0.5 / max(1, int(payload.get("sample_rate", 16000)))),
+            ):
+                raise RuntimeError(
+                    "audio effective duration differs from the requested scale: "
+                    f"requested={scale}, effective={result['effective_input_scale']}"
+                )
+    finally:
+        if session is not None:
+            _stop_container_session(session.name, log_prefix="[probe]")
+
+    print(
+        f"[scale] Using {source} audio scales: "
+        f"{serialize_input_scales(normalized_scales)}"
+    )
+    return _materialize_scale_plan(
+        task_info=task_info,
+        scales=normalized_scales,
+        batch_size=batch_size,
+        output_dir=output_dir,
+        source=source,
+        workload_spec_path=workload_spec_path,
+        model_constraints=model_constraints,
+    )
+
+
 def plan_input_scales(
     task_info: TaskInfo,
     image_info: ImageInfo,
@@ -2061,12 +2312,30 @@ def plan_input_scales(
     batch_size: int,
     output_dir: str,
     input_scales: Optional[str] = None,
+    workload_spec_path: Optional[str] = None,
 ) -> PlannedInputScales:
+    if workload_spec_path and task_info.task_family != "audio":
+        raise ValueError(
+            "--workload-spec is currently implemented only for task_family='audio'"
+        )
     plan_file = _scale_plan_file_path(output_dir)
     _clear_scale_plan_file(plan_file)
 
     if input_scales:
         manual_scales = resolve_input_scales(task_info.task_family, input_scales=input_scales)
+        if task_info.task_family == "audio":
+            return _plan_audio_scales(
+                task_info=task_info,
+                image_info=image_info,
+                cpu_list=cpu_list,
+                mem_list=mem_list,
+                gpu_list=gpu_list,
+                scales=manual_scales,
+                batch_size=batch_size,
+                output_dir=output_dir,
+                source="manual",
+                workload_spec_path=workload_spec_path,
+            )
         if task_info.task_family == "nlp":
             return _plan_manual_nlp_scales(
                 task_info=task_info,
@@ -2093,6 +2362,7 @@ def plan_input_scales(
             batch_size=batch_size,
             output_dir=output_dir,
             source="manual",
+            workload_spec_path=workload_spec_path,
         )
 
     if task_info.task_family == "nlp":
@@ -2104,6 +2374,34 @@ def plan_input_scales(
             gpu_list=gpu_list,
             batch_size=batch_size,
             output_dir=output_dir,
+        )
+
+    if task_info.task_family == "audio":
+        from acprof.workloads import get_generator
+
+        workload_gen = get_generator(
+            task_info.task_family,
+            task_info.model_id,
+            task_info.pipeline_tag,
+            batch_size,
+            workload_spec_path=workload_spec_path,
+        )
+        default_scales = workload_gen.default_input_scales()
+        if not default_scales:
+            raise RuntimeError(
+                "audio workload manifest did not provide default input scales"
+            )
+        return _plan_audio_scales(
+            task_info=task_info,
+            image_info=image_info,
+            cpu_list=cpu_list,
+            mem_list=mem_list,
+            gpu_list=gpu_list,
+            scales=[float(scale) for scale in default_scales],
+            batch_size=batch_size,
+            output_dir=output_dir,
+            source="workload_spec",
+            workload_spec_path=workload_spec_path,
         )
 
     max_scale = _default_family_max_scale(task_info, batch_size)
@@ -2122,6 +2420,7 @@ def plan_input_scales(
         batch_size=batch_size,
         output_dir=output_dir,
         source="auto",
+        workload_spec_path=workload_spec_path,
     )
 
 

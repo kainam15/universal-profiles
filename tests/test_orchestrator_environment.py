@@ -645,7 +645,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             def scale_label(self, scale: float) -> str:
                 return f"scale{scale:g}"
 
-        for task_family in ("cv", "audio", "timeseries"):
+        for task_family in ("cv", "timeseries"):
             with self.subTest(task_family=task_family), tempfile.TemporaryDirectory() as tmp, patch(
                 "acprof.workloads.get_generator",
                 return_value=FakeWorkloadGenerator(),
@@ -687,30 +687,24 @@ class DetectEnvironmentTests(unittest.TestCase):
                         {
                             "input_scale": 1.0,
                             "scale_label": "scale1",
+                            "input_metadata": {},
                             "payload": {"value": 1.0},
                         },
                         {
                             "input_scale": 2.0,
                             "scale_label": "scale2",
+                            "input_metadata": {},
                             "payload": {"value": 2.0},
                         },
                     ],
                 )
+                self.assertEqual(plan["schema_version"], 2)
+                self.assertRegex(planned.plan_sha256, r"^[0-9a-f]{64}$")
 
-    def test_auto_non_nlp_scales_write_reusable_payload_plan(self) -> None:
+    def test_auto_audio_scales_use_workload_manifest_defaults(self) -> None:
         class FakeWorkloadGenerator:
-            def generate(self, scale: float) -> dict:
-                return {"value": float(scale)}
-
-            def effective_input_scale(
-                self,
-                scale: float,
-                payload: dict | None = None,
-            ) -> float:
-                return float(scale)
-
-            def scale_label(self, scale: float) -> str:
-                return f"duration{scale:g}"
+            def default_input_scales(self) -> list[float]:
+                return [1.0, 2.0, 5.0, 10.0, 20.0, 30.0]
 
         task_info = TaskInfo(
             model_id="test/audio",
@@ -722,13 +716,19 @@ class DetectEnvironmentTests(unittest.TestCase):
             detection_method="unit",
         )
 
+        expected = orchestrator.PlannedInputScales(
+            scales=[1.0, 2.0, 5.0, 10.0, 20.0, 30.0],
+            source="workload_spec",
+            plan_file="/tmp/input_scale_plan.json",
+        )
         with tempfile.TemporaryDirectory() as tmp, patch(
             "acprof.workloads.get_generator",
             return_value=FakeWorkloadGenerator(),
-        ), patch(
-            "acprof.host.orchestrator._default_family_max_scale",
-            return_value=6.0,
-        ):
+        ), patch.object(
+            orchestrator,
+            "_plan_audio_scales",
+            return_value=expected,
+        ) as plan_audio:
             planned = orchestrator.plan_input_scales(
                 task_info=task_info,
                 image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
@@ -739,15 +739,178 @@ class DetectEnvironmentTests(unittest.TestCase):
                 output_dir=tmp,
             )
 
-            self.assertEqual(planned.scales, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
-            assert planned.plan_file is not None
-            with open(planned.plan_file, "r", encoding="utf-8") as f:
-                plan = json.load(f)
-
+        self.assertIs(planned, expected)
         self.assertEqual(
-            [entry["input_scale"] for entry in plan["entries"]],
-            planned.scales,
+            plan_audio.call_args.kwargs["scales"],
+            [1.0, 2.0, 5.0, 10.0, 20.0, 30.0],
         )
+
+    def test_audio_scale_meta_records_fixed_frontend_and_decoder_limit(self) -> None:
+        response = {
+            "input_scale_type": "duration_s",
+            "required_sampling_rate": 16000,
+            "max_short_form_duration_s": 30,
+            "model_input_num_samples": 480000,
+            "model_input_frames": 3000,
+            "short_form_fixed_padding": True,
+            "fixed_frontend_num_samples": 480000,
+            "fixed_frontend_num_frames": 3000,
+            "frontend_feature_bins": 128,
+            "encoder_positions": 1500,
+            "decoder_output_token_limit": 448,
+            "model_type": "whisper",
+            "reason": "fixed frontend; 448 is an output limit",
+        }
+        session = orchestrator.RunningContainer(
+            name="probe",
+            base_url="http://127.0.0.1:1",
+            host_port=1,
+            cold_start_s=0.0,
+        )
+        with patch.object(
+            orchestrator,
+            "_request_scale_meta",
+            return_value=response,
+        ):
+            metadata = orchestrator._request_audio_scale_meta(session, {})
+
+        self.assertTrue(metadata["short_form_fixed_padding"])
+        self.assertEqual(metadata["fixed_frontend_num_samples"], 480000)
+        self.assertEqual(metadata["fixed_frontend_num_frames"], 3000)
+        self.assertEqual(metadata["frontend_feature_bins"], 128)
+        self.assertEqual(metadata["decoder_output_token_limit"], 448)
+
+    def test_audio_output_schema_describes_effective_scale_and_nullable_tokens(self) -> None:
+        task_info = TaskInfo(
+            model_id="openai/whisper-large-v3",
+            pipeline_tag="automatic-speech-recognition",
+            task_family="audio",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="unit",
+        )
+
+        _, output_format = orchestrator._model_io_formats(task_info)
+        properties = output_format["json_schema"]["properties"]
+
+        self.assertEqual(properties["effective_input_scale"], {"type": "number"})
+        self.assertEqual(
+            properties["output_token_count"],
+            {"type": ["integer", "null"]},
+        )
+
+    def test_workload_spec_is_rejected_for_unimplemented_families(self) -> None:
+        task_info = TaskInfo(
+            model_id="test/nlp",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="unit",
+        )
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaisesRegex(
+            ValueError,
+            "implemented only.*audio",
+        ):
+            orchestrator.plan_input_scales(
+                task_info=task_info,
+                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                cpu_list=[1],
+                mem_list=[4],
+                gpu_list=["off"],
+                batch_size=1,
+                output_dir=tmp,
+                workload_spec_path="/tmp/not-used.json",
+            )
+
+    def test_audio_manifest_limit_is_checked_before_starting_probe(self) -> None:
+        task_info = TaskInfo(
+            model_id="openai/whisper-large-v3",
+            pipeline_tag="automatic-speech-recognition",
+            task_family="audio",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="unit",
+        )
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            orchestrator,
+            "_start_probe_session",
+        ) as start_probe, self.assertRaisesRegex(
+            ValueError,
+            "long-form workload",
+        ):
+            orchestrator._plan_audio_scales(
+                task_info=task_info,
+                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                cpu_list=[1],
+                mem_list=[4],
+                gpu_list=["off"],
+                scales=[31.0],
+                batch_size=1,
+                output_dir=tmp,
+                source="manual",
+                workload_spec_path=None,
+            )
+        start_probe.assert_not_called()
+
+    def test_materialized_plan_v2_records_workload_and_input_metadata(self) -> None:
+        class FakeWorkloadGenerator:
+            def generate(self, scale: float) -> dict:
+                return {"value": float(scale), "params": {"mode": "fixed"}}
+
+            def effective_input_scale(self, scale: float, payload=None) -> float:
+                return float(scale)
+
+            def scale_label(self, scale: float) -> str:
+                return f"scale{scale:g}"
+
+            def input_metadata(self, scale: float, payload=None) -> dict:
+                return {"input_num_samples": int(scale * 100)}
+
+            def plan_metadata(self) -> dict:
+                return {"workload_id": "fixture-v1"}
+
+        task_info = TaskInfo(
+            model_id="test/audio",
+            pipeline_tag="automatic-speech-recognition",
+            task_family="audio",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="unit",
+        )
+        constraints = {"max_short_form_duration_s": 30}
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "acprof.workloads.get_generator",
+            return_value=FakeWorkloadGenerator(),
+        ):
+            planned = orchestrator._materialize_scale_plan(
+                task_info=task_info,
+                scales=[1.0, 2.0],
+                batch_size=1,
+                output_dir=tmp,
+                source="unit",
+                model_constraints=constraints,
+            )
+            assert planned.plan_file is not None
+            with open(planned.plan_file, "r", encoding="utf-8") as plan_file:
+                plan = json.load(plan_file)
+
+        self.assertEqual(plan["schema_version"], 2)
+        self.assertEqual(plan["workload"], {"workload_id": "fixture-v1"})
+        self.assertEqual(plan["model_constraints"], constraints)
+        self.assertEqual(
+            plan["entries"][0]["input_metadata"]["input_num_samples"],
+            100,
+        )
+        self.assertEqual(
+            planned.workload["model_constraints"],
+            constraints,
+        )
+        self.assertRegex(planned.plan_sha256, r"^[0-9a-f]{64}$")
 
     def test_run_single_case_passes_container_name_to_client(self) -> None:
         task_info = TaskInfo(

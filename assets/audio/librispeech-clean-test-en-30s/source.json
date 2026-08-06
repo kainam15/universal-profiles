@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "workload_id": "librispeech-clean-test-en-transcribe-short-v1",
+  "task_family": "audio",
+  "pipeline_tag": "automatic-speech-recognition",
+  "asset": {
+    "path": "audio.wav",
+    "sha256": "c67f163f3b1aa88157123dfa0264d80a34d7a5b51e4d3f2b6718b60bcca34157",
+    "format": "wav",
+    "pcm_subtype": "PCM_16",
+    "sample_rate": 16000,
+    "channels": 1,
+    "num_samples": 480000,
+    "duration_s": 30.0
+  },
+  "input_scale": {
+    "type": "duration_s",
+    "values": [1, 2, 5, 10, 20, 30],
+    "construction": "prefix"
+  },
+  "inference": {
+    "mode": "short_form",
+    "asr_task": "transcribe",
+    "language": "en",
+    "return_timestamps": false,
+    "pipeline_kwargs": {}
+  },
+  "provenance": {
+    "dataset_id": "openslr/librispeech_asr",
+    "dataset_revision": "71cacbfb7e2354c4226d01e70d77d5fca3d04ba1",
+    "config": "clean",
+    "split": "test",
+    "dataset_url": "https://huggingface.co/datasets/openslr/librispeech_asr",
+    "license": "CC-BY-4.0",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "speaker_id": 6930,
+    "chapter_id": 75918,
+    "sources": [
+      {
+        "row_index": 1,
+        "id": "6930-75918-0001",
+        "filename": "6930-75918-0001.flac",
+        "duration_s": 14.225,
+        "sha256": "3dfad7eb0793eddd5040d04f1f2f3046ceeee39e0ec461794856a350e1bd728e",
+        "text": "THE ENGLISH FORWARDED TO THE FRENCH BASKETS OF FLOWERS OF WHICH THEY HAD MADE A PLENTIFUL PROVISION TO GREET THE ARRIVAL OF THE YOUNG PRINCESS THE FRENCH IN RETURN INVITED THE ENGLISH TO A SUPPER WHICH WAS TO BE GIVEN THE NEXT DAY"
+      },
+      {
+        "row_index": 2,
+        "id": "6930-75918-0002",
+        "filename": "6930-75918-0002.flac",
+        "duration_s": 5.025,
+        "sha256": "74ecfd628f49dca71995972c075fcc9904df804d49a4eb5b11fb712b3584f789",
+        "text": "CONGRATULATIONS WERE POURED IN UPON THE PRINCESS EVERYWHERE DURING HER JOURNEY"
+      },
+      {
+        "row_index": 3,
+        "id": "6930-75918-0003",
+        "filename": "6930-75918-0003.flac",
+        "duration_s": 23.315,
+        "sha256": "0ec415739efc00adcbe70838f6c207ee4ae8b31639bad534138c3d26d890f58b",
+        "text": "FROM THE RESPECT PAID HER ON ALL SIDES SHE SEEMED LIKE A QUEEN AND FROM THE ADORATION WITH WHICH SHE WAS TREATED BY TWO OR THREE SHE APPEARED AN OBJECT OF WORSHIP THE QUEEN MOTHER GAVE THE FRENCH THE MOST AFFECTIONATE RECEPTION FRANCE WAS HER NATIVE COUNTRY AND SHE HAD SUFFERED TOO MUCH UNHAPPINESS IN ENGLAND FOR ENGLAND TO HAVE MADE HER FORGET FRANCE"
+      }
+    ],
+    "transform": {
+      "operation": "concatenate_then_prefix_crop",
+      "source_order": [
+        "6930-75918-0001",
+        "6930-75918-0002",
+        "6930-75918-0003"
+      ],
+      "concatenated_duration_s": 42.565,
+      "crop_start_sample": 0,
+      "output_num_samples": 480000,
+      "output_duration_s": 30.0,
+      "gain_applied": false,
+      "normalized": false,
+      "resampled": false,
+      "silence_trimmed": false
+    }
+  }
+}

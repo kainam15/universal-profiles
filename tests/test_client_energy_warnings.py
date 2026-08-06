@@ -10,7 +10,11 @@ from unittest.mock import patch
 
 from acprof.host import client
 from acprof.monitors import energy_cpu
-from acprof.config import CSV_FIELDS
+from acprof.config import (
+    CSV_FIELDS,
+    STATIC_META_FIELDS,
+    STATIC_META_SCHEMA_VERSION,
+)
 
 
 REMOVED_LEGACY_COMPUTE_FIELDS = (
@@ -117,6 +121,176 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         gpu_idle_index = CSV_FIELDS.index("gpu_idle_power_w")
         self.assertEqual(CSV_FIELDS[gpu_idle_index + 1], "gpu_idle_measured_at")
         self.assertEqual(CSV_FIELDS[gpu_idle_index + 2], "gpu_idle_rel_range_so_far")
+
+    def test_schema_v2_includes_workload_and_request_shape_metrics(self) -> None:
+        self.assertEqual(STATIC_META_SCHEMA_VERSION, 2)
+        self.assertIn("workload", STATIC_META_FIELDS)
+        self.assertIn("input_scale_plan_sha256", STATIC_META_FIELDS)
+        expected = [
+            "input_scale",
+            "input_num_samples",
+            "request_payload_bytes",
+            "task_param",
+            "output_length_avg",
+            "output_token_count_avg",
+        ]
+        start = CSV_FIELDS.index("input_scale")
+        self.assertEqual(CSV_FIELDS[start:start + len(expected)], expected)
+
+    def test_input_scale_plan_v1_derives_audio_metadata_and_v2_preserves_it(self) -> None:
+        plans = [
+            (
+                {
+                    "entries": [
+                        {
+                            "input_scale": 0.25,
+                            "payload": {
+                                "audio_samples": [0.0, 0.1, -0.1, 0.0],
+                                "sample_rate": 16000,
+                                "params": {},
+                            },
+                        }
+                    ]
+                },
+                {"input_num_samples": 4, "sample_rate": 16000},
+            ),
+            (
+                {
+                    "schema_version": 2,
+                    "entries": [
+                        {
+                            "input_scale": 1.0,
+                            "payload": {
+                                "audio_base64": "UklGRg==",
+                                "audio_format": "wav",
+                                "sample_rate": 16000,
+                                "params": {},
+                            },
+                            "input_metadata": {
+                                "input_num_samples": 16000,
+                                "audio_sha256": "abc123",
+                            },
+                        }
+                    ],
+                },
+                {"input_num_samples": 16000, "audio_sha256": "abc123"},
+            ),
+        ]
+
+        for plan, expected_metadata in plans:
+            with self.subTest(schema_version=plan.get("schema_version", 1)):
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    path = os.path.join(tmp_dir, "input_scale_plan.json")
+                    with open(path, "w", encoding="utf-8") as f:
+                        json.dump(plan, f)
+                    with patch.object(
+                        client, "INPUT_SCALE_PLAN_FILE", path
+                    ), patch.object(client, "workload_gen", None):
+                        entries = client._load_input_scale_entries()
+
+                self.assertEqual(entries[0]["input_metadata"], expected_metadata)
+
+    def test_one_request_reports_prepared_body_and_response_counts(self) -> None:
+        class FakeResponse:
+            status_code = 200
+            text = ""
+            reason = "OK"
+            request = SimpleNamespace(body='{"text":"\u2713"}')
+
+            @staticmethod
+            def json():
+                return {
+                    "effective_input_scale": 3,
+                    "output_length": 12,
+                    "output_token_count": 5,
+                }
+
+        payload = {"text": "hello", "params": {"z": 1, "a": 2}}
+        with patch.object(client.requests, "post", return_value=FakeResponse()), patch.object(
+            client.time,
+            "perf_counter",
+            side_effect=[10.0, 10.25],
+        ):
+            result = client._one_request(3.0, "req", payload_override=payload)
+
+        self.assertEqual(result["request_payload_bytes"], 14.0)
+        self.assertEqual(result["output_length"], 12.0)
+        self.assertEqual(result["output_token_count"], 5.0)
+        self.assertEqual(result["task_param"], '{"a":2,"z":1}')
+
+    def test_task_param_includes_top_level_timeseries_prediction_length(self) -> None:
+        payload = {
+            "context": [[0.1, 0.2]],
+            "prediction_length": 64,
+        }
+        self.assertEqual(
+            client._canonical_task_param(payload),
+            '{"prediction_length":64}',
+        )
+
+    def test_request_shape_metrics_are_averaged_per_window(self) -> None:
+        responses = iter([
+            {
+                "latency_app_s": 0.1,
+                "effective_input_scale": 1.0,
+                "request_payload_bytes": 100,
+                "output_length": 10,
+                "output_token_count": 3,
+            },
+            {
+                "latency_app_s": 0.2,
+                "effective_input_scale": 1.0,
+                "request_payload_bytes": 104,
+                "output_length": 14,
+                "output_token_count": 5,
+            },
+        ])
+        payload = {
+            "audio_base64": "UklGRg==",
+            "audio_format": "wav",
+            "sample_rate": 16000,
+            "params": {"task": "transcribe", "language": "english"},
+        }
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_csv = os.path.join(tmp_dir, "result.csv")
+            with patch.object(client, "OUT_CSV", out_csv), patch.object(
+                client, "WARMUP", 0
+            ), patch.object(client, "REPEAT", 1), patch.object(
+                client, "REPEAT_IN_WINDOW", 2
+            ), patch.object(client, "USE_ENERGY", False), patch.object(
+                client, "USE_MIPS", False
+            ), patch.object(client, "energy_mod", None), patch.object(
+                client, "cpu_energy_mod", None
+            ), patch.object(client, "resource_usage_mod", None), patch.object(
+                client,
+                "input_scale_entries",
+                [
+                    {
+                        "input_scale": 1.0,
+                        "scale_label": "dur1s",
+                        "payload": payload,
+                        "input_metadata": {"input_num_samples": 16000},
+                    }
+                ],
+            ), patch.object(
+                client.requests,
+                "get",
+                return_value=SimpleNamespace(status_code=200, text="ok"),
+            ), patch.object(client, "_one_request", side_effect=lambda *args, **kwargs: next(responses)):
+                client.main()
+
+            with open(out_csv, "r", encoding="utf-8", newline="") as f:
+                row = next(csv.DictReader(f))
+
+        self.assertEqual(row["input_num_samples"], "16000.000000")
+        self.assertEqual(row["request_payload_bytes"], "102.000000")
+        self.assertEqual(row["output_length_avg"], "12.000000")
+        self.assertEqual(row["output_token_count_avg"], "4.000000")
+        self.assertEqual(
+            row["task_param"],
+            '{"language":"english","task":"transcribe"}',
+        )
 
     def test_csv_schema_includes_idle_debug_fields_after_cpu_idle_power(self) -> None:
         self.assertIn("cpu_idle_measured_at", CSV_FIELDS)

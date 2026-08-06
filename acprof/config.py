@@ -145,7 +145,11 @@ CSV_FIELDS = [
     "mem_cap_gb",
     "gpu_mode",
     "input_scale",
+    "input_num_samples",
+    "request_payload_bytes",
     "task_param",
+    "output_length_avg",
+    "output_token_count_avg",
     "repeat_idx",
     "warmup",
     "repeat_in_window",
@@ -271,6 +275,8 @@ STATIC_META_FIELDS = [
     "image_tag",
     "batch_size",
     "input_scale_type",
+    "workload",
+    "input_scale_plan_sha256",
     "run_command",
     "model_download_url",
     "gpu",
@@ -309,7 +315,7 @@ STATIC_META_FIELDS = [
     "execution_profiles_retained",
     "execution_profile_provenance",
 ]
-STATIC_META_SCHEMA_VERSION = 1
+STATIC_META_SCHEMA_VERSION = 2
 
 # ─────────────────────────────────────────────
 # Docker 镜像命名

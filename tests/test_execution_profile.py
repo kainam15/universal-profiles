@@ -45,6 +45,41 @@ def _write_input_scale_plan(directory: str) -> str:
 
 
 class ExecutionProfileTests(unittest.TestCase):
+    def test_v1_and_v2_input_plans_reuse_the_exact_payload(self) -> None:
+        payload = {
+            "audio_base64": "UklGRg==",
+            "audio_format": "wav",
+            "sample_rate": 16000,
+            "params": {"asr_task": "transcribe"},
+        }
+        for schema_version in (1, 2):
+            with self.subTest(schema_version=schema_version), tempfile.TemporaryDirectory() as tmp:
+                path = os.path.join(tmp, "input_scale_plan.json")
+                plan = {
+                    "entries": [
+                        {
+                            "input_scale": 1.0,
+                            "scale_label": "dur1s",
+                            "payload": payload,
+                        }
+                    ]
+                }
+                if schema_version == 2:
+                    plan.update({
+                        "schema_version": 2,
+                        "workload": {"workload_id": "fixture"},
+                        "model_constraints": {"max_short_form_duration_s": 30},
+                    })
+                    plan["entries"][0]["input_metadata"] = {
+                        "input_num_samples": 16000
+                    }
+                with open(path, "w", encoding="utf-8") as plan_file:
+                    json.dump(plan, plan_file)
+
+                entries = execution_profile._load_input_scale_plan_entries(path)
+
+                self.assertEqual(entries[0]["payload"], payload)
+
     def test_parse_massif_native_snapshots_uses_independent_and_total_peaks(
         self,
     ) -> None:

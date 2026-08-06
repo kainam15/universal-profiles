@@ -526,6 +526,14 @@ Examples:
         help="Write CPU idle baseline timestamps and per-row diagnostic JSONL sidecars",
     )
     parser.add_argument("--input-scales", default=None, help="Override input scale values (comma-separated)")
+    parser.add_argument(
+        "--workload-spec",
+        default=None,
+        help=(
+            "Path to an audio workload manifest. ASR defaults to the "
+            "bundled LibriSpeech short-form manifest."
+        ),
+    )
 
     # Compute profiling
     parser.add_argument("--no-compute-profile", action="store_true", help="Disable MFLOPS compute profiling")
@@ -683,6 +691,7 @@ Examples:
     from acprof.host.orchestrator import (
         build_image,
         collect_static_meta,
+        enrich_static_meta_from_input_plan,
         enrich_static_meta_from_compute_plan,
         enrich_static_meta_from_execution_plan,
         merge_all_csvs,
@@ -735,12 +744,18 @@ Examples:
             batch_size=args.batch_size,
             output_dir=output_dir,
             input_scales=args.input_scales,
+            workload_spec_path=args.workload_spec,
         )
     except Exception as exc:
         print(f"\n[scale][ERROR] {exc}", file=sys.stderr)
         sys.exit(1)
 
     input_scales_arg = serialize_input_scales(planned_input_scales.scales)
+    static_meta = enrich_static_meta_from_input_plan(
+        static_meta,
+        planned_input_scales,
+    )
+    write_static_meta_json(static_meta, static_meta_json)
     compute_profile_plan_file = ""
     if args.no_compute_profile:
         print("[compute] Compute profiling disabled by --no-compute-profile")

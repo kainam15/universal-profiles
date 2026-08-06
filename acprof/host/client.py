@@ -36,7 +36,6 @@ from acprof.config import (
     DEFAULT_IDLE_COOLDOWN_SECONDS,
     DEFAULT_REPEAT_IN_WINDOW,
     DEFAULT_REPEAT_WINDOW_SECONDS,
-    DEFAULT_TASK_PARAMS,
     IDLE_DIAG_DIRNAME,
     SCALING_DIMENSIONS,
 )
@@ -110,7 +109,6 @@ EXECUTION_PROFILE_PLAN_FILE = os.getenv(
     "EXECUTION_PROFILE_PLAN_FILE",
     "",
 ).strip()
-TASK_PARAM_STR = os.getenv("TASK_PARAM", "")
 
 
 # ─────────────────────────────────────────────
@@ -258,6 +256,70 @@ class MIPSAbort(RuntimeError):
 
 def _mean(xs: List[float]) -> float:
     return sum(xs) / len(xs) if xs else float("nan")
+
+
+def _mean_finite(xs: List[float]) -> float:
+    values = [
+        value
+        for value in (_to_float_or_nan(item) for item in xs)
+        if math.isfinite(value)
+    ]
+    return _mean(values)
+
+
+def _canonical_task_param(payload: Optional[Dict[str, Any]]) -> str:
+    """Serialize the parameters that the server actually receives."""
+    params: Any = {}
+    if isinstance(payload, dict):
+        nested_params = payload.get("params")
+        if isinstance(nested_params, dict):
+            params = dict(nested_params)
+        elif nested_params is not None:
+            params = {"params": nested_params}
+
+        # Time-series handlers consume prediction_length at the top level,
+        # rather than through the common nested params object.
+        if "prediction_length" in payload:
+            params["prediction_length"] = payload["prediction_length"]
+    return json.dumps(
+        params,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _prepared_body_size_bytes(response: Any) -> float:
+    """Return the encoded body size from requests' PreparedRequest."""
+    prepared = getattr(response, "request", None)
+    body = getattr(prepared, "body", None)
+    if isinstance(body, str):
+        return float(len(body.encode("utf-8")))
+    if isinstance(body, (bytes, bytearray, memoryview)):
+        return float(len(body))
+    return float("nan")
+
+
+def _derive_input_metadata(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Recover v1 audio metadata without changing its legacy payload."""
+    metadata: Dict[str, Any] = {}
+    audio_samples = payload.get("audio_samples")
+    if isinstance(audio_samples, (list, tuple)):
+        metadata["input_num_samples"] = len(audio_samples)
+        sample_rate = payload.get("sample_rate")
+        if sample_rate is not None:
+            metadata["sample_rate"] = sample_rate
+    return metadata
+
+
+def _input_num_samples(input_metadata: Any) -> float:
+    if not isinstance(input_metadata, dict):
+        return float("nan")
+    for key in ("input_num_samples", "num_samples", "actual_num_samples"):
+        value = _to_float_or_nan(input_metadata.get(key))
+        if math.isfinite(value):
+            return value
+    return float("nan")
 
 
 def _percentile_nearest_rank(xs: List[float], percentile: float) -> float:
@@ -417,18 +479,7 @@ else:
     else:
         input_scales = [1.0]
 
-# Task param (secondary parameter)
-task_param = TASK_PARAM_STR
-if not task_param:
-    defaults = DEFAULT_TASK_PARAMS.get(TASK_FAMILY, {})
-    # Filter out params not applicable to this task type
-    _GENERATIVE_TAGS = {"text-generation", "text2text-generation", "summarization",
-                        "translation", "conversational"}
-    if PIPELINE_TAG not in _GENERATIVE_TAGS:
-        defaults = {k: v for k, v in defaults.items() if k != "max_new_tokens"}
-    task_param = json.dumps(defaults) if defaults else ""
-
-print(f"[client] PIPELINE_TAG={PIPELINE_TAG}, task_param={task_param!r}", flush=True)
+print(f"[client] PIPELINE_TAG={PIPELINE_TAG}", flush=True)
 
 
 # ─────────────────────────────────────────────
@@ -436,11 +487,26 @@ print(f"[client] PIPELINE_TAG={PIPELINE_TAG}, task_param={task_param!r}", flush=
 # ─────────────────────────────────────────────
 from acprof.workloads import get_generator  # noqa: E402
 
-workload_gen = get_generator(TASK_FAMILY, MODEL_ID, PIPELINE_TAG, BATCH_SIZE)
+workload_gen = (
+    None
+    if INPUT_SCALE_PLAN_FILE
+    else get_generator(TASK_FAMILY, MODEL_ID, PIPELINE_TAG, BATCH_SIZE)
+)
+
+
+def _generic_scale_label(scale_value: float) -> str:
+    return f"scale{float(scale_value):g}"
 
 
 def _one_request(scale_value: float, req_id: str, payload_override: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    payload = payload_override if payload_override is not None else workload_gen.generate(scale_value)
+    if payload_override is not None:
+        payload = payload_override
+    else:
+        if workload_gen is None:
+            raise RuntimeError(
+                "input scale plan entry has no payload; the plan must be self-contained"
+            )
+        payload = workload_gen.generate(scale_value)
 
     headers = {
         "Connection": "close",
@@ -461,6 +527,10 @@ def _one_request(scale_value: float, req_id: str, payload_override: Optional[Dic
         "latency_app_s": (t1 - t0),
         "resp": resp,
         "effective_input_scale": _parse_effective_input_scale(resp),
+        "request_payload_bytes": _prepared_body_size_bytes(r),
+        "output_length": _to_float_or_nan(resp.get("output_length")),
+        "output_token_count": _to_float_or_nan(resp.get("output_token_count")),
+        "task_param": _canonical_task_param(payload),
     }
 
 
@@ -468,6 +538,18 @@ def _load_input_scale_entries() -> List[Dict[str, Any]]:
     if INPUT_SCALE_PLAN_FILE:
         with open(INPUT_SCALE_PLAN_FILE, "r", encoding="utf-8") as f:
             plan = json.load(f)
+
+        raw_schema_version = plan.get("schema_version", 1)
+        try:
+            schema_version = int(raw_schema_version)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"invalid input scale plan schema_version: {raw_schema_version!r}"
+            ) from exc
+        if schema_version not in {1, 2}:
+            raise RuntimeError(
+                f"unsupported input scale plan schema_version={schema_version}"
+            )
 
         entries = plan.get("entries")
         if not isinstance(entries, list) or not entries:
@@ -488,20 +570,41 @@ def _load_input_scale_entries() -> List[Dict[str, Any]]:
                 )
 
             scale_value = float(raw_scale)
-            scale_label = str(entry.get("scale_label") or workload_gen.scale_label(scale_value))
+            scale_label = str(
+                entry.get("scale_label") or _generic_scale_label(scale_value)
+            )
+            raw_input_metadata = entry.get("input_metadata")
+            if raw_input_metadata is None:
+                input_metadata = _derive_input_metadata(payload)
+            elif isinstance(raw_input_metadata, dict):
+                input_metadata = dict(raw_input_metadata)
+                if "input_num_samples" not in input_metadata:
+                    derived_metadata = _derive_input_metadata(payload)
+                    if "input_num_samples" in derived_metadata:
+                        input_metadata["input_num_samples"] = derived_metadata[
+                            "input_num_samples"
+                        ]
+            else:
+                raise RuntimeError(
+                    f"invalid input_metadata at input scale plan entry {idx}"
+                )
             loaded_entries.append({
                 "input_scale": scale_value,
                 "scale_label": scale_label,
                 "payload": payload,
+                "input_metadata": input_metadata,
             })
 
         return loaded_entries
 
+    if workload_gen is None:
+        raise RuntimeError("legacy input scales require a workload generator")
     return [
         {
             "input_scale": float(scale_value),
             "scale_label": workload_gen.scale_label(scale_value),
             "payload": None,
+            "input_metadata": {},
         }
         for scale_value in input_scales
     ]
@@ -1188,6 +1291,9 @@ def main() -> None:
         for scale_entry in input_scale_entries:
             scale_val = float(scale_entry["input_scale"])
             payload_override = scale_entry.get("payload")
+            input_num_samples = _input_num_samples(
+                scale_entry.get("input_metadata")
+            )
             repeat_request_limit = _prepare_repeat_window(
                 scale_val,
                 str(scale_entry["scale_label"]),
@@ -1202,6 +1308,10 @@ def main() -> None:
                 sniff_group_id = f"{CASE_NAME}_{scale_label}_{phase}{repeat_idx}"
 
                 latency_app_s = float("nan")
+                request_payload_bytes = float("nan")
+                output_length_avg = float("nan")
+                output_token_count_avg = float("nan")
+                executed_task_param: Optional[str] = None
                 status = "ok"
                 err_msg = ""
                 gpu_metrics = _nan_metrics(GPU_METRIC_FIELDS)
@@ -1230,6 +1340,9 @@ def main() -> None:
                     actual_repeat_in_window = 0
                     lat_sum = 0.0
                     latency_app_values: List[float] = []
+                    request_payload_bytes_values: List[float] = []
+                    output_length_values: List[float] = []
+                    output_token_count_values: List[float] = []
                     gpu_monitor_started = False
                     cpu_monitor_started = False
                     resource_usage_monitor_started = False
@@ -1334,6 +1447,21 @@ def main() -> None:
                             request_latency_app_s = float(out["latency_app_s"])
                             lat_sum += request_latency_app_s
                             latency_app_values.append(request_latency_app_s)
+                            request_payload_bytes_values.append(
+                                _to_float_or_nan(out.get("request_payload_bytes"))
+                            )
+                            output_length_values.append(
+                                _to_float_or_nan(out.get("output_length"))
+                            )
+                            output_token_count_values.append(
+                                _to_float_or_nan(out.get("output_token_count"))
+                            )
+                            request_task_param = out.get("task_param")
+                            if (
+                                request_task_param is not None
+                                and executed_task_param is None
+                            ):
+                                executed_task_param = str(request_task_param)
                             actual_repeat_in_window += 1
                             effective_input_scale = _merge_effective_input_scale(
                                 effective_input_scale,
@@ -1381,6 +1509,13 @@ def main() -> None:
                             raise mips_stop_error
 
                     latency_app_s = _mean(latency_app_values)
+                    request_payload_bytes = _mean_finite(
+                        request_payload_bytes_values
+                    )
+                    output_length_avg = _mean_finite(output_length_values)
+                    output_token_count_avg = _mean_finite(
+                        output_token_count_values
+                    )
                     latency_app_distribution_metrics = _latency_distribution_metrics(
                         "latency_app",
                         latency_app_values,
@@ -1459,7 +1594,17 @@ def main() -> None:
                     "input_scale": str(
                         effective_input_scale if effective_input_scale is not None else scale_val
                     ),
-                    "task_param": task_param,
+                    "input_num_samples": _fmt_float(input_num_samples),
+                    "request_payload_bytes": _fmt_float(request_payload_bytes),
+                    "task_param": (
+                        executed_task_param
+                        if executed_task_param is not None
+                        else _canonical_task_param(payload_override)
+                    ),
+                    "output_length_avg": _fmt_float(output_length_avg),
+                    "output_token_count_avg": _fmt_float(
+                        output_token_count_avg
+                    ),
                     "repeat_idx": str(repeat_idx),
                     "warmup": str(warmup_flag),
                     "repeat_in_window": str(actual_repeat_in_window),

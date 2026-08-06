@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 class WorkloadGenerator(ABC):
@@ -34,6 +34,22 @@ class WorkloadGenerator(ABC):
         """Return the default maximum input scale for auto-planning when known."""
         return None
 
+    def default_input_scales(self) -> Optional[List[float]]:
+        """Return workload-defined default scales, or ``None`` for legacy planning."""
+        return None
+
+    def plan_metadata(self) -> Dict[str, Any]:
+        """Return JSON-serializable metadata to persist with a materialized plan."""
+        return {}
+
+    def input_metadata(
+        self,
+        scale_value: float,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Return JSON-serializable metadata for one materialized input."""
+        return {}
+
 
 _generators: Dict[str, type] = {}
 
@@ -42,10 +58,23 @@ def register_generator(task_family: str, cls: type):
     _generators[task_family] = cls
 
 
-def get_generator(task_family: str, model_id: str, task_type: str, batch_size: int) -> WorkloadGenerator:
+def get_generator(
+    task_family: str,
+    model_id: str,
+    task_type: str,
+    batch_size: int,
+    workload_spec_path: Optional[str] = None,
+) -> WorkloadGenerator:
     cls = _generators.get(task_family)
     if cls is None:
         raise ValueError(f"No workload generator for task_family='{task_family}'. Available: {list(_generators.keys())}")
+    if workload_spec_path is not None:
+        return cls(
+            model_id,
+            task_type,
+            batch_size,
+            workload_spec_path=workload_spec_path,
+        )
     return cls(model_id, task_type, batch_size)
 
 

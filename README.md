@@ -320,6 +320,7 @@ CPU 模型使用共同的二次 log input-scale 项表达各资源配置共有�
 | `--idle-cooldown-seconds` | `3.0` | 每个 workload window 采集 idle baseline 前的统一冷却等待时间。CPU-only 和 GPU+CPU case 都使用同一个值，避免上一轮推理刚结束后的短时热状态、Docker/server 收尾或 GPU clock/power 瞬态直接进入 idle baseline。 |
 | `--idle-debug` | false | 开启 baseline 调试输出。主 CSV 会填充 GPU 的 `gpu_idle_measured_at` / `gpu_idle_rel_range_so_far` 和 CPU 的 `cpu_idle_measured_at` / `cpu_idle_rel_range_so_far`，并写出 `debug_idle_diag/result_case_*.csv.idle_diag.jsonl`。诊断文件记录 matched control window 的 GPU NVML trace、CPU RAPL 子窗口、host/container CPU delta，以及 control 结束后的 `nvidia-smi`、loadavg、top CPU processes、Docker 容器和 `docker stats` 快照。为避免诊断本身污染 baseline，逐进程 `/proc` 快照移到 control window 外，不再归入 RAPL control 能量。 |
 | `--input-scales` | auto | 手动覆盖 input scale 列表。未提供时自动规划 6 档。 |
+| `--workload-spec` | task default | workload 清单 JSON。ASR 默认使用仓库内置的 LibriSpeech 英文短音频清单；其他音频任务必须显式提供清单。 |
 | `--no-compute-profile` | false | 禁用 MFLOPS compute profiling。 |
 | `--compute-profile-tool` | `both` | `both` 独立采集 `torch_profiler_eager` 逻辑 FLOP，并在 `gpu_mode=on` 时采集 NCU GPU 实际执行 FLOP。`auto` 是 `both` 的弃用别名；`torch`、`ncu`、`vendor` 用于单工具诊断或旧流程兼容。 |
 | `--advisor-root` | auto | Host Intel Advisor install root or executable；显式值优先于自动检测。 |
@@ -352,13 +353,28 @@ CPU 模型使用共同的二次 log input-scale 项表达各资源配置共有�
 | `audio` | `duration_s` | 输入音频时长，单位秒。 |
 | `timeseries` | `context_length` | 时间序列 context length。 |
 
-未提供 `--input-scales` 时，当前实现会为一次 profiling run 自动规划 6 档 input scale：
+未提供 `--input-scales` 时，当前内置 workload/legacy 配置通常会为一次 profiling run 规划 6 档 input scale；自定义音频清单则使用清单中声明的档数：
 
 - `nlp` 会启动容器读取 tokenizer / handler 的可用最大输入长度，最后一档尽量贴近有效上限。
-- `cv`、`audio`、`timeseries` 会根据各自 workload generator 的最大尺度或配置默认值生成 6 档。
+- `audio` 从 workload 清单读取默认尺度；内置英文 ASR 清单固定为 `1,2,5,10,20,30` 秒。`cv`、`timeseries` 仍根据各自 generator 的最大尺度或配置默认值生成。
 - 同一次 run 的所有资源配置共用同一组 scale。
 - 所有任务族都会把已确定尺度的 payload 写入唯一的 `input_scale_plan.json`；主采集与 compute profiler 共同读取该文件，保证实际执行 payload、FLOP profiling 和 CSV 中记录的 `input_scale` 一致。
-- 手动传入 `--input-scales` 时以手动值为准；`nlp` 和 `timeseries` 会在 sweep 前验证合法性。
+- 手动传入 `--input-scales` 时以手动值为准；`nlp`、`audio` 和 `timeseries` 会在 sweep 前验证合法性。
+
+### 真实音频 workload
+
+`automatic-speech-recognition` 默认使用 `assets/audio/librispeech-clean-test-en-30s/source.json`。该清单引用 LibriSpeech `clean/test` 中同一说话人、同一章节的三条连续语音，按固定顺序拼接后截取前 30 秒；素材是单声道 16 kHz PCM16 WAV，许可证为 CC BY 4.0。每一档输入都从同一个 30 秒基准音频取前缀，不做逐档归一化、补全或循环。
+
+音频请求采用 JSON 内的 Base64 WAV；handler 仍能读取历史 `audio_samples` 浮点数组。短音频模式会读取模型 feature extractor 的约束并拒绝超过 receptive field 的尺度。对于 Whisper，30 秒是音频 receptive field；当前 feature extractor 会把接受的短音频补齐为固定的 480,000 samples / 3,000 frames，`/scale_meta` 会显式记录这一点。`max_target_positions=448` 是解码器输出 token 上限，不是音频输入上限，因此框架不会把 latency 必须随 `duration_s` 单调增加作为正确性条件。
+
+自定义素材时可复制内置 `source.json`，设置新的 `workload_id`，再修改相对素材路径、SHA256、provenance 和 inference 字段。自定义 provenance 可以描述单条录音或既有重采样/增益流程；运行时仍会严格验证派生 WAV 本身是单声道、16 kHz、PCM16 且哈希匹配。然后传入：
+
+```bash
+python run.py --model openai/whisper-large-v3 \
+  --workload-spec /path/to/source.json
+```
+
+当前音频 request 只实现 `batch_size=1` 和 `short_form`。清单会拒绝非空的 `chunk_length_s` / `stride_length_s`；长音频 sequential/chunked 应使用独立 workload，不能通过把本清单尺度直接扩展到 30 秒以上来混测。
 
 ## 7. 输出文件
 
@@ -368,7 +384,7 @@ CPU 模型使用共同的二次 log input-scale 项表达各资源配置共有�
 | --- | --- |
 | `result_all.csv` | 动态测量结果。每一行对应一个 resource config、一个 input scale、一次 warmup/repeat iteration。 |
 | `static_meta.json` | 单个 JSON object 的静态元数据。记录模型版本、参数/精度/量化/许可证、输入输出格式、per-scale 静态逻辑 FLOPs、推理后端、镜像、硬件和环境信息。 |
-| `input_scale_plan.json` | 所有任务族共用的 input scale/payload 计划。自动与手动 `--input-scales` 都会生成，主采集和 compute profiler 复用同一份内容。 |
+| `input_scale_plan.json` | 所有任务族共用的 input scale/payload 计划。schema v2 额外记录 workload provenance、per-scale 输入元数据和模型约束；读取端继续兼容无版本字段的 v1 计划。主采集和 compute profiler 复用同一份 payload。 |
 | `compute_profile_plan.json` | per-scale FLOP profiling 结果。每个 CPU/GPU scale 可同时记录独立的 `torch_profiler_eager` 与 `ncu` profile；NCU 只存在于 GPU profile。失败信息按工具保存，只读取当前按 profiler 分层的 plan 结构。 |
 | `execution_profile_plan.json` | 显式 execution profiling 的 per-resource-config/per-scale 计划与汇总。Massif 条目对应 `gpu_mode=off`，Nsight Systems 条目对应 `gpu_mode=on`；失败按工具记录且不阻断主实验。 |
 | `execution_profiles/` | 默认保留 raw Massif `.out` 与 Nsight Systems `.nsys-rep`；stats 导出的 `.sqlite` 缓存会自动删除。传入 `--discard-execution-profiles` 时 raw artifacts 也会在汇总后删除。 |
@@ -409,7 +425,11 @@ python -m acprof.cli.backfill_compute \
 | `mem_cap_gb` | 当前 Docker container 的 memory cap，单位 GB，来自 `--mems`。 |
 | `gpu_mode` | `on` 或 `off`。`on` 表示容器使用 Docker `--gpus all`。 |
 | `input_scale` | 本行实际执行的主输入尺度。语义见 `static_meta.json/input_scale_type`。 |
-| `task_param` | 任务族的 secondary parameter，通常是 JSON 字符串。生成式 NLP 常见为 `{"max_new_tokens": 64}`，timeseries 常见为 `{"prediction_length": 64}`；不适用时为空。 |
+| `input_num_samples` | 音频 payload 的实际采样点数；其他任务或旧计划无法推导时为 `nan`。它是诊断字段，音频主尺度仍为 `duration_s`。 |
+| `request_payload_bytes` | `requests` 实际发送的 prepared HTTP JSON body 字节数，在同一 workload window 内取平均。 |
+| `task_param` | 本行 payload 真正发送给 handler 的二级参数，使用稳定排序的 JSON 字符串；通常来自 `params`，时序任务同时记录顶层 `prediction_length`，不再记录未执行的任务族默认值。 |
+| `output_length_avg` | 同一 workload window 内响应文本字符数的平均值；不适用时为 `nan`。 |
+| `output_token_count_avg` | 同一 workload window 内响应文本 tokenizer token 数的平均值；用于解释 ASR 解码器工作量，不适用时为 `nan`。 |
 | `repeat_idx` | 当前 warmup 或 repeat phase 内的 0-based iteration index。 |
 | `warmup` | `1` 表示 warmup 行，`0` 表示正式测量行。`plot.py` 默认排除 warmup 行。 |
 | `repeat_in_window` | 本行内部连续发送的 request 数量。`latency_app_s` 和 `latency_s` 都是该 window 内 request 的平均值。 |
@@ -541,6 +561,8 @@ python -m acprof.cli.backfill_compute \
 | `image_tag` | 本次使用的 Docker image tag。 |
 | `batch_size` | 本次 profiling 的 batch size。 |
 | `input_scale_type` | `result_all.csv/input_scale` 的语义名，例如 `seq_length`。 |
+| `workload` | workload 清单的可复现元数据，包括素材 SHA256、来源、变换、推理模式以及模型侧输入约束。 |
+| `input_scale_plan_sha256` | 本次实际执行的 `input_scale_plan.json` SHA256。 |
 | `run_command` | 启动本次 profiling 的 `python run.py ...` 命令，便于复现实验参数。 |
 | `model_download_url` | Hugging Face model page URL。 |
 | `gpu` | host device 0 的 GPU 名称；没有可见 NVIDIA GPU 时为 `unknown`。 |

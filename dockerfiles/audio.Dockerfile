@@ -32,4 +32,8 @@ RUN --mount=type=secret,id=hf_token \
     fi; \
     python -m acprof.container.download_model
 
+# Keep runtime handler changes in a cheap final layer after the heavyweight
+# dependency and model-download layers.
+COPY acprof/ acprof/
+
 CMD ["python", "-m", "acprof.container.server"]
