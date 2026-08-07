@@ -909,6 +909,9 @@ def _collect_execution_plan(
     massif_sampling: str,
     massif_reference_cpu: Optional[int],
     massif_reference_mem: Optional[int],
+    nsys_sampling: str,
+    nsys_reference_cpu: Optional[int],
+    nsys_reference_mem: Optional[int],
     massif_repeat: int,
     nsys_repeat: int,
     nsys_root: Optional[str],
@@ -919,49 +922,36 @@ def _collect_execution_plan(
     cases = context.cases_for_mode(mode)
     cpus = sorted({case[0] for case in cases})
     mems = sorted({case[1] for case in cases})
-    reference: Optional[Tuple[int, int]] = None
-    if tool == "massif" and massif_sampling == "per-scale":
-        reference = _resolve_massif_reference(
-            context, massif_reference_cpu, massif_reference_mem
-        )
-        cpus = [reference[0]]
-        mems = [reference[1]]
-        print(
-            "[profile][massif] Representative per-scale sampling: "
-            f"CPU={reference[0]}, MEM={reference[1]}GB"
-        )
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    plan_path = collect_execution_profile_plan(
-        task_info=context.task_info,
-        image_tag=context.image_tag,
-        cpu_list=cpus,
-        mem_list=mems,
-        gpu_list=[mode],
-        output_dir=str(output_dir),
-        input_scale_plan_file=str(context.input_scale_plan_path),
-        project_dir=str(PROJECT_DIR),
-        tool_mode=tool,
-        massif_repeat=massif_repeat,
-        nsys_repeat=nsys_repeat,
-        nsys_root=nsys_root,
-        keep_profiles=True,
-    )
+    try:
+        plan_path = collect_execution_profile_plan(
+            task_info=context.task_info,
+            image_tag=context.image_tag,
+            cpu_list=cpus,
+            mem_list=mems,
+            gpu_list=[mode],
+            output_dir=str(output_dir),
+            input_scale_plan_file=str(context.input_scale_plan_path),
+            project_dir=str(PROJECT_DIR),
+            tool_mode=tool,
+            massif_sampling=massif_sampling,
+            massif_reference_cpu=massif_reference_cpu,
+            massif_reference_mem=massif_reference_mem,
+            massif_repeat=massif_repeat,
+            nsys_sampling=nsys_sampling,
+            nsys_reference_cpu=nsys_reference_cpu,
+            nsys_reference_mem=nsys_reference_mem,
+            nsys_repeat=nsys_repeat,
+            nsys_root=nsys_root,
+            keep_profiles=True,
+        )
+    except ValueError as exc:
+        raise PosthocError(str(exc)) from exc
     plan = _read_plan(Path(plan_path))
     if plan is None:
         raise PosthocError(
             f"{tool} collector did not produce a valid plan: {plan_path}"
-        )
-    if tool == "massif" and reference is not None:
-        plan = expand_representative_massif_plan(
-            plan,
-            context,
-            reference_cpu=reference[0],
-            reference_mem=reference[1],
-        )
-        _atomic_write_json(
-            output_dir / "execution_profile_plan.for_backfill.json",
-            plan,
         )
     return plan
 
@@ -1204,6 +1194,7 @@ def update_static_meta(
     execution_plan: Optional[Mapping[str, Any]],
     backup_dir: Path,
     massif_sampling: str,
+    nsys_sampling: str,
 ) -> Dict[str, Any]:
     updated = copy.deepcopy(context.static_meta)
     selected = tuple(tools)
@@ -1283,11 +1274,23 @@ def update_static_meta(
                     "nsys_timeline_semantics",
                     "nsys_repeat",
                     "nsys_version",
+                    "nsys_sampling_strategy",
+                    "nsys_reference_cpu_cores",
+                    "nsys_reference_mem_cap_gb",
+                    "nsys_reused_across_resource_cases",
                 ]
             )
+        nullable_sampling_keys = {
+            "massif_reference_cpu_cores",
+            "massif_reference_mem_cap_gb",
+            "nsys_reference_cpu_cores",
+            "nsys_reference_mem_cap_gb",
+        }
         for key in metadata_keys:
+            if key not in metadata:
+                continue
             value = metadata.get(key)
-            if value not in (None, "", "unknown"):
+            if key in nullable_sampling_keys or value not in (None, "", "unknown"):
                 updated[key] = copy.deepcopy(value)
         updated["execution_profiles_retained"] = True
         updated["execution_profile_provenance"] = _merge_provenance(
@@ -1300,6 +1303,7 @@ def update_static_meta(
         "tools": list(selected),
         "result_backup": str(backup_dir.relative_to(context.result_dir)),
         "massif_sampling": massif_sampling if "massif" in selected else None,
+        "nsys_sampling": nsys_sampling if "nsys" in selected else None,
     }
     history = updated.get("posthoc_profile_history")
     if not isinstance(history, list):
@@ -1582,6 +1586,9 @@ def run_posthoc(
     massif_sampling: str = "per-scale",
     massif_reference_cpu: Optional[int] = None,
     massif_reference_mem: Optional[int] = None,
+    nsys_sampling: str = "per-cpu-scale",
+    nsys_reference_cpu: Optional[int] = None,
+    nsys_reference_mem: Optional[int] = None,
     ncu_root: Optional[str] = None,
     nsys_root: Optional[str] = None,
     torch_repeat: int = 1,
@@ -1595,6 +1602,10 @@ def run_posthoc(
 ) -> PosthocSummary:
     if massif_sampling not in {"per-scale", "full"}:
         raise PosthocError("massif_sampling must be 'per-scale' or 'full'")
+    if nsys_sampling not in {"per-cpu-scale", "per-scale", "full"}:
+        raise PosthocError(
+            "nsys_sampling must be 'per-cpu-scale', 'per-scale', or 'full'"
+        )
     for name, value in (
         ("torch_repeat", torch_repeat),
         ("ncu_repeat", ncu_repeat),
@@ -1602,6 +1613,14 @@ def run_posthoc(
         ("massif_repeat", massif_repeat),
     ):
         if int(value) <= 0:
+            raise PosthocError(f"{name} must be > 0")
+    for name, value in (
+        ("massif_reference_cpu", massif_reference_cpu),
+        ("massif_reference_mem", massif_reference_mem),
+        ("nsys_reference_cpu", nsys_reference_cpu),
+        ("nsys_reference_mem", nsys_reference_mem),
+    ):
+        if value is not None and int(value) <= 0:
             raise PosthocError(f"{name} must be > 0")
 
     selected = parse_tools(tools)
@@ -1709,6 +1728,9 @@ def run_posthoc(
                     massif_sampling=massif_sampling,
                     massif_reference_cpu=massif_reference_cpu,
                     massif_reference_mem=massif_reference_mem,
+                    nsys_sampling=nsys_sampling,
+                    nsys_reference_cpu=nsys_reference_cpu,
+                    nsys_reference_mem=nsys_reference_mem,
                     massif_repeat=massif_repeat,
                     nsys_repeat=nsys_repeat,
                     nsys_root=nsys_root,
@@ -1758,6 +1780,7 @@ def run_posthoc(
             execution_plan=execution_plan,
             backup_dir=backup_dir,
             massif_sampling=massif_sampling,
+            nsys_sampling=nsys_sampling,
         )
         commit_result_files(
             context,
@@ -1814,6 +1837,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--massif-reference-cpu", type=int, default=None)
     parser.add_argument("--massif-reference-mem", type=int, default=None)
+    parser.add_argument(
+        "--nsys-sampling",
+        choices=("per-cpu-scale", "per-scale", "full"),
+        default="per-cpu-scale",
+        help=(
+            "per-cpu-scale profiles every CPU at one representative memory "
+            "per input scale (default); per-scale profiles one representative "
+            "CPU/memory case; full profiles the entire CPU/memory matrix"
+        ),
+    )
+    parser.add_argument("--nsys-reference-cpu", type=int, default=None)
+    parser.add_argument("--nsys-reference-mem", type=int, default=None)
     parser.add_argument("--ncu-root", default=None)
     parser.add_argument("--nsys-root", default=None)
     parser.add_argument(
@@ -1852,6 +1887,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             massif_sampling=args.massif_sampling,
             massif_reference_cpu=args.massif_reference_cpu,
             massif_reference_mem=args.massif_reference_mem,
+            nsys_sampling=args.nsys_sampling,
+            nsys_reference_cpu=args.nsys_reference_cpu,
+            nsys_reference_mem=args.nsys_reference_mem,
             ncu_root=args.ncu_root,
             nsys_root=args.nsys_root,
             torch_repeat=args.torch_repeat,

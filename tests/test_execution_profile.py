@@ -393,7 +393,13 @@ heap_tree=peak
         ), patch(
             "acprof.host.execution_profile._find_nsys_executable",
             return_value=None,
-        ):
+        ), patch(
+            "acprof.host.execution_profile._profile_massif_tool",
+            wraps=execution_profile._profile_massif_tool,
+        ) as profile_massif, patch(
+            "acprof.host.execution_profile._profile_nsys_tool",
+            wraps=execution_profile._profile_nsys_tool,
+        ) as profile_nsys:
             plan_path = execution_profile.collect_execution_profile_plan(
                 task_info=_task_info(),
                 image_tag="acprof-test:latest",
@@ -415,12 +421,30 @@ heap_tree=peak
             plan["static_metadata"]["execution_profile_tools"],
             ["massif", "nsys"],
         )
+        self.assertEqual(profile_massif.call_count, 1)
+        self.assertEqual(profile_nsys.call_count, 2)
+        self.assertEqual(
+            plan["static_metadata"]["massif_sampling_strategy"],
+            "representative_per_scale",
+        )
+        self.assertEqual(
+            plan["static_metadata"]["nsys_sampling_strategy"],
+            "representative_per_cpu_scale",
+        )
         for profile in plan["profiles"]:
             self.assertEqual(len(profile["tools"]), 1)
             tool = "massif" if profile["gpu_mode"] == "off" else "nsys"
             tool_profile = profile["tools"][tool]
             self.assertEqual(len(tool_profile["entries"]), 2)
             for entry in tool_profile["entries"]:
+                expected_source_cpu = (
+                    2 if tool == "massif" else profile["cpu_cores"]
+                )
+                self.assertEqual(
+                    entry["profile_source_cpu_cores"],
+                    expected_source_cpu,
+                )
+                self.assertEqual(entry["profile_source_mem_cap_gb"], 8)
                 self.assertTrue(entry["error"])
                 if tool == "massif":
                     self.assertIsNone(
@@ -434,6 +458,99 @@ heap_tree=peak
                         ]
                     )
                     self.assertTrue(entry["compute_profile_error_nsys"])
+
+    def test_full_sampling_profiles_every_resource_case(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "acprof.host.execution_profile._build_massif_image",
+            side_effect=RuntimeError("massif_image_build_failed:no_apt"),
+        ), patch(
+            "acprof.host.execution_profile._find_nsys_executable",
+            return_value=None,
+        ), patch(
+            "acprof.host.execution_profile._profile_massif_tool",
+            wraps=execution_profile._profile_massif_tool,
+        ) as profile_massif, patch(
+            "acprof.host.execution_profile._profile_nsys_tool",
+            wraps=execution_profile._profile_nsys_tool,
+        ) as profile_nsys:
+            plan_path = execution_profile.collect_execution_profile_plan(
+                task_info=_task_info(),
+                image_tag="acprof-test:latest",
+                cpu_list=[1, 2],
+                mem_list=[4, 8],
+                gpu_list=["off", "on"],
+                output_dir=tmp,
+                input_scale_plan_file=_write_input_scale_plan(tmp),
+                project_dir=os.path.dirname(os.path.dirname(__file__)),
+                tool_mode="both",
+                massif_sampling="full",
+                nsys_sampling="full",
+                keep_profiles=False,
+            )
+            with open(plan_path, "r", encoding="utf-8") as plan_file:
+                plan = json.load(plan_file)
+
+        self.assertEqual(profile_massif.call_count, 4)
+        self.assertEqual(profile_nsys.call_count, 4)
+        self.assertEqual(
+            plan["static_metadata"]["massif_sampling_strategy"],
+            "full_resource_matrix",
+        )
+        self.assertEqual(
+            plan["static_metadata"]["nsys_sampling_strategy"],
+            "full_resource_matrix",
+        )
+        for profile in plan["profiles"]:
+            tool = "massif" if profile["gpu_mode"] == "off" else "nsys"
+            entry = profile["tools"][tool]["entries"][0]
+            self.assertEqual(
+                entry["profile_source_cpu_cores"], profile["cpu_cores"]
+            )
+            self.assertEqual(
+                entry["profile_source_mem_cap_gb"], profile["mem_cap_gb"]
+            )
+
+    def test_explicit_sampling_references_select_requested_resources(self) -> None:
+        massif = execution_profile._sampled_resource_cases(
+            tool="massif",
+            cpus=[1, 2, 8],
+            memories=[2, 4, 16],
+            sampling="per-scale",
+            reference_cpu=2,
+            reference_mem=4,
+        )
+        nsys_per_cpu = execution_profile._sampled_resource_cases(
+            tool="nsys",
+            cpus=[1, 2, 8],
+            memories=[2, 4, 16],
+            sampling="per-cpu-scale",
+            reference_cpu=None,
+            reference_mem=4,
+        )
+        nsys_one = execution_profile._sampled_resource_cases(
+            tool="nsys",
+            cpus=[1, 2, 8],
+            memories=[2, 4, 16],
+            sampling="per-scale",
+            reference_cpu=2,
+            reference_mem=4,
+        )
+
+        self.assertEqual(massif, ([(2, 4)], 2, 4))
+        self.assertEqual(
+            nsys_per_cpu,
+            ([(1, 4), (2, 4), (8, 4)], None, 4),
+        )
+        self.assertEqual(nsys_one, ([(2, 4)], 2, 4))
+        with self.assertRaisesRegex(ValueError, "not present"):
+            execution_profile._sampled_resource_cases(
+                tool="nsys",
+                cpus=[1, 2, 8],
+                memories=[2, 4, 16],
+                sampling="per-scale",
+                reference_cpu=3,
+                reference_mem=4,
+            )
 
     def test_none_mode_writes_disabled_plan_without_profiler_side_effects(
         self,

@@ -412,6 +412,8 @@ class DetectEnvironmentTests(unittest.TestCase):
             STATIC_META_FIELDS.index("compute_profile_provenance"),
             STATIC_META_FIELDS.index("execution_profile_schema_version"),
         )
+        self.assertIn("massif_sampling_strategy", STATIC_META_FIELDS)
+        self.assertIn("nsys_sampling_strategy", STATIC_META_FIELDS)
         self.assertEqual(STATIC_META_FIELDS[-1], "execution_profile_provenance")
 
     def test_enrich_static_meta_preserves_native_json_types(self) -> None:

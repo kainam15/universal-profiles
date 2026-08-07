@@ -581,8 +581,7 @@ Examples:
     parser.set_defaults(keep_compute_profiles=True)
 
     # High-overhead execution profiling. These probes are intentionally
-    # opt-in because Massif and Nsight Systems launch an additional profiler
-    # container for every matching resource configuration and input scale.
+    # opt-in and use reduced resource sampling by default.
     parser.add_argument(
         "--execution-profile-tool",
         choices=("none", "both", "massif", "nsys"),
@@ -593,10 +592,57 @@ Examples:
         ),
     )
     parser.add_argument(
+        "--massif-sampling",
+        choices=("per-scale", "full"),
+        default="per-scale",
+        help=(
+            "Massif resource sampling: per-scale profiles the largest selected "
+            "CPU/memory case and reuses it across CPU-only rows (default); "
+            "full profiles every selected CPU/memory case"
+        ),
+    )
+    parser.add_argument(
+        "--massif-reference-cpu",
+        type=int,
+        default=None,
+        help="Representative CPU for Massif per-scale sampling (default: largest selected)",
+    )
+    parser.add_argument(
+        "--massif-reference-mem",
+        type=int,
+        default=None,
+        help="Representative memory GB for Massif per-scale sampling (default: largest selected)",
+    )
+    parser.add_argument(
         "--massif-repeat",
         type=int,
         default=1,
         help="Inference repetitions inside each Valgrind Massif probe",
+    )
+    parser.add_argument(
+        "--nsys-sampling",
+        choices=("per-cpu-scale", "per-scale", "full"),
+        default="per-cpu-scale",
+        help=(
+            "Nsight Systems resource sampling: per-cpu-scale profiles every "
+            "selected CPU at the largest selected memory (default); per-scale "
+            "uses one representative CPU/memory case; full profiles every case"
+        ),
+    )
+    parser.add_argument(
+        "--nsys-reference-cpu",
+        type=int,
+        default=None,
+        help="Representative CPU for Nsys per-scale sampling (default: largest selected)",
+    )
+    parser.add_argument(
+        "--nsys-reference-mem",
+        type=int,
+        default=None,
+        help=(
+            "Representative memory GB for Nsys reduced sampling "
+            "(default: largest selected)"
+        ),
     )
     parser.add_argument(
         "--nsys-repeat",
@@ -649,6 +695,14 @@ Examples:
         parser.error("--massif-repeat must be > 0")
     if args.nsys_repeat <= 0:
         parser.error("--nsys-repeat must be > 0")
+    for option, value in (
+        ("--massif-reference-cpu", args.massif_reference_cpu),
+        ("--massif-reference-mem", args.massif_reference_mem),
+        ("--nsys-reference-cpu", args.nsys_reference_cpu),
+        ("--nsys-reference-mem", args.nsys_reference_mem),
+    ):
+        if value is not None and value <= 0:
+            parser.error(f"{option} must be > 0")
 
     terminal_output_dir = os.path.join(
         PROJECT_DIR,
@@ -723,6 +777,30 @@ Examples:
     cpu_list = _parse_int_list(args.cpus)
     mem_list = _parse_int_list(args.mems)
     gpu_list = _parse_str_list(args.gpus)
+    massif_selected = args.execution_profile_tool in {"massif", "both"}
+    nsys_selected = args.execution_profile_tool in {"nsys", "both"}
+    reference_checks = []
+    if massif_selected and args.massif_sampling == "per-scale":
+        reference_checks.extend(
+            [
+                ("--massif-reference-cpu", args.massif_reference_cpu, cpu_list),
+                ("--massif-reference-mem", args.massif_reference_mem, mem_list),
+            ]
+        )
+    if nsys_selected and args.nsys_sampling != "full":
+        reference_checks.append(
+            ("--nsys-reference-mem", args.nsys_reference_mem, mem_list)
+        )
+    if nsys_selected and args.nsys_sampling == "per-scale":
+        reference_checks.append(
+            ("--nsys-reference-cpu", args.nsys_reference_cpu, cpu_list)
+        )
+    for option, value, resources in reference_checks:
+        if value is not None and value not in resources:
+            parser.error(
+                f"{option}={value} must be present in the selected resource "
+                f"matrix {resources}"
+            )
 
     output_dir = os.path.join(PROJECT_DIR, args.output_dir, task_info.model_id.replace("/", "--"))
     os.makedirs(output_dir, exist_ok=True)
@@ -825,7 +903,13 @@ Examples:
                 input_scale_plan_file=planned_input_scales.plan_file,
                 project_dir=PROJECT_DIR,
                 tool_mode=args.execution_profile_tool,
+                massif_sampling=args.massif_sampling,
+                massif_reference_cpu=args.massif_reference_cpu,
+                massif_reference_mem=args.massif_reference_mem,
                 massif_repeat=args.massif_repeat,
+                nsys_sampling=args.nsys_sampling,
+                nsys_reference_cpu=args.nsys_reference_cpu,
+                nsys_reference_mem=args.nsys_reference_mem,
                 nsys_repeat=args.nsys_repeat,
                 nsys_root=args.nsys_root,
                 keep_profiles=args.keep_execution_profiles,

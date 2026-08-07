@@ -7,6 +7,7 @@ diagnostic entry rather than aborting the other profiler.
 """
 from __future__ import annotations
 
+import copy
 import csv
 import glob
 import hashlib
@@ -27,6 +28,13 @@ EXECUTION_PROFILE_SCHEMA_VERSION = 1
 EXECUTION_PROFILE_TOOL_MODES = {"none", "both", "massif", "nsys"}
 MASSIF_TOOL = "massif"
 NSYS_TOOL = "nsys"
+MASSIF_SAMPLING_MODES = {"per-scale", "full"}
+NSYS_SAMPLING_MODES = {"per-cpu-scale", "per-scale", "full"}
+SAMPLING_STRATEGY_METADATA = {
+    "full": "full_resource_matrix",
+    "per-scale": "representative_per_scale",
+    "per-cpu-scale": "representative_per_cpu_scale",
+}
 NSYS_NVTX_RANGE = "acprof_compute"
 NSYS_REPORTS = (
     "cuda_api_sum",
@@ -130,6 +138,109 @@ def _normalize_resources(values: Iterable[int], name: str) -> List[int]:
         if integer not in normalized:
             normalized.append(integer)
     return normalized
+
+
+def _normalize_sampling_mode(
+    value: str,
+    *,
+    name: str,
+    allowed: Iterable[str],
+) -> str:
+    normalized = str(value or "").strip().lower()
+    allowed_values = set(allowed)
+    if normalized not in allowed_values:
+        raise ValueError(
+            f"{name} must be one of {', '.join(sorted(allowed_values))}, "
+            f"got {value!r}"
+        )
+    return normalized
+
+
+def _resolve_reference_resource(
+    values: Sequence[int],
+    requested: Optional[int],
+    *,
+    name: str,
+) -> int:
+    reference = max(values) if requested is None else int(requested)
+    if reference not in values:
+        raise ValueError(
+            f"{name}={reference} is not present in the requested resource "
+            f"matrix {list(values)}"
+        )
+    return reference
+
+
+def _sampled_resource_cases(
+    *,
+    tool: str,
+    cpus: Sequence[int],
+    memories: Sequence[int],
+    sampling: str,
+    reference_cpu: Optional[int],
+    reference_mem: Optional[int],
+) -> Tuple[List[Tuple[int, int]], Optional[int], Optional[int]]:
+    """Return actual profiler resources and resolved representative values."""
+    if sampling == "full":
+        return (
+            [(cpu, mem) for cpu in cpus for mem in memories],
+            None,
+            None,
+        )
+
+    resolved_mem = _resolve_reference_resource(
+        memories,
+        reference_mem,
+        name=f"{tool}_reference_mem",
+    )
+    if tool == NSYS_TOOL and sampling == "per-cpu-scale":
+        return ([(cpu, resolved_mem) for cpu in cpus], None, resolved_mem)
+
+    resolved_cpu = _resolve_reference_resource(
+        cpus,
+        reference_cpu,
+        name=f"{tool}_reference_cpu",
+    )
+    return ([(resolved_cpu, resolved_mem)], resolved_cpu, resolved_mem)
+
+
+def _profile_source_resource(
+    *,
+    cpu: int,
+    mem: int,
+    sampling: str,
+    reference_cpu: Optional[int],
+    reference_mem: Optional[int],
+) -> Tuple[int, int]:
+    if sampling == "full":
+        return cpu, mem
+    if sampling == "per-cpu-scale":
+        if reference_mem is None:
+            raise ValueError("per-cpu-scale sampling requires reference memory")
+        return cpu, reference_mem
+    if reference_cpu is None or reference_mem is None:
+        raise ValueError("per-scale sampling requires reference CPU and memory")
+    return reference_cpu, reference_mem
+
+
+def _copy_profile_with_provenance(
+    profile: Mapping[str, Any],
+    *,
+    source_cpu: int,
+    source_mem: int,
+    sampling: str,
+) -> Dict[str, Any]:
+    copied = copy.deepcopy(dict(profile))
+    strategy = SAMPLING_STRATEGY_METADATA[sampling]
+    entries = copied.get("entries")
+    if isinstance(entries, list):
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            entry["profile_source_cpu_cores"] = source_cpu
+            entry["profile_source_mem_cap_gb"] = source_mem
+            entry["profile_sampling_strategy"] = strategy
+    return copied
 
 
 def _massif_error_entry(
@@ -1170,8 +1281,14 @@ def collect_execution_profile_plan(
     nsys_repeat: int = 1,
     nsys_root: Optional[str] = None,
     keep_profiles: bool = True,
+    massif_sampling: str = "per-scale",
+    massif_reference_cpu: Optional[int] = None,
+    massif_reference_mem: Optional[int] = None,
+    nsys_sampling: str = "per-cpu-scale",
+    nsys_reference_cpu: Optional[int] = None,
+    nsys_reference_mem: Optional[int] = None,
 ) -> str:
-    """Collect a full resource-grid execution profile plan atomically."""
+    """Collect sampled probes and expand them to a full resource-grid plan."""
     normalized_tool_mode = (tool_mode or "both").strip().lower()
     if normalized_tool_mode not in EXECUTION_PROFILE_TOOL_MODES:
         raise ValueError(
@@ -1183,6 +1300,16 @@ def collect_execution_profile_plan(
     cpus = _normalize_resources(cpu_list, "cpu_list")
     memories = _normalize_resources(mem_list, "mem_list")
     gpu_modes = _normalize_gpu_modes(gpu_list)
+    normalized_massif_sampling = _normalize_sampling_mode(
+        massif_sampling,
+        name="massif_sampling",
+        allowed=MASSIF_SAMPLING_MODES,
+    )
+    normalized_nsys_sampling = _normalize_sampling_mode(
+        nsys_sampling,
+        name="nsys_sampling",
+        allowed=NSYS_SAMPLING_MODES,
+    )
     entries = _load_input_scale_plan_entries(input_scale_plan_file)
     normalized_massif_repeat = max(1, int(massif_repeat))
     normalized_nsys_repeat = max(1, int(nsys_repeat))
@@ -1198,19 +1325,67 @@ def collect_execution_profile_plan(
         normalized_tool_mode in {"both", NSYS_TOOL}
         and "on" in gpu_modes
     )
+    massif_sources: List[Tuple[int, int]] = []
+    massif_reference: Tuple[Optional[int], Optional[int]] = (None, None)
+    if collect_massif:
+        (
+            massif_sources,
+            massif_reference_cpu_resolved,
+            massif_reference_mem_resolved,
+        ) = _sampled_resource_cases(
+            tool=MASSIF_TOOL,
+            cpus=cpus,
+            memories=memories,
+            sampling=normalized_massif_sampling,
+            reference_cpu=massif_reference_cpu,
+            reference_mem=massif_reference_mem,
+        )
+        massif_reference = (
+            massif_reference_cpu_resolved,
+            massif_reference_mem_resolved,
+        )
+
+    nsys_sources: List[Tuple[int, int]] = []
+    nsys_reference: Tuple[Optional[int], Optional[int]] = (None, None)
+    if collect_nsys:
+        (
+            nsys_sources,
+            nsys_reference_cpu_resolved,
+            nsys_reference_mem_resolved,
+        ) = _sampled_resource_cases(
+            tool=NSYS_TOOL,
+            cpus=cpus,
+            memories=memories,
+            sampling=normalized_nsys_sampling,
+            reference_cpu=nsys_reference_cpu,
+            reference_mem=nsys_reference_mem,
+        )
+        nsys_reference = (
+            nsys_reference_cpu_resolved,
+            nsys_reference_mem_resolved,
+        )
+
     if collect_massif or collect_nsys:
         os.makedirs(profile_root, exist_ok=True)
-        probe_count = (
-            len(entries)
-            * len(cpus)
-            * len(memories)
-            * (int(collect_massif) + int(collect_nsys))
+        probe_count = len(entries) * (
+            len(massif_sources) + len(nsys_sources)
         )
         print(
             "[execution-profile] Collecting "
-            f"{probe_count} isolated probe(s) before the normal CSV sweep; "
+            f"{probe_count} sampled isolated probe(s) before the normal CSV "
+            "sweep; "
             "result CSV files appear after this stage completes."
         )
+        if collect_massif:
+            print(
+                "[execution-profile][massif] Sampling="
+                f"{normalized_massif_sampling}, resources={massif_sources}"
+            )
+        if collect_nsys:
+            print(
+                "[execution-profile][nsys] Sampling="
+                f"{normalized_nsys_sampling}, resources={nsys_sources}"
+            )
 
     derived_image: Optional[str] = None
     massif_error = ""
@@ -1265,38 +1440,68 @@ def collect_execution_profile_plan(
         elif not nsys_error:
             nsys_error = "nsys_not_found"
 
+    source_profiles: Dict[Tuple[str, int, int], Dict[str, Any]] = {}
+    for cpu, mem in massif_sources:
+        source_profiles[(MASSIF_TOOL, cpu, mem)] = _profile_massif_tool(
+            entries=entries,
+            global_error=massif_error,
+            task_info=task_info,
+            derived_image=derived_image,
+            cpu=cpu,
+            mem=mem,
+            payload_file=input_scale_plan_file,
+            profile_root=profile_root,
+            output_dir=output_dir,
+            repeat=normalized_massif_repeat,
+        )
+    for cpu, mem in nsys_sources:
+        source_profiles[(NSYS_TOOL, cpu, mem)] = _profile_nsys_tool(
+            entries=entries,
+            global_error=nsys_error,
+            task_info=task_info,
+            image_tag=nsys_profile_image,
+            nsys_bin=nsys_bin,
+            nsys_mount_root=nsys_mount_root,
+            cpu=cpu,
+            mem=mem,
+            payload_file=input_scale_plan_file,
+            profile_root=profile_root,
+            output_dir=output_dir,
+            repeat=normalized_nsys_repeat,
+        )
+
     profiles: List[Dict[str, Any]] = []
     for cpu in cpus:
         for mem in memories:
             for gpu_mode in gpu_modes:
                 tools: Dict[str, Any] = {}
                 if gpu_mode == "off" and collect_massif:
-                    tools[MASSIF_TOOL] = _profile_massif_tool(
-                        entries=entries,
-                        global_error=massif_error,
-                        task_info=task_info,
-                        derived_image=derived_image,
+                    source_cpu, source_mem = _profile_source_resource(
                         cpu=cpu,
                         mem=mem,
-                        payload_file=input_scale_plan_file,
-                        profile_root=profile_root,
-                        output_dir=output_dir,
-                        repeat=normalized_massif_repeat,
+                        sampling=normalized_massif_sampling,
+                        reference_cpu=massif_reference[0],
+                        reference_mem=massif_reference[1],
+                    )
+                    tools[MASSIF_TOOL] = _copy_profile_with_provenance(
+                        source_profiles[(MASSIF_TOOL, source_cpu, source_mem)],
+                        source_cpu=source_cpu,
+                        source_mem=source_mem,
+                        sampling=normalized_massif_sampling,
                     )
                 if gpu_mode == "on" and collect_nsys:
-                    tools[NSYS_TOOL] = _profile_nsys_tool(
-                        entries=entries,
-                        global_error=nsys_error,
-                        task_info=task_info,
-                        image_tag=nsys_profile_image,
-                        nsys_bin=nsys_bin,
-                        nsys_mount_root=nsys_mount_root,
+                    source_cpu, source_mem = _profile_source_resource(
                         cpu=cpu,
                         mem=mem,
-                        payload_file=input_scale_plan_file,
-                        profile_root=profile_root,
-                        output_dir=output_dir,
-                        repeat=normalized_nsys_repeat,
+                        sampling=normalized_nsys_sampling,
+                        reference_cpu=nsys_reference[0],
+                        reference_mem=nsys_reference[1],
+                    )
+                    tools[NSYS_TOOL] = _copy_profile_with_provenance(
+                        source_profiles[(NSYS_TOOL, source_cpu, source_mem)],
+                        source_cpu=source_cpu,
+                        source_mem=source_mem,
+                        sampling=normalized_nsys_sampling,
                     )
                 if tools:
                     profiles.append(
@@ -1328,12 +1533,40 @@ def collect_execution_profile_plan(
             normalized_massif_repeat if collect_massif else None
         ),
         "massif_version": massif_version,
+        "massif_sampling_strategy": (
+            SAMPLING_STRATEGY_METADATA[normalized_massif_sampling]
+            if collect_massif
+            else None
+        ),
+        "massif_reference_cpu_cores": (
+            massif_reference[0] if collect_massif else None
+        ),
+        "massif_reference_mem_cap_gb": (
+            massif_reference[1] if collect_massif else None
+        ),
+        "massif_reused_across_resource_cases": bool(
+            collect_massif and normalized_massif_sampling != "full"
+        ),
         "nsys_timeline_semantics": (
             "NVTX acprof_compute capture; CUDA API, kernel, and memcpy "
             "sums/counts normalized per request"
         ),
         "nsys_repeat": normalized_nsys_repeat if collect_nsys else None,
         "nsys_version": nsys_version,
+        "nsys_sampling_strategy": (
+            SAMPLING_STRATEGY_METADATA[normalized_nsys_sampling]
+            if collect_nsys
+            else None
+        ),
+        "nsys_reference_cpu_cores": (
+            nsys_reference[0] if collect_nsys else None
+        ),
+        "nsys_reference_mem_cap_gb": (
+            nsys_reference[1] if collect_nsys else None
+        ),
+        "nsys_reused_across_resource_cases": bool(
+            collect_nsys and normalized_nsys_sampling != "full"
+        ),
         "execution_profiles_retained": bool(keep_profiles and enabled_tools),
         "execution_profile_provenance": (
             "collected" if enabled_tools else "disabled"
@@ -1347,6 +1580,10 @@ def collect_execution_profile_plan(
         "pipeline_tag": task_info.pipeline_tag,
         "runtime_backend": task_info.runtime_backend,
         "execution_profile_tool_mode": normalized_tool_mode,
+        "massif_sampling": (
+            normalized_massif_sampling if collect_massif else None
+        ),
+        "nsys_sampling": normalized_nsys_sampling if collect_nsys else None,
         "static_metadata": static_metadata,
         "profiles": profiles,
     }

@@ -13,6 +13,29 @@ from acprof.host.compute_profile_plan import TORCH_LOGICAL_MFLOP_FIELD
 
 
 class PosthocProfileTests(unittest.TestCase):
+    def test_parser_defaults_to_reduced_execution_sampling(self):
+        defaults = posthoc._build_parser().parse_args(["results/example"])
+        explicit = posthoc._build_parser().parse_args(
+            [
+                "results/example",
+                "--massif-sampling",
+                "full",
+                "--nsys-sampling",
+                "per-scale",
+                "--nsys-reference-cpu",
+                "4",
+                "--nsys-reference-mem",
+                "8",
+            ]
+        )
+
+        self.assertEqual(defaults.massif_sampling, "per-scale")
+        self.assertEqual(defaults.nsys_sampling, "per-cpu-scale")
+        self.assertEqual(explicit.massif_sampling, "full")
+        self.assertEqual(explicit.nsys_sampling, "per-scale")
+        self.assertEqual(explicit.nsys_reference_cpu, 4)
+        self.assertEqual(explicit.nsys_reference_mem, 8)
+
     def _write_fixture(
         self,
         root: Path,

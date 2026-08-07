@@ -109,9 +109,17 @@ class StaticMeta:
     massif_peak_semantics: str = ""
     massif_repeat: Optional[int] = None
     massif_version: str = ""
+    massif_sampling_strategy: str = ""
+    massif_reference_cpu_cores: Optional[int] = None
+    massif_reference_mem_cap_gb: Optional[int] = None
+    massif_reused_across_resource_cases: bool = False
     nsys_timeline_semantics: str = ""
     nsys_repeat: Optional[int] = None
     nsys_version: str = ""
+    nsys_sampling_strategy: str = ""
+    nsys_reference_cpu_cores: Optional[int] = None
+    nsys_reference_mem_cap_gb: Optional[int] = None
+    nsys_reused_across_resource_cases: bool = False
     execution_profiles_retained: bool = False
     execution_profile_provenance: str = ""
 

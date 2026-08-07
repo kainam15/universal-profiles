@@ -205,7 +205,7 @@ python run.py --help
 | `static_meta.json` | 模型 revision、精度、量化、许可证、输入输出格式、硬件与实验命令。 |
 | `input_scale_plan.json` | 本次实际执行的 scale 和 payload 计划。 |
 | `compute_profile_plan.json` | Torch / NCU 的 per-scale 结果与错误。 |
-| `execution_profile_plan.json` | Massif / Nsys 的 per-resource/per-scale 结果与错误。 |
+| `execution_profile_plan.json` | Massif / Nsys 的采样来源、复用 provenance、per-resource/per-scale 结果与错误。 |
 | `compute_profiles/`、`execution_profiles/` | 启用对应 profiler 时默认保留的原始 artifacts。 |
 | `tmux_all.log` | 从 tmux pane 启动时自动保存的完整终端输出。 |
 | `cpu/`、`gpu/`、`gpu+cpu/` | `plot.py` 生成的指标图。 |
@@ -231,11 +231,25 @@ FLOP profiling 和主 latency / energy workload 相互独立：
 | `ncu` | GPU 实际执行的 Tensor / Scalar FLOP | 单独诊断 NVIDIA GPU |
 | `both` | Torch eager；GPU 行再运行 NCU | 默认完整采集 |
 
-Execution profiling 默认关闭，因为它会按完整的 `CPU × memory × GPU mode × input scale` 资源配置展开：
+Execution profiling 默认关闭。显式启用后采用缩减采样，并把来源记录到 plan 与静态元数据：
 
 - `--execution-profile-tool massif`：CPU-only 的 process-lifetime 内存峰值。
 - `--execution-profile-tool nsys`：GPU 的 CUDA API、kernel 和 memcpy timeline。
 - `--execution-profile-tool both`：同时启用两者。
+- Massif 默认 `--massif-sampling per-scale`：最大 CPU/内存 × 每个 input scale。
+- Nsys 默认 `--nsys-sampling per-cpu-scale`：全部 CPU × 最大内存 × 每个 input scale。
+
+需要严格采完整资源矩阵时显式传入：
+
+```bash
+python run.py --model google-bert/bert-base-uncased \
+  --execution-profile-tool both \
+  --massif-sampling full --nsys-sampling full
+```
+
+代表资源默认取本次 `--cpus` / `--mems` 中的最大值，也可用
+`--massif-reference-cpu`、`--massif-reference-mem`、
+`--nsys-reference-cpu`、`--nsys-reference-mem` 显式选择。
 
 也可以先完成主矩阵，再安全地补采缺失指标：
 

@@ -134,9 +134,9 @@ python run.py --model google-bert/bert-base-uncased \
   --cpus 1,2 --mems 4,8 --gpus off,on
 ```
 
-`massif` 只匹配 CPU-only 配置，`nsys` 只匹配 GPU 配置，`both` 同时选择两者。与按 device/input scale 共用结果的 FLOP probe 不同，execution probe 会按每一个完整的 `CPU × memory × GPU mode × input scale` 资源配置另起 profiler container，因此显著增加运行时间。
+`massif` 只匹配 CPU-only 配置，`nsys` 只匹配 GPU 配置，`both` 同时选择两者。默认采样矩阵为：Massif 选择本次资源列表中的最大 CPU/内存并逐 input scale 采集；Nsys 选择最大内存、保留全部 CPU 并逐 input scale 采集。采样结果会展开到完整结果行，但每个 entry 都记录实际 `profile_source_cpu_cores`、`profile_source_mem_cap_gb` 和 `profile_sampling_strategy`，不会丢失 provenance。显式传入 `--massif-sampling full --nsys-sampling full` 才会为每个完整资源配置另起 profiler container。
 
-Massif 的 peak 是被剖析进程整个生命周期的峰值，包含模型加载、预热和随后执行的 inference，不能解释成“单次 request 新增了多少内存”，`--massif-repeat` 也不会把 peak bytes 除回单 request。Nsight Systems 只在 `acprof_compute` NVTX range 内追踪 CUDA 与 NVTX，汇总 CUDA API、GPU kernel 和 memcpy，并用 `--nsys-repeat` 归一化为单 request；host inference wall timer 只包围正式推理循环与其末尾 CUDA synchronize，不计入 NVTX capture 的启动/停止握手。不同 host/device timeline 和 CUDA stream 上的活动可能重叠，因此各项 `*_time_sum_*` 彼此相加不要求等于 host wall time。中间 `.qdstrm` 不属于保留产物；若 importer 失败，程序会删除该中间文件并记录 `nsys_import_failed`，避免完整矩阵反复堆积巨型 raw stream。
+Massif 的 peak 是被剖析进程整个生命周期的峰值，包含模型加载、预热和随后执行的 inference，不能解释成“单次 request 新增了多少内存”，`--massif-repeat` 也不会把 peak bytes 除回单 request。Nsight Systems 只在 `acprof_compute` NVTX range 内追踪 CUDA 与 NVTX，汇总 CUDA API、GPU kernel 和 memcpy，并用 `--nsys-repeat` 归一化为单 request；host inference wall timer 只包围正式推理循环与其末尾 CUDA synchronize，不计入 NVTX capture 的启动/停止握手。不同 host/device timeline 和 CUDA stream 上的活动可能重叠，因此各项 `*_time_sum_*` 彼此相加不要求等于 host wall time。中间 `.qdstrm` 不属于保留产物；若 importer 失败，程序会删除该中间文件并记录 `nsys_import_failed`，避免批量采集反复堆积巨型 raw stream。
 
 两个 execution probe 的失败互不影响，也不影响 FLOP probe 或正常 latency / energy / resource-usage 窗口。raw Massif `.out` 与 Nsight Systems `.nsys-rep` 默认保留；`nsys stats` 导出的 `.sqlite` 只作为解析缓存，在指标汇总完成或 stats 报错后自动删除。显式传入 `--discard-execution-profiles` 会在汇总后连同 raw artifacts 一并删除。
 
@@ -342,8 +342,12 @@ CPU 模型使用共同的二次 log input-scale 项表达各资源配置共有�
 | `--compute-profile-mem` | 75% host memory | 临时 compute profiler container 的 memory cap，单位 GB。 |
 | `--keep-compute-profiles` | true | 保留 raw profiler artifacts；这是默认行为。artifact 位于模型结果目录的 `compute_profiles/`，路径不写入结果行。 |
 | `--discard-compute-profiles` | false | 汇总完成后删除 raw profiler artifacts。 |
-| `--execution-profile-tool` | `none` | 显式启用高开销 execution profiler：`massif` 用于 CPU-only、`nsys` 用于 GPU，`both` 同时选择两者；默认 `none` 不运行。probe 按完整资源配置和 input scale 采集。 |
+| `--execution-profile-tool` | `none` | 显式启用高开销 execution profiler：`massif` 用于 CPU-only、`nsys` 用于 GPU，`both` 同时选择两者；默认 `none` 不运行。 |
+| `--massif-sampling` | `per-scale` | `per-scale` 使用一个代表 CPU/内存逐 input scale 采集并复用；`full` 采完整 CPU × memory 矩阵。 |
+| `--massif-reference-cpu` / `--massif-reference-mem` | 最大选中值 | Massif `per-scale` 的代表 CPU 与内存；必须存在于本次 `--cpus` / `--mems` 中。 |
 | `--massif-repeat` | `1` | 每个 Massif probe 内执行的 inference 次数。Massif peak 仍是包含加载和预热的 process-lifetime peak，不按此值归一化。 |
+| `--nsys-sampling` | `per-cpu-scale` | `per-cpu-scale` 保留全部 CPU、只用一个代表内存；`per-scale` 只用一个代表 CPU/内存；`full` 采完整矩阵。 |
+| `--nsys-reference-cpu` / `--nsys-reference-mem` | 最大选中值 | Nsys 缩减采样的代表资源；`per-cpu-scale` 只使用代表内存，`per-scale` 同时使用两者。 |
 | `--nsys-repeat` | `1` | 每个 Nsight Systems `acprof_compute` NVTX range 内的 inference 次数；time、count 和 bytes 汇总会除回单 request。 |
 | `--nsys-root` | auto | Host Nsight Systems install root 或 `nsys` executable；显式值优先于自动检测。 |
 | `--keep-execution-profiles` | true | 保留 `execution_profiles/` 下的 raw Massif `.out` 与 Nsight Systems `.nsys-rep`；这是默认行为。stats 导出的 `.sqlite` 缓存会自动删除。 |
@@ -396,7 +400,7 @@ python run.py --model openai/whisper-large-v3 \
 | `static_meta.json` | 单个 JSON object 的静态元数据。记录模型版本、参数/精度/量化/许可证、输入输出格式、per-scale 静态逻辑 FLOPs、推理后端、镜像、硬件和环境信息。 |
 | `input_scale_plan.json` | 所有任务族共用的 input scale/payload 计划。schema v2 额外记录 workload provenance、per-scale 输入元数据和模型约束；读取端继续兼容无版本字段的 v1 计划。主采集和 compute profiler 复用同一份 payload。 |
 | `compute_profile_plan.json` | per-scale FLOP profiling 结果。每个 CPU/GPU scale 可同时记录独立的 `torch_profiler_eager` 与 `ncu` profile；NCU 只存在于 GPU profile。失败信息按工具保存，只读取当前按 profiler 分层的 plan 结构。 |
-| `execution_profile_plan.json` | 显式 execution profiling 的 per-resource-config/per-scale 计划与汇总。Massif 条目对应 `gpu_mode=off`，Nsight Systems 条目对应 `gpu_mode=on`；失败按工具记录且不阻断主实验。 |
+| `execution_profile_plan.json` | 显式 execution profiling 的采样与 per-resource-config/per-scale 汇总。Massif 条目对应 `gpu_mode=off`，Nsight Systems 条目对应 `gpu_mode=on`；复用 entry 记录实际 source resource 与 sampling strategy，失败按工具记录且不阻断主实验。 |
 | `execution_profiles/` | 默认保留 raw Massif `.out` 与 Nsight Systems `.nsys-rep`；stats 导出的 `.sqlite` 缓存会自动删除。传入 `--discard-execution-profiles` 时 raw artifacts 也会在汇总后删除。 |
 | `tmux_all.log` | 在 tmux pane 内运行 `run.py` 时自动记录的完整终端显示。实验正常结束或报错退出时落盘，不受 tmux 历史行数上限影响。 |
 | `latency_model/latency_model_report.json` | `plot.py` 生成的 latency 拟合报告。包含分 CPU/GPU 的正值模型、整配置留一与最大尺度外推指标、质量门槛、系数和训练范围。 |
@@ -447,6 +451,17 @@ Massif 默认使用 `--massif-sampling per-scale`：自动选择结果矩阵中�
 python profile.py results/google-bert--bert-base-uncased \
   --tools massif --massif-sampling full
 ```
+
+Nsys 默认使用 `--nsys-sampling per-cpu-scale`：保留结果矩阵中的全部 CPU，自动选择最大 memory，每个 CPU/input scale 运行一个探针，再复用到同 CPU/scale 的其他内存行。可以进一步缩成一个代表资源，或恢复完整矩阵：
+
+```bash
+python profile.py results/google-bert--bert-base-uncased \
+  --tools nsys --nsys-sampling per-scale
+python profile.py results/google-bert--bert-base-uncased \
+  --tools nsys --nsys-sampling full
+```
+
+四个 `--*-reference-cpu/mem` 参数可覆盖默认最大资源，但显式值必须存在于已有结果矩阵中。已有成功结果默认会复用；需要按新采样参数重采时同时传入 `--force-reprofile`。
 
 常用安全/诊断选项：
 
@@ -655,13 +670,19 @@ python -m acprof.cli.backfill_compute \
 | `massif_peak_semantics` | Massif peak 的 process-lifetime 口径，明确包含模型加载与预热。 |
 | `massif_repeat` | 每个 Massif probe 内的 inference repeat；peak bytes 不按 repeat 归一化。 |
 | `massif_version` | Massif 派生 container image 中的 Valgrind/Massif 版本；未启用或无法确认时为 `unknown`。 |
+| `massif_sampling_strategy` | `representative_per_scale` 或 `full_resource_matrix`。 |
+| `massif_reference_cpu_cores` / `massif_reference_mem_cap_gb` | 缩减采样实际使用的代表资源；完整矩阵时为 `null`。 |
+| `massif_reused_across_resource_cases` | Massif entry 是否从代表资源复用到其他结果行。 |
 | `nsys_timeline_semantics` | Nsight Systems timeline 的 NVTX range 与汇总口径。 |
 | `nsys_repeat` | 每个 Nsight Systems NVTX range 内的 inference repeat；动态汇总据此归一化到单 request。 |
 | `nsys_version` | Host Nsight Systems 版本；未启用或无法确认时为 `unknown`。 |
+| `nsys_sampling_strategy` | `representative_per_cpu_scale`、`representative_per_scale` 或 `full_resource_matrix`。 |
+| `nsys_reference_cpu_cores` / `nsys_reference_mem_cap_gb` | Nsys 缩减采样使用的代表资源；per-CPU 策略的代表 CPU 为 `null`。 |
+| `nsys_reused_across_resource_cases` | Nsys entry 是否从采样资源复用到其他结果行。 |
 | `execution_profiles_retained` | raw Massif / Nsight Systems artifacts 是否保留。 |
 | `execution_profile_provenance` | execution profile 的来源；默认关闭时为 `disabled`。 |
 
-这些字段在 profiling 后原子补写，原始 `run_command` 保持不变。`static_flops` 只保存不依赖硬件计数器的 Torch 逻辑 shape FLOPs，并按 input scale 展开；NCU 实际执行 FLOPs、吞吐率以及随完整资源配置变化的 execution 数值仍保存在 `result_all.csv`。
+这些字段在 profiling 后原子补写，原始 `run_command` 保持不变。`static_flops` 只保存不依赖硬件计数器的 Torch 逻辑 shape FLOPs，并按 input scale 展开；NCU 实际执行 FLOPs、吞吐率以及 execution 数值仍保存在 `result_all.csv`，execution 字段是否来自代表资源由上述 sampling metadata 和 plan entry provenance 说明。
 
 ## 10. 结果行数和时间成本估算
 
@@ -755,16 +776,22 @@ compute_profile_s ~= len(input_scales) * (
 
 probe 次数按 input scale 和启用的 GPU mode 增长，不按 CPU × memory 主矩阵展开；`--torch-profiler-repeat` 与 `--ncu-repeat` 会进一步增加各自 workload，NCU 还可能对 kernel 做 replay，因此常是最昂贵的 probe，在部分模型上可能从数分钟增加到更久。默认保留 raw NCU report 也会增加磁盘占用。`--compute-profile-tool none` 可从主流程完全去掉这部分成本，之后再用 `profile.py` 补采；单工具模式只去掉未选择的 probe。
 
-Execution profiling 默认 `none`，所以不进入上述默认时间预算。显式启用后，它与 FLOP probe 的复用策略不同，会按完整资源矩阵展开：
+Execution profiling 默认 `none`，所以不进入上述默认时间预算。显式启用后，先按采样策略计算实际 source case 数：
 
 ```text
-execution_profile_s ~= len(input_scales) * len(cpus) * len(mems) * (
-  [gpu off enabled and Massif selected] * massif_probe_s
-  + [gpu on enabled and Nsys selected] * nsys_probe_s
+massif_source_cases = 1                         # per-scale 默认
+                      或 len(cpus) * len(mems) # full
+nsys_source_cases   = len(cpus)                 # per-cpu-scale 默认
+                      或 1                      # per-scale
+                      或 len(cpus) * len(mems) # full
+
+execution_profile_s ~= len(input_scales) * (
+  massif_source_cases * massif_probe_s
+  + nsys_source_cases * nsys_probe_s
 )
 ```
 
-Massif 会放慢整个被剖析进程生命周期，Nsight Systems 还需要生成和解析 timeline；`--massif-repeat` / `--nsys-repeat` 会增加每个 probe 的 workload。默认保留 `execution_profiles/` raw artifacts 也会增加磁盘占用。大矩阵启用前建议先用一个 CPU、一个 memory cap 和一个 input scale 做 smoke。
+未选择对应工具/GPU mode 时，该项 source case 数按 0 计算。Massif 会放慢整个被剖析进程生命周期，Nsight Systems 还需要生成和解析 timeline；`--massif-repeat` / `--nsys-repeat` 会增加每个 probe 的 workload。默认保留 `execution_profiles/` raw artifacts 也会增加磁盘占用。使用 `full` 前建议先用一个 CPU、一个 memory cap 和一个 input scale 做 smoke。
 
 <a id="troubleshooting"></a>
 
