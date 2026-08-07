@@ -553,7 +553,8 @@ def prepare_df(csv_path: str) -> pd.DataFrame:
             df[target_col] = df[source_col] / float(BYTES_PER_GIB)
 
     if ONLY_OK and "status" in df.columns:
-        df = df[df["status"].astype(str).str.lower() == "ok"].copy()
+        normalized_status = df["status"].astype(str).str.strip().str.lower()
+        df = df[normalized_status == "ok"].copy()
 
     if EXCLUDE_WARMUP and "warmup" in df.columns:
         df = df[df["warmup"].fillna(0).astype(int) == 0].copy()
@@ -563,7 +564,10 @@ def prepare_df(csv_path: str) -> pd.DataFrame:
     if missing:
         raise ValueError(f"CSV missing required columns: {missing}")
 
-    df["config"] = df.apply(make_config_label, axis=1)
+    if df.empty:
+        df["config"] = pd.Series(index=df.index, dtype="object")
+    else:
+        df["config"] = df.apply(make_config_label, axis=1)
     df = df[df["input_scale"].notna() & (df["input_scale"] > 0)].copy()
 
     return df

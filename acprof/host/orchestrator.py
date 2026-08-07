@@ -374,6 +374,69 @@ def _run(cmd: List[str], check: bool = True, capture: bool = True, **kwargs) -> 
     )
 
 
+def _inspect_container_state(container_name: str) -> Optional[Dict[str, Any]]:
+    """Return Docker's runtime state without flooding readiness logs."""
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "inspect",
+                container_name,
+                "--format",
+                "{{json .State}}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError:
+        return None
+
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    try:
+        state = json.loads(result.stdout)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return state if isinstance(state, dict) else None
+
+
+def _container_startup_exit_error(
+    container_name: str,
+    memory_limit_gb: int,
+) -> Optional[str]:
+    """Describe a container that exited while the server was starting."""
+    state = _inspect_container_state(container_name)
+    if not state:
+        return None
+
+    status = str(state.get("Status") or "").strip().lower()
+    running = bool(state.get("Running"))
+    restarting = bool(state.get("Restarting"))
+    oom_killed = bool(state.get("OOMKilled"))
+    if running or restarting:
+        return None
+    if not oom_killed and status not in {"dead", "exited", "removing"}:
+        return None
+
+    try:
+        exit_code = int(state.get("ExitCode"))
+    except (TypeError, ValueError):
+        exit_code = -1
+    docker_error = str(state.get("Error") or "").strip()
+    detail = (
+        f"container={container_name}, memory_limit={memory_limit_gb}g, "
+        f"status={status or 'unknown'}, exit_code={exit_code}"
+    )
+    if docker_error:
+        detail += f", docker_error={docker_error}"
+    if oom_killed:
+        return f"container_oom_killed during startup ({detail})"
+    return f"container_exited_before_ready ({detail})"
+
+
 def _url_host(url: str) -> str:
     """Extract host from a URL for pip trusted-host."""
     parsed = urlparse(url)
@@ -1630,6 +1693,13 @@ def _start_container_session(
     base_url = f"http://127.0.0.1:{host_port}"
     deadline = time.perf_counter() + READY_TIMEOUT_S
 
+    def fail_startup(reason: str) -> None:
+        logs = _run(["docker", "logs", container_name, "--tail", "200"], check=False)
+        if logs.stdout:
+            print(logs.stdout[-500:])
+        _run(["docker", "rm", "-f", container_name], check=False)
+        raise RuntimeError(reason)
+
     while time.perf_counter() < deadline:
         try:
             response = requests.get(
@@ -1668,15 +1738,20 @@ def _start_container_session(
                     )
         except Exception:
             pass
+
+        startup_exit_error = _container_startup_exit_error(container_name, mem)
+        if startup_exit_error:
+            print(f"{log_prefix} Container exited before server became ready: {startup_exit_error}")
+            fail_startup(startup_exit_error)
         time.sleep(READY_POLL_INTERVAL_S)
 
     cold_start_s = time.perf_counter() - t0
     print(f"{log_prefix} Server not ready after {READY_TIMEOUT_S}s. cold_start={cold_start_s:.3f}s")
-    logs = _run(["docker", "logs", container_name, "--tail", "200"], check=False)
-    if logs.stdout:
-        print(logs.stdout[-500:])
-    _run(["docker", "rm", "-f", container_name], check=False)
-    raise RuntimeError(f"server not ready after {READY_TIMEOUT_S}s for container {container_name}")
+    startup_exit_error = _container_startup_exit_error(container_name, mem)
+    fail_startup(
+        startup_exit_error
+        or f"server not ready after {READY_TIMEOUT_S}s for container {container_name}"
+    )
 
 
 def _stop_container_session(container_name: str, log_prefix: Optional[str] = None) -> None:

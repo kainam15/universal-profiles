@@ -765,6 +765,12 @@ Massif 会放慢整个被剖析进程生命周期，Nsight Systems 还需要生�
 - 执行 `unset DOCKER_HOST DOCKER_CONTEXT && docker context use default`，然后确认 Docker endpoint 是 `unix:///var/run/docker.sock`。
 - 不要使用 Docker Desktop、远程 Docker context 或旧的 `/var/run/docker-native.sock`；这些 daemon 与宿主侧抓包、cgroup、RAPL、perf PID 和 profiler 观察到的对象不一致。
 
+case CSV 的 `error` 包含 `container_oom_killed during startup`：
+
+- 容器在模型加载期间触达 `--memory` cgroup 上限并被内核终止；错误会同时记录 memory cap、Docker 状态和 exit code。
+- 该 case 的占位行保留为 `status=error`，latency、throughput、energy 和 resource usage 等未执行指标保持 `nan`。`plot.py` 只使用 `status=ok` 行，不会把这些占位行纳入图表或 latency model。
+- 增大 memory cap，或改用更小/量化模型；不要用推测值回填失败 case 的指标。
+
 GPU energy 字段全是 `nan`：
 
 - `gpu_mode=off` 时这是正常结果。

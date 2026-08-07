@@ -236,6 +236,61 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertNotIn("HF_TOKEN", docker_run)
         self.assertNotIn("HUGGING_FACE_HUB_TOKEN", docker_run)
 
+    def test_start_container_session_reports_oom_before_ready_timeout(self) -> None:
+        task_info = TaskInfo(
+            model_id="openai/whisper-large-v3",
+            pipeline_tag="automatic-speech-recognition",
+            task_family="audio",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="unit",
+        )
+        commands = []
+
+        def fake_run(cmd, **_kwargs):
+            commands.append(cmd)
+            stdout = "[server] Loading model\n" if cmd[:2] == ["docker", "logs"] else ""
+            return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+        container_state = {
+            "Status": "exited",
+            "Running": False,
+            "Restarting": False,
+            "OOMKilled": True,
+            "ExitCode": 137,
+            "Error": "",
+        }
+        with patch(
+            "acprof.host.orchestrator._run",
+            side_effect=fake_run,
+        ), patch(
+            "acprof.host.orchestrator._inspect_container_state",
+            return_value=container_state,
+        ), patch(
+            "requests.get",
+            side_effect=ConnectionError("connection refused"),
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                orchestrator._start_container_session(
+                    task_info=task_info,
+                    cpu=1,
+                    mem=2,
+                    gpu="off",
+                    image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                    container_name="oom-test",
+                    log_prefix="[test]",
+                )
+
+        message = str(raised.exception)
+        self.assertIn("container_oom_killed", message)
+        self.assertIn("memory_limit=2g", message)
+        self.assertIn("exit_code=137", message)
+        self.assertIn(
+            ["docker", "rm", "-f", "oom-test"],
+            commands,
+        )
+
     def test_detect_environment_windows_11_with_wsl_kernel(self) -> None:
         with patch("acprof.host.orchestrator.platform.system", return_value="Windows"), patch(
             "acprof.host.orchestrator.platform.release", return_value="11"
@@ -1281,7 +1336,10 @@ class DetectEnvironmentTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_dir, patch(
             "acprof.host.orchestrator._start_container_session",
-            side_effect=RuntimeError("server not ready after 180s"),
+            side_effect=RuntimeError(
+                "container_oom_killed during startup "
+                "(container=unit-test, memory_limit=2g, status=exited, exit_code=137)"
+            ),
         ):
             csv_path = orchestrator.run_single_case(
                 task_info=task_info,
@@ -1321,7 +1379,8 @@ class DetectEnvironmentTests(unittest.TestCase):
         )
         self.assertTrue(
             all(
-                "container_start_failed: server not ready after 180s" in row["error"]
+                "container_start_failed: container_oom_killed during startup"
+                in row["error"]
                 for row in rows
             )
         )

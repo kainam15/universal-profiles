@@ -185,6 +185,78 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
         self.assertEqual(float(df["gpu_mem_used_avg_gib"].iloc[0]), 3.0)
         self.assertEqual(float(df["gpu_mem_total_gib"].iloc[0]), 8.0)
 
+    def test_prepare_df_excludes_error_rows_even_when_they_have_numeric_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = os.path.join(tmp, "result_all.csv")
+            fieldnames = [
+                "cpu_cores",
+                "mem_cap_gb",
+                "gpu_mode",
+                "input_scale",
+                "warmup",
+                "status",
+                "latency_s",
+            ]
+            with open(csv_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows([
+                    {
+                        "cpu_cores": "1",
+                        "mem_cap_gb": "8",
+                        "gpu_mode": "off",
+                        "input_scale": "1",
+                        "warmup": "0",
+                        "status": "ok",
+                        "latency_s": "0.25",
+                    },
+                    {
+                        "cpu_cores": "1",
+                        "mem_cap_gb": "2",
+                        "gpu_mode": "off",
+                        "input_scale": "1",
+                        "warmup": "0",
+                        "status": " ERROR ",
+                        "latency_s": "999",
+                    },
+                ])
+
+            df = plot.prepare_df(csv_path)
+
+        self.assertEqual(len(df), 1)
+        self.assertEqual(df["status"].iloc[0], "ok")
+        self.assertEqual(float(df["latency_s"].iloc[0]), 0.25)
+
+    def test_prepare_df_returns_empty_frame_when_all_rows_are_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = os.path.join(tmp, "result_case.csv")
+            fieldnames = [
+                "cpu_cores",
+                "mem_cap_gb",
+                "gpu_mode",
+                "input_scale",
+                "warmup",
+                "status",
+                "latency_s",
+            ]
+            with open(csv_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerow({
+                    "cpu_cores": "1",
+                    "mem_cap_gb": "2",
+                    "gpu_mode": "off",
+                    "input_scale": "1",
+                    "warmup": "0",
+                    "status": "error",
+                    "latency_s": "999",
+                })
+
+            df = plot.prepare_df(csv_path)
+
+        self.assertTrue(df.empty)
+        self.assertIn("config", df.columns)
+
     def test_prepare_df_accepts_padded_legacy_csv_headers_and_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             csv_path = os.path.join(tmp, "result_all.csv")
