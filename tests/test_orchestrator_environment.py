@@ -1325,6 +1325,72 @@ class DetectEnvironmentTests(unittest.TestCase):
 
         self.assertIn("client.py exited with code 7", str(raised.exception))
 
+    def test_run_single_case_records_request_timeout_and_returns(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+
+        def fake_run(cmd, check=True, capture=True, **kwargs):
+            if cmd and cmd[-2:] == ["-m", "acprof.host.client"]:
+                return SimpleNamespace(
+                    returncode=orchestrator.CLIENT_REQUEST_TIMEOUT_EXIT_CODE,
+                    stdout="",
+                    stderr="slow inference",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as tmp_dir, patch(
+            "acprof.host.orchestrator._start_container_session",
+            return_value=orchestrator.RunningContainer(
+                name="case_google-bert--bert-base-uncased_1c_4g_off",
+                base_url="http://127.0.0.1:8106",
+                host_port=8106,
+                cold_start_s=1.0,
+            ),
+        ), patch(
+            "acprof.host.orchestrator._resolve_packet_latency_runtime",
+            return_value=None,
+        ), patch(
+            "acprof.host.orchestrator._stop_container_session"
+        ) as stop_container, patch(
+            "acprof.host.orchestrator._run",
+            side_effect=fake_run,
+        ):
+            csv_path = orchestrator.run_single_case(
+                task_info=task_info,
+                cpu=1,
+                mem=4,
+                gpu="off",
+                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                output_dir=tmp_dir,
+                project_dir=".",
+                warmup=1,
+                repeat=2,
+                repeat_in_window=0,
+                input_scales="64,128",
+                require_packet_latency=False,
+            )
+
+            with open(csv_path, "r", encoding="utf-8", newline="") as f:
+                rows = list(csv.DictReader(f))
+
+        self.assertEqual(len(rows), 6)
+        self.assertEqual({row["status"] for row in rows}, {"error"})
+        self.assertTrue(
+            all("client_request_timeout" in row["error"] for row in rows)
+        )
+        self.assertEqual(
+            sorted({float(row["input_scale"]) for row in rows}),
+            [64.0, 128.0],
+        )
+        stop_container.assert_called_once()
+
     def test_run_single_case_writes_error_rows_when_container_start_fails(self) -> None:
         task_info = TaskInfo(
             model_id="google-bert/bert-base-uncased",

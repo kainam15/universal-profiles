@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from acprof.config import (
+    CLIENT_REQUEST_TIMEOUT_EXIT_CODE,
     CSV_FIELDS,
     DEFAULT_IDLE_COOLDOWN_SECONDS,
     DEFAULT_REPEAT_IN_WINDOW,
@@ -2902,6 +2903,25 @@ def run_single_case(
         )
 
         if client_result.returncode != 0:
+            if client_result.returncode == CLIENT_REQUEST_TIMEOUT_EXIT_CODE:
+                error = (
+                    "client_request_timeout: inference request exceeded the client "
+                    "timeout; resource case skipped"
+                )
+                print(f"[case][WARN] {error}", file=sys.stderr)
+                _write_case_error_csv(
+                    task_info=task_info,
+                    out_csv=out_csv,
+                    cpu=cpu,
+                    mem=mem,
+                    gpu=gpu,
+                    warmup=warmup,
+                    repeat=repeat,
+                    repeat_in_window=repeat_in_window,
+                    input_scales=input_scales,
+                    error=error,
+                )
+                return out_csv
             if client_result.returncode == MIPS_EXIT_CODE:
                 raise MIPSProfilingError(
                     "client.py exited because MIPS profiling failed; review the "

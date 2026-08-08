@@ -9,6 +9,7 @@ __pycache__/
 results/
 result-past/
 *.csv
+results_resume_1c
 
 /docs
 AGENTS.md

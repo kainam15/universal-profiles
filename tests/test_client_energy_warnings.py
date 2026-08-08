@@ -873,6 +873,99 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertIn("[energy][ERROR] gpu_idle_power_w failed", stderr.getvalue())
         self.assertNotIn("Traceback", stderr.getvalue())
 
+    def test_one_request_converts_http_timeout_to_case_abort(self) -> None:
+        with patch.object(
+            client,
+            "REQUEST_TIMEOUT_SECONDS",
+            0.25,
+        ), patch.object(
+            client.requests,
+            "post",
+            side_effect=client.requests.exceptions.ReadTimeout("slow inference"),
+        ), self.assertRaises(client.RequestTimeoutAbort) as raised:
+            client._one_request(
+                10.0,
+                req_id="case_dur10_auto_warmup0",
+                payload_override={},
+            )
+
+        message = str(raised.exception)
+        self.assertIn("timed out after 0.25s", message)
+        self.assertIn("input_scale=10", message)
+        self.assertIn("req_id=case_dur10_auto_warmup0", message)
+
+    def test_measurement_timeout_escapes_row_level_error_handling(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir, patch.object(
+            client,
+            "OUT_CSV",
+            f"{tmp_dir}/result.csv",
+        ), patch.object(
+            client,
+            "CASE_NAME",
+            "case",
+        ), patch.object(
+            client,
+            "WARMUP",
+            0,
+        ), patch.object(
+            client,
+            "REPEAT",
+            1,
+        ), patch.object(
+            client,
+            "REPEAT_IN_WINDOW",
+            1,
+        ), patch.object(
+            client,
+            "USE_ENERGY",
+            False,
+        ), patch.object(
+            client,
+            "USE_MIPS",
+            False,
+        ), patch.object(
+            client,
+            "energy_mod",
+            None,
+        ), patch.object(
+            client,
+            "cpu_energy_mod",
+            None,
+        ), patch.object(
+            client,
+            "resource_usage_mod",
+            None,
+        ), patch.object(
+            client,
+            "input_scale_entries",
+            [{"input_scale": 10.0, "scale_label": "dur10", "payload": {}}],
+        ), patch.object(
+            client.requests,
+            "get",
+            return_value=SimpleNamespace(status_code=200, text="ok"),
+        ), patch.object(
+            client,
+            "_one_request",
+            side_effect=client.RequestTimeoutAbort("slow inference"),
+        ), self.assertRaises(client.RequestTimeoutAbort):
+            client.main()
+
+    def test_client_entrypoint_uses_dedicated_timeout_exit_code(self) -> None:
+        stderr = io.StringIO()
+        with patch.object(
+            client,
+            "main",
+            side_effect=client.RequestTimeoutAbort("slow inference"),
+        ), self.assertRaises(SystemExit) as raised, redirect_stderr(stderr):
+            client.run_cli()
+
+        self.assertEqual(
+            raised.exception.code,
+            client.CLIENT_REQUEST_TIMEOUT_EXIT_CODE,
+        )
+        self.assertIn("[case][ERROR] slow inference", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+
     def test_sniff_group_id_is_hidden_from_csv_but_kept_for_packet_merge(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             out_csv = f"{tmp_dir}/result.csv"

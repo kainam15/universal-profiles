@@ -32,8 +32,10 @@ _ensure_local_proxy_bypass()
 import requests
 
 from acprof.config import (
+    CLIENT_REQUEST_TIMEOUT_EXIT_CODE,
     CSV_FIELDS,
     DEFAULT_IDLE_COOLDOWN_SECONDS,
+    DEFAULT_REQUEST_TIMEOUT_SECONDS,
     DEFAULT_REPEAT_IN_WINDOW,
     DEFAULT_REPEAT_WINDOW_SECONDS,
     IDLE_DIAG_DIRNAME,
@@ -82,6 +84,9 @@ REPEAT = int(os.getenv("REPEAT", "5"))
 REPEAT_IN_WINDOW = int(os.getenv("REPEAT_IN_WINDOW", str(DEFAULT_REPEAT_IN_WINDOW)))
 REPEAT_WINDOW_SECONDS = float(os.getenv("REPEAT_WINDOW_SECONDS", str(DEFAULT_REPEAT_WINDOW_SECONDS)))
 AUTO_WARMUP_REQUESTS = int(os.getenv("AUTO_WARMUP_REQUESTS", "5"))
+REQUEST_TIMEOUT_SECONDS = float(
+    os.getenv("REQUEST_TIMEOUT_SECONDS", str(DEFAULT_REQUEST_TIMEOUT_SECONDS))
+)
 SLOW_LATENCY_THRESHOLD_S = float(os.getenv("SLOW_LATENCY_THRESHOLD_S", "0.06"))
 
 COLD_START_S = os.getenv("COLD_START_S", "nan")
@@ -252,6 +257,10 @@ class EnergyAbort(RuntimeError):
 
 class MIPSAbort(RuntimeError):
     """Raised when perf MIPS profiling cannot continue."""
+
+
+class RequestTimeoutAbort(RuntimeError):
+    """Raised when the current resource case cannot finish inference in time."""
 
 
 def _mean(xs: List[float]) -> float:
@@ -514,7 +523,19 @@ def _one_request(scale_value: float, req_id: str, payload_override: Optional[Dic
     }
 
     t0 = time.perf_counter()
-    r = requests.post(BASE_URL + ENDPOINT, json=payload, headers=headers, timeout=300)
+    try:
+        r = requests.post(
+            BASE_URL + ENDPOINT,
+            json=payload,
+            headers=headers,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+    except requests.exceptions.Timeout as exc:
+        raise RequestTimeoutAbort(
+            "inference request timed out after "
+            f"{REQUEST_TIMEOUT_SECONDS:g}s "
+            f"(input_scale={scale_value:g}, req_id={req_id})"
+        ) from exc
     t1 = time.perf_counter()
     if r.status_code >= 400:
         try:
@@ -1559,6 +1580,8 @@ def main() -> None:
                     else:
                         throughput = float("nan")
 
+                except RequestTimeoutAbort:
+                    raise
                 except EnergyAbort:
                     raise
                 except MIPSAbort:
@@ -1696,6 +1719,9 @@ def main() -> None:
 def run_cli() -> None:
     try:
         main()
+    except RequestTimeoutAbort as exc:
+        print(f"[case][ERROR] {exc}", file=sys.stderr)
+        raise SystemExit(CLIENT_REQUEST_TIMEOUT_EXIT_CODE) from None
     except EnergyAbort as exc:
         print(f"[energy][ERROR] {exc}", file=sys.stderr)
         raise SystemExit(1) from None
