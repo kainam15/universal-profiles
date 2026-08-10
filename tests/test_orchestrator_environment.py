@@ -1391,6 +1391,90 @@ class DetectEnvironmentTests(unittest.TestCase):
         )
         stop_container.assert_called_once()
 
+    def test_run_single_case_preserves_completed_rows_before_request_timeout(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+
+        def fake_run(cmd, check=True, capture=True, **kwargs):
+            if cmd and cmd[-2:] == ["-m", "acprof.host.client"]:
+                out_csv = kwargs["env"]["OUT_CSV"]
+                row = {field: "nan" for field in CSV_FIELDS}
+                row.update({
+                    "cpu_cores": "1",
+                    "mem_cap_gb": "4",
+                    "gpu_mode": "off",
+                    "input_scale": "64",
+                    "repeat_idx": "0",
+                    "warmup": "0",
+                    "repeat_in_window": "1",
+                    "latency_app_s": "12.5",
+                    "cpu_idle_power_w": "5.0",
+                    "status": "ok",
+                    "error": "",
+                })
+                with open(out_csv, "w", encoding="utf-8", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+                    writer.writeheader()
+                    writer.writerow(row)
+                return SimpleNamespace(
+                    returncode=orchestrator.CLIENT_REQUEST_TIMEOUT_EXIT_CODE,
+                    stdout="",
+                    stderr="slow inference",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as tmp_dir, patch(
+            "acprof.host.orchestrator._start_container_session",
+            return_value=orchestrator.RunningContainer(
+                name="case_google-bert--bert-base-uncased_1c_4g_off",
+                base_url="http://127.0.0.1:8106",
+                host_port=8106,
+                cold_start_s=1.0,
+            ),
+        ), patch(
+            "acprof.host.orchestrator._resolve_packet_latency_runtime",
+            return_value=None,
+        ), patch(
+            "acprof.host.orchestrator._stop_container_session"
+        ), patch(
+            "acprof.host.orchestrator._run",
+            side_effect=fake_run,
+        ):
+            csv_path = orchestrator.run_single_case(
+                task_info=task_info,
+                cpu=1,
+                mem=4,
+                gpu="off",
+                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                output_dir=tmp_dir,
+                project_dir=".",
+                warmup=0,
+                repeat=1,
+                repeat_in_window=1,
+                input_scales="64,128",
+                require_packet_latency=False,
+            )
+
+            with open(csv_path, "r", encoding="utf-8", newline="") as f:
+                rows = list(csv.DictReader(f))
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["input_scale"], "64")
+        self.assertEqual(rows[0]["latency_app_s"], "12.5")
+        self.assertEqual(rows[0]["status"], "ok")
+        self.assertEqual(rows[0]["error"], "")
+        self.assertEqual(rows[1]["input_scale"], "128")
+        self.assertEqual(rows[1]["status"], "error")
+        self.assertIn("client_request_timeout", rows[1]["error"])
+        self.assertIn("remaining measurements skipped", rows[1]["error"])
+
     def test_run_single_case_writes_error_rows_when_container_start_fails(self) -> None:
         task_info = TaskInfo(
             model_id="google-bert/bert-base-uncased",
@@ -1747,6 +1831,17 @@ class DetectEnvironmentTests(unittest.TestCase):
                 orchestrator._assert_packet_latency_csv_complete(csv_path)
 
         self.assertIn("latency_s is missing", str(raised.exception))
+
+    def test_assert_packet_latency_csv_complete_ignores_timeout_error_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = os.path.join(tmp, "result_case.csv")
+            with open(csv_path, "w", encoding="utf-8", newline="") as f:
+                f.write("latency_s,status\n0.25,ok\nnan,error\n")
+
+            orchestrator._assert_packet_latency_csv_complete(
+                csv_path,
+                ignore_error_rows=True,
+            )
 
 
 if __name__ == "__main__":

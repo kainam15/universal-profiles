@@ -472,6 +472,10 @@ def _parse_csv_float(value: Any) -> float:
         return float("nan")
 
 
+def _row_has_error_status(row: Dict[str, Any]) -> bool:
+    return str(row.get("status") or "").strip().lower() == "error"
+
+
 def _check_idle_power_values_stable(
     *,
     csv_path: str,
@@ -522,6 +526,7 @@ def _check_idle_power_values_stable(
 def _check_case_gpu_idle_power_stable(
     csv_path: str,
     threshold: float = IDLE_POWER_RELATIVE_RANGE_THRESHOLD,
+    ignore_error_rows: bool = False,
 ) -> None:
     """Validate that GPU idle baseline did not drift across a finished case CSV."""
     if not os.path.exists(csv_path):
@@ -535,6 +540,8 @@ def _check_case_gpu_idle_power_stable(
     with open(csv_path, "r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
+            if ignore_error_rows and _row_has_error_status(row):
+                continue
             if _normalize_gpu_mode(row.get("gpu_mode", "off")) != "on":
                 continue
             gpu_rows += 1
@@ -564,6 +571,7 @@ def _check_case_gpu_idle_power_stable(
 def _check_case_cpu_idle_power_stable(
     csv_path: str,
     threshold: float = IDLE_POWER_RELATIVE_RANGE_THRESHOLD,
+    ignore_error_rows: bool = False,
 ) -> None:
     """Validate that CPU package idle baseline did not drift across a finished case CSV."""
     if not os.path.exists(csv_path):
@@ -577,6 +585,8 @@ def _check_case_cpu_idle_power_stable(
     with open(csv_path, "r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
+            if ignore_error_rows and _row_has_error_status(row):
+                continue
             rows += 1
             cpu_idle_power_w = _parse_csv_float(row.get("cpu_idle_power_w"))
             if not math.isfinite(cpu_idle_power_w) or cpu_idle_power_w <= 0.0:
@@ -595,6 +605,7 @@ def _check_case_cpu_idle_power_stable(
             "Increase --idle-seconds, close host background processes, wait for "
             "CPU package power to stabilize, then rerun."
         ),
+        skip_when_no_rows=ignore_error_rows,
     )
 
 
@@ -1057,7 +1068,11 @@ def _resolve_packet_latency_runtime(
     return None
 
 
-def _assert_packet_latency_csv_complete(csv_path: str) -> None:
+def _assert_packet_latency_csv_complete(
+    csv_path: str,
+    *,
+    ignore_error_rows: bool = False,
+) -> None:
     import csv
 
     if not os.path.exists(csv_path):
@@ -1073,6 +1088,8 @@ def _assert_packet_latency_csv_complete(csv_path: str) -> None:
         total = 0
         missing = 0
         for row in reader:
+            if ignore_error_rows and _row_has_error_status(row):
+                continue
             total += 1
             raw_value = (row.get("latency_s") or "").strip()
             try:
@@ -1084,7 +1101,7 @@ def _assert_packet_latency_csv_complete(csv_path: str) -> None:
             if not math.isfinite(value) or value <= 0:
                 missing += 1
 
-    if total == 0:
+    if total == 0 and not ignore_error_rows:
         raise _packet_latency_error(f"result CSV has no rows: {csv_path}")
 
     if missing:
@@ -2825,6 +2842,8 @@ def run_single_case(
     base_url = session.base_url
     cold_start_s = session.cold_start_s
     tcpdump_proc = None
+    request_timed_out = False
+    timeout_preserved_rows = 0
     sniff_runtime = _resolve_packet_latency_runtime(
         project_dir=project_dir,
         pcap_file=pcap_file,
@@ -2904,12 +2923,13 @@ def run_single_case(
 
         if client_result.returncode != 0:
             if client_result.returncode == CLIENT_REQUEST_TIMEOUT_EXIT_CODE:
+                request_timed_out = True
                 error = (
                     "client_request_timeout: inference request exceeded the client "
-                    "timeout; resource case skipped"
+                    "timeout; remaining measurements skipped"
                 )
                 print(f"[case][WARN] {error}", file=sys.stderr)
-                _write_case_error_csv(
+                timeout_preserved_rows, _ = _write_case_error_csv(
                     task_info=task_info,
                     out_csv=out_csv,
                     cpu=cpu,
@@ -2920,18 +2940,19 @@ def run_single_case(
                     repeat_in_window=repeat_in_window,
                     input_scales=input_scales,
                     error=error,
+                    preserve_existing=True,
                 )
-                return out_csv
-            if client_result.returncode == MIPS_EXIT_CODE:
+            elif client_result.returncode == MIPS_EXIT_CODE:
                 raise MIPSProfilingError(
                     "client.py exited because MIPS profiling failed; review the "
                     "[mips][ERROR] output above for the perf remediation steps."
                 )
-            raise EnergyProfilingError(
-                "client.py exited with code "
-                f"{client_result.returncode}; aborting profiling matrix. "
-                "Review the client output above for the energy stability diagnostic."
-            )
+            else:
+                raise EnergyProfilingError(
+                    "client.py exited with code "
+                    f"{client_result.returncode}; aborting profiling matrix. "
+                    "Review the client output above for the energy stability diagnostic."
+                )
 
         if tcpdump_proc is not None:
             time.sleep(1.0)
@@ -2942,7 +2963,12 @@ def run_single_case(
                 tcpdump_proc.kill()
             time.sleep(0.2)
 
-            if not os.path.exists(pcap_file) or os.path.getsize(pcap_file) <= 0:
+            if request_timed_out and timeout_preserved_rows == 0:
+                print(
+                    "[sniff] No completed measurements before request timeout; "
+                    "skipping packet-latency merge"
+                )
+            elif not os.path.exists(pcap_file) or os.path.getsize(pcap_file) <= 0:
                 if require_packet_latency:
                     raise _packet_latency_error(
                         f"pcap file is missing or empty: {pcap_file}"
@@ -3002,11 +3028,21 @@ def run_single_case(
                     )
                 os.replace(merged_csv, out_csv)
                 if require_packet_latency:
-                    _assert_packet_latency_csv_complete(out_csv)
+                    _assert_packet_latency_csv_complete(
+                        out_csv,
+                        ignore_error_rows=request_timed_out,
+                    )
 
-        _check_case_cpu_idle_power_stable(out_csv)
-        if _normalize_gpu_mode(gpu) == "on":
-            _check_case_gpu_idle_power_stable(out_csv)
+        if not request_timed_out or timeout_preserved_rows > 0:
+            _check_case_cpu_idle_power_stable(
+                out_csv,
+                ignore_error_rows=request_timed_out,
+            )
+            if _normalize_gpu_mode(gpu) == "on":
+                _check_case_gpu_idle_power_stable(
+                    out_csv,
+                    ignore_error_rows=request_timed_out,
+                )
     finally:
         if tcpdump_proc is not None and tcpdump_proc.poll() is None:
             tcpdump_proc.terminate()
@@ -3032,8 +3068,9 @@ def _write_case_error_csv(
     repeat_in_window: int,
     input_scales: Optional[str],
     error: str,
-) -> None:
-    """Write placeholder rows when a whole resource case cannot run."""
+    preserve_existing: bool = False,
+) -> Tuple[int, int]:
+    """Write missing error rows, optionally retaining completed measurements."""
     os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
     scales = resolve_input_scales(task_info.task_family, input_scales)
 
@@ -3059,19 +3096,72 @@ def _write_case_error_csv(
             row["compute_profile_error_massif"] = "not_run"
         return row
 
-    rows = []
+    planned_rows: List[Dict[str, Any]] = []
     for scale in scales:
         for idx in range(warmup):
-            rows.append(make_row(scale, idx, True))
+            planned_rows.append(make_row(scale, idx, True))
         for idx in range(repeat):
-            rows.append(make_row(scale, idx, False))
+            planned_rows.append(make_row(scale, idx, False))
+
+    def measurement_key(row: Dict[str, Any]) -> Tuple[str, str, int]:
+        try:
+            scale = _format_scale_value(float(row.get("input_scale", "nan")))
+            repeat_idx = int(row.get("repeat_idx", ""))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"invalid measurement key in partial case CSV: {row!r}"
+            ) from exc
+        warmup_flag = "1" if str(row.get("warmup") or "0").strip() == "1" else "0"
+        return scale, warmup_flag, repeat_idx
+
+    planned_by_key = {
+        measurement_key(row): row
+        for row in planned_rows
+    }
+    existing_rows: List[Dict[str, Any]] = []
+    existing_keys = set()
+    if preserve_existing and os.path.exists(out_csv) and os.path.getsize(out_csv) > 0:
+        with open(out_csv, "r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            missing_fields = set(CSV_FIELDS) - set(reader.fieldnames or [])
+            if missing_fields:
+                raise RuntimeError(
+                    "partial case CSV is missing required fields: "
+                    + ", ".join(sorted(missing_fields))
+                )
+            for row in reader:
+                key = measurement_key(row)
+                if key not in planned_by_key:
+                    raise RuntimeError(
+                        f"partial case CSV contains an unplanned measurement: {key!r}"
+                    )
+                if key in existing_keys:
+                    raise RuntimeError(
+                        f"partial case CSV contains a duplicate measurement: {key!r}"
+                    )
+                existing_keys.add(key)
+                existing_rows.append({field: row.get(field, "") for field in CSV_FIELDS})
+
+    missing_rows = [
+        row
+        for row in planned_rows
+        if measurement_key(row) not in existing_keys
+    ]
+    rows = [*existing_rows, *missing_rows]
 
     with open(out_csv, "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
 
-    print(f"[case] Wrote error rows: {out_csv} ({len(rows)} rows)")
+    if preserve_existing:
+        print(
+            f"[case] Preserved completed rows: {len(existing_rows)}; "
+            f"wrote timeout error rows: {len(missing_rows)}; total: {len(rows)}"
+        )
+    else:
+        print(f"[case] Wrote error rows: {out_csv} ({len(rows)} rows)")
+    return len(existing_rows), len(missing_rows)
 
 
 def run_matrix(
