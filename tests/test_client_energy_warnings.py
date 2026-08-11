@@ -893,6 +893,9 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertIn("timed out after 0.25s", message)
         self.assertIn("input_scale=10", message)
         self.assertIn("req_id=case_dur10_auto_warmup0", message)
+        self.assertEqual(raised.exception.input_scale, 10.0)
+        self.assertEqual(raised.exception.request_id, "case_dur10_auto_warmup0")
+        self.assertEqual(raised.exception.timeout_s, 0.25)
 
     def test_measurement_timeout_escapes_row_level_error_handling(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir, patch.object(
@@ -965,6 +968,36 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         )
         self.assertIn("[case][ERROR] slow inference", stderr.getvalue())
         self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_client_entrypoint_persists_structured_timeout_context(self) -> None:
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sidecar_path = os.path.join(tmp_dir, "client-error.json")
+            exc = client.RequestTimeoutAbort(
+                "slow inference",
+                input_scale=30.0,
+                request_id="case_dur30_auto_warmup0",
+                timeout_s=300.0,
+            )
+            with patch.object(
+                client,
+                "CLIENT_ERROR_PATH",
+                sidecar_path,
+            ), patch.object(
+                client,
+                "main",
+                side_effect=exc,
+            ), self.assertRaises(SystemExit), redirect_stderr(stderr):
+                client.run_cli()
+
+            with open(sidecar_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+
+        self.assertEqual(payload["error_type"], "client_request_timeout")
+        self.assertEqual(payload["input_scale"], 30.0)
+        self.assertEqual(payload["request_timeout_s"], 300.0)
+        self.assertEqual(payload["request_phase"], "auto_repeat_window_warmup")
+        self.assertEqual(payload["request_index_in_window"], 0)
 
     def test_sniff_group_id_is_hidden_from_csv_but_kept_for_packet_merge(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

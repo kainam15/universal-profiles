@@ -25,6 +25,7 @@ from acprof.config import (
     CLIENT_REQUEST_TIMEOUT_EXIT_CODE,
     CSV_FIELDS,
     DEFAULT_IDLE_COOLDOWN_SECONDS,
+    DEFAULT_REQUEST_TIMEOUT_SECONDS,
     DEFAULT_REPEAT_IN_WINDOW,
     DEFAULT_REPEAT_WINDOW_SECONDS,
     DOCKER_IMAGE_PREFIX,
@@ -2805,12 +2806,18 @@ def run_single_case(
     )
     pcap_file = os.path.join(output_dir, f"sniff_{case_name}.pcap")
     lat_json = os.path.join(output_dir, f"lat_{case_name}.json")
+    client_error_path = f"{out_csv}.client_error.json"
 
     print(f"\n{'='*60}")
     print(f"[case] {case_name}")
     print(f"  CPU={cpu}, MEM={mem}GB, GPU={gpu}")
     print(f"  Port: {host_port}")
     print(f"{'='*60}")
+
+    try:
+        os.remove(client_error_path)
+    except FileNotFoundError:
+        pass
 
     try:
         session = _start_container_session(
@@ -2907,6 +2914,7 @@ def run_single_case(
             "IDLE_COOLDOWN_SECONDS": str(idle_cooldown_seconds),
             "IDLE_DEBUG": "1" if idle_debug else "0",
             "IDLE_DIAG_PATH": idle_diag_path if idle_debug else "",
+            "CLIENT_ERROR_PATH": client_error_path,
             "DEVICE_INDEX": "0",
             "INPUT_SCALES": scales_str,
             "INPUT_SCALE_PLAN_FILE": input_scale_plan_file or "",
@@ -2924,9 +2932,15 @@ def run_single_case(
         if client_result.returncode != 0:
             if client_result.returncode == CLIENT_REQUEST_TIMEOUT_EXIT_CODE:
                 request_timed_out = True
+                timeout_context = _load_client_error_context(client_error_path)
+                timeout_s = _timeout_context_float(
+                    timeout_context.get("request_timeout_s"),
+                    DEFAULT_REQUEST_TIMEOUT_SECONDS,
+                )
                 error = (
-                    "client_request_timeout: inference request exceeded the client "
-                    "timeout; remaining measurements skipped"
+                    "client_request_timeout: triggering request exceeded "
+                    f"{timeout_s:g}s; incomplete and later rows will be marked "
+                    "individually"
                 )
                 print(f"[case][WARN] {error}", file=sys.stderr)
                 timeout_preserved_rows, _ = _write_case_error_csv(
@@ -2941,6 +2955,7 @@ def run_single_case(
                     input_scales=input_scales,
                     error=error,
                     preserve_existing=True,
+                    timeout_context=timeout_context,
                 )
             elif client_result.returncode == MIPS_EXIT_CODE:
                 raise MIPSProfilingError(
@@ -3069,8 +3084,11 @@ def _write_case_error_csv(
     input_scales: Optional[str],
     error: str,
     preserve_existing: bool = False,
+    timeout_context: Optional[Dict[str, Any]] = None,
 ) -> Tuple[int, int]:
     """Write missing error rows, optionally retaining completed measurements."""
+    if not str(error or "").strip():
+        raise ValueError("error rows require a non-empty diagnostic")
     os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
     scales = resolve_input_scales(task_info.task_family, input_scales)
 
@@ -3147,6 +3165,12 @@ def _write_case_error_csv(
         for row in planned_rows
         if measurement_key(row) not in existing_keys
     ]
+    if timeout_context is not None and missing_rows:
+        _annotate_timeout_placeholder_rows(
+            missing_rows,
+            measurement_key=measurement_key,
+            timeout_context=timeout_context,
+        )
     rows = [*existing_rows, *missing_rows]
 
     with open(out_csv, "w", encoding="utf-8", newline="") as f:
@@ -3162,6 +3186,97 @@ def _write_case_error_csv(
     else:
         print(f"[case] Wrote error rows: {out_csv} ({len(rows)} rows)")
     return len(existing_rows), len(missing_rows)
+
+
+def _timeout_context_float(value: Any, fallback: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return float(fallback)
+    return parsed if math.isfinite(parsed) and parsed > 0.0 else float(fallback)
+
+
+def _load_client_error_context(path: str) -> Dict[str, Any]:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError) as exc:
+        print(
+            f"[case][WARN] could not read structured client error context {path}: {exc}",
+            file=sys.stderr,
+        )
+        return {}
+    if not isinstance(payload, dict):
+        print(
+            f"[case][WARN] ignored non-object client error context: {path}",
+            file=sys.stderr,
+        )
+        return {}
+    return payload
+
+
+def _annotate_timeout_placeholder_rows(
+    rows: List[Dict[str, Any]],
+    *,
+    measurement_key,
+    timeout_context: Dict[str, Any],
+) -> None:
+    first_missing_scale = measurement_key(rows[0])[0]
+    try:
+        triggering_scale = _format_scale_value(
+            float(timeout_context.get("input_scale", first_missing_scale))
+        )
+    except (TypeError, ValueError):
+        triggering_scale = first_missing_scale
+
+    timeout_s = _timeout_context_float(
+        timeout_context.get("request_timeout_s"),
+        DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    )
+    request_id = str(timeout_context.get("request_id") or "unknown")
+    request_phase = str(timeout_context.get("request_phase") or "unknown")
+    repeat_idx = timeout_context.get("measurement_repeat_idx")
+    attempted_key = None
+    if request_phase == "measurement_warmup" and repeat_idx is not None:
+        attempted_key = (triggering_scale, "1", int(repeat_idx))
+    elif request_phase == "measurement_repeat" and repeat_idx is not None:
+        attempted_key = (triggering_scale, "0", int(repeat_idx))
+
+    context_source = (
+        "client_timeout_sidecar"
+        if timeout_context.get("input_scale") is not None
+        else "inferred_from_first_missing_scale"
+    )
+    trigger_fields = (
+        f"trigger_error=client_request_timeout; triggering_input_scale={triggering_scale}; "
+        f"request_timeout_s={timeout_s:g}; triggering_request_latency_s>{timeout_s:g}; "
+        f"trigger_phase={request_phase}; trigger_request_id={request_id}; "
+        f"context_source={context_source}"
+    )
+
+    for row in rows:
+        key = measurement_key(row)
+        planned_scale = key[0]
+        if attempted_key is not None and key == attempted_key:
+            row["error"] = (
+                "client_request_timeout: planned_request_attempted=true; "
+                "measurement_row_completed=false; "
+                f"planned_input_scale={planned_scale}; {trigger_fields}"
+            )
+            continue
+
+        reason = (
+            "triggering_scale_probe_timed_out"
+            if planned_scale == triggering_scale
+            else "skipped_after_prior_scale_timeout"
+        )
+        row["error"] = (
+            "not_measured_after_timeout: planned_request_attempted=false; "
+            "measurement_row_completed=false; "
+            f"planned_input_scale={planned_scale}; reason={reason}; {trigger_fields}"
+        )
 
 
 def run_matrix(
@@ -3246,7 +3361,12 @@ def merge_all_csvs(csv_paths: List[str], output_path: str) -> None:
             continue
         with open(path, "r", encoding="utf-8", newline="") as f:
             reader = csv.DictReader(f)
-            for row in reader:
+            for row_number, row in enumerate(reader, start=2):
+                if _row_has_error_status(row) and not str(row.get("error") or "").strip():
+                    raise RuntimeError(
+                        "refusing to merge status=error without an error diagnostic: "
+                        f"{path}:{row_number}"
+                    )
                 all_rows.append(row)
 
     with open(output_path, "w", encoding="utf-8", newline="") as f:

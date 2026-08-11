@@ -1338,6 +1338,21 @@ class DetectEnvironmentTests(unittest.TestCase):
 
         def fake_run(cmd, check=True, capture=True, **kwargs):
             if cmd and cmd[-2:] == ["-m", "acprof.host.client"]:
+                with open(
+                    kwargs["env"]["CLIENT_ERROR_PATH"],
+                    "w",
+                    encoding="utf-8",
+                ) as f:
+                    json.dump(
+                        {
+                            "error_type": "client_request_timeout",
+                            "input_scale": 64.0,
+                            "request_timeout_s": 300.0,
+                            "request_phase": "auto_repeat_window_warmup",
+                            "request_id": "case_scale64_auto_warmup0",
+                        },
+                        f,
+                    )
                 return SimpleNamespace(
                     returncode=orchestrator.CLIENT_REQUEST_TIMEOUT_EXIT_CODE,
                     stdout="",
@@ -1385,6 +1400,20 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertTrue(
             all("client_request_timeout" in row["error"] for row in rows)
         )
+        trigger_rows = [row for row in rows if float(row["input_scale"]) == 64.0]
+        skipped_rows = [row for row in rows if float(row["input_scale"]) == 128.0]
+        self.assertTrue(
+            all("reason=triggering_scale_probe_timed_out" in row["error"] for row in trigger_rows)
+        )
+        self.assertTrue(
+            all("triggering_request_latency_s>300" in row["error"] for row in trigger_rows)
+        )
+        self.assertTrue(
+            all("reason=skipped_after_prior_scale_timeout" in row["error"] for row in skipped_rows)
+        )
+        self.assertTrue(
+            all("planned_request_attempted=false" in row["error"] for row in skipped_rows)
+        )
         self.assertEqual(
             sorted({float(row["input_scale"]) for row in rows}),
             [64.0, 128.0],
@@ -1423,6 +1452,22 @@ class DetectEnvironmentTests(unittest.TestCase):
                     writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
                     writer.writeheader()
                     writer.writerow(row)
+                with open(
+                    kwargs["env"]["CLIENT_ERROR_PATH"],
+                    "w",
+                    encoding="utf-8",
+                ) as f:
+                    json.dump(
+                        {
+                            "error_type": "client_request_timeout",
+                            "input_scale": 128.0,
+                            "request_timeout_s": 300.0,
+                            "request_phase": "measurement_repeat",
+                            "measurement_repeat_idx": 0,
+                            "request_id": "case_scale128_r0:0",
+                        },
+                        f,
+                    )
                 return SimpleNamespace(
                     returncode=orchestrator.CLIENT_REQUEST_TIMEOUT_EXIT_CODE,
                     stdout="",
@@ -1473,7 +1518,9 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(rows[1]["input_scale"], "128")
         self.assertEqual(rows[1]["status"], "error")
         self.assertIn("client_request_timeout", rows[1]["error"])
-        self.assertIn("remaining measurements skipped", rows[1]["error"])
+        self.assertIn("planned_request_attempted=true", rows[1]["error"])
+        self.assertIn("measurement_row_completed=false", rows[1]["error"])
+        self.assertIn("triggering_request_latency_s>300", rows[1]["error"])
 
     def test_run_single_case_writes_error_rows_when_container_start_fails(self) -> None:
         task_info = TaskInfo(

@@ -9,6 +9,7 @@ import datetime
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import time
@@ -96,6 +97,7 @@ CONTAINER_NAME = os.getenv("CONTAINER_NAME", "").strip()
 SNIFF_GROUPS_PATH = os.getenv("SNIFF_GROUPS_PATH", "").strip()
 IDLE_DEBUG = os.getenv("IDLE_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 IDLE_DIAG_PATH = os.getenv("IDLE_DIAG_PATH", "").strip()
+CLIENT_ERROR_PATH = os.getenv("CLIENT_ERROR_PATH", "").strip()
 IDLE_DEBUG_TRACE_INTERVAL_S = float(os.getenv("IDLE_DEBUG_TRACE_INTERVAL_S", "0.1"))
 USE_MIPS = os.getenv("USE_MIPS", "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -261,6 +263,68 @@ class MIPSAbort(RuntimeError):
 
 class RequestTimeoutAbort(RuntimeError):
     """Raised when the current resource case cannot finish inference in time."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        input_scale: Optional[float] = None,
+        request_id: str = "",
+        timeout_s: Optional[float] = None,
+    ) -> None:
+        super().__init__(message)
+        self.input_scale = input_scale
+        self.request_id = request_id
+        self.timeout_s = timeout_s
+
+
+def _request_phase_context(request_id: str) -> Dict[str, Any]:
+    auto_match = re.search(r"_auto_warmup(?P<request_idx>\d+)$", request_id)
+    if auto_match:
+        return {
+            "request_phase": "auto_repeat_window_warmup",
+            "request_index_in_window": int(auto_match.group("request_idx")),
+        }
+
+    measurement_match = re.search(
+        r"_(?P<phase>[wr])(?P<repeat_idx>\d+):(?P<request_idx>\d+)$",
+        request_id,
+    )
+    if measurement_match:
+        phase = measurement_match.group("phase")
+        return {
+            "request_phase": (
+                "measurement_warmup" if phase == "w" else "measurement_repeat"
+            ),
+            "measurement_repeat_idx": int(measurement_match.group("repeat_idx")),
+            "request_index_in_window": int(measurement_match.group("request_idx")),
+        }
+
+    return {"request_phase": "unknown"}
+
+
+def _write_client_error_sidecar(exc: RequestTimeoutAbort) -> None:
+    if not CLIENT_ERROR_PATH:
+        return
+
+    payload = {
+        "schema_version": 1,
+        "error_type": "client_request_timeout",
+        "message": str(exc),
+        "input_scale": exc.input_scale,
+        "request_id": exc.request_id,
+        "request_timeout_s": exc.timeout_s,
+        "measurement_completed": False,
+        **_request_phase_context(exc.request_id),
+    }
+    os.makedirs(os.path.dirname(CLIENT_ERROR_PATH) or ".", exist_ok=True)
+    tmp_path = f"{CLIENT_ERROR_PATH}.tmp-{os.getpid()}"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=True, indent=2, sort_keys=True)
+        f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, CLIENT_ERROR_PATH)
 
 
 def _mean(xs: List[float]) -> float:
@@ -534,7 +598,10 @@ def _one_request(scale_value: float, req_id: str, payload_override: Optional[Dic
         raise RequestTimeoutAbort(
             "inference request timed out after "
             f"{REQUEST_TIMEOUT_SECONDS:g}s "
-            f"(input_scale={scale_value:g}, req_id={req_id})"
+            f"(input_scale={scale_value:g}, req_id={req_id})",
+            input_scale=float(scale_value),
+            request_id=req_id,
+            timeout_s=float(REQUEST_TIMEOUT_SECONDS),
         ) from exc
     t1 = time.perf_counter()
     if r.status_code >= 400:
@@ -1243,6 +1310,10 @@ def _append_row(
     idle_diag_record: Optional[Dict[str, Any]] = None,
 ) -> None:
     out = {k: row.get(k, "") for k in CSV_FIELDS}
+    if str(out.get("status") or "").strip().lower() == "error" and not str(
+        out.get("error") or ""
+    ).strip():
+        raise RuntimeError("refusing to write status=error without an error diagnostic")
     writer.writerow(out)
     f.flush()
     os.fsync(f.fileno())
@@ -1720,6 +1791,14 @@ def run_cli() -> None:
     try:
         main()
     except RequestTimeoutAbort as exc:
+        try:
+            _write_client_error_sidecar(exc)
+        except OSError as sidecar_exc:
+            print(
+                "[case][WARN] failed to persist structured timeout context: "
+                f"{sidecar_exc}",
+                file=sys.stderr,
+            )
         print(f"[case][ERROR] {exc}", file=sys.stderr)
         raise SystemExit(CLIENT_REQUEST_TIMEOUT_EXIT_CODE) from None
     except EnergyAbort as exc:
