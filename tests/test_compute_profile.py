@@ -36,6 +36,19 @@ def _write_input_scale_plan(directory: str, input_scale: float = 8.0) -> str:
     return path
 
 
+def _ncu_resume_csv_text() -> str:
+    return "\n".join([
+        (
+            '"ID","Kernel Name","smsp__sass_thread_inst_executed_op_'
+            'ffma_pred_on.sum","sm__ops_path_tensor_src_fp16_dst_fp32.sum",'
+            '"gpu__time_duration.sum"'
+        ),
+        '"","","inst","FLOP","usec"',
+        '"0","kernel_a","10","100","1000"',
+        '"1","kernel_b","20","300","2000"',
+    ])
+
+
 class ComputeProfileTests(unittest.TestCase):
     def test_transformers_handler_forces_eager_only_when_requested(self) -> None:
         self.assertEqual(transformers_pipeline_load_kwargs(None), {})
@@ -721,6 +734,160 @@ class ComputeProfileTests(unittest.TestCase):
         self.assertIn("--cap-add=SYS_PTRACE", container_base_cmd)
         self.assertIn("--security-opt=seccomp=unconfined", container_base_cmd)
         self.assertEqual(container_base_cmd[-1], "acprof-test:latest")
+
+    def test_ncu_resume_reuses_csv_recovers_report_and_collects_only_missing(self) -> None:
+        task_info = TaskInfo(
+            model_id="openai/whisper-large-v3",
+            pipeline_tag="automatic-speech-recognition",
+            task_family="audio",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="revision-1",
+            detection_method="hub_api",
+        )
+        metrics = [
+            "smsp__sass_thread_inst_executed_op_ffma_pred_on.sum",
+            "sm__ops_path_tensor_src_fp16_dst_fp32.sum",
+        ]
+        collected = []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_root = os.path.join(tmp, "compute_profiles")
+            os.makedirs(profile_root)
+            with open(
+                os.path.join(profile_root, "ncu_scale_1.csv"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write(_ncu_resume_csv_text())
+            with open(
+                os.path.join(profile_root, "ncu_scale_20.ncu-rep"),
+                "wb",
+            ) as f:
+                f.write(b"existing report")
+
+            def fake_export(**kwargs):
+                self.assertTrue(kwargs["report_base"].endswith("ncu_scale_20"))
+                compute_profile._write_text_atomic(
+                    kwargs["host_csv"],
+                    _ncu_resume_csv_text(),
+                )
+                return True, ""
+
+            def fake_collect(**kwargs):
+                scale = float(kwargs["entry"]["input_scale"])
+                collected.append(scale)
+                self.assertEqual(scale, 30.0)
+                _report_base, host_csv, _host_report, _checkpoint = (
+                    compute_profile._ncu_artifact_paths(profile_root, scale)
+                )
+                compute_profile._write_text_atomic(
+                    host_csv,
+                    _ncu_resume_csv_text(),
+                )
+                return compute_profile._ncu_entry_from_csv(
+                    entry=kwargs["entry"],
+                    host_csv=host_csv,
+                    profile_root=profile_root,
+                    repeat=kwargs["repeat"],
+                    runner_payload={
+                        "gpu_compute_capability": "8.9",
+                        "gpu_sm_count": 24,
+                    },
+                )
+
+            with patch(
+                "acprof.host.compute_profile._resolve_ncu_metrics",
+                return_value=(metrics, ""),
+            ), patch(
+                "acprof.host.compute_profile._export_ncu_report",
+                side_effect=fake_export,
+            ) as export_report, patch(
+                "acprof.host.compute_profile._run_ncu_for_entry",
+                side_effect=fake_collect,
+            ):
+                result = compute_profile._profile_gpu_entries(
+                    entries=[
+                        {"input_scale": 1.0},
+                        {"input_scale": 20.0},
+                        {"input_scale": 30.0},
+                    ],
+                    ncu_bin="/opt/nvidia/nsight-compute/ncu",
+                    ncu_root=None,
+                    task_info=task_info,
+                    image_tag="acprof-test:latest",
+                    cpu=2,
+                    mem=4,
+                    payload_file=os.path.join(tmp, "payloads.json"),
+                    profile_root=profile_root,
+                    repeat=1,
+                    resume_existing=True,
+                )
+
+            self.assertEqual(collected, [30.0])
+            self.assertEqual(export_report.call_count, 1)
+            self.assertEqual(
+                [entry["input_scale"] for entry in result["entries"]],
+                [1.0, 20.0, 30.0],
+            )
+            self.assertTrue(all(
+                compute_profile._ncu_entry_complete(entry)
+                for entry in result["entries"]
+            ))
+            for scale in (1, 20, 30):
+                self.assertTrue(os.path.isfile(os.path.join(
+                    profile_root,
+                    f"ncu_scale_{scale}.checkpoint.json",
+                )))
+
+    def test_ncu_resume_rejects_checkpoint_from_different_repeat(self) -> None:
+        task_info = TaskInfo(
+            model_id="openai/whisper-large-v3",
+            pipeline_tag="automatic-speech-recognition",
+            task_family="audio",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="revision-1",
+            detection_method="hub_api",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_root = os.path.join(tmp, "compute_profiles")
+            os.makedirs(profile_root)
+            host_csv = os.path.join(profile_root, "ncu_scale_1.csv")
+            compute_profile._write_text_atomic(host_csv, _ncu_resume_csv_text())
+            entry = compute_profile._ncu_entry_from_csv(
+                entry={"input_scale": 1.0},
+                host_csv=host_csv,
+                profile_root=profile_root,
+                repeat=1,
+            )
+            checkpoint_path = os.path.join(
+                profile_root,
+                "ncu_scale_1.checkpoint.json",
+            )
+            compute_profile._write_ncu_checkpoint(
+                checkpoint_path=checkpoint_path,
+                task_info=task_info,
+                image_tag="acprof-test:latest",
+                input_scale=1.0,
+                repeat=1,
+                metrics=["metric", compute_profile.NCU_DURATION_METRIC],
+                host_csv=host_csv,
+                entry=entry,
+            )
+
+            resumed = compute_profile._resume_ncu_for_entry(
+                ncu_bin="/opt/ncu",
+                ncu_metrics=["metric", compute_profile.NCU_DURATION_METRIC],
+                task_info=task_info,
+                image_tag="acprof-test:latest",
+                base_cmd=["docker"],
+                profile_root=profile_root,
+                entry={"input_scale": 1.0},
+                repeat=2,
+            )
+
+        self.assertIsNone(resumed)
 
     def test_vendor_mode_missing_tools_write_nan_profiles_with_errors(self) -> None:
         task_info = TaskInfo(

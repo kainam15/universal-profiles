@@ -44,6 +44,30 @@ def _write_input_scale_plan(directory: str) -> str:
     return path
 
 
+def _massif_resume_report() -> str:
+    return """\
+desc: --time-unit=ms --stacks=yes
+cmd: python -m acprof.container.compute_profile_runner
+time_unit: ms
+#-----------
+snapshot=0
+#-----------
+time=1
+mem_heap_B=100
+mem_heap_extra_B=20
+mem_stacks_B=5
+heap_tree=empty
+#-----------
+snapshot=1
+#-----------
+time=2
+mem_heap_B=150
+mem_heap_extra_B=30
+mem_stacks_B=10
+heap_tree=peak
+"""
+
+
 class ExecutionProfileTests(unittest.TestCase):
     def test_v1_and_v2_input_plans_reuse_the_exact_payload(self) -> None:
         payload = {
@@ -383,6 +407,83 @@ heap_tree=peak
                 any(value.startswith(f"{name}=") for value in command)
             )
         self.assertEqual(command[-1], "acprof-test:latest")
+
+    def test_massif_resume_reuses_report_and_collects_only_missing_scale(
+        self,
+    ) -> None:
+        collected = []
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_root = os.path.join(tmp, "execution_profiles")
+            os.makedirs(profile_root)
+            existing_report, _checkpoint = execution_profile._massif_artifact_paths(
+                profile_root=profile_root,
+                cpu=8,
+                mem=16,
+                input_scale=8.0,
+            )
+            with open(existing_report, "w", encoding="utf-8") as report_file:
+                report_file.write(_massif_resume_report())
+
+            def fake_collect(**kwargs):
+                input_scale = float(kwargs["entry"]["input_scale"])
+                collected.append(input_scale)
+                self.assertEqual(input_scale, 16.0)
+                report_path, checkpoint_path = (
+                    execution_profile._massif_artifact_paths(
+                        profile_root=profile_root,
+                        cpu=kwargs["cpu"],
+                        mem=kwargs["mem"],
+                        input_scale=input_scale,
+                    )
+                )
+                with open(report_path, "w", encoding="utf-8") as report_file:
+                    report_file.write(_massif_resume_report())
+                profiled = execution_profile._massif_entry_from_report(
+                    entry=kwargs["entry"],
+                    host_report=report_path,
+                    output_dir=kwargs["output_dir"],
+                )
+                execution_profile._write_massif_checkpoint(
+                    checkpoint_path=checkpoint_path,
+                    task_info=kwargs["task_info"],
+                    derived_image=kwargs["derived_image"],
+                    cpu=kwargs["cpu"],
+                    mem=kwargs["mem"],
+                    input_scale=input_scale,
+                    repeat=kwargs["repeat"],
+                    host_report=report_path,
+                    entry=profiled,
+                )
+                return profiled
+
+            with patch(
+                "acprof.host.execution_profile._collect_massif_entry",
+                side_effect=fake_collect,
+            ):
+                result = execution_profile._profile_massif_tool(
+                    entries=[{"input_scale": 8.0}, {"input_scale": 16.0}],
+                    global_error="",
+                    task_info=_task_info(),
+                    derived_image="acprof-massif-test:latest",
+                    cpu=8,
+                    mem=16,
+                    payload_file=os.path.join(tmp, "input_scale_plan.json"),
+                    profile_root=profile_root,
+                    output_dir=tmp,
+                    repeat=1,
+                    resume_existing=True,
+                )
+
+            self.assertEqual(collected, [16.0])
+            self.assertTrue(all(
+                execution_profile._massif_entry_complete(entry)
+                for entry in result["entries"]
+            ))
+            for scale in (8, 16):
+                self.assertTrue(os.path.isfile(os.path.join(
+                    profile_root,
+                    f"massif_cpu_8_mem_16_scale_{scale}.checkpoint.json",
+                )))
 
     def test_missing_tools_fill_every_resource_and_scale_without_aborting(
         self,

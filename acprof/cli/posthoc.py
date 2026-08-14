@@ -785,6 +785,7 @@ def _collect_compute_plan(
     ncu_repeat: int,
     compute_profile_cpus: Optional[int],
     compute_profile_mem: Optional[int],
+    resume_existing_ncu_profiles: bool = True,
 ) -> Dict[str, Any]:
     from acprof.host.compute_profile import collect_compute_profile_plan
 
@@ -814,6 +815,7 @@ def _collect_compute_plan(
         compute_profile_cpus=compute_profile_cpus,
         compute_profile_mem=compute_profile_mem,
         compute_profile_tool=tool,
+        resume_existing_ncu_profiles=resume_existing_ncu_profiles,
     )
     plan = _read_plan(Path(plan_path))
     if plan is None:
@@ -915,6 +917,7 @@ def _collect_execution_plan(
     massif_repeat: int,
     nsys_repeat: int,
     nsys_root: Optional[str],
+    resume_existing_profiles: bool = True,
 ) -> Dict[str, Any]:
     from acprof.host.execution_profile import collect_execution_profile_plan
 
@@ -945,6 +948,7 @@ def _collect_execution_plan(
             nsys_repeat=nsys_repeat,
             nsys_root=nsys_root,
             keep_profiles=True,
+            resume_existing_profiles=resume_existing_profiles,
         )
     except ValueError as exc:
         raise PosthocError(str(exc)) from exc
@@ -1719,6 +1723,7 @@ def run_posthoc(
                     ncu_repeat=ncu_repeat,
                     compute_profile_cpus=compute_profile_cpus,
                     compute_profile_mem=compute_profile_mem,
+                    resume_existing_ncu_profiles=not force_reprofile,
                 )
             else:
                 plan = _collect_execution_plan(
@@ -1734,6 +1739,7 @@ def run_posthoc(
                     massif_repeat=massif_repeat,
                     nsys_repeat=nsys_repeat,
                     nsys_root=nsys_root,
+                    resume_existing_profiles=not force_reprofile,
                 )
             plans_by_tool[tool] = plan
             collected.append(tool)

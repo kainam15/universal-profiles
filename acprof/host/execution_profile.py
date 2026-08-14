@@ -12,6 +12,7 @@ import csv
 import glob
 import hashlib
 import io
+import json
 import math
 import os
 import re
@@ -25,6 +26,7 @@ from acprof.host.detect import TaskInfo
 EXECUTION_PROFILE_PLAN_NAME = "execution_profile_plan.json"
 EXECUTION_PROFILE_DIRNAME = "execution_profiles"
 EXECUTION_PROFILE_SCHEMA_VERSION = 1
+MASSIF_CHECKPOINT_SCHEMA_VERSION = 1
 EXECUTION_PROFILE_TOOL_MODES = {"none", "both", "massif", "nsys"}
 MASSIF_TOOL = "massif"
 NSYS_TOOL = "nsys"
@@ -873,6 +875,222 @@ def _without_compute_thread_env(cmd: Sequence[str]) -> List[str]:
     return filtered
 
 
+def _massif_artifact_paths(
+    *,
+    profile_root: str,
+    cpu: int,
+    mem: int,
+    input_scale: float,
+) -> Tuple[str, str]:
+    scale_label = _safe_filename_token(
+        compute_profile._format_scale_value(input_scale)
+    )
+    filename = f"massif_cpu_{cpu}_mem_{mem}_scale_{scale_label}.out"
+    host_report = os.path.join(profile_root, filename)
+    checkpoint = os.path.join(
+        profile_root,
+        f"massif_cpu_{cpu}_mem_{mem}_scale_{scale_label}.checkpoint.json",
+    )
+    return host_report, checkpoint
+
+
+def _massif_entry_complete(entry: Mapping[str, Any]) -> bool:
+    return not str(entry.get("error") or "").strip() and all(
+        _finite_float(entry.get(field)) is not None
+        for field in MASSIF_FIELDS
+    )
+
+
+def _massif_entry_from_report(
+    *,
+    entry: Mapping[str, Any],
+    host_report: str,
+    output_dir: str,
+) -> Dict[str, Any]:
+    relative_report = _relative_artifact(host_report, output_dir)
+    try:
+        parsed = parse_massif_output(host_report)
+    except Exception as exc:
+        detail = str(exc)
+        error = (
+            detail
+            if detail.startswith("massif_parse_failed:")
+            else f"massif_parse_failed:{detail}"
+        )
+        return _massif_error_entry(
+            entry,
+            error,
+            report=relative_report if os.path.isfile(host_report) else None,
+        )
+    return {
+        "input_scale": float(entry["input_scale"]),
+        "tool": MASSIF_TOOL,
+        **parsed,
+        "compute_profile_error_massif": "",
+        "error": "",
+        "report": relative_report,
+    }
+
+
+def _write_massif_checkpoint(
+    *,
+    checkpoint_path: str,
+    task_info: TaskInfo,
+    derived_image: str,
+    cpu: int,
+    mem: int,
+    input_scale: float,
+    repeat: int,
+    host_report: str,
+    entry: Mapping[str, Any],
+) -> None:
+    _write_json_atomic(
+        checkpoint_path,
+        {
+            "schema_version": MASSIF_CHECKPOINT_SCHEMA_VERSION,
+            "model_id": task_info.model_id,
+            "model_revision": task_info.model_revision or "main",
+            "derived_image": derived_image,
+            "cpu_cores": int(cpu),
+            "mem_cap_gb": int(mem),
+            "input_scale": float(input_scale),
+            "repeat": max(1, int(repeat)),
+            "report_size_bytes": os.path.getsize(host_report),
+            "entry": dict(entry),
+        },
+    )
+
+
+def _read_massif_checkpoint(path: str) -> Optional[Dict[str, Any]]:
+    try:
+        with open(path, "r", encoding="utf-8") as checkpoint_file:
+            payload = json.load(checkpoint_file)
+    except (OSError, ValueError, TypeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _massif_checkpoint_matches(
+    checkpoint: Mapping[str, Any],
+    *,
+    task_info: TaskInfo,
+    derived_image: str,
+    cpu: int,
+    mem: int,
+    input_scale: float,
+    repeat: int,
+) -> bool:
+    try:
+        schema_version = int(checkpoint.get("schema_version"))
+        checkpoint_cpu = int(checkpoint.get("cpu_cores"))
+        checkpoint_mem = int(checkpoint.get("mem_cap_gb"))
+        checkpoint_scale = float(checkpoint.get("input_scale"))
+        checkpoint_repeat = int(checkpoint.get("repeat"))
+    except (TypeError, ValueError):
+        return False
+    return (
+        schema_version == MASSIF_CHECKPOINT_SCHEMA_VERSION
+        and str(checkpoint.get("model_id") or "") == task_info.model_id
+        and str(checkpoint.get("model_revision") or "main")
+        == str(task_info.model_revision or "main")
+        and str(checkpoint.get("derived_image") or "") == derived_image
+        and checkpoint_cpu == int(cpu)
+        and checkpoint_mem == int(mem)
+        and math.isclose(checkpoint_scale, input_scale, abs_tol=1e-9)
+        and checkpoint_repeat == max(1, int(repeat))
+    )
+
+
+def _resume_massif_entry(
+    *,
+    task_info: TaskInfo,
+    derived_image: str,
+    cpu: int,
+    mem: int,
+    profile_root: str,
+    output_dir: str,
+    entry: Mapping[str, Any],
+    repeat: int,
+) -> Optional[Dict[str, Any]]:
+    input_scale = float(entry["input_scale"])
+    scale_label = compute_profile._format_scale_value(input_scale)
+    host_report, checkpoint_path = _massif_artifact_paths(
+        profile_root=profile_root,
+        cpu=cpu,
+        mem=mem,
+        input_scale=input_scale,
+    )
+    checkpoint_exists = os.path.isfile(checkpoint_path)
+    checkpoint = (
+        _read_massif_checkpoint(checkpoint_path)
+        if checkpoint_exists
+        else None
+    )
+    if checkpoint_exists and (
+        checkpoint is None
+        or not _massif_checkpoint_matches(
+            checkpoint,
+            task_info=task_info,
+            derived_image=derived_image,
+            cpu=cpu,
+            mem=mem,
+            input_scale=input_scale,
+            repeat=repeat,
+        )
+    ):
+        print(
+            f"[execution-profile][massif][resume] scale={scale_label}: "
+            "checkpoint does not match this run; recollecting"
+        )
+        return None
+
+    if checkpoint is not None and os.path.isfile(host_report):
+        checkpoint_entry = checkpoint.get("entry")
+        expected_size = _finite_float(checkpoint.get("report_size_bytes"))
+        if (
+            isinstance(checkpoint_entry, Mapping)
+            and _massif_entry_complete(checkpoint_entry)
+            and expected_size is not None
+            and os.path.getsize(host_report) == int(expected_size)
+        ):
+            resumed = dict(checkpoint_entry)
+            resumed["report"] = _relative_artifact(host_report, output_dir)
+            print(
+                f"[execution-profile][massif][resume] scale={scale_label}: "
+                f"reusing checkpoint {checkpoint_path}"
+            )
+            return resumed
+
+    if checkpoint is None and os.path.isfile(host_report):
+        resumed = _massif_entry_from_report(
+            entry=entry,
+            host_report=host_report,
+            output_dir=output_dir,
+        )
+        if _massif_entry_complete(resumed):
+            _write_massif_checkpoint(
+                checkpoint_path=checkpoint_path,
+                task_info=task_info,
+                derived_image=derived_image,
+                cpu=cpu,
+                mem=mem,
+                input_scale=input_scale,
+                repeat=repeat,
+                host_report=host_report,
+                entry=resumed,
+            )
+            print(
+                f"[execution-profile][massif][resume] scale={scale_label}: "
+                f"reusing valid report {host_report}"
+            )
+            return resumed
+        print(
+            f"[execution-profile][massif][resume] scale={scale_label}: "
+            "existing report is incomplete; recollecting"
+        )
+    return None
+
+
 def _collect_massif_entry(
     *,
     task_info: TaskInfo,
@@ -885,11 +1103,17 @@ def _collect_massif_entry(
     entry: Mapping[str, Any],
     repeat: int,
 ) -> Dict[str, Any]:
+    input_scale = float(entry["input_scale"])
     scale_label = _safe_filename_token(
-        compute_profile._format_scale_value(float(entry["input_scale"]))
+        compute_profile._format_scale_value(input_scale)
     )
-    filename = f"massif_cpu_{cpu}_mem_{mem}_scale_{scale_label}.out"
-    host_report = os.path.join(profile_root, filename)
+    host_report, checkpoint_path = _massif_artifact_paths(
+        profile_root=profile_root,
+        cpu=cpu,
+        mem=mem,
+        input_scale=input_scale,
+    )
+    filename = os.path.basename(host_report)
     relative_report = _relative_artifact(host_report, output_dir)
     base_cmd = _base_docker_cmd(
         task_info=task_info,
@@ -918,28 +1142,24 @@ def _collect_massif_entry(
             f"massif_failed:{_command_detail(result)}",
             report=relative_report if os.path.isfile(host_report) else None,
         )
-    try:
-        parsed = parse_massif_output(host_report)
-    except Exception as exc:
-        detail = str(exc)
-        error = (
-            detail
-            if detail.startswith("massif_parse_failed:")
-            else f"massif_parse_failed:{detail}"
+    profiled = _massif_entry_from_report(
+        entry=entry,
+        host_report=host_report,
+        output_dir=output_dir,
+    )
+    if _massif_entry_complete(profiled):
+        _write_massif_checkpoint(
+            checkpoint_path=checkpoint_path,
+            task_info=task_info,
+            derived_image=derived_image,
+            cpu=cpu,
+            mem=mem,
+            input_scale=input_scale,
+            repeat=repeat,
+            host_report=host_report,
+            entry=profiled,
         )
-        return _massif_error_entry(
-            entry,
-            error,
-            report=relative_report if os.path.isfile(host_report) else None,
-        )
-    return {
-        "input_scale": float(entry["input_scale"]),
-        "tool": MASSIF_TOOL,
-        **parsed,
-        "compute_profile_error_massif": "",
-        "error": "",
-        "report": relative_report,
-    }
+    return profiled
 
 
 def _nsys_sqlite_path(report_path: str) -> str:
@@ -1157,6 +1377,7 @@ def _profile_massif_tool(
     profile_root: str,
     output_dir: str,
     repeat: int,
+    resume_existing: bool = False,
 ) -> Dict[str, Any]:
     if global_error or not derived_image:
         error = global_error or "massif_not_found"
@@ -1168,8 +1389,20 @@ def _profile_massif_tool(
         profiled_entries = []
         for entry in entries:
             try:
-                profiled_entries.append(
-                    _collect_massif_entry(
+                profiled = None
+                if resume_existing:
+                    profiled = _resume_massif_entry(
+                        task_info=task_info,
+                        derived_image=derived_image,
+                        cpu=cpu,
+                        mem=mem,
+                        profile_root=profile_root,
+                        output_dir=output_dir,
+                        entry=entry,
+                        repeat=repeat,
+                    )
+                if profiled is None:
+                    profiled = _collect_massif_entry(
                         task_info=task_info,
                         derived_image=derived_image,
                         cpu=cpu,
@@ -1180,7 +1413,7 @@ def _profile_massif_tool(
                         entry=entry,
                         repeat=repeat,
                     )
-                )
+                profiled_entries.append(profiled)
             except Exception as exc:
                 profiled_entries.append(
                     _massif_error_entry(
@@ -1287,6 +1520,7 @@ def collect_execution_profile_plan(
     nsys_sampling: str = "per-cpu-scale",
     nsys_reference_cpu: Optional[int] = None,
     nsys_reference_mem: Optional[int] = None,
+    resume_existing_profiles: bool = False,
 ) -> str:
     """Collect sampled probes and expand them to a full resource-grid plan."""
     normalized_tool_mode = (tool_mode or "both").strip().lower()
@@ -1453,6 +1687,7 @@ def collect_execution_profile_plan(
             profile_root=profile_root,
             output_dir=output_dir,
             repeat=normalized_massif_repeat,
+            resume_existing=resume_existing_profiles,
         )
     for cpu, mem in nsys_sources:
         source_profiles[(NSYS_TOOL, cpu, mem)] = _profile_nsys_tool(

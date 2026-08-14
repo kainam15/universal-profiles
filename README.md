@@ -261,7 +261,7 @@ python profile.py results/google-bert--bert-base-uncased --dry-run
 python profile.py results/google-bert--bert-base-uncased --tools torch,ncu
 ```
 
-`profile.py` 不会重跑 latency、energy、MIPS、resource usage 或 packet latency；写入前会备份旧结果并进行原子替换。详细行为见[完整参考中的补采说明](REFERENCE.md#posthoc-profiling)。
+`profile.py` 不会重跑 latency、energy、MIPS、resource usage 或 packet latency；写入前会备份旧结果并进行原子替换。NCU 和 Massif 会按 input scale 保存 checkpoint：NCU 可复用完整 CSV 或从遗留 `.ncu-rep` 恢复，Massif 可复用已完成的 `.out`，因此重启后只重新采集缺失尺度；`--force-reprofile` 会强制全部重采。详细行为见[完整参考中的补采说明](REFERENCE.md#posthoc-profiling)。
 
 ## 常见问题
 

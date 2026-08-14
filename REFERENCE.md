@@ -463,6 +463,8 @@ python profile.py results/google-bert--bert-base-uncased \
 
 四个 `--*-reference-cpu/mem` 参数可覆盖默认最大资源，但显式值必须存在于已有结果矩阵中。已有成功结果默认会复用；需要按新采样参数重采时同时传入 `--force-reprofile`。
 
+Post-hoc NCU 与 Massif 补采支持按 input scale 断点续跑。NCU 每个成功尺度会在 raw CSV 旁原子写入 `ncu_scale_<scale>.checkpoint.json`；重新执行同一命令时，会依次尝试复用匹配的 checkpoint、校验并迁移旧版 CSV、从已存在的 `.ncu-rep` 重新导出 CSV，只有无法恢复的尺度才会重新采集。Massif 同样为每个完成的 `.out` 写 checkpoint，并可迁移补采中断前留下的完整旧报告。checkpoint 会校验模型 revision、镜像、资源、repeat，以及 NCU metrics（适用时）；`--force-reprofile` 会禁用恢复路径并强制重新采集。
+
 常用安全/诊断选项：
 
 ```bash

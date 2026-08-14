@@ -408,6 +408,7 @@ class PosthocProfileTests(unittest.TestCase):
         self.assertEqual(kwargs["torch_profiler_repeat"], 3)
         self.assertEqual(kwargs["compute_profile_cpus"], 8)
         self.assertEqual(kwargs["compute_profile_mem"], 16)
+        self.assertTrue(kwargs["resume_existing_ncu_profiles"])
         self.assertTrue(posthoc.compute_plan_covers_tool(plan, context, "torch"))
 
     def test_torch_and_ncu_plans_merge_without_overwriting_each_other(self):
