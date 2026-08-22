@@ -39,6 +39,7 @@ from acprof.config import (
     DEFAULT_REQUEST_TIMEOUT_SECONDS,
     DEFAULT_REPEAT_IN_WINDOW,
     DEFAULT_REPEAT_WINDOW_SECONDS,
+    GPU_RUNTIME_STATE_FIELDS,
     IDLE_DIAG_DIRNAME,
     SCALING_DIMENSIONS,
 )
@@ -886,6 +887,38 @@ def _resource_usage_metrics_from_result(result: Any) -> Dict[str, float]:
     }
 
 
+def _gpu_runtime_metrics_from_result(resource_usage_result: Any) -> Dict[str, Any]:
+    pstate = str(
+        getattr(resource_usage_result, "gpu_pstate", "nan")
+        if resource_usage_result is not None
+        else "nan"
+    ).strip().upper()
+    if not (
+        pstate.startswith("P")
+        and pstate[1:].isdigit()
+        and 0 <= int(pstate[1:]) <= 15
+    ):
+        pstate = "nan"
+    return {
+        "gpu_sm_clock_mhz": _to_float_or_nan(
+            getattr(resource_usage_result, "gpu_sm_clock_mhz", float("nan"))
+            if resource_usage_result is not None
+            else float("nan")
+        ),
+        "gpu_memory_clock_mhz": _to_float_or_nan(
+            getattr(resource_usage_result, "gpu_memory_clock_mhz", float("nan"))
+            if resource_usage_result is not None
+            else float("nan")
+        ),
+        "gpu_pstate": pstate,
+        "gpu_temp_c": _to_float_or_nan(
+            getattr(resource_usage_result, "gpu_temp_c", float("nan"))
+            if resource_usage_result is not None
+            else float("nan")
+        ),
+    }
+
+
 def _mips_metrics_from_result(result: Any) -> Dict[str, float]:
     return {
         "cpu_instructions_per_request": _to_float_or_nan(
@@ -1409,6 +1442,10 @@ def main() -> None:
                 gpu_metrics = _nan_metrics(GPU_METRIC_FIELDS)
                 cpu_metrics = _nan_metrics(CPU_METRIC_FIELDS)
                 resource_usage_metrics = _nan_metrics(RESOURCE_USAGE_METRIC_FIELDS)
+                gpu_runtime_metrics: Dict[str, Any] = _nan_metrics(
+                    GPU_RUNTIME_STATE_FIELDS
+                )
+                gpu_runtime_metrics["gpu_pstate"] = "nan"
                 mips_metrics = _nan_metrics(MIPS_METRIC_FIELDS)
                 latency_packet_distribution_metrics = _nan_metrics(LATENCY_PACKET_DISTRIBUTION_FIELDS)
                 latency_app_distribution_metrics = _nan_metrics(LATENCY_APP_DISTRIBUTION_FIELDS)
@@ -1625,6 +1662,9 @@ def main() -> None:
                         )
                     if resource_usage_result is not None:
                         resource_usage_metrics = _resource_usage_metrics_from_result(resource_usage_result)
+                    gpu_runtime_metrics = _gpu_runtime_metrics_from_result(
+                        resource_usage_result
+                    )
                     if mips_result is not None:
                         mips_metrics = _mips_metrics_from_result(mips_result)
 
@@ -1722,6 +1762,14 @@ def main() -> None:
                         else "nan"
                     ),
                     **{field: _fmt_float(resource_usage_metrics[field]) for field in RESOURCE_USAGE_METRIC_FIELDS},
+                    **{
+                        field: (
+                            str(gpu_runtime_metrics[field])
+                            if field == "gpu_pstate"
+                            else _fmt_float(gpu_runtime_metrics[field])
+                        )
+                        for field in GPU_RUNTIME_STATE_FIELDS
+                    },
                     "cpu_cycles_est_app": _fmt_float(cpu_cycles_est_app),
                     "cpu_cycles_est_packet": "nan",
                     **{field: _fmt_float(mips_metrics[field]) for field in MIPS_METRIC_FIELDS},

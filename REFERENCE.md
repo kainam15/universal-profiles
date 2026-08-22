@@ -594,6 +594,10 @@ python -m acprof.cli.backfill_compute \
 | `container_mem_usage_peak_bytes` | 当前 Docker container 在测量窗口内的峰值 memory usage，单位 bytes。 |
 | `container_mem_util_avg_pct` | 当前 Docker container 平均 memory usage / `mem_cap_gb` 的百分比。 |
 | `container_mem_util_peak_pct` | 当前 Docker container 峰值 memory usage / `mem_cap_gb` 的百分比。 |
+| `gpu_sm_clock_mhz` | NVML device 0 在 workload 测量窗口内的 SM clock 成功采样值算术平均，单位 MHz。仅 `gpu_mode=on` 且 NVML 支持该查询时有值；不采集 graphics clock。 |
+| `gpu_memory_clock_mhz` | NVML device 0 在 workload 测量窗口内的 memory clock 成功采样值算术平均，单位 MHz。 |
+| `gpu_pstate` | NVML device 0 在 workload 测量窗口内出现次数最多的 performance state（`P0`–`P15`）；次数并列时取性能等级更高的较小编号。它是运行状态解释变量，不代表锁频。 |
+| `gpu_temp_c` | NVML device 0 在 workload 测量窗口内的 GPU temperature 成功采样值算术平均，单位 °C。 |
 | `gpu_util_avg_pct` | NVML device 0 在测量窗口内的平均 GPU utilization，单位 `%`。这是 device-level 口径，不做 container process attribution。 |
 | `gpu_util_peak_pct` | NVML device 0 在测量窗口内的峰值 GPU utilization，单位 `%`。 |
 | `gpu_mem_used_avg_bytes` | NVML device 0 在测量窗口内的平均 used VRAM，单位 bytes。 |

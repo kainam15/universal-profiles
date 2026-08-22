@@ -5,6 +5,7 @@ import os
 import subprocess
 import threading
 import time
+from collections import Counter
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple
 
@@ -27,6 +28,10 @@ class ResourceUsageSample:
     gpu_mem_total_bytes: Optional[int]
     cpu_freq_avg_hz: Optional[float] = None
     cpu_freq_peak_hz: Optional[float] = None
+    gpu_sm_clock_mhz: Optional[float] = None
+    gpu_memory_clock_mhz: Optional[float] = None
+    gpu_pstate: Optional[str] = None
+    gpu_temp_c: Optional[float] = None
 
 
 @dataclass
@@ -42,6 +47,10 @@ class ResourceUsageResult:
     container_mem_util_peak_pct: float
     gpu_util_avg_pct: float
     gpu_util_peak_pct: float
+    gpu_sm_clock_mhz: float
+    gpu_memory_clock_mhz: float
+    gpu_pstate: str
+    gpu_temp_c: float
     gpu_mem_used_avg_bytes: float
     gpu_mem_used_peak_bytes: float
     gpu_mem_util_avg_pct: float
@@ -52,27 +61,55 @@ class ResourceUsageResult:
 def _nan_result(resource_usage_iters: int = 0) -> ResourceUsageResult:
     nan = float("nan")
     return ResourceUsageResult(
-        resource_usage_iters,
-        nan,
-        nan,
-        nan,
-        nan,
-        nan,
-        nan,
-        nan,
-        nan,
-        nan,
-        nan,
-        nan,
-        nan,
-        nan,
-        nan,
-        nan,
+        resource_usage_iters=resource_usage_iters,
+        container_cpu_util_avg_pct=nan,
+        container_cpu_util_peak_pct=nan,
+        cpu_freq_avg_hz=nan,
+        cpu_freq_peak_hz=nan,
+        container_mem_usage_avg_bytes=nan,
+        container_mem_usage_peak_bytes=nan,
+        container_mem_util_avg_pct=nan,
+        container_mem_util_peak_pct=nan,
+        gpu_util_avg_pct=nan,
+        gpu_util_peak_pct=nan,
+        gpu_sm_clock_mhz=nan,
+        gpu_memory_clock_mhz=nan,
+        gpu_pstate="nan",
+        gpu_temp_c=nan,
+        gpu_mem_used_avg_bytes=nan,
+        gpu_mem_used_peak_bytes=nan,
+        gpu_mem_util_avg_pct=nan,
+        gpu_mem_util_peak_pct=nan,
+        gpu_mem_total_bytes=nan,
     )
 
 
 def _mean(values: List[float]) -> float:
     return sum(values) / len(values) if values else float("nan")
+
+
+def _normalize_pstate(value: object) -> Optional[str]:
+    if isinstance(value, str):
+        normalized = value.strip().upper()
+        if normalized.startswith("P") and normalized[1:].isdigit():
+            numeric = int(normalized[1:])
+            return normalized if 0 <= numeric <= 15 else None
+        return None
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return None
+    return f"P{numeric}" if 0 <= numeric <= 15 else None
+
+
+def _dominant_pstate(values: List[str]) -> str:
+    normalized = [state for value in values if (state := _normalize_pstate(value))]
+    if not normalized:
+        return "nan"
+    counts = Counter(normalized)
+    highest_count = max(counts.values())
+    candidates = [state for state, count in counts.items() if count == highest_count]
+    return min(candidates, key=lambda state: int(state[1:]))
 
 
 def _read_int(path: str) -> int:
@@ -354,6 +391,34 @@ def _result_from_samples(
         result.gpu_util_avg_pct = _mean(gpu_utils)
         result.gpu_util_peak_pct = max(gpu_utils)
 
+    gpu_sm_clocks = [
+        float(sample.gpu_sm_clock_mhz)
+        for sample in samples
+        if sample.gpu_sm_clock_mhz is not None
+    ]
+    gpu_memory_clocks = [
+        float(sample.gpu_memory_clock_mhz)
+        for sample in samples
+        if sample.gpu_memory_clock_mhz is not None
+    ]
+    gpu_pstates = [
+        sample.gpu_pstate
+        for sample in samples
+        if sample.gpu_pstate is not None
+    ]
+    gpu_temperatures = [
+        float(sample.gpu_temp_c)
+        for sample in samples
+        if sample.gpu_temp_c is not None
+    ]
+    if gpu_sm_clocks:
+        result.gpu_sm_clock_mhz = _mean(gpu_sm_clocks)
+    if gpu_memory_clocks:
+        result.gpu_memory_clock_mhz = _mean(gpu_memory_clocks)
+    result.gpu_pstate = _dominant_pstate(gpu_pstates)
+    if gpu_temperatures:
+        result.gpu_temp_c = _mean(gpu_temperatures)
+
     gpu_mem_used = [
         float(sample.gpu_mem_used_bytes)
         for sample in samples
@@ -532,6 +597,10 @@ class ResourceUsageMonitor:
         gpu_mem_total_bytes = None
         cpu_freq_avg_hz = None
         cpu_freq_peak_hz = None
+        gpu_sm_clock_mhz = None
+        gpu_memory_clock_mhz = None
+        gpu_pstate = None
+        gpu_temp_c = None
 
         if self._cpu_reader is not None:
             try:
@@ -562,6 +631,39 @@ class ResourceUsageMonitor:
                 gpu_mem_total_bytes = int(mem.total)
             except Exception as exc:
                 self._runtime_error = str(exc)
+            try:
+                gpu_sm_clock_mhz = float(
+                    pynvml.nvmlDeviceGetClockInfo(
+                        self._gpu_handle,
+                        pynvml.NVML_CLOCK_SM,
+                    )
+                )
+            except Exception as exc:
+                self._runtime_error = str(exc)
+            try:
+                gpu_memory_clock_mhz = float(
+                    pynvml.nvmlDeviceGetClockInfo(
+                        self._gpu_handle,
+                        pynvml.NVML_CLOCK_MEM,
+                    )
+                )
+            except Exception as exc:
+                self._runtime_error = str(exc)
+            try:
+                gpu_pstate = _normalize_pstate(
+                    pynvml.nvmlDeviceGetPerformanceState(self._gpu_handle)
+                )
+            except Exception as exc:
+                self._runtime_error = str(exc)
+            try:
+                gpu_temp_c = float(
+                    pynvml.nvmlDeviceGetTemperature(
+                        self._gpu_handle,
+                        pynvml.NVML_TEMPERATURE_GPU,
+                    )
+                )
+            except Exception as exc:
+                self._runtime_error = str(exc)
 
         return ResourceUsageSample(
             timestamp,
@@ -572,6 +674,10 @@ class ResourceUsageMonitor:
             gpu_mem_total_bytes,
             cpu_freq_avg_hz,
             cpu_freq_peak_hz,
+            gpu_sm_clock_mhz,
+            gpu_memory_clock_mhz,
+            gpu_pstate,
+            gpu_temp_c,
         )
 
     def _append_sample(self, timestamp: float) -> None:

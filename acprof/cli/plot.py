@@ -495,6 +495,8 @@ def prepare_df(csv_path: str) -> pd.DataFrame:
         "cpu_perf_elapsed_s",
         "container_mem_usage_avg_bytes", "container_mem_usage_peak_bytes",
         "container_mem_util_avg_pct", "container_mem_util_peak_pct",
+        "gpu_sm_clock_mhz", "gpu_memory_clock_mhz",
+        "gpu_temp_c",
         "gpu_util_avg_pct", "gpu_util_peak_pct",
         "gpu_mem_used_avg_bytes", "gpu_mem_used_peak_bytes",
         "gpu_mem_util_avg_pct", "gpu_mem_util_peak_pct",

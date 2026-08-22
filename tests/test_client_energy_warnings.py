@@ -12,6 +12,7 @@ from acprof.host import client
 from acprof.monitors import energy_cpu
 from acprof.config import (
     CSV_FIELDS,
+    GPU_RUNTIME_STATE_FIELDS,
     STATIC_META_FIELDS,
     STATIC_META_SCHEMA_VERSION,
 )
@@ -324,6 +325,35 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
             self.assertIn(field, CSV_FIELDS)
         for field in old_names:
             self.assertNotIn(field, CSV_FIELDS)
+
+    def test_csv_schema_includes_gpu_runtime_state_fields(self) -> None:
+        expected = [
+            "gpu_sm_clock_mhz",
+            "gpu_memory_clock_mhz",
+            "gpu_pstate",
+            "gpu_temp_c",
+        ]
+
+        self.assertEqual(GPU_RUNTIME_STATE_FIELDS, expected)
+        start = CSV_FIELDS.index(expected[0])
+        self.assertEqual(CSV_FIELDS[start:start + len(expected)], expected)
+        self.assertEqual(CSV_FIELDS[start + len(expected)], "gpu_util_avg_pct")
+
+    def test_gpu_runtime_metrics_normalize_pstate(self) -> None:
+        metrics = client._gpu_runtime_metrics_from_result(
+            SimpleNamespace(
+                gpu_sm_clock_mhz=1800.0,
+                gpu_memory_clock_mhz=7500.0,
+                gpu_pstate="p0",
+                gpu_util_avg_pct=88.0,
+                gpu_temp_c=67.0,
+            ),
+        )
+
+        self.assertEqual(metrics["gpu_sm_clock_mhz"], 1800.0)
+        self.assertEqual(metrics["gpu_memory_clock_mhz"], 7500.0)
+        self.assertEqual(metrics["gpu_pstate"], "P0")
+        self.assertEqual(metrics["gpu_temp_c"], 67.0)
 
     def test_csv_schema_distinguishes_torch_logical_and_ncu_executed_flops(self) -> None:
         torch_fields = [
@@ -760,6 +790,8 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertNotIn("energy_eff_j", fieldnames)
         self.assertEqual(rows[0]["gpu_idle_power_w"], "10.000000")
         self.assertEqual(rows[0]["gpu_energy_eff_j"], "0.200000")
+        self.assertEqual(rows[0]["gpu_avg_power_total_w"], "12.000000")
+        self.assertNotIn("gpu_power_w", rows[0])
 
     def test_idle_cooldown_applies_before_cpu_idle_without_gpu(self) -> None:
         sleep_calls = []
@@ -1463,6 +1495,10 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                     container_mem_util_peak_pct=2.0,
                     gpu_util_avg_pct=30.0,
                     gpu_util_peak_pct=40.0,
+                    gpu_sm_clock_mhz=1500.0,
+                    gpu_memory_clock_mhz=7000.0,
+                    gpu_pstate="P2",
+                    gpu_temp_c=61.0,
                     gpu_mem_used_avg_bytes=4096.0,
                     gpu_mem_used_peak_bytes=8192.0,
                     gpu_mem_util_avg_pct=3.0,
@@ -1522,6 +1558,13 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(rows[0]["cpu_freq_peak_hz"], "3200000000.000000")
         self.assertEqual(rows[0]["cpu_cycles_est_app"], "375000000.000000")
         self.assertEqual(rows[0]["cpu_cycles_est_packet"], "nan")
+        self.assertEqual(rows[0]["gpu_sm_clock_mhz"], "1500.000000")
+        self.assertEqual(rows[0]["gpu_memory_clock_mhz"], "7000.000000")
+        self.assertEqual(rows[0]["gpu_pstate"], "P2")
+        self.assertEqual(rows[0]["gpu_temp_c"], "61.000000")
+        self.assertEqual(rows[0]["gpu_util_avg_pct"], "30.000000")
+        self.assertNotIn("gpu_power_w", rows[0])
+        self.assertNotIn("gpu_util_percent", rows[0])
         self.assertNotIn("gpu_mem_total_bytes", rows[0])
 
     def test_mips_metrics_are_written_to_successful_row(self) -> None:
@@ -1682,6 +1725,12 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(rows[0]["error"], "")
         self.assertEqual(rows[0]["container_cpu_util_avg_pct"], "nan")
         self.assertEqual(rows[0]["gpu_util_avg_pct"], "nan")
+        self.assertEqual(rows[0]["gpu_sm_clock_mhz"], "nan")
+        self.assertEqual(rows[0]["gpu_memory_clock_mhz"], "nan")
+        self.assertEqual(rows[0]["gpu_pstate"], "nan")
+        self.assertEqual(rows[0]["gpu_temp_c"], "nan")
+        self.assertNotIn("gpu_power_w", rows[0])
+        self.assertNotIn("gpu_util_percent", rows[0])
 
     def test_flat_compute_plan_is_rejected_without_emitting_generic_columns(
         self,

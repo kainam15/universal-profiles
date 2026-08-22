@@ -142,6 +142,13 @@ READY_POLL_INTERVAL_S = 0.1
 # ─────────────────────────────────────────────
 # CSV 输出字段
 # ─────────────────────────────────────────────
+GPU_RUNTIME_STATE_FIELDS = [
+    "gpu_sm_clock_mhz",
+    "gpu_memory_clock_mhz",
+    "gpu_pstate",
+    "gpu_temp_c",
+]
+
 CSV_FIELDS = [
     "cpu_cores",
     "mem_cap_gb",
@@ -243,6 +250,7 @@ CSV_FIELDS = [
     "container_mem_usage_peak_bytes",
     "container_mem_util_avg_pct",
     "container_mem_util_peak_pct",
+    *GPU_RUNTIME_STATE_FIELDS,
     "gpu_util_avg_pct",
     "gpu_util_peak_pct",
     "gpu_mem_used_avg_bytes",

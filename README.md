@@ -16,7 +16,7 @@ AC-Prof 是一个面向 Hugging Face 推理服务的零侵入运行时分析工�
 
 - 性能：application / packet-level latency、P50/P90/P95、吞吐量、冷启动时间。
 - 能耗：CPU package、估算 vCPU 和 GPU 的 idle、平均/峰值功率与能量。
-- 资源：容器 CPU / 内存、CPU 频率与估算 cycles、GPU utilization 与 VRAM。
+- 资源：容器 CPU / 内存、CPU 频率与估算 cycles，以及 GPU utilization、VRAM、SM/显存时钟、P-state 和温度。
 - PMU：retired-instruction MIPS、cache miss 和 dTLB miss。
 - 计算：PyTorch eager 逻辑 FLOP，以及 NVIDIA Nsight Compute 实际 GPU FLOP。
 - 可选 execution profile：Valgrind Massif 内存峰值、Nsight Systems CUDA timeline。

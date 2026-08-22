@@ -12,9 +12,42 @@ class ResourceUsageMonitorTests(unittest.TestCase):
     def test_result_calculates_container_and_gpu_usage_metrics(self) -> None:
         gib = 1024 ** 3
         samples = [
-            resource_usage.ResourceUsageSample(0.0, 0.0, 100, 10.0, 1 * gib, 4 * gib),
-            resource_usage.ResourceUsageSample(1.0, 1.0, 200, 30.0, 2 * gib, 4 * gib),
-            resource_usage.ResourceUsageSample(2.0, 3.0, 300, 20.0, 3 * gib, 4 * gib),
+            resource_usage.ResourceUsageSample(
+                0.0,
+                0.0,
+                100,
+                10.0,
+                1 * gib,
+                4 * gib,
+                gpu_sm_clock_mhz=1000.0,
+                gpu_memory_clock_mhz=5000.0,
+                gpu_pstate="P0",
+                gpu_temp_c=50.0,
+            ),
+            resource_usage.ResourceUsageSample(
+                1.0,
+                1.0,
+                200,
+                30.0,
+                2 * gib,
+                4 * gib,
+                gpu_sm_clock_mhz=1200.0,
+                gpu_memory_clock_mhz=6000.0,
+                gpu_pstate="P2",
+                gpu_temp_c=52.0,
+            ),
+            resource_usage.ResourceUsageSample(
+                2.0,
+                3.0,
+                300,
+                20.0,
+                3 * gib,
+                4 * gib,
+                gpu_sm_clock_mhz=1400.0,
+                gpu_memory_clock_mhz=7000.0,
+                gpu_pstate="P0",
+                gpu_temp_c=54.0,
+            ),
         ]
 
         result = resource_usage._result_from_samples(
@@ -32,6 +65,10 @@ class ResourceUsageMonitorTests(unittest.TestCase):
         self.assertAlmostEqual(result.container_mem_util_peak_pct, 30.0)
         self.assertAlmostEqual(result.gpu_util_avg_pct, 20.0)
         self.assertAlmostEqual(result.gpu_util_peak_pct, 30.0)
+        self.assertAlmostEqual(result.gpu_sm_clock_mhz, 1200.0)
+        self.assertAlmostEqual(result.gpu_memory_clock_mhz, 6000.0)
+        self.assertEqual(result.gpu_pstate, "P0")
+        self.assertAlmostEqual(result.gpu_temp_c, 52.0)
         self.assertAlmostEqual(result.gpu_mem_used_avg_bytes, 2 * gib)
         self.assertAlmostEqual(result.gpu_mem_used_peak_bytes, 3 * gib)
         self.assertAlmostEqual(result.gpu_mem_util_avg_pct, 50.0)
@@ -187,10 +224,19 @@ class ResourceUsageMonitorTests(unittest.TestCase):
 
     def test_reads_gpu_utilization_and_memory_from_nvml(self) -> None:
         fake_nvml = SimpleNamespace(
+            NVML_CLOCK_SM=1,
+            NVML_CLOCK_MEM=2,
+            NVML_TEMPERATURE_GPU=0,
             nvmlInit=lambda: None,
             nvmlDeviceGetHandleByIndex=lambda index: "handle",
             nvmlDeviceGetUtilizationRates=lambda handle: SimpleNamespace(gpu=42),
             nvmlDeviceGetMemoryInfo=lambda handle: SimpleNamespace(used=123, total=456),
+            nvmlDeviceGetClockInfo=lambda handle, clock_type: {
+                1: 1500,
+                2: 7000,
+            }[clock_type],
+            nvmlDeviceGetPerformanceState=lambda handle: 2,
+            nvmlDeviceGetTemperature=lambda handle, sensor_type: 63,
             nvmlShutdown=lambda: None,
         )
 
@@ -208,6 +254,17 @@ class ResourceUsageMonitorTests(unittest.TestCase):
         self.assertEqual(sample.gpu_util_pct, 42.0)
         self.assertEqual(sample.gpu_mem_used_bytes, 123)
         self.assertEqual(sample.gpu_mem_total_bytes, 456)
+        self.assertEqual(sample.gpu_sm_clock_mhz, 1500.0)
+        self.assertEqual(sample.gpu_memory_clock_mhz, 7000.0)
+        self.assertEqual(sample.gpu_pstate, "P2")
+        self.assertEqual(sample.gpu_temp_c, 63.0)
+
+    def test_dominant_pstate_prefers_higher_performance_on_tie(self) -> None:
+        self.assertEqual(
+            resource_usage._dominant_pstate(["P2", "p0", "P2", "P0"]),
+            "P0",
+        )
+        self.assertEqual(resource_usage._dominant_pstate(["invalid"]), "nan")
 
     def test_unavailable_container_keeps_nan_result_without_raising(self) -> None:
         fake_completed = SimpleNamespace(returncode=1, stdout="", stderr="missing")
@@ -229,6 +286,10 @@ class ResourceUsageMonitorTests(unittest.TestCase):
         self.assertTrue(math.isnan(result.container_cpu_util_avg_pct))
         self.assertTrue(math.isnan(result.container_mem_usage_avg_bytes))
         self.assertTrue(math.isnan(result.gpu_util_avg_pct))
+        self.assertTrue(math.isnan(result.gpu_sm_clock_mhz))
+        self.assertTrue(math.isnan(result.gpu_memory_clock_mhz))
+        self.assertEqual(result.gpu_pstate, "nan")
+        self.assertTrue(math.isnan(result.gpu_temp_c))
 
 
 if __name__ == "__main__":

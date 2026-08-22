@@ -37,6 +37,10 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             "container_mem_usage_peak_bytes",
             "container_mem_util_avg_pct",
             "container_mem_util_peak_pct",
+            "gpu_sm_clock_mhz",
+            "gpu_memory_clock_mhz",
+            "gpu_pstate",
+            "gpu_temp_c",
             "gpu_util_avg_pct",
             "gpu_util_peak_pct",
             "gpu_mem_used_avg_bytes",
@@ -150,6 +154,10 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 "cpu_instructions_per_request",
                 "cpu_mips_app",
                 "container_mem_usage_avg_bytes",
+                "gpu_sm_clock_mhz",
+                "gpu_memory_clock_mhz",
+                "gpu_pstate",
+                "gpu_temp_c",
                 "gpu_mem_used_avg_bytes",
             ]
             with open(csv_path, "w", encoding="utf-8", newline="") as f:
@@ -168,6 +176,10 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                     "cpu_instructions_per_request": "500000",
                     "cpu_mips_app": "2.5",
                     "container_mem_usage_avg_bytes": str(2 * 1024 ** 3),
+                    "gpu_sm_clock_mhz": "1800",
+                    "gpu_memory_clock_mhz": "7500",
+                    "gpu_pstate": "P0",
+                    "gpu_temp_c": "67",
                     "gpu_mem_used_avg_bytes": str(3 * 1024 ** 3),
                 })
             static_meta_path = os.path.join(tmp, "static_meta.json")
@@ -181,6 +193,10 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
         self.assertEqual(float(df["cpu_cycles_est_app"].iloc[0]), 765_000_000.0)
         self.assertEqual(float(df["cpu_instructions_per_request"].iloc[0]), 500_000.0)
         self.assertEqual(float(df["cpu_mips_app"].iloc[0]), 2.5)
+        self.assertEqual(float(df["gpu_sm_clock_mhz"].iloc[0]), 1800.0)
+        self.assertEqual(float(df["gpu_memory_clock_mhz"].iloc[0]), 7500.0)
+        self.assertEqual(df["gpu_pstate"].iloc[0], "P0")
+        self.assertEqual(float(df["gpu_temp_c"].iloc[0]), 67.0)
         self.assertEqual(float(df["container_mem_usage_avg_gib"].iloc[0]), 2.0)
         self.assertEqual(float(df["gpu_mem_used_avg_gib"].iloc[0]), 3.0)
         self.assertEqual(float(df["gpu_mem_total_gib"].iloc[0]), 8.0)
