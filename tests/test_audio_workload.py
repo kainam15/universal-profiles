@@ -192,6 +192,21 @@ class AudioWorkloadTests(unittest.TestCase):
         self.assertFalse(provenance["transform"]["resampled"])
         self.assertFalse(provenance["transform"]["normalized"])
 
+    def test_builtin_manifest_records_project_relative_spec_path(self):
+        generator = AudioWorkloadGenerator(
+            "openai/whisper-large-v3",
+            "automatic-speech-recognition",
+            1,
+        )
+
+        workload_spec_path = generator.plan_metadata()["workload_spec_path"]
+
+        self.assertEqual(
+            workload_spec_path,
+            "assets/audio/librispeech-clean-test-en-30s/source.json",
+        )
+        self.assertFalse(Path(workload_spec_path).is_absolute())
+
     def test_custom_manifest_allows_arbitrary_auditable_provenance(self):
         custom = copy.deepcopy(self.spec)
         custom["workload_id"] = "custom-single-source-v1"

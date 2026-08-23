@@ -21,6 +21,7 @@ import wave
 from acprof.workloads import WorkloadGenerator, register_generator
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SAMPLE_RATE = 16000
 CHANNELS = 1
 SAMPLE_WIDTH_BYTES = 2
@@ -28,12 +29,24 @@ ASR_TASK_TYPE = "automatic-speech-recognition"
 SHORT_FORM_MAX_DURATION_S = 30.0
 DEFAULT_WORKLOAD_ID = "librispeech-clean-test-en-transcribe-short-v1"
 DEFAULT_WORKLOAD_SPEC = (
-    Path(__file__).resolve().parents[2]
+    PROJECT_ROOT
     / "assets"
     / "audio"
     / "librispeech-clean-test-en-30s"
     / "source.json"
 )
+
+
+def _portable_workload_spec_path(path: Path) -> str:
+    """Use a stable project-relative path for checked-in workload specs."""
+    try:
+        return path.relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        # Explicit custom specs may live outside the project. Preserve their
+        # resolved location because there is no truthful repository-relative
+        # representation for them.
+        return str(path)
+
 
 _TOP_LEVEL_KEYS = {
     "schema_version",
@@ -526,7 +539,9 @@ class AudioWorkloadGenerator(WorkloadGenerator):
 
     def plan_metadata(self) -> Dict[str, Any]:
         metadata = copy.deepcopy(self._spec)
-        metadata["workload_spec_path"] = str(self.workload_spec_path)
+        metadata["workload_spec_path"] = _portable_workload_spec_path(
+            self.workload_spec_path
+        )
         metadata["workload_constraints"] = {
             "sample_rate": self._sample_rate,
             "channels": CHANNELS,
