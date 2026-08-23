@@ -74,6 +74,55 @@ class DetectEnvironmentTests(unittest.TestCase):
 
         self.assertEqual(total, 32_768_000_000)
 
+    def test_host_swap_metadata_reads_capacity_usage_type_and_swappiness(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            meminfo_path = os.path.join(tmp, "meminfo")
+            swaps_path = os.path.join(tmp, "swaps")
+            swappiness_path = os.path.join(tmp, "swappiness")
+            with open(meminfo_path, "w", encoding="utf-8") as f:
+                f.write("SwapTotal:       2097148 kB\n")
+                f.write("SwapFree:        2096124 kB\n")
+            with open(swaps_path, "w", encoding="utf-8") as f:
+                f.write("Filename Type Size Used Priority\n")
+                f.write("/swapfile file 2097148 1024 -2\n")
+            with open(swappiness_path, "w", encoding="utf-8") as f:
+                f.write("60\n")
+
+            metadata = orchestrator._host_swap_metadata(
+                proc_meminfo_path=meminfo_path,
+                proc_swaps_path=swaps_path,
+                swappiness_path=swappiness_path,
+            )
+
+        self.assertEqual(metadata["host_swap_total_bytes"], 2_147_479_552)
+        self.assertEqual(metadata["host_swap_used_bytes_at_start"], 1_048_576)
+        self.assertEqual(metadata["host_swap_type"], "file")
+        self.assertEqual(metadata["host_vm_swappiness"], 60)
+
+    def test_host_swap_metadata_reports_none_when_swap_is_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            meminfo_path = os.path.join(tmp, "meminfo")
+            swaps_path = os.path.join(tmp, "swaps")
+            swappiness_path = os.path.join(tmp, "swappiness")
+            with open(meminfo_path, "w", encoding="utf-8") as f:
+                f.write("SwapTotal:             0 kB\n")
+                f.write("SwapFree:              0 kB\n")
+            with open(swaps_path, "w", encoding="utf-8") as f:
+                f.write("Filename Type Size Used Priority\n")
+            with open(swappiness_path, "w", encoding="utf-8") as f:
+                f.write("0\n")
+
+            metadata = orchestrator._host_swap_metadata(
+                proc_meminfo_path=meminfo_path,
+                proc_swaps_path=swaps_path,
+                swappiness_path=swappiness_path,
+            )
+
+        self.assertEqual(metadata["host_swap_total_bytes"], 0)
+        self.assertEqual(metadata["host_swap_used_bytes_at_start"], 0)
+        self.assertEqual(metadata["host_swap_type"], "none")
+        self.assertEqual(metadata["host_vm_swappiness"], 0)
+
     def test_docker_storage_metadata_uses_daemon_root_backing_filesystem(self) -> None:
         with patch(
             "acprof.host.orchestrator._docker_root_dir",
@@ -424,6 +473,14 @@ class DetectEnvironmentTests(unittest.TestCase):
         ), patch(
             "acprof.host.orchestrator._host_mem_total_bytes", return_value=64_000_000_000
         ), patch(
+            "acprof.host.orchestrator._host_swap_metadata",
+            return_value={
+                "host_swap_total_bytes": 2_000_000_000,
+                "host_swap_used_bytes_at_start": 100_000_000,
+                "host_swap_type": "file",
+                "host_vm_swappiness": 60,
+            },
+        ), patch(
             "acprof.host.orchestrator._docker_model_cache_bytes", return_value=123
         ), patch("acprof.host.orchestrator._docker_image_size_bytes", return_value=456), patch(
             "acprof.host.orchestrator._docker_storage_metadata",
@@ -467,6 +524,10 @@ class DetectEnvironmentTests(unittest.TestCase):
         )
         self.assertEqual(meta.gpu_mem_total_bytes, 987654321)
         self.assertEqual(meta.host_mem_total_bytes, 64_000_000_000)
+        self.assertEqual(meta.host_swap_total_bytes, 2_000_000_000)
+        self.assertEqual(meta.host_swap_used_bytes_at_start, 100_000_000)
+        self.assertEqual(meta.host_swap_type, "file")
+        self.assertEqual(meta.host_vm_swappiness, 60)
         self.assertEqual(meta.docker_storage_total_bytes, 1_000_000)
         self.assertEqual(meta.docker_storage_available_bytes_at_start, 600_000)
         self.assertEqual(meta.docker_storage_filesystem, "ext4")
@@ -503,12 +564,16 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(meta.execution_profile_provenance, "disabled")
 
     def test_static_meta_compute_profile_fields_follow_host_metadata(self) -> None:
-        self.assertEqual(STATIC_META_SCHEMA_VERSION, 4)
+        self.assertEqual(STATIC_META_SCHEMA_VERSION, 5)
         self.assertIn("parameter_bytes", STATIC_META_FIELDS)
         self.assertIn("model_cache_bytes", STATIC_META_FIELDS)
         self.assertNotIn("model_weight_bytes", STATIC_META_FIELDS)
         self.assertIn("gpu_mem_total_bytes", STATIC_META_FIELDS)
         self.assertIn("host_mem_total_bytes", STATIC_META_FIELDS)
+        self.assertIn("host_swap_total_bytes", STATIC_META_FIELDS)
+        self.assertIn("host_swap_used_bytes_at_start", STATIC_META_FIELDS)
+        self.assertIn("host_swap_type", STATIC_META_FIELDS)
+        self.assertIn("host_vm_swappiness", STATIC_META_FIELDS)
         self.assertIn("docker_storage_total_bytes", STATIC_META_FIELDS)
         self.assertLess(
             STATIC_META_FIELDS.index("gpu_mem_total_bytes"),
@@ -546,6 +611,10 @@ class DetectEnvironmentTests(unittest.TestCase):
             gpu="GPU",
             gpu_mem_total_bytes=123,
             host_mem_total_bytes=1_024,
+            host_swap_total_bytes=512,
+            host_swap_used_bytes_at_start=64,
+            host_swap_type="file",
+            host_vm_swappiness=60,
             model_cache_bytes=456,
             docker_image_bytes=789,
             docker_storage_total_bytes=10_000,
@@ -615,6 +684,10 @@ class DetectEnvironmentTests(unittest.TestCase):
             gpu="GPU",
             gpu_mem_total_bytes=123,
             host_mem_total_bytes=1_024,
+            host_swap_total_bytes=512,
+            host_swap_used_bytes_at_start=64,
+            host_swap_type="file",
+            host_vm_swappiness=60,
             model_cache_bytes=456,
             docker_image_bytes=789,
             docker_storage_total_bytes=10_000,
@@ -657,6 +730,10 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(payload["model_cache_bytes"], 456)
         self.assertNotIn("model_weight_bytes", payload)
         self.assertEqual(payload["host_mem_total_bytes"], 1_024)
+        self.assertEqual(payload["host_swap_total_bytes"], 512)
+        self.assertEqual(payload["host_swap_used_bytes_at_start"], 64)
+        self.assertEqual(payload["host_swap_type"], "file")
+        self.assertEqual(payload["host_vm_swappiness"], 60)
         self.assertEqual(payload["docker_storage_total_bytes"], 10_000)
         self.assertEqual(
             payload["docker_storage_available_bytes_at_start"],

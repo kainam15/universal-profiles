@@ -782,6 +782,11 @@ RESOURCE_USAGE_METRIC_FIELDS = [
     "container_mem_usage_peak_bytes",
     "container_mem_util_avg_pct",
     "container_mem_util_peak_pct",
+    "container_swap_limit_bytes",
+    "container_swap_usage_avg_bytes",
+    "container_swap_usage_peak_bytes",
+    "container_io_read_bytes_per_request",
+    "container_io_write_bytes_per_request",
     "gpu_util_avg_pct",
     "gpu_util_peak_pct",
     "gpu_mem_used_avg_bytes",
@@ -863,7 +868,22 @@ def _cpu_metrics_from_result(result: Any, repeat_in_window: int) -> Dict[str, fl
     }
 
 
-def _resource_usage_metrics_from_result(result: Any) -> Dict[str, float]:
+def _resource_usage_metrics_from_result(
+    result: Any,
+    repeat_in_window: int,
+) -> Dict[str, float]:
+    io_read_bytes = _to_float_or_nan(
+        getattr(result, "container_io_read_bytes", float("nan"))
+    )
+    io_write_bytes = _to_float_or_nan(
+        getattr(result, "container_io_write_bytes", float("nan"))
+    )
+    if repeat_in_window > 0:
+        io_read_bytes /= float(repeat_in_window)
+        io_write_bytes /= float(repeat_in_window)
+    else:
+        io_read_bytes = float("nan")
+        io_write_bytes = float("nan")
     return {
         "resource_usage_iters": float(result.resource_usage_iters),
         "container_cpu_util_avg_pct": _to_float_or_nan(result.container_cpu_util_avg_pct),
@@ -878,6 +898,17 @@ def _resource_usage_metrics_from_result(result: Any) -> Dict[str, float]:
         "container_mem_usage_peak_bytes": _to_float_or_nan(result.container_mem_usage_peak_bytes),
         "container_mem_util_avg_pct": _to_float_or_nan(result.container_mem_util_avg_pct),
         "container_mem_util_peak_pct": _to_float_or_nan(result.container_mem_util_peak_pct),
+        "container_swap_limit_bytes": _to_float_or_nan(
+            getattr(result, "container_swap_limit_bytes", float("nan"))
+        ),
+        "container_swap_usage_avg_bytes": _to_float_or_nan(
+            getattr(result, "container_swap_usage_avg_bytes", float("nan"))
+        ),
+        "container_swap_usage_peak_bytes": _to_float_or_nan(
+            getattr(result, "container_swap_usage_peak_bytes", float("nan"))
+        ),
+        "container_io_read_bytes_per_request": io_read_bytes,
+        "container_io_write_bytes_per_request": io_write_bytes,
         "gpu_util_avg_pct": _to_float_or_nan(result.gpu_util_avg_pct),
         "gpu_util_peak_pct": _to_float_or_nan(result.gpu_util_peak_pct),
         "gpu_mem_used_avg_bytes": _to_float_or_nan(result.gpu_mem_used_avg_bytes),
@@ -1661,7 +1692,10 @@ def main() -> None:
                             actual_repeat_in_window,
                         )
                     if resource_usage_result is not None:
-                        resource_usage_metrics = _resource_usage_metrics_from_result(resource_usage_result)
+                        resource_usage_metrics = _resource_usage_metrics_from_result(
+                            resource_usage_result,
+                            actual_repeat_in_window,
+                        )
                     gpu_runtime_metrics = _gpu_runtime_metrics_from_result(
                         resource_usage_result
                     )

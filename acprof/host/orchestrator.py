@@ -75,6 +75,10 @@ class StaticMeta:
     cpu_governor: str
     cpu_boost: str
     host_mem_total_bytes: Optional[int] = None
+    host_swap_total_bytes: Optional[int] = None
+    host_swap_used_bytes_at_start: Optional[int] = None
+    host_swap_type: str = "unknown"
+    host_vm_swappiness: Optional[int] = None
     docker_storage_total_bytes: Optional[int] = None
     docker_storage_available_bytes_at_start: Optional[int] = None
     docker_storage_filesystem: str = "unknown"
@@ -722,6 +726,97 @@ def _host_mem_total_bytes() -> Optional[int]:
     except (OSError, TypeError, ValueError):
         pass
     return None
+
+
+def _host_swap_metadata(
+    proc_meminfo_path: str = "/proc/meminfo",
+    proc_swaps_path: str = "/proc/swaps",
+    swappiness_path: str = "/proc/sys/vm/swappiness",
+) -> Dict[str, Any]:
+    """Snapshot host swap capacity, usage, backing type, and policy."""
+    metadata: Dict[str, Any] = {
+        "host_swap_total_bytes": None,
+        "host_swap_used_bytes_at_start": None,
+        "host_swap_type": "unknown",
+        "host_vm_swappiness": None,
+    }
+
+    try:
+        meminfo: Dict[str, int] = {}
+        with open(proc_meminfo_path, "r", encoding="utf-8") as f:
+            for line in f:
+                key, separator, raw_value = line.partition(":")
+                if not separator or key not in {"SwapTotal", "SwapFree"}:
+                    continue
+                parts = raw_value.split()
+                if not parts:
+                    continue
+                value_kib = int(parts[0])
+                if value_kib >= 0:
+                    meminfo[key] = value_kib * 1024
+        total = meminfo.get("SwapTotal")
+        free = meminfo.get("SwapFree")
+        if total is not None:
+            metadata["host_swap_total_bytes"] = total
+        if total is not None and free is not None:
+            metadata["host_swap_used_bytes_at_start"] = max(0, total - free)
+    except (OSError, TypeError, ValueError):
+        pass
+
+    swaps_read = False
+    swap_types: set[str] = set()
+    swap_total_kib = 0
+    swap_used_kib = 0
+    try:
+        with open(proc_swaps_path, "r", encoding="utf-8") as f:
+            for line in f:
+                parts = line.split()
+                if not parts:
+                    continue
+                if parts[0].lower() == "filename":
+                    continue
+                if len(parts) < 4:
+                    continue
+                filename = parts[0]
+                raw_type = parts[1].strip().lower()
+                size_kib = int(parts[2])
+                used_kib = int(parts[3])
+                if size_kib >= 0:
+                    swap_total_kib += size_kib
+                if used_kib >= 0:
+                    swap_used_kib += used_kib
+                if os.path.basename(filename).lower().startswith("zram"):
+                    swap_types.add("zram")
+                elif raw_type == "file":
+                    swap_types.add("file")
+                elif raw_type == "partition":
+                    swap_types.add("partition")
+                else:
+                    swap_types.add("unknown")
+        swaps_read = True
+    except (OSError, TypeError, ValueError):
+        pass
+
+    if metadata["host_swap_total_bytes"] is None and swaps_read:
+        metadata["host_swap_total_bytes"] = swap_total_kib * 1024
+    if metadata["host_swap_used_bytes_at_start"] is None and swaps_read:
+        metadata["host_swap_used_bytes_at_start"] = swap_used_kib * 1024
+    if swaps_read:
+        if not swap_types:
+            metadata["host_swap_type"] = "none"
+        elif len(swap_types) == 1:
+            metadata["host_swap_type"] = next(iter(swap_types))
+        else:
+            metadata["host_swap_type"] = "mixed"
+
+    try:
+        with open(swappiness_path, "r", encoding="utf-8") as f:
+            swappiness = int(f.read().strip())
+        if swappiness >= 0:
+            metadata["host_vm_swappiness"] = swappiness
+    except (OSError, TypeError, ValueError):
+        pass
+    return metadata
 
 
 def _docker_root_dir() -> Optional[str]:
@@ -1503,6 +1598,7 @@ def collect_static_meta(
     """Collect static metadata for the current model/image pair."""
     cpu_power_source, vcpu_power_method = _cpu_power_metadata()
     cpu_governor, cpu_boost = _cpu_frequency_policy_metadata()
+    host_swap = _host_swap_metadata()
     docker_storage = _docker_storage_metadata()
     input_format, output_format = _model_io_formats(task_info)
     static_meta = StaticMeta(
@@ -1531,6 +1627,12 @@ def collect_static_meta(
         gpu=_get_gpu_name(device_index=device_index),
         gpu_mem_total_bytes=_get_gpu_mem_total_bytes(device_index=device_index),
         host_mem_total_bytes=_host_mem_total_bytes(),
+        host_swap_total_bytes=host_swap["host_swap_total_bytes"],
+        host_swap_used_bytes_at_start=host_swap[
+            "host_swap_used_bytes_at_start"
+        ],
+        host_swap_type=host_swap["host_swap_type"],
+        host_vm_swappiness=host_swap["host_vm_swappiness"],
         model_cache_bytes=_docker_model_cache_bytes(image_info.tag),
         docker_image_bytes=_docker_image_size_bytes(image_info.tag),
         docker_storage_total_bytes=docker_storage[

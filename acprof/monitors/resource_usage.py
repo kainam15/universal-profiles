@@ -32,6 +32,7 @@ class ResourceUsageSample:
     gpu_memory_clock_mhz: Optional[float] = None
     gpu_pstate: Optional[str] = None
     gpu_temp_c: Optional[float] = None
+    container_swap_usage_bytes: Optional[int] = None
 
 
 @dataclass
@@ -56,6 +57,20 @@ class ResourceUsageResult:
     gpu_mem_util_avg_pct: float
     gpu_mem_util_peak_pct: float
     gpu_mem_total_bytes: float
+    container_swap_limit_bytes: float = float("nan")
+    container_swap_usage_avg_bytes: float = float("nan")
+    container_swap_usage_peak_bytes: float = float("nan")
+    container_io_read_bytes: float = float("nan")
+    container_io_write_bytes: float = float("nan")
+
+
+@dataclass
+class _ContainerReaders:
+    cpu: Optional[Callable[[], float]] = None
+    memory: Optional[Callable[[], int]] = None
+    swap: Optional[Callable[[], int]] = None
+    swap_limit: Optional[Callable[[], int]] = None
+    io: Optional[Callable[[], Tuple[int, int]]] = None
 
 
 def _nan_result(resource_usage_iters: int = 0) -> ResourceUsageResult:
@@ -81,6 +96,11 @@ def _nan_result(resource_usage_iters: int = 0) -> ResourceUsageResult:
         gpu_mem_util_avg_pct=nan,
         gpu_mem_util_peak_pct=nan,
         gpu_mem_total_bytes=nan,
+        container_swap_limit_bytes=nan,
+        container_swap_usage_avg_bytes=nan,
+        container_swap_usage_peak_bytes=nan,
+        container_io_read_bytes=nan,
+        container_io_write_bytes=nan,
     )
 
 
@@ -115,6 +135,65 @@ def _dominant_pstate(values: List[str]) -> str:
 def _read_int(path: str) -> int:
     with open(path, "r", encoding="utf-8") as f:
         return int(f.read().strip())
+
+
+def _read_cgroup_limit(path: str) -> int:
+    """Read a cgroup byte limit, using -1 for the kernel's unlimited value."""
+    with open(path, "r", encoding="utf-8") as f:
+        raw = f.read().strip().lower()
+    if raw == "max":
+        return -1
+    value = int(raw)
+    # cgroup v1 represents an unlimited limit with a very large page-aligned
+    # integer rather than the cgroup v2 ``max`` token.
+    return -1 if value >= (1 << 60) else value
+
+
+def _read_v1_swap_usage(memsw_path: str, memory_path: str) -> int:
+    return max(0, _read_int(memsw_path) - _read_int(memory_path))
+
+
+def _read_v1_swap_limit(memsw_path: str, memory_path: str) -> int:
+    memsw_limit = _read_cgroup_limit(memsw_path)
+    memory_limit = _read_cgroup_limit(memory_path)
+    if memsw_limit < 0:
+        return -1
+    if memory_limit < 0:
+        return memsw_limit
+    return max(0, memsw_limit - memory_limit)
+
+
+def _read_cgroup_v2_io_stat(path: str) -> Tuple[int, int]:
+    read_bytes = 0
+    write_bytes = 0
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            parts = line.split()
+            for token in parts[1:]:
+                key, separator, raw_value = token.partition("=")
+                if not separator:
+                    continue
+                if key == "rbytes":
+                    read_bytes += int(raw_value)
+                elif key == "wbytes":
+                    write_bytes += int(raw_value)
+    return read_bytes, write_bytes
+
+
+def _read_cgroup_v1_io_service_bytes(path: str) -> Tuple[int, int]:
+    read_bytes = 0
+    write_bytes = 0
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) < 3 or parts[0].lower() == "total":
+                continue
+            operation = parts[1].strip().lower()
+            if operation == "read":
+                read_bytes += int(parts[2])
+            elif operation == "write":
+                write_bytes += int(parts[2])
+    return read_bytes, write_bytes
 
 
 def _read_cpu_stat_usage_s(path: str) -> float:
@@ -262,32 +341,50 @@ def _v1_candidates(
     return candidates
 
 
-def _resolve_container_readers(
+def _resolve_container_metric_readers(
     container_name: str,
     cgroup_root: str = "/sys/fs/cgroup",
     proc_root: str = "/proc",
-) -> Tuple[Optional[Callable[[], float]], Optional[Callable[[], int]]]:
+) -> _ContainerReaders:
     if not container_name:
-        return None, None
+        return _ContainerReaders()
 
     pid = _docker_container_pid(container_name)
     cgroup_file = os.path.join(proc_root, str(pid), "cgroup")
     with open(cgroup_file, "r", encoding="utf-8") as f:
         lines = [line.strip() for line in f if line.strip()]
 
-    cpu_reader: Optional[Callable[[], float]] = None
-    mem_reader: Optional[Callable[[], int]] = None
+    readers = _ContainerReaders()
 
     for line in lines:
         parts = line.split(":", 2)
         if len(parts) == 3 and parts[0] == "0":
             cpu_path = _join_cgroup_path(cgroup_root, parts[2], "cpu.stat")
             mem_path = _join_cgroup_path(cgroup_root, parts[2], "memory.current")
+            swap_path = _join_cgroup_path(
+                cgroup_root,
+                parts[2],
+                "memory.swap.current",
+            )
+            swap_limit_path = _join_cgroup_path(
+                cgroup_root,
+                parts[2],
+                "memory.swap.max",
+            )
+            io_path = _join_cgroup_path(cgroup_root, parts[2], "io.stat")
             if os.path.exists(cpu_path):
-                cpu_reader = lambda path=cpu_path: _read_cpu_stat_usage_s(path)
+                readers.cpu = lambda path=cpu_path: _read_cpu_stat_usage_s(path)
             if os.path.exists(mem_path):
-                mem_reader = lambda path=mem_path: _read_int(path)
-            return cpu_reader, mem_reader
+                readers.memory = lambda path=mem_path: _read_int(path)
+            if os.path.exists(swap_path):
+                readers.swap = lambda path=swap_path: _read_int(path)
+            if os.path.exists(swap_limit_path):
+                readers.swap_limit = (
+                    lambda path=swap_limit_path: _read_cgroup_limit(path)
+                )
+            if os.path.exists(io_path):
+                readers.io = lambda path=io_path: _read_cgroup_v2_io_stat(path)
+            return readers
 
     for line in lines:
         parts = line.split(":", 2)
@@ -295,21 +392,96 @@ def _resolve_container_readers(
             continue
 
         controllers = set(parts[1].split(","))
-        if cpu_reader is None and "cpuacct" in controllers:
+        if readers.cpu is None and "cpuacct" in controllers:
             cpu_path = _first_existing(
                 _v1_candidates(cgroup_root, parts[1], parts[2], "cpuacct.usage")
             )
             if cpu_path is not None:
-                cpu_reader = lambda path=cpu_path: float(_read_int(path)) / 1_000_000_000.0
+                readers.cpu = (
+                    lambda path=cpu_path: float(_read_int(path)) / 1_000_000_000.0
+                )
 
-        if mem_reader is None and "memory" in controllers:
+        if readers.memory is None and "memory" in controllers:
             mem_path = _first_existing(
                 _v1_candidates(cgroup_root, parts[1], parts[2], "memory.usage_in_bytes")
             )
             if mem_path is not None:
-                mem_reader = lambda path=mem_path: _read_int(path)
+                readers.memory = lambda path=mem_path: _read_int(path)
 
-    return cpu_reader, mem_reader
+            memsw_path = _first_existing(
+                _v1_candidates(
+                    cgroup_root,
+                    parts[1],
+                    parts[2],
+                    "memory.memsw.usage_in_bytes",
+                )
+            )
+            if memsw_path is not None and mem_path is not None:
+                readers.swap = (
+                    lambda memsw=memsw_path, memory=mem_path: _read_v1_swap_usage(
+                        memsw,
+                        memory,
+                    )
+                )
+
+            memsw_limit_path = _first_existing(
+                _v1_candidates(
+                    cgroup_root,
+                    parts[1],
+                    parts[2],
+                    "memory.memsw.limit_in_bytes",
+                )
+            )
+            memory_limit_path = _first_existing(
+                _v1_candidates(
+                    cgroup_root,
+                    parts[1],
+                    parts[2],
+                    "memory.limit_in_bytes",
+                )
+            )
+            if memsw_limit_path is not None and memory_limit_path is not None:
+                readers.swap_limit = (
+                    lambda memsw=memsw_limit_path, memory=memory_limit_path: (
+                        _read_v1_swap_limit(memsw, memory)
+                    )
+                )
+
+        if readers.io is None and "blkio" in controllers:
+            io_path = _first_existing(
+                _v1_candidates(
+                    cgroup_root,
+                    parts[1],
+                    parts[2],
+                    "blkio.throttle.io_service_bytes",
+                )
+                + _v1_candidates(
+                    cgroup_root,
+                    parts[1],
+                    parts[2],
+                    "blkio.io_service_bytes",
+                )
+            )
+            if io_path is not None:
+                readers.io = (
+                    lambda path=io_path: _read_cgroup_v1_io_service_bytes(path)
+                )
+
+    return readers
+
+
+def _resolve_container_readers(
+    container_name: str,
+    cgroup_root: str = "/sys/fs/cgroup",
+    proc_root: str = "/proc",
+) -> Tuple[Optional[Callable[[], float]], Optional[Callable[[], int]]]:
+    """Compatibility wrapper for callers that only need CPU and memory."""
+    readers = _resolve_container_metric_readers(
+        container_name,
+        cgroup_root=cgroup_root,
+        proc_root=proc_root,
+    )
+    return readers.cpu, readers.memory
 
 
 def _result_from_samples(
@@ -381,6 +553,15 @@ def _result_from_samples(
             result.container_mem_util_peak_pct = (
                 result.container_mem_usage_peak_bytes / mem_limit_bytes
             ) * 100.0
+
+    swap_values = [
+        float(sample.container_swap_usage_bytes)
+        for sample in samples
+        if sample.container_swap_usage_bytes is not None
+    ]
+    if swap_values:
+        result.container_swap_usage_avg_bytes = _mean(swap_values)
+        result.container_swap_usage_peak_bytes = max(swap_values)
 
     gpu_utils = [
         float(sample.gpu_util_pct)
@@ -476,6 +657,12 @@ class ResourceUsageMonitor:
         self.samples: List[ResourceUsageSample] = []
         self._cpu_reader: Optional[Callable[[], float]] = None
         self._mem_reader: Optional[Callable[[], int]] = None
+        self._swap_reader: Optional[Callable[[], int]] = None
+        self._swap_limit_reader: Optional[Callable[[], int]] = None
+        self._io_reader: Optional[Callable[[], Tuple[int, int]]] = None
+        self._swap_limit_bytes: Optional[int] = None
+        self._io_start: Optional[Tuple[int, int]] = None
+        self._io_end: Optional[Tuple[int, int]] = None
         self._gpu_handle = None
         self._gpu_initialized = False
         self._thread: Optional[threading.Thread] = None
@@ -487,11 +674,16 @@ class ResourceUsageMonitor:
         self._closed = False
 
         try:
-            self._cpu_reader, self._mem_reader = _resolve_container_readers(
+            readers = _resolve_container_metric_readers(
                 container_name,
                 cgroup_root=cgroup_root,
                 proc_root=proc_root,
             )
+            self._cpu_reader = readers.cpu
+            self._mem_reader = readers.memory
+            self._swap_reader = readers.swap
+            self._swap_limit_reader = readers.swap_limit
+            self._io_reader = readers.io
         except Exception as exc:
             self._init_error = str(exc)
 
@@ -512,6 +704,9 @@ class ResourceUsageMonitor:
         return (
             self._cpu_reader is not None
             or self._mem_reader is not None
+            or self._swap_reader is not None
+            or self._swap_limit_reader is not None
+            or self._io_reader is not None
             or self._gpu_handle is not None
         )
 
@@ -523,6 +718,19 @@ class ResourceUsageMonitor:
 
         self.samples = []
         self._stop_event = threading.Event()
+        self._swap_limit_bytes = None
+        self._io_start = None
+        self._io_end = None
+        if self._swap_limit_reader is not None:
+            try:
+                self._swap_limit_bytes = self._swap_limit_reader()
+            except Exception as exc:
+                self._runtime_error = str(exc)
+        if self._io_reader is not None:
+            try:
+                self._io_start = self._io_reader()
+            except Exception as exc:
+                self._runtime_error = str(exc)
         self._t_start = time.perf_counter()
         self._t_end = None
         self._append_sample(self._t_start)
@@ -542,6 +750,11 @@ class ResourceUsageMonitor:
             self._thread.join(timeout=1.0)
 
         self._append_sample(self._t_end)
+        if self._io_reader is not None:
+            try:
+                self._io_end = self._io_reader()
+            except Exception as exc:
+                self._runtime_error = str(exc)
         samples = [
             sample
             for sample in self.samples
@@ -549,13 +762,23 @@ class ResourceUsageMonitor:
         ]
         samples.sort(key=lambda item: item.timestamp)
         self.samples = samples
+        result = _result_from_samples(
+            samples,
+            self.cpu_cores,
+            self.mem_limit_bytes,
+            min_cpu_interval_s=0.5 * self.dt,
+        )
+        if self._swap_limit_bytes is not None:
+            result.container_swap_limit_bytes = float(self._swap_limit_bytes)
+        if self._io_start is not None and self._io_end is not None:
+            result.container_io_read_bytes = float(
+                max(0, self._io_end[0] - self._io_start[0])
+            )
+            result.container_io_write_bytes = float(
+                max(0, self._io_end[1] - self._io_start[1])
+            )
         return (
-            _result_from_samples(
-                samples,
-                self.cpu_cores,
-                self.mem_limit_bytes,
-                min_cpu_interval_s=0.5 * self.dt,
-            ),
+            result,
             self._error_message(),
             samples,
         )
@@ -592,6 +815,7 @@ class ResourceUsageMonitor:
     def _read_sample(self, timestamp: float) -> ResourceUsageSample:
         container_cpu_s = None
         container_mem_usage_bytes = None
+        container_swap_usage_bytes = None
         gpu_util_pct = None
         gpu_mem_used_bytes = None
         gpu_mem_total_bytes = None
@@ -611,6 +835,12 @@ class ResourceUsageMonitor:
         if self._mem_reader is not None:
             try:
                 container_mem_usage_bytes = self._mem_reader()
+            except Exception as exc:
+                self._runtime_error = str(exc)
+
+        if self._swap_reader is not None:
+            try:
+                container_swap_usage_bytes = self._swap_reader()
             except Exception as exc:
                 self._runtime_error = str(exc)
 
@@ -678,6 +908,7 @@ class ResourceUsageMonitor:
             gpu_memory_clock_mhz,
             gpu_pstate,
             gpu_temp_c,
+            container_swap_usage_bytes,
         )
 
     def _append_sample(self, timestamp: float) -> None:

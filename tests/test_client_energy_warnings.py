@@ -123,12 +123,16 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(CSV_FIELDS[gpu_idle_index + 1], "gpu_idle_measured_at")
         self.assertEqual(CSV_FIELDS[gpu_idle_index + 2], "gpu_idle_rel_range_so_far")
 
-    def test_schema_v4_includes_model_size_and_request_shape_metrics(self) -> None:
-        self.assertEqual(STATIC_META_SCHEMA_VERSION, 4)
+    def test_schema_v5_includes_swap_and_request_shape_metrics(self) -> None:
+        self.assertEqual(STATIC_META_SCHEMA_VERSION, 5)
         self.assertIn("parameter_bytes", STATIC_META_FIELDS)
         self.assertIn("model_cache_bytes", STATIC_META_FIELDS)
         self.assertNotIn("model_weight_bytes", STATIC_META_FIELDS)
         self.assertIn("host_mem_total_bytes", STATIC_META_FIELDS)
+        self.assertIn("host_swap_total_bytes", STATIC_META_FIELDS)
+        self.assertIn("host_swap_used_bytes_at_start", STATIC_META_FIELDS)
+        self.assertIn("host_swap_type", STATIC_META_FIELDS)
+        self.assertIn("host_vm_swappiness", STATIC_META_FIELDS)
         self.assertIn("docker_storage_total_bytes", STATIC_META_FIELDS)
         self.assertIn("workload", STATIC_META_FIELDS)
         self.assertIn("input_scale_plan_sha256", STATIC_META_FIELDS)
@@ -408,6 +412,18 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
             ],
             fields,
         )
+
+    def test_csv_schema_includes_container_swap_and_io_metrics(self) -> None:
+        fields = [
+            "container_swap_limit_bytes",
+            "container_swap_usage_avg_bytes",
+            "container_swap_usage_peak_bytes",
+            "container_io_read_bytes_per_request",
+            "container_io_write_bytes_per_request",
+        ]
+
+        start = CSV_FIELDS.index("container_mem_util_peak_pct") + 1
+        self.assertEqual(CSV_FIELDS[start:start + len(fields)], fields)
 
     def test_csv_schema_includes_massif_and_nsys_execution_metrics(self) -> None:
         massif_fields = [
@@ -1498,6 +1514,11 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                     container_mem_usage_peak_bytes=2048.0,
                     container_mem_util_avg_pct=1.0,
                     container_mem_util_peak_pct=2.0,
+                    container_swap_limit_bytes=4096.0,
+                    container_swap_usage_avg_bytes=128.0,
+                    container_swap_usage_peak_bytes=256.0,
+                    container_io_read_bytes=1024.0,
+                    container_io_write_bytes=2048.0,
                     gpu_util_avg_pct=30.0,
                     gpu_util_peak_pct=40.0,
                     gpu_sm_clock_mhz=1500.0,
@@ -1525,7 +1546,7 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
             ), patch.object(
                 client, "REPEAT", 1
             ), patch.object(
-                client, "REPEAT_IN_WINDOW", 1
+                client, "REPEAT_IN_WINDOW", 2
             ), patch.object(
                 client, "USE_ENERGY", False
             ), patch.object(
@@ -1568,6 +1589,23 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(rows[0]["gpu_pstate"], "P2")
         self.assertEqual(rows[0]["gpu_temp_c"], "61.000000")
         self.assertEqual(rows[0]["gpu_util_avg_pct"], "30.000000")
+        self.assertEqual(rows[0]["container_swap_limit_bytes"], "4096.000000")
+        self.assertEqual(
+            rows[0]["container_swap_usage_avg_bytes"],
+            "128.000000",
+        )
+        self.assertEqual(
+            rows[0]["container_swap_usage_peak_bytes"],
+            "256.000000",
+        )
+        self.assertEqual(
+            rows[0]["container_io_read_bytes_per_request"],
+            "512.000000",
+        )
+        self.assertEqual(
+            rows[0]["container_io_write_bytes_per_request"],
+            "1024.000000",
+        )
         self.assertNotIn("gpu_power_w", rows[0])
         self.assertNotIn("gpu_util_percent", rows[0])
         self.assertNotIn("gpu_mem_total_bytes", rows[0])

@@ -23,6 +23,7 @@ class ResourceUsageMonitorTests(unittest.TestCase):
                 gpu_memory_clock_mhz=5000.0,
                 gpu_pstate="P0",
                 gpu_temp_c=50.0,
+                container_swap_usage_bytes=10,
             ),
             resource_usage.ResourceUsageSample(
                 1.0,
@@ -35,6 +36,7 @@ class ResourceUsageMonitorTests(unittest.TestCase):
                 gpu_memory_clock_mhz=6000.0,
                 gpu_pstate="P2",
                 gpu_temp_c=52.0,
+                container_swap_usage_bytes=20,
             ),
             resource_usage.ResourceUsageSample(
                 2.0,
@@ -47,6 +49,7 @@ class ResourceUsageMonitorTests(unittest.TestCase):
                 gpu_memory_clock_mhz=7000.0,
                 gpu_pstate="P0",
                 gpu_temp_c=54.0,
+                container_swap_usage_bytes=30,
             ),
         ]
 
@@ -63,6 +66,8 @@ class ResourceUsageMonitorTests(unittest.TestCase):
         self.assertAlmostEqual(result.container_mem_usage_peak_bytes, 300.0)
         self.assertAlmostEqual(result.container_mem_util_avg_pct, 20.0)
         self.assertAlmostEqual(result.container_mem_util_peak_pct, 30.0)
+        self.assertAlmostEqual(result.container_swap_usage_avg_bytes, 20.0)
+        self.assertAlmostEqual(result.container_swap_usage_peak_bytes, 30.0)
         self.assertAlmostEqual(result.gpu_util_avg_pct, 20.0)
         self.assertAlmostEqual(result.gpu_util_peak_pct, 30.0)
         self.assertAlmostEqual(result.gpu_sm_clock_mhz, 1200.0)
@@ -154,7 +159,7 @@ class ResourceUsageMonitorTests(unittest.TestCase):
         self.assertAlmostEqual(result.container_cpu_util_avg_pct, (0.22 / 0.201) * 100.0)
         self.assertAlmostEqual(result.container_cpu_util_peak_pct, 100.0)
 
-    def test_resolves_cgroup_v2_cpu_and_memory_readers(self) -> None:
+    def test_resolves_cgroup_v2_resource_readers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             proc_root = os.path.join(tmp, "proc")
             cgroup_root = os.path.join(tmp, "cgroup")
@@ -167,33 +172,63 @@ class ResourceUsageMonitorTests(unittest.TestCase):
                 f.write("usage_usec 1500000\n")
             with open(os.path.join(cgroup_root, "docker", "abc", "memory.current"), "w", encoding="utf-8") as f:
                 f.write("12345\n")
+            with open(
+                os.path.join(cgroup_root, "docker", "abc", "memory.swap.current"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write("2048\n")
+            with open(
+                os.path.join(cgroup_root, "docker", "abc", "memory.swap.max"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write("4096\n")
+            with open(
+                os.path.join(cgroup_root, "docker", "abc", "io.stat"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write("8:0 rbytes=100 wbytes=200 rios=1 wios=2\n")
+                f.write("8:16 rbytes=300 wbytes=400 rios=3 wios=4\n")
 
             fake_completed = SimpleNamespace(returncode=0, stdout="123\n", stderr="")
             with patch("acprof.monitors.resource_usage.subprocess.run", return_value=fake_completed):
-                cpu_reader, mem_reader = resource_usage._resolve_container_readers(
+                readers = resource_usage._resolve_container_metric_readers(
                     "case_container",
                     cgroup_root=cgroup_root,
                     proc_root=proc_root,
                 )
 
-            self.assertIsNotNone(cpu_reader)
-            self.assertIsNotNone(mem_reader)
-            assert cpu_reader is not None
-            assert mem_reader is not None
-            self.assertEqual(cpu_reader(), 1.5)
-            self.assertEqual(mem_reader(), 12345)
+            self.assertIsNotNone(readers.cpu)
+            self.assertIsNotNone(readers.memory)
+            self.assertIsNotNone(readers.swap)
+            self.assertIsNotNone(readers.swap_limit)
+            self.assertIsNotNone(readers.io)
+            assert readers.cpu is not None
+            assert readers.memory is not None
+            assert readers.swap is not None
+            assert readers.swap_limit is not None
+            assert readers.io is not None
+            self.assertEqual(readers.cpu(), 1.5)
+            self.assertEqual(readers.memory(), 12345)
+            self.assertEqual(readers.swap(), 2048)
+            self.assertEqual(readers.swap_limit(), 4096)
+            self.assertEqual(readers.io(), (400, 600))
 
-    def test_resolves_cgroup_v1_cpuacct_and_memory_readers(self) -> None:
+    def test_resolves_cgroup_v1_resource_readers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             proc_root = os.path.join(tmp, "proc")
             cgroup_root = os.path.join(tmp, "cgroup")
             os.makedirs(os.path.join(proc_root, "123"))
             os.makedirs(os.path.join(cgroup_root, "cpu,cpuacct", "docker", "abc"))
             os.makedirs(os.path.join(cgroup_root, "memory", "docker", "abc"))
+            os.makedirs(os.path.join(cgroup_root, "blkio", "docker", "abc"))
 
             with open(os.path.join(proc_root, "123", "cgroup"), "w", encoding="utf-8") as f:
                 f.write("8:cpu,cpuacct:/docker/abc\n")
                 f.write("9:memory:/docker/abc\n")
+                f.write("10:blkio:/docker/abc\n")
             with open(
                 os.path.join(cgroup_root, "cpu,cpuacct", "docker", "abc", "cpuacct.usage"),
                 "w",
@@ -206,21 +241,125 @@ class ResourceUsageMonitorTests(unittest.TestCase):
                 encoding="utf-8",
             ) as f:
                 f.write("67890\n")
+            with open(
+                os.path.join(
+                    cgroup_root,
+                    "memory",
+                    "docker",
+                    "abc",
+                    "memory.memsw.usage_in_bytes",
+                ),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write("68890\n")
+            with open(
+                os.path.join(
+                    cgroup_root,
+                    "memory",
+                    "docker",
+                    "abc",
+                    "memory.limit_in_bytes",
+                ),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write("10000\n")
+            with open(
+                os.path.join(
+                    cgroup_root,
+                    "memory",
+                    "docker",
+                    "abc",
+                    "memory.memsw.limit_in_bytes",
+                ),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write("14000\n")
+            with open(
+                os.path.join(
+                    cgroup_root,
+                    "blkio",
+                    "docker",
+                    "abc",
+                    "blkio.throttle.io_service_bytes",
+                ),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write("8:0 Read 100\n")
+                f.write("8:0 Write 200\n")
+                f.write("8:16 Read 300\n")
+                f.write("8:16 Write 400\n")
+                f.write("Total 1000\n")
 
             fake_completed = SimpleNamespace(returncode=0, stdout="123\n", stderr="")
             with patch("acprof.monitors.resource_usage.subprocess.run", return_value=fake_completed):
-                cpu_reader, mem_reader = resource_usage._resolve_container_readers(
+                readers = resource_usage._resolve_container_metric_readers(
                     "case_container",
                     cgroup_root=cgroup_root,
                     proc_root=proc_root,
                 )
 
-            self.assertIsNotNone(cpu_reader)
-            self.assertIsNotNone(mem_reader)
-            assert cpu_reader is not None
-            assert mem_reader is not None
-            self.assertEqual(cpu_reader(), 2.5)
-            self.assertEqual(mem_reader(), 67890)
+            self.assertIsNotNone(readers.cpu)
+            self.assertIsNotNone(readers.memory)
+            self.assertIsNotNone(readers.swap)
+            self.assertIsNotNone(readers.swap_limit)
+            self.assertIsNotNone(readers.io)
+            assert readers.cpu is not None
+            assert readers.memory is not None
+            assert readers.swap is not None
+            assert readers.swap_limit is not None
+            assert readers.io is not None
+            self.assertEqual(readers.cpu(), 2.5)
+            self.assertEqual(readers.memory(), 67890)
+            self.assertEqual(readers.swap(), 1000)
+            self.assertEqual(readers.swap_limit(), 4000)
+            self.assertEqual(readers.io(), (400, 600))
+
+    def test_cgroup_unlimited_limit_uses_negative_one_sentinel(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            limit_path = os.path.join(tmp, "memory.swap.max")
+            with open(limit_path, "w", encoding="utf-8") as f:
+                f.write("max\n")
+            self.assertEqual(resource_usage._read_cgroup_limit(limit_path), -1)
+
+    def test_monitor_collects_swap_and_window_io_delta(self) -> None:
+        state = {
+            "swap": 10,
+            "read": 100,
+            "write": 200,
+        }
+        readers = resource_usage._ContainerReaders(
+            swap=lambda: state["swap"],
+            swap_limit=lambda: 4096,
+            io=lambda: (state["read"], state["write"]),
+        )
+
+        with patch(
+            "acprof.monitors.resource_usage._resolve_container_metric_readers",
+            return_value=readers,
+        ), patch(
+            "acprof.monitors.resource_usage._read_cpu_frequency_hz",
+            return_value=(None, None),
+        ):
+            monitor = resource_usage.ResourceUsageMonitor(
+                sample_hz=1.0,
+                container_name="case_container",
+            )
+            monitor.start()
+            state.update({"swap": 30, "read": 700, "write": 1000})
+            result, error, samples = monitor.stop()
+            monitor.close()
+
+        self.assertEqual(error, "")
+        self.assertEqual(len(samples), 2)
+        self.assertEqual(result.container_swap_limit_bytes, 4096.0)
+        self.assertEqual(result.container_swap_usage_avg_bytes, 20.0)
+        self.assertEqual(result.container_swap_usage_peak_bytes, 30.0)
+        self.assertEqual(result.container_io_read_bytes, 600.0)
+        self.assertEqual(result.container_io_write_bytes, 800.0)
 
     def test_reads_gpu_utilization_and_memory_from_nvml(self) -> None:
         fake_nvml = SimpleNamespace(
@@ -285,6 +424,11 @@ class ResourceUsageMonitorTests(unittest.TestCase):
         self.assertEqual(result.resource_usage_iters, 0)
         self.assertTrue(math.isnan(result.container_cpu_util_avg_pct))
         self.assertTrue(math.isnan(result.container_mem_usage_avg_bytes))
+        self.assertTrue(math.isnan(result.container_swap_limit_bytes))
+        self.assertTrue(math.isnan(result.container_swap_usage_avg_bytes))
+        self.assertTrue(math.isnan(result.container_swap_usage_peak_bytes))
+        self.assertTrue(math.isnan(result.container_io_read_bytes))
+        self.assertTrue(math.isnan(result.container_io_write_bytes))
         self.assertTrue(math.isnan(result.gpu_util_avg_pct))
         self.assertTrue(math.isnan(result.gpu_sm_clock_mhz))
         self.assertTrue(math.isnan(result.gpu_memory_clock_mhz))

@@ -37,6 +37,11 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             "container_mem_usage_peak_bytes",
             "container_mem_util_avg_pct",
             "container_mem_util_peak_pct",
+            "container_swap_limit_bytes",
+            "container_swap_usage_avg_bytes",
+            "container_swap_usage_peak_bytes",
+            "container_io_read_bytes_per_request",
+            "container_io_write_bytes_per_request",
             "gpu_sm_clock_mhz",
             "gpu_memory_clock_mhz",
             "gpu_pstate",
@@ -154,6 +159,11 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 "cpu_instructions_per_request",
                 "cpu_mips_app",
                 "container_mem_usage_avg_bytes",
+                "container_swap_limit_bytes",
+                "container_swap_usage_avg_bytes",
+                "container_swap_usage_peak_bytes",
+                "container_io_read_bytes_per_request",
+                "container_io_write_bytes_per_request",
                 "gpu_sm_clock_mhz",
                 "gpu_memory_clock_mhz",
                 "gpu_pstate",
@@ -176,6 +186,11 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                     "cpu_instructions_per_request": "500000",
                     "cpu_mips_app": "2.5",
                     "container_mem_usage_avg_bytes": str(2 * 1024 ** 3),
+                    "container_swap_limit_bytes": str(4 * 1024 ** 3),
+                    "container_swap_usage_avg_bytes": str(512 * 1024 ** 2),
+                    "container_swap_usage_peak_bytes": str(1024 ** 3),
+                    "container_io_read_bytes_per_request": "4096",
+                    "container_io_write_bytes_per_request": "2048",
                     "gpu_sm_clock_mhz": "1800",
                     "gpu_memory_clock_mhz": "7500",
                     "gpu_pstate": "P0",
@@ -198,6 +213,23 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
         self.assertEqual(df["gpu_pstate"].iloc[0], "P0")
         self.assertEqual(float(df["gpu_temp_c"].iloc[0]), 67.0)
         self.assertEqual(float(df["container_mem_usage_avg_gib"].iloc[0]), 2.0)
+        self.assertEqual(float(df["container_swap_limit_gib"].iloc[0]), 4.0)
+        self.assertEqual(
+            float(df["container_swap_usage_avg_gib"].iloc[0]),
+            0.5,
+        )
+        self.assertEqual(
+            float(df["container_swap_usage_peak_gib"].iloc[0]),
+            1.0,
+        )
+        self.assertEqual(
+            float(df["container_io_read_bytes_per_request"].iloc[0]),
+            4096.0,
+        )
+        self.assertEqual(
+            float(df["container_io_write_bytes_per_request"].iloc[0]),
+            2048.0,
+        )
         self.assertEqual(float(df["gpu_mem_used_avg_gib"].iloc[0]), 3.0)
         self.assertEqual(float(df["gpu_mem_total_gib"].iloc[0]), 8.0)
 

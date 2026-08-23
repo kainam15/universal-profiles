@@ -250,6 +250,11 @@ CSV_FIELDS = [
     "container_mem_usage_peak_bytes",
     "container_mem_util_avg_pct",
     "container_mem_util_peak_pct",
+    "container_swap_limit_bytes",
+    "container_swap_usage_avg_bytes",
+    "container_swap_usage_peak_bytes",
+    "container_io_read_bytes_per_request",
+    "container_io_write_bytes_per_request",
     *GPU_RUNTIME_STATE_FIELDS,
     "gpu_util_avg_pct",
     "gpu_util_peak_pct",
@@ -293,6 +298,10 @@ STATIC_META_FIELDS = [
     "gpu",
     "gpu_mem_total_bytes",
     "host_mem_total_bytes",
+    "host_swap_total_bytes",
+    "host_swap_used_bytes_at_start",
+    "host_swap_type",
+    "host_vm_swappiness",
     "model_cache_bytes",
     "docker_image_bytes",
     "docker_storage_total_bytes",
@@ -340,7 +349,7 @@ STATIC_META_FIELDS = [
     "execution_profiles_retained",
     "execution_profile_provenance",
 ]
-STATIC_META_SCHEMA_VERSION = 4
+STATIC_META_SCHEMA_VERSION = 5
 
 # ─────────────────────────────────────────────
 # Docker 镜像命名
