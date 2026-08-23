@@ -267,6 +267,7 @@ STATIC_META_FIELDS = [
     "model_name",
     "model_revision",
     "parameter_count",
+    "parameter_bytes",
     "precision_dtype",
     "parameter_dtype_counts",
     "inference_precision_by_device",
@@ -292,7 +293,7 @@ STATIC_META_FIELDS = [
     "gpu",
     "gpu_mem_total_bytes",
     "host_mem_total_bytes",
-    "model_weight_bytes",
+    "model_cache_bytes",
     "docker_image_bytes",
     "docker_storage_total_bytes",
     "docker_storage_available_bytes_at_start",
@@ -339,7 +340,7 @@ STATIC_META_FIELDS = [
     "execution_profiles_retained",
     "execution_profile_provenance",
 ]
-STATIC_META_SCHEMA_VERSION = 3
+STATIC_META_SCHEMA_VERSION = 4
 
 # ─────────────────────────────────────────────
 # Docker 镜像命名

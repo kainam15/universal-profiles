@@ -31,6 +31,7 @@ class TaskInfo:
     model_revision: str
     detection_method: str  # "hub_api" / "config_infer" / "manual"
     parameter_count: Optional[int] = None
+    parameter_bytes: Optional[int] = None
     precision_dtype: Optional[str] = None
     parameter_dtype_counts: dict[str, int] = field(default_factory=dict)
     quantized: Optional[bool] = None
@@ -87,6 +88,23 @@ _QUANTIZATION_TAGS = {
     "quanto",
     "spqr",
 }
+_DTYPE_BYTE_WIDTHS = {
+    "BOOL": 1,
+    "FP64": 8,
+    "FP32": 4,
+    "FP16": 2,
+    "BF16": 2,
+    "FP8_E5M2": 1,
+    "FP8_E4M3": 1,
+    "INT64": 8,
+    "INT32": 4,
+    "INT16": 2,
+    "INT8": 1,
+    "UINT64": 8,
+    "UINT32": 4,
+    "UINT16": 2,
+    "UINT8": 1,
+}
 
 
 def _normalize_dtype_name(raw_dtype: object) -> str:
@@ -125,6 +143,22 @@ def _json_mapping(value: object) -> dict[str, Any]:
         converted = to_dict()
         return dict(converted) if isinstance(converted, dict) else {}
     return {}
+
+
+def _parameter_bytes_from_dtype_counts(
+    dtype_counts: dict[str, int],
+) -> Optional[int]:
+    """Return logical tensor payload bytes, or ``None`` if not exact."""
+    if not dtype_counts:
+        return None
+
+    total = 0
+    for dtype, count in dtype_counts.items():
+        byte_width = _DTYPE_BYTE_WIDTHS.get(dtype)
+        if byte_width is None or count < 0:
+            return None
+        total += count * byte_width
+    return total
 
 
 def _hub_model_metadata(info: object) -> dict[str, Any]:
@@ -198,6 +232,7 @@ def _hub_model_metadata(info: object) -> dict[str, Any]:
 
     return {
         "parameter_count": parameter_count,
+        "parameter_bytes": _parameter_bytes_from_dtype_counts(dtype_counts),
         "precision_dtype": precision_dtype,
         "parameter_dtype_counts": dtype_counts,
         "quantized": quantized,

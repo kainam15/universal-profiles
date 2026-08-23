@@ -67,7 +67,7 @@ class StaticMeta:
     model_download_url: str
     gpu: str
     gpu_mem_total_bytes: Optional[int]
-    model_weight_bytes: int
+    model_cache_bytes: int
     docker_image_bytes: int
     environment: str
     cpu_power_source: str
@@ -84,6 +84,7 @@ class StaticMeta:
     input_scale_plan_sha256: str = ""
     schema_version: int = STATIC_META_SCHEMA_VERSION
     parameter_count: Optional[int] = None
+    parameter_bytes: Optional[int] = None
     precision_dtype: Optional[str] = None
     parameter_dtype_counts: Dict[str, int] = field(default_factory=dict)
     inference_precision_by_device: Dict[str, str] = field(default_factory=dict)
@@ -1296,8 +1297,8 @@ def _docker_image_size_bytes(image_tag: str) -> int:
         ) from exc
 
 
-def _docker_model_weight_bytes(image_tag: str, cache_root: str = "/models/hf") -> int:
-    """Measure total bytes of downloaded model artifacts stored in the image."""
+def _docker_model_cache_bytes(image_tag: str, cache_root: str = "/models/hf") -> int:
+    """Measure unique regular-file logical bytes beneath the model cache root."""
     script = (
         "import os, stat\n"
         f"root = {cache_root!r}\n"
@@ -1310,6 +1311,8 @@ def _docker_model_weight_bytes(image_tag: str, cache_root: str = "/models/hf") -
         "        path = os.path.join(dirpath, name)\n"
         "        st = os.lstat(path)\n"
         "        if stat.S_ISLNK(st.st_mode):\n"
+        "            continue\n"
+        "        if not stat.S_ISREG(st.st_mode):\n"
         "            continue\n"
         "        key = (st.st_dev, st.st_ino)\n"
         "        if key in seen:\n"
@@ -1506,6 +1509,7 @@ def collect_static_meta(
         model_name=task_info.model_id,
         model_revision=task_info.model_revision,
         parameter_count=task_info.parameter_count,
+        parameter_bytes=task_info.parameter_bytes,
         precision_dtype=task_info.precision_dtype,
         parameter_dtype_counts=dict(task_info.parameter_dtype_counts),
         inference_precision_by_device=_inference_precision_by_device(task_info),
@@ -1527,7 +1531,7 @@ def collect_static_meta(
         gpu=_get_gpu_name(device_index=device_index),
         gpu_mem_total_bytes=_get_gpu_mem_total_bytes(device_index=device_index),
         host_mem_total_bytes=_host_mem_total_bytes(),
-        model_weight_bytes=_docker_model_weight_bytes(image_info.tag),
+        model_cache_bytes=_docker_model_cache_bytes(image_info.tag),
         docker_image_bytes=_docker_image_size_bytes(image_info.tag),
         docker_storage_total_bytes=docker_storage[
             "docker_storage_total_bytes"

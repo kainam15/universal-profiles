@@ -32,6 +32,7 @@ class DetectTaskTests(unittest.TestCase):
         self.assertIsNotNone(info)
         assert info is not None
         self.assertEqual(info.parameter_count, 110_106_428)
+        self.assertEqual(info.parameter_bytes, 440_425_712)
         self.assertEqual(info.precision_dtype, "FP32")
         self.assertEqual(
             info.parameter_dtype_counts,
@@ -66,6 +67,7 @@ class DetectTaskTests(unittest.TestCase):
 
         self.assertIsNotNone(info)
         assert info is not None
+        self.assertEqual(info.parameter_bytes, 7_000_000_000)
         self.assertEqual(info.precision_dtype, "INT8")
         self.assertTrue(info.quantized)
         self.assertEqual(info.quantization_method, "gptq")
@@ -74,6 +76,31 @@ class DetectTaskTests(unittest.TestCase):
             {"quant_method": "gptq", "bits": 8},
         )
         self.assertEqual(info.model_license, "mit")
+
+    def test_parameter_bytes_is_null_when_any_dtype_width_is_unknown(self) -> None:
+        self.assertEqual(
+            detect._parameter_bytes_from_dtype_counts(
+                {"FP16": 10, "INT64": 2}
+            ),
+            36,
+        )
+        metadata = detect._hub_model_metadata(
+            SimpleNamespace(
+                safetensors=SimpleNamespace(
+                    parameters={"F16": 10, "CUSTOM": 2},
+                    total=12,
+                ),
+                card_data={},
+                config={},
+                tags=[],
+            )
+        )
+
+        self.assertEqual(
+            metadata["parameter_dtype_counts"],
+            {"FP16": 10, "CUSTOM": 2},
+        )
+        self.assertIsNone(metadata["parameter_bytes"])
 
     def test_config_fallback_reads_config_json_without_transformers_dependency(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

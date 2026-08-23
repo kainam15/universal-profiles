@@ -409,6 +409,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             model_revision="main",
             detection_method="hub_api",
             parameter_count=110_106_428,
+            parameter_bytes=440_425_712,
             precision_dtype="FP32",
             parameter_dtype_counts={"FP32": 110_106_428},
             quantized=False,
@@ -423,7 +424,7 @@ class DetectEnvironmentTests(unittest.TestCase):
         ), patch(
             "acprof.host.orchestrator._host_mem_total_bytes", return_value=64_000_000_000
         ), patch(
-            "acprof.host.orchestrator._docker_model_weight_bytes", return_value=123
+            "acprof.host.orchestrator._docker_model_cache_bytes", return_value=123
         ), patch("acprof.host.orchestrator._docker_image_size_bytes", return_value=456), patch(
             "acprof.host.orchestrator._docker_storage_metadata",
             return_value={
@@ -476,6 +477,8 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(meta.cpu_governor, "performance")
         self.assertEqual(meta.cpu_boost, "on")
         self.assertEqual(meta.parameter_count, 110_106_428)
+        self.assertEqual(meta.parameter_bytes, 440_425_712)
+        self.assertEqual(meta.model_cache_bytes, 123)
         self.assertEqual(meta.precision_dtype, "FP32")
         self.assertEqual(
             meta.inference_precision_by_device,
@@ -500,7 +503,10 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(meta.execution_profile_provenance, "disabled")
 
     def test_static_meta_compute_profile_fields_follow_host_metadata(self) -> None:
-        self.assertEqual(STATIC_META_SCHEMA_VERSION, 3)
+        self.assertEqual(STATIC_META_SCHEMA_VERSION, 4)
+        self.assertIn("parameter_bytes", STATIC_META_FIELDS)
+        self.assertIn("model_cache_bytes", STATIC_META_FIELDS)
+        self.assertNotIn("model_weight_bytes", STATIC_META_FIELDS)
         self.assertIn("gpu_mem_total_bytes", STATIC_META_FIELDS)
         self.assertIn("host_mem_total_bytes", STATIC_META_FIELDS)
         self.assertIn("docker_storage_total_bytes", STATIC_META_FIELDS)
@@ -540,7 +546,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             gpu="GPU",
             gpu_mem_total_bytes=123,
             host_mem_total_bytes=1_024,
-            model_weight_bytes=456,
+            model_cache_bytes=456,
             docker_image_bytes=789,
             docker_storage_total_bytes=10_000,
             docker_storage_available_bytes_at_start=4_000,
@@ -609,7 +615,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             gpu="GPU",
             gpu_mem_total_bytes=123,
             host_mem_total_bytes=1_024,
-            model_weight_bytes=456,
+            model_cache_bytes=456,
             docker_image_bytes=789,
             docker_storage_total_bytes=10_000,
             docker_storage_available_bytes_at_start=4_000,
@@ -622,6 +628,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             cpu_governor="performance",
             cpu_boost="off",
             parameter_count=42,
+            parameter_bytes=168,
             precision_dtype="FP32",
             parameter_dtype_counts={"FP32": 42},
             input_format={"media_type": "application/json"},
@@ -646,6 +653,9 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(list(payload), STATIC_META_FIELDS)
         self.assertNotIn("compute_profile_schema_version", payload)
         self.assertEqual(payload["parameter_count"], 42)
+        self.assertEqual(payload["parameter_bytes"], 168)
+        self.assertEqual(payload["model_cache_bytes"], 456)
+        self.assertNotIn("model_weight_bytes", payload)
         self.assertEqual(payload["host_mem_total_bytes"], 1_024)
         self.assertEqual(payload["docker_storage_total_bytes"], 10_000)
         self.assertEqual(
@@ -676,7 +686,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             model_download_url="https://example.invalid/model",
             gpu="GPU",
             gpu_mem_total_bytes=123,
-            model_weight_bytes=456,
+            model_cache_bytes=456,
             docker_image_bytes=789,
             environment="ubuntu24.04",
             cpu_power_source="rapl",

@@ -627,10 +627,11 @@ python -m acprof.cli.backfill_compute \
 
 | 字段 | 含义 |
 | --- | --- |
-| `schema_version` | `static_meta.json` schema 版本；新增主机 RAM 与 Docker 存储快照后的当前版本为 `3`。 |
+| `schema_version` | `static_meta.json` schema 版本；拆分参数 payload 与模型 cache 口径后的当前版本为 `4`。 |
 | `model_name` | Hugging Face model ID，例如 `google-bert/bert-base-uncased`。 |
 | `model_revision` | 实际解析到的 model revision / commit hash。 |
 | `parameter_count` | Hugging Face Hub SafeTensors metadata 的参数总数；Hub 未提供时为 `null`。 |
+| `parameter_bytes` | 根据 `parameter_dtype_counts` 的各 dtype 元素数量与字节宽度精确求和得到的逻辑 tensor payload 大小，不含序列化 header；没有 dtype 统计或存在未知 dtype 时为 `null`。 |
 | `precision_dtype` | SafeTensors 参数中数量占主导的权重精度，例如 `FP32`、`FP16`、`BF16`、`INT8`；无法确认时为 `null`。 |
 | `parameter_dtype_counts` | 按 dtype 统计的参数/张量元素数量，保留混合精度与少量整型 buffer 信息。 |
 | `inference_precision_by_device` | 当前 handler 明确请求的 CPU/GPU 推理精度。Transformers NLP/CV/audio handler 当前为 `{"cpu":"FP32","gpu":"FP16"}`。 |
@@ -642,7 +643,7 @@ python -m acprof.cli.backfill_compute \
 | `quantization_method` | 量化方法，例如 `gptq`、`awq`；不适用或未知时为 `null`。 |
 | `quantization_config` | Hub model config 中的完整量化配置；没有时为空 object。 |
 | `model_license` | Hugging Face model card 许可证，例如 `apache-2.0`、`mit`；无法确认时为 `null`。 |
-| `model_metadata_source` | 参数量、精度、量化和许可证的元数据来源，当前在线 Hub 检测成功时为 `huggingface_hub`。 |
+| `model_metadata_source` | 参数量、参数 payload、精度、量化和许可证的元数据来源，当前在线 Hub 检测成功时为 `huggingface_hub`。 |
 | `task_family` | 任务族：`nlp`、`cv`、`audio`、`timeseries`。 |
 | `pipeline_tag` | Hugging Face pipeline tag，例如 `fill-mask`、`image-classification`。 |
 | `runtime_backend` | 容器内使用的 runtime backend，例如 `transformers_pipeline`、`chronos`。 |
@@ -656,7 +657,7 @@ python -m acprof.cli.backfill_compute \
 | `gpu` | host device 0 的 GPU 名称；没有可见 NVIDIA GPU 时为 `unknown`。 |
 | `gpu_mem_total_bytes` | host device 0 的 total VRAM，单位 bytes；无法读取时为 `null`。 |
 | `host_mem_total_bytes` | Host 物理 RAM 总量，单位 bytes；无法读取时为 `null`。 |
-| `model_weight_bytes` | Docker image 内 `/models/hf` 下 Hugging Face cache artifacts 的总字节数，不是严格的单一权重文件大小。 |
+| `model_cache_bytes` | Docker image 内 `/models/hf` 下唯一普通文件的逻辑字节数总和；跳过符号链接并按 inode 去重。包括缓存中的全部权重格式、配置、tokenizer 等 artifacts，不代表单一权重文件大小、文件系统实际占用块或 Docker 下载体积。 |
 | `docker_image_bytes` | `docker image inspect <image_tag> --format "{{.Size}}"` 返回的本地 image size，单位 bytes。 |
 | `docker_storage_total_bytes` | Docker daemon `DockerRootDir` 所在文件系统的总容量，单位 bytes；无法访问 daemon 路径时为 `null`。 |
 | `docker_storage_available_bytes_at_start` | 静态元数据采集时 `DockerRootDir` 所在文件系统对当前用户可用的容量快照，单位 bytes；该值会随磁盘使用变化。 |
@@ -700,6 +701,8 @@ python -m acprof.cli.backfill_compute \
 | `nsys_reused_across_resource_cases` | Nsys entry 是否从采样资源复用到其他结果行。 |
 | `execution_profiles_retained` | raw Massif / Nsight Systems artifacts 是否保留。 |
 | `execution_profile_provenance` | execution profile 的来源；默认关闭时为 `disabled`。 |
+
+`schema_version=3` 的历史文件使用 `model_weight_bytes` 表示上述完整 cache artifacts 大小。v4 不回写历史文件，并以 `model_cache_bytes` 替代该旧字段，避免把 cache footprint 误解为模型权重大小。
 
 这些字段在 profiling 后原子补写，原始 `run_command` 保持不变。`static_flops` 只保存不依赖硬件计数器的 Torch 逻辑 shape FLOPs，并按 input scale 展开；NCU 实际执行 FLOPs、吞吐率以及 execution 数值仍保存在 `result_all.csv`，execution 字段是否来自代表资源由上述 sampling metadata 和 plan entry provenance 说明。
 
