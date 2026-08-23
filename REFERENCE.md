@@ -404,6 +404,7 @@ python run.py --model openai/whisper-large-v3 \
 | --- | --- |
 | `result_all.csv` | 动态测量结果。每一行对应一个 resource config、一个 input scale、一次 warmup/repeat iteration。 |
 | `static_meta.json` | 单个 JSON object 的静态元数据。记录模型版本、参数/精度/量化/许可证、输入输出格式、per-scale 静态逻辑 FLOPs、推理后端、镜像、硬件和环境信息。 |
+| `collection_history.json` | schema v1 的采集/修复 provenance。分别记录 post-hoc profiler 补采、timeout retry 和 quality retry 历史；最新一次状态由对应 history 的最后一项得到。 |
 | `input_scale_plan.json` | 所有任务族共用的 input scale/payload 计划。schema v2 额外记录 workload provenance、per-scale 输入元数据和模型约束；读取端继续兼容无版本字段的 v1 计划。主采集和 compute profiler 复用同一份 payload。 |
 | `compute_profile_plan.json` | per-scale FLOP profiling 结果。每个 CPU/GPU scale 可同时记录独立的 `torch_profiler_eager` 与 `ncu` profile；NCU 只存在于 GPU profile。失败信息按工具保存，只读取当前按 profiler 分层的 plan 结构。 |
 | `execution_profile_plan.json` | 显式 execution profiling 的采样与 per-resource-config/per-scale 汇总。Massif 条目对应 `gpu_mode=off`，Nsight Systems 条目对应 `gpu_mode=on`；复用 entry 记录实际 source resource 与 sampling strategy，失败按工具记录且不阻断主实验。 |
@@ -438,7 +439,7 @@ python run.py \
 
 正常矩阵运行期间会先写 `result_case_*.csv`。只有全部 case 完成后，`run.py` 才把这些中间文件合并成最终的 `result_all.csv`，因此启动主矩阵并不代表目录中会立刻出现 `result_all.csv`。
 
-正常运行结束且结果目录中已经同时存在 `result_all.csv`、`static_meta.json`、`input_scale_plan.json` 后，在项目根目录执行：
+正常运行结束且结果目录中已经同时存在 `result_all.csv`、`static_meta.json`、`input_scale_plan.json` 后，在项目根目录执行。新结果还会包含 `collection_history.json`；旧结果没有该文件时，首次成功补采会自动创建并迁移 `static_meta.json` 中的旧 history 字段：
 
 ```bash
 python profile.py results/openai--whisper-large-v3
@@ -481,7 +482,7 @@ python profile.py results/google-bert--bert-base-uncased --dry-run
 python profile.py results/google-bert--bert-base-uncased --force-reprofile
 ```
 
-回填后仍使用原文件名 `result_all.csv` 与 `static_meta.json`。发布新文件前，命令会把旧版本复制到 `posthoc_backups/<timestamp>/`，临时文件验证通过后才原子替换；非 profiler 字段原样保留。raw report 与补采 plan 位于 `posthoc_profiles/`。若检测到 `run.py`、Torch/NCU/Nsys/Massif 或另一个 `profile.py` 正在使用相同结果目录，命令会拒绝启动。完整成功的已有 plan 会直接复用；已有成功 CSV 行默认不会被覆盖。
+回填后仍使用原文件名 `result_all.csv` 与 `static_meta.json`，并把本次操作追加到 `collection_history.json/posthoc_profile_history`。发布新文件前，命令会把旧版本复制到 `posthoc_backups/<timestamp>/`，三个临时文件全部验证通过后才替换；失败时从备份恢复。非 profiler 字段原样保留。raw report 与补采 plan 位于 `posthoc_profiles/`。若检测到 `run.py`、Torch/NCU/Nsys/Massif 或另一个 `profile.py` 正在使用相同结果目录，命令会拒绝启动。完整成功的已有 plan 会直接复用；已有成功 CSV 行默认不会被覆盖。
 
 ### 已有 CSV 回填 compute profile
 
@@ -622,7 +623,7 @@ python -m acprof.cli.backfill_compute \
 
 ## 9. `static_meta.json` 字段解释
 
-`static_meta.json` 是一个 model/image/run-level JSON object。数组、布尔值、数字和 `null` 均保留 JSON 原生类型，不再编码成 CSV 字符串。
+`static_meta.json` 是一个 model/image/run-level JSON object，只保存描述实验对象、环境和最终 profiling 配置/口径的相对稳定信息。补采、重试、回填与备份过程记录放在独立的 `collection_history.json`。数组、布尔值、数字和 `null` 均保留 JSON 原生类型，不再编码成 CSV 字符串。
 
 | 字段 | 含义 |
 | --- | --- |
@@ -695,6 +696,17 @@ python -m acprof.cli.backfill_compute \
 | `execution_profile_provenance` | execution profile 的来源；默认关闭时为 `disabled`。 |
 
 这些字段在 profiling 后原子补写，原始 `run_command` 保持不变。`static_flops` 只保存不依赖硬件计数器的 Torch 逻辑 shape FLOPs，并按 input scale 展开；NCU 实际执行 FLOPs、吞吐率以及 execution 数值仍保存在 `result_all.csv`，execution 字段是否来自代表资源由上述 sampling metadata 和 plan entry provenance 说明。
+
+### `collection_history.json` 字段
+
+| 字段 | 含义 |
+| --- | --- |
+| `schema_version` | `collection_history.json` schema 版本，当前为 `1`。 |
+| `posthoc_profile_history` | `profile.py` 事后补采记录，包括工具、采样策略、完成时间与备份位置。 |
+| `timeout_retry_history` | 请求超时后的重采/合并记录。当前仓库没有自动生成该记录的入口，但会迁移和保留已有数据。 |
+| `quality_retry_history` | 质量检查后的定向重采/合并记录。当前仓库没有自动生成该记录的入口，但会迁移和保留已有数据。 |
+
+不再重复保存 `posthoc_profile_last_run`、`timeout_retry_last_run` 或 `quality_retry_last_run`；需要最新记录时读取对应 `*_history[-1]`。旧版 `static_meta.json` 中已有的六个 history/last-run 字段，会在首次成功 post-hoc 更新时无损迁移并去重。
 
 ## 10. 结果行数和时间成本估算
 

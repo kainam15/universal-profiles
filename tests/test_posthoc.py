@@ -301,6 +301,24 @@ class PosthocProfileTests(unittest.TestCase):
         self.assertEqual(applicable, ("torch", "ncu", "nsys", "massif"))
         self.assertEqual(skipped, ())
 
+    def test_load_context_migrates_legacy_static_meta_histories_in_memory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "example--model"
+            self._write_fixture(root)
+            static_path = root / posthoc.STATIC_META_NAME
+            static_meta = json.loads(static_path.read_text(encoding="utf-8"))
+            record = {"completed_at": "2026-08-21T22:29:33+08:00"}
+            static_meta["timeout_retry_history"] = [record]
+            static_meta["timeout_retry_last_run"] = record
+            static_path.write_text(json.dumps(static_meta), encoding="utf-8")
+
+            context = posthoc.load_result_context(root)
+
+        self.assertNotIn("timeout_retry_history", context.static_meta)
+        self.assertNotIn("timeout_retry_last_run", context.static_meta)
+        self.assertEqual(context.collection_history["timeout_retry_history"], [record])
+        self.assertFalse(context.collection_history_existed)
+
     def test_backfill_updates_only_profiler_fields_for_applicable_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "example--model"
@@ -461,8 +479,17 @@ class PosthocProfileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "example--model"
             csv_path = self._write_fixture(root)
+            initial_history = {
+                "schema_version": 1,
+                "posthoc_profile_history": [],
+                "timeout_retry_history": [{"completed_at": "2026-08-01T00:00:00Z"}],
+                "quality_retry_history": [],
+            }
+            history_path = root / posthoc.COLLECTION_HISTORY_NAME
+            history_path.write_text(json.dumps(initial_history), encoding="utf-8")
             original_csv = csv_path.read_bytes()
             original_meta = (root / posthoc.STATIC_META_NAME).read_bytes()
+            original_history = history_path.read_bytes()
             (root / "compute_profile_plan.json").write_text(
                 json.dumps(self._compute_plan()), encoding="utf-8"
             )
@@ -484,6 +511,10 @@ class PosthocProfileTests(unittest.TestCase):
             backup = Path(summary.backup_dir)
             self.assertEqual((backup / "result_all.csv").read_bytes(), original_csv)
             self.assertEqual((backup / "static_meta.json").read_bytes(), original_meta)
+            self.assertEqual(
+                (backup / posthoc.COLLECTION_HISTORY_NAME).read_bytes(),
+                original_history,
+            )
 
             rows = self._read_rows(root / "result_all.csv")
             cpu = next(row for row in rows if row["gpu_mode"] == "off")
@@ -500,8 +531,69 @@ class PosthocProfileTests(unittest.TestCase):
             )
             self.assertEqual(metadata["nsys_version"], "test-nsys")
             self.assertEqual(metadata["massif_version"], "test-massif")
-            self.assertEqual(len(metadata["posthoc_profile_history"]), 1)
+            self.assertNotIn("posthoc_profile_history", metadata)
+            self.assertNotIn("posthoc_profile_last_run", metadata)
+            collection_history = json.loads(history_path.read_text())
+            self.assertEqual(len(collection_history["posthoc_profile_history"]), 1)
+            self.assertEqual(len(collection_history["timeout_retry_history"]), 1)
             self.assertFalse((root / posthoc.LOCK_FILENAME).exists())
+
+    def test_three_file_commit_restores_csv_and_meta_if_history_publish_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "example--model"
+            self._write_fixture(root)
+            history_path = root / posthoc.COLLECTION_HISTORY_NAME
+            history_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "posthoc_profile_history": [],
+                        "timeout_retry_history": [],
+                        "quality_retry_history": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            context = posthoc.load_result_context(root)
+            backup = posthoc.create_backup(context)
+            original_csv = context.result_csv.read_bytes()
+            original_meta = context.static_meta_path.read_bytes()
+            original_history = history_path.read_bytes()
+            rows = [dict(row) for row in context.rows]
+            rows[0]["marker"] = "changed"
+            static_meta = {**context.static_meta, "run_command": "changed"}
+            collection_history = posthoc.append_collection_record(
+                context.collection_history,
+                "posthoc_profile_history",
+                {"completed_at": "2026-08-23T00:00:00Z"},
+            )
+            real_replace = os.replace
+
+            def fail_history_publish(source, destination):
+                if (
+                    Path(destination) == history_path
+                    and ".restore." not in Path(source).name
+                ):
+                    raise OSError("simulated history publish failure")
+                return real_replace(source, destination)
+
+            with patch(
+                "acprof.cli.posthoc.os.replace",
+                side_effect=fail_history_publish,
+            ), self.assertRaisesRegex(OSError, "simulated history publish failure"):
+                posthoc.commit_result_files(
+                    context,
+                    fieldnames=context.fieldnames,
+                    rows=rows,
+                    static_meta=static_meta,
+                    collection_history=collection_history,
+                    backup_dir=backup,
+                )
+
+            self.assertEqual(context.result_csv.read_bytes(), original_csv)
+            self.assertEqual(context.static_meta_path.read_bytes(), original_meta)
+            self.assertEqual(history_path.read_bytes(), original_history)
+            self.assertEqual(list(root.glob(".*.tmp")), [])
 
     def test_gpu_only_collection_runs_ncu_and_nsys_but_skips_massif(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -559,6 +559,8 @@ class NativeDockerGuardTests(unittest.TestCase):
         ) as collect_static_meta, patch(
             "acprof.host.orchestrator.write_static_meta_json"
         ) as write_static_meta_json, patch(
+            "acprof.cli.run.write_collection_history_json"
+        ) as write_collection_history_json, patch(
             "acprof.host.orchestrator.plan_input_scales",
             return_value=orchestrator.PlannedInputScales(
                 scales=[1.0],
@@ -582,6 +584,14 @@ class NativeDockerGuardTests(unittest.TestCase):
         self.assertEqual(
             write_static_meta_json.call_args_list[0].args[1],
             os.path.join(tmp_dir, "dummy-model", "static_meta.json"),
+        )
+        self.assertEqual(
+            write_collection_history_json.call_args.args[1],
+            os.path.join(tmp_dir, "dummy-model", "collection_history.json"),
+        )
+        self.assertEqual(
+            write_collection_history_json.call_args.args[0]["schema_version"],
+            1,
         )
 
 

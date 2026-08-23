@@ -2,8 +2,8 @@
 
 The normal benchmark and the high-overhead profiler probes are intentionally
 separate.  This command reuses an existing result directory, collects only
-missing profiler data, and updates ``result_all.csv``/``static_meta.json`` in
-place after creating a recoverable backup.
+missing profiler data, and updates ``result_all.csv``, ``static_meta.json``,
+and ``collection_history.json`` in place after creating a recoverable backup.
 """
 from __future__ import annotations
 
@@ -24,6 +24,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from acprof.host.collection_history import (
+    COLLECTION_HISTORY_NAME,
+    LEGACY_STATIC_META_COLLECTION_FIELDS,
+    append_collection_record,
+    migrate_legacy_static_meta_history,
+    normalize_collection_history,
+)
 from acprof.host.compute_profile_plan import (
     INPUT_SCALE_ABS_TOLERANCE,
     NCU_ERROR_FIELD,
@@ -136,11 +143,14 @@ class ResultContext:
     result_dir: Path
     result_csv: Path
     static_meta_path: Path
+    collection_history_path: Path
     input_scale_plan_path: Path
     fieldnames: List[str]
     rows: List[Dict[str, str]]
     csv_encoding: str
     static_meta: Dict[str, Any]
+    collection_history: Dict[str, Any]
+    collection_history_existed: bool
     input_scale_plan: Dict[str, Any]
     task_info: TaskInfo
     image_tag: str
@@ -289,9 +299,23 @@ def load_result_context(result_dir: str | os.PathLike[str]) -> ResultContext:
 
     result_csv = directory / RESULT_CSV_NAME
     static_meta_path = directory / STATIC_META_NAME
+    collection_history_path = directory / COLLECTION_HISTORY_NAME
     input_scale_plan_path = directory / INPUT_SCALE_PLAN_NAME
     fieldnames, rows, encoding = _load_result_csv(result_csv)
     static_meta = _load_json_object(static_meta_path, STATIC_META_NAME)
+    collection_history_existed = collection_history_path.is_file()
+    collection_history_payload = (
+        _load_json_object(collection_history_path, COLLECTION_HISTORY_NAME)
+        if collection_history_existed
+        else None
+    )
+    try:
+        static_meta, collection_history = migrate_legacy_static_meta_history(
+            static_meta,
+            collection_history_payload,
+        )
+    except ValueError as exc:
+        raise PosthocError(f"invalid collection history: {exc}") from exc
     input_plan = _load_json_object(input_scale_plan_path, INPUT_SCALE_PLAN_NAME)
 
     model_id = str(
@@ -374,11 +398,14 @@ def load_result_context(result_dir: str | os.PathLike[str]) -> ResultContext:
         result_dir=directory,
         result_csv=result_csv,
         static_meta_path=static_meta_path,
+        collection_history_path=collection_history_path,
         input_scale_plan_path=input_scale_plan_path,
         fieldnames=fieldnames,
         rows=rows,
         csv_encoding=encoding,
         static_meta=static_meta,
+        collection_history=collection_history,
+        collection_history_existed=collection_history_existed,
         input_scale_plan=input_plan,
         task_info=task_info,
         image_tag=image_tag,
@@ -1196,11 +1223,10 @@ def update_static_meta(
     tools: Iterable[str],
     compute_plan: Optional[Mapping[str, Any]],
     execution_plan: Optional[Mapping[str, Any]],
-    backup_dir: Path,
-    massif_sampling: str,
-    nsys_sampling: str,
 ) -> Dict[str, Any]:
     updated = copy.deepcopy(context.static_meta)
+    for field in LEGACY_STATIC_META_COLLECTION_FIELDS:
+        updated.pop(field, None)
     selected = tuple(tools)
 
     compute_selected = [tool for tool in selected if tool in {"torch", "ncu"}]
@@ -1301,20 +1327,31 @@ def update_static_meta(
             updated.get("execution_profile_provenance"), "posthoc_backfill"
         )
 
-    timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    return updated
+
+
+def update_collection_history(
+    context: ResultContext,
+    *,
+    tools: Iterable[str],
+    backup_dir: Path,
+    massif_sampling: str,
+    nsys_sampling: str,
+) -> Dict[str, Any]:
+    """Record post-hoc collection provenance outside ``static_meta.json``."""
+    selected = tuple(tools)
     record = {
-        "completed_at": timestamp,
+        "completed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "tools": list(selected),
         "result_backup": str(backup_dir.relative_to(context.result_dir)),
         "massif_sampling": massif_sampling if "massif" in selected else None,
         "nsys_sampling": nsys_sampling if "nsys" in selected else None,
     }
-    history = updated.get("posthoc_profile_history")
-    if not isinstance(history, list):
-        history = []
-    updated["posthoc_profile_history"] = [*history, record]
-    updated["posthoc_profile_last_run"] = record
-    return updated
+    return append_collection_record(
+        context.collection_history,
+        "posthoc_profile_history",
+        record,
+    )
 
 
 def _timestamp_token() -> str:
@@ -1333,6 +1370,11 @@ def create_backup(context: ResultContext) -> Path:
     backup.mkdir()
     shutil.copy2(context.result_csv, backup / RESULT_CSV_NAME)
     shutil.copy2(context.static_meta_path, backup / STATIC_META_NAME)
+    if context.collection_history_existed:
+        shutil.copy2(
+            context.collection_history_path,
+            backup / COLLECTION_HISTORY_NAME,
+        )
     return backup
 
 
@@ -1361,7 +1403,11 @@ def _write_csv_temporary(
             writer.writerows(rows)
             f.flush()
             os.fsync(f.fileno())
-        mode = stat.S_IMODE(destination.stat().st_mode)
+        mode = (
+            stat.S_IMODE(destination.stat().st_mode)
+            if destination.exists()
+            else 0o644
+        )
         temporary_path.chmod(mode)
         return temporary_path
     except Exception:
@@ -1385,7 +1431,11 @@ def _write_json_temporary(destination: Path, payload: Mapping[str, Any]) -> Path
             f.write("\n")
             f.flush()
             os.fsync(f.fileno())
-        mode = stat.S_IMODE(destination.stat().st_mode)
+        mode = (
+            stat.S_IMODE(destination.stat().st_mode)
+            if destination.exists()
+            else 0o644
+        )
         temporary_path.chmod(mode)
         return temporary_path
     except Exception:
@@ -1420,6 +1470,7 @@ def commit_result_files(
     fieldnames: Sequence[str],
     rows: Sequence[Mapping[str, Any]],
     static_meta: Mapping[str, Any],
+    collection_history: Mapping[str, Any],
     backup_dir: Path,
 ) -> None:
     csv_temporary = _write_csv_temporary(
@@ -1429,21 +1480,33 @@ def commit_result_files(
         encoding=context.csv_encoding,
     )
     meta_temporary = _write_json_temporary(context.static_meta_path, static_meta)
+    history_temporary = _write_json_temporary(
+        context.collection_history_path,
+        collection_history,
+    )
     csv_replaced = False
     meta_replaced = False
+    history_replaced = False
     try:
-        # Validate both complete temporary documents before publishing either.
+        # Validate all complete temporary documents before publishing any of them.
         with csv_temporary.open(
             "r", encoding=context.csv_encoding, newline=""
         ) as f:
             if sum(1 for _row in csv.DictReader(f)) != len(rows):
                 raise PosthocError("temporary result CSV row-count validation failed")
         _load_json_object(meta_temporary, "temporary static metadata")
+        temporary_history = _load_json_object(
+            history_temporary,
+            "temporary collection history",
+        )
+        normalize_collection_history(temporary_history)
 
         os.replace(csv_temporary, context.result_csv)
         csv_replaced = True
         os.replace(meta_temporary, context.static_meta_path)
         meta_replaced = True
+        os.replace(history_temporary, context.collection_history_path)
+        history_replaced = True
     except Exception:
         if csv_replaced:
             _restore_from_backup(
@@ -1453,9 +1516,21 @@ def commit_result_files(
             _restore_from_backup(
                 context.static_meta_path, backup_dir / STATIC_META_NAME
             )
+        if history_replaced:
+            history_backup = backup_dir / COLLECTION_HISTORY_NAME
+            if history_backup.is_file():
+                _restore_from_backup(
+                    context.collection_history_path,
+                    history_backup,
+                )
+            else:
+                try:
+                    context.collection_history_path.unlink()
+                except FileNotFoundError:
+                    pass
         raise
     finally:
-        for temporary in (csv_temporary, meta_temporary):
+        for temporary in (csv_temporary, meta_temporary, history_temporary):
             try:
                 temporary.unlink()
             except FileNotFoundError:
@@ -1784,6 +1859,10 @@ def run_posthoc(
             tools=needed,
             compute_plan=compute_plan,
             execution_plan=execution_plan,
+        )
+        collection_history = update_collection_history(
+            context,
+            tools=needed,
             backup_dir=backup_dir,
             massif_sampling=massif_sampling,
             nsys_sampling=nsys_sampling,
@@ -1793,11 +1872,13 @@ def run_posthoc(
             fieldnames=fieldnames,
             rows=rows,
             static_meta=static_meta,
+            collection_history=collection_history,
             backup_dir=backup_dir,
         )
 
     print(f"[profile] Updated in place: {context.result_csv}")
     print(f"[profile] Updated in place: {context.static_meta_path}")
+    print(f"[profile] Updated in place: {context.collection_history_path}")
     print(f"[profile] Original files backed up to: {backup_dir}")
     for tool, count in updated_rows.items():
         print(f"[profile][{tool}] Backfilled rows: {count}")

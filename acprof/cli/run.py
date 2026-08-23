@@ -24,6 +24,11 @@ from acprof.config import (
     SCALING_DIMENSIONS,
 )
 from acprof.host.env_utils import bootstrap_project_env
+from acprof.host.collection_history import (
+    COLLECTION_HISTORY_NAME,
+    empty_collection_history,
+    write_collection_history_json,
+)
 from acprof.host.orchestrator import (
     EnergyProfilingError,
     MIPSProfilingError,
@@ -806,6 +811,7 @@ Examples:
     os.makedirs(output_dir, exist_ok=True)
 
     static_meta_json = os.path.join(output_dir, "static_meta.json")
+    collection_history_json = os.path.join(output_dir, COLLECTION_HISTORY_NAME)
     scaling_cfg = SCALING_DIMENSIONS.get(task_info.task_family)
     input_scale_type = scaling_cfg.param_name if scaling_cfg else ""
 
@@ -819,6 +825,10 @@ Examples:
         execution_profile_enabled=args.execution_profile_tool != "none",
     )
     write_static_meta_json(static_meta, static_meta_json)
+    write_collection_history_json(
+        empty_collection_history(),
+        collection_history_json,
+    )
 
     # ── Step 4: Run profiling matrix ──
     try:
@@ -986,6 +996,7 @@ Examples:
         print(f"\n{'='*60}")
         print(f"Profiling complete!")
         print(f"  Static meta:      {static_meta_json}")
+        print(f"  Collection log:   {collection_history_json}")
         print(f"  Merged results:   {final_csv}")
         print(f"  Total elapsed:    {elapsed}")
         print(f"  Intermediate files from this run were cleaned up.")
