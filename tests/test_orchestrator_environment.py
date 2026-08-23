@@ -9,7 +9,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from acprof.host import orchestrator
-from acprof.config import CSV_FIELDS, STATIC_META_FIELDS
+from acprof.config import (
+    CSV_FIELDS,
+    STATIC_META_FIELDS,
+    STATIC_META_SCHEMA_VERSION,
+)
 from acprof.host.detect import TaskInfo
 
 
@@ -56,6 +60,87 @@ def _write_cpu_case_csv(path: str, idle_power_values: list[float], gpu_mode: str
 
 
 class DetectEnvironmentTests(unittest.TestCase):
+    def test_host_mem_total_bytes_uses_physical_page_count(self) -> None:
+        values = {
+            "SC_PAGE_SIZE": 4096,
+            "SC_PHYS_PAGES": 8_000_000,
+        }
+
+        with patch(
+            "acprof.host.orchestrator.os.sysconf",
+            side_effect=lambda name: values[name],
+        ):
+            total = orchestrator._host_mem_total_bytes()
+
+        self.assertEqual(total, 32_768_000_000)
+
+    def test_docker_storage_metadata_uses_daemon_root_backing_filesystem(self) -> None:
+        with patch(
+            "acprof.host.orchestrator._docker_root_dir",
+            return_value="/var/lib/docker",
+        ), patch(
+            "acprof.host.orchestrator.shutil.disk_usage",
+            return_value=SimpleNamespace(total=1_000, used=400, free=600),
+        ) as disk_usage, patch(
+            "acprof.host.orchestrator._docker_mount_metadata",
+            return_value=("/dev/nvme0n1p2", "ext4"),
+        ), patch(
+            "acprof.host.orchestrator._block_device_storage_type",
+            return_value="nvme_ssd",
+        ):
+            metadata = orchestrator._docker_storage_metadata()
+
+        disk_usage.assert_called_once_with("/var/lib/docker")
+        self.assertEqual(
+            metadata,
+            {
+                "docker_storage_total_bytes": 1_000,
+                "docker_storage_available_bytes_at_start": 600,
+                "docker_storage_filesystem": "ext4",
+                "docker_storage_device": "/dev/nvme0n1p2",
+                "docker_storage_type": "nvme_ssd",
+            },
+        )
+
+    def test_block_device_type_uses_transport_and_rotational_flag(self) -> None:
+        cases = (
+            ({"tran": "nvme", "rota": False}, "nvme_ssd"),
+            ({"tran": "sata", "rota": False}, "ssd"),
+            ({"tran": "sata", "rota": True}, "hdd"),
+            ({"tran": None, "rota": None}, "unknown"),
+        )
+        with patch(
+            "acprof.host.orchestrator.shutil.which",
+            return_value="/usr/bin/lsblk",
+        ):
+            for device_metadata, expected in cases:
+                with self.subTest(expected=expected), patch(
+                    "acprof.host.orchestrator._run",
+                    return_value=SimpleNamespace(
+                        returncode=0,
+                        stdout=json.dumps({"blockdevices": [device_metadata]}),
+                        stderr="",
+                    ),
+                ):
+                    self.assertEqual(
+                        orchestrator._block_device_storage_type("/dev/test"),
+                        expected,
+                    )
+
+    def test_docker_storage_metadata_is_unknown_when_daemon_root_is_unavailable(self) -> None:
+        with patch(
+            "acprof.host.orchestrator._docker_root_dir",
+            return_value=None,
+        ), patch(
+            "acprof.host.orchestrator.shutil.disk_usage",
+        ) as disk_usage:
+            metadata = orchestrator._docker_storage_metadata()
+
+        disk_usage.assert_not_called()
+        self.assertIsNone(metadata["docker_storage_total_bytes"])
+        self.assertIsNone(metadata["docker_storage_available_bytes_at_start"])
+        self.assertEqual(metadata["docker_storage_type"], "unknown")
+
     def test_select_nlp_torch_index_url_uses_cu124_for_cuda_12_4_driver(self) -> None:
         with patch("acprof.host.orchestrator.shutil.which", return_value="/usr/bin/nvidia-smi"), patch(
             "acprof.host.orchestrator._run",
@@ -336,8 +421,19 @@ class DetectEnvironmentTests(unittest.TestCase):
         ), patch(
             "acprof.host.orchestrator._get_gpu_mem_total_bytes", return_value=987654321
         ), patch(
+            "acprof.host.orchestrator._host_mem_total_bytes", return_value=64_000_000_000
+        ), patch(
             "acprof.host.orchestrator._docker_model_weight_bytes", return_value=123
         ), patch("acprof.host.orchestrator._docker_image_size_bytes", return_value=456), patch(
+            "acprof.host.orchestrator._docker_storage_metadata",
+            return_value={
+                "docker_storage_total_bytes": 1_000_000,
+                "docker_storage_available_bytes_at_start": 600_000,
+                "docker_storage_filesystem": "ext4",
+                "docker_storage_device": "/dev/nvme0n1p2",
+                "docker_storage_type": "nvme_ssd",
+            },
+        ), patch(
             "acprof.host.orchestrator._cpu_power_metadata",
             return_value=("rapl", "rapl_cgroup_cpu_share"),
         ), patch(
@@ -369,6 +465,12 @@ class DetectEnvironmentTests(unittest.TestCase):
             "python run.py --model google-bert/bert-base-uncased",
         )
         self.assertEqual(meta.gpu_mem_total_bytes, 987654321)
+        self.assertEqual(meta.host_mem_total_bytes, 64_000_000_000)
+        self.assertEqual(meta.docker_storage_total_bytes, 1_000_000)
+        self.assertEqual(meta.docker_storage_available_bytes_at_start, 600_000)
+        self.assertEqual(meta.docker_storage_filesystem, "ext4")
+        self.assertEqual(meta.docker_storage_device, "/dev/nvme0n1p2")
+        self.assertEqual(meta.docker_storage_type, "nvme_ssd")
         self.assertEqual(meta.cpu_power_source, "rapl")
         self.assertEqual(meta.vcpu_power_method, "rapl_cgroup_cpu_share")
         self.assertEqual(meta.cpu_governor, "performance")
@@ -398,9 +500,16 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(meta.execution_profile_provenance, "disabled")
 
     def test_static_meta_compute_profile_fields_follow_host_metadata(self) -> None:
+        self.assertEqual(STATIC_META_SCHEMA_VERSION, 3)
         self.assertIn("gpu_mem_total_bytes", STATIC_META_FIELDS)
+        self.assertIn("host_mem_total_bytes", STATIC_META_FIELDS)
+        self.assertIn("docker_storage_total_bytes", STATIC_META_FIELDS)
         self.assertLess(
             STATIC_META_FIELDS.index("gpu_mem_total_bytes"),
+            STATIC_META_FIELDS.index("environment"),
+        )
+        self.assertLess(
+            STATIC_META_FIELDS.index("docker_storage_type"),
             STATIC_META_FIELDS.index("environment"),
         )
         self.assertLess(
@@ -430,8 +539,14 @@ class DetectEnvironmentTests(unittest.TestCase):
             model_download_url="https://example.invalid/model",
             gpu="GPU",
             gpu_mem_total_bytes=123,
+            host_mem_total_bytes=1_024,
             model_weight_bytes=456,
             docker_image_bytes=789,
+            docker_storage_total_bytes=10_000,
+            docker_storage_available_bytes_at_start=4_000,
+            docker_storage_filesystem="ext4",
+            docker_storage_device="/dev/nvme0n1p2",
+            docker_storage_type="nvme_ssd",
             environment="ubuntu24.04",
             cpu_power_source="rapl",
             vcpu_power_method="rapl_cgroup_cpu_share",
@@ -493,8 +608,14 @@ class DetectEnvironmentTests(unittest.TestCase):
             model_download_url="https://example.invalid/model",
             gpu="GPU",
             gpu_mem_total_bytes=123,
+            host_mem_total_bytes=1_024,
             model_weight_bytes=456,
             docker_image_bytes=789,
+            docker_storage_total_bytes=10_000,
+            docker_storage_available_bytes_at_start=4_000,
+            docker_storage_filesystem="ext4",
+            docker_storage_device="/dev/nvme0n1p2",
+            docker_storage_type="nvme_ssd",
             environment="ubuntu24.04",
             cpu_power_source="rapl",
             vcpu_power_method="rapl_cgroup_cpu_share",
@@ -525,6 +646,13 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(list(payload), STATIC_META_FIELDS)
         self.assertNotIn("compute_profile_schema_version", payload)
         self.assertEqual(payload["parameter_count"], 42)
+        self.assertEqual(payload["host_mem_total_bytes"], 1_024)
+        self.assertEqual(payload["docker_storage_total_bytes"], 10_000)
+        self.assertEqual(
+            payload["docker_storage_available_bytes_at_start"],
+            4_000,
+        )
+        self.assertEqual(payload["docker_storage_type"], "nvme_ssd")
         self.assertEqual(payload["parameter_dtype_counts"], {"FP32": 42})
         self.assertFalse(payload["quantized"])
         self.assertEqual(

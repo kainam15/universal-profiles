@@ -403,8 +403,8 @@ python run.py --model openai/whisper-large-v3 \
 | 文件 | 说明 |
 | --- | --- |
 | `result_all.csv` | 动态测量结果。每一行对应一个 resource config、一个 input scale、一次 warmup/repeat iteration。 |
-| `static_meta.json` | 单个 JSON object 的静态元数据。记录模型版本、参数/精度/量化/许可证、输入输出格式、per-scale 静态逻辑 FLOPs、推理后端、镜像、硬件和环境信息。 |
-| `collection_history.json` | schema v1 的采集/修复 provenance。分别记录 post-hoc profiler 补采、timeout retry 和 quality retry 历史；最新一次状态由对应 history 的最后一项得到。 |
+| `static_meta.json` | 单个 JSON object 的静态元数据。记录模型版本、参数/精度/量化/许可证、输入输出格式、per-scale 静态逻辑 FLOPs、推理后端、镜像、GPU/主机 RAM、Docker 存储和环境信息。 |
+| `collection_history.json` | schema v1 的采集/修复 provenance。分别记录 post-hoc profiler 补采、timeout retry、quality retry 和静态元数据回填历史；最新一次状态由对应 history 的最后一项得到。 |
 | `input_scale_plan.json` | 所有任务族共用的 input scale/payload 计划。schema v2 额外记录 workload provenance、per-scale 输入元数据和模型约束；读取端继续兼容无版本字段的 v1 计划。主采集和 compute profiler 复用同一份 payload。 |
 | `compute_profile_plan.json` | per-scale FLOP profiling 结果。每个 CPU/GPU scale 可同时记录独立的 `torch_profiler_eager` 与 `ncu` profile；NCU 只存在于 GPU profile。失败信息按工具保存，只读取当前按 profiler 分层的 plan 结构。 |
 | `execution_profile_plan.json` | 显式 execution profiling 的采样与 per-resource-config/per-scale 汇总。Massif 条目对应 `gpu_mode=off`，Nsight Systems 条目对应 `gpu_mode=on`；复用 entry 记录实际 source resource 与 sampling strategy，失败按工具记录且不阻断主实验。 |
@@ -627,7 +627,7 @@ python -m acprof.cli.backfill_compute \
 
 | 字段 | 含义 |
 | --- | --- |
-| `schema_version` | `static_meta.json` schema 版本。 |
+| `schema_version` | `static_meta.json` schema 版本；新增主机 RAM 与 Docker 存储快照后的当前版本为 `3`。 |
 | `model_name` | Hugging Face model ID，例如 `google-bert/bert-base-uncased`。 |
 | `model_revision` | 实际解析到的 model revision / commit hash。 |
 | `parameter_count` | Hugging Face Hub SafeTensors metadata 的参数总数；Hub 未提供时为 `null`。 |
@@ -655,8 +655,14 @@ python -m acprof.cli.backfill_compute \
 | `model_download_url` | Hugging Face model page URL。 |
 | `gpu` | host device 0 的 GPU 名称；没有可见 NVIDIA GPU 时为 `unknown`。 |
 | `gpu_mem_total_bytes` | host device 0 的 total VRAM，单位 bytes；无法读取时为 `null`。 |
+| `host_mem_total_bytes` | Host 物理 RAM 总量，单位 bytes；无法读取时为 `null`。 |
 | `model_weight_bytes` | Docker image 内 `/models/hf` 下 Hugging Face cache artifacts 的总字节数，不是严格的单一权重文件大小。 |
 | `docker_image_bytes` | `docker image inspect <image_tag> --format "{{.Size}}"` 返回的本地 image size，单位 bytes。 |
+| `docker_storage_total_bytes` | Docker daemon `DockerRootDir` 所在文件系统的总容量，单位 bytes；无法访问 daemon 路径时为 `null`。 |
+| `docker_storage_available_bytes_at_start` | 静态元数据采集时 `DockerRootDir` 所在文件系统对当前用户可用的容量快照，单位 bytes；该值会随磁盘使用变化。 |
+| `docker_storage_filesystem` | `DockerRootDir` 所在文件系统类型，例如 `ext4`；无法识别时为 `unknown`。 |
+| `docker_storage_device` | 承载 `DockerRootDir` 的 mount source，例如 `/dev/nvme0n1p2`；无法识别时为 `unknown`。 |
+| `docker_storage_type` | 根据 `lsblk` transport/rotational 信息得到的 `nvme_ssd`、`ssd`、`hdd` 或内存文件系统 `memory`；证据不足时为 `unknown`。 |
 | `environment` | 自动检测的运行环境标签，例如 `windows11+wsl`、`ubuntu24.04+wsl`、`ubuntu24.04`、`macos15`。 |
 | `cpu_power_source` | CPU package 功耗来源。`rapl` 表示使用 Linux RAPL powercap 真实计数器；`unavailable` 表示当前环境没有可用 RAPL。 |
 | `vcpu_power_method` | estimated vCPU 功耗计算方法。`rapl_cgroup_cpu_share` 表示用 RAPL package energy 乘以 container cgroup CPU share；`unavailable` 表示无法估算。 |
@@ -705,6 +711,7 @@ python -m acprof.cli.backfill_compute \
 | `posthoc_profile_history` | `profile.py` 事后补采记录，包括工具、采样策略、完成时间与备份位置。 |
 | `timeout_retry_history` | 请求超时后的重采/合并记录。当前仓库没有自动生成该记录的入口，但会迁移和保留已有数据。 |
 | `quality_retry_history` | 质量检查后的定向重采/合并记录。当前仓库没有自动生成该记录的入口，但会迁移和保留已有数据。 |
+| `static_meta_backfill_history` | 对历史结果补充静态元数据时的来源、字段、备份位置及无法回溯的字段。 |
 
 不再重复保存 `posthoc_profile_last_run`、`timeout_retry_last_run` 或 `quality_retry_last_run`；需要最新记录时读取对应 `*_history[-1]`。旧版 `static_meta.json` 中已有的六个 history/last-run 字段，会在首次成功 post-hoc 更新时无损迁移并去重。
 

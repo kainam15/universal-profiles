@@ -123,8 +123,10 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(CSV_FIELDS[gpu_idle_index + 1], "gpu_idle_measured_at")
         self.assertEqual(CSV_FIELDS[gpu_idle_index + 2], "gpu_idle_rel_range_so_far")
 
-    def test_schema_v2_includes_workload_and_request_shape_metrics(self) -> None:
-        self.assertEqual(STATIC_META_SCHEMA_VERSION, 2)
+    def test_schema_v3_includes_host_capacity_and_request_shape_metrics(self) -> None:
+        self.assertEqual(STATIC_META_SCHEMA_VERSION, 3)
+        self.assertIn("host_mem_total_bytes", STATIC_META_FIELDS)
+        self.assertIn("docker_storage_total_bytes", STATIC_META_FIELDS)
         self.assertIn("workload", STATIC_META_FIELDS)
         self.assertIn("input_scale_plan_sha256", STATIC_META_FIELDS)
         expected = [

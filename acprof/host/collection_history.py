@@ -16,6 +16,7 @@ COLLECTION_HISTORY_FIELDS = (
     "posthoc_profile_history",
     "timeout_retry_history",
     "quality_retry_history",
+    "static_meta_backfill_history",
 )
 LEGACY_LAST_RUN_FIELDS = {
     "posthoc_profile_history": "posthoc_profile_last_run",
@@ -70,7 +71,8 @@ def migrate_legacy_static_meta_history(
     cleaned_static_meta = copy.deepcopy(dict(static_meta))
     migrated = normalize_collection_history(collection_history)
 
-    for history_field, last_run_field in LEGACY_LAST_RUN_FIELDS.items():
+    for history_field in COLLECTION_HISTORY_FIELDS:
+        last_run_field = LEGACY_LAST_RUN_FIELDS.get(history_field)
         legacy_history = cleaned_static_meta.get(history_field, [])
         if legacy_history is None:
             legacy_history = []
@@ -80,7 +82,11 @@ def migrate_legacy_static_meta_history(
             raise ValueError(f"legacy {history_field} entries must be JSON objects")
 
         candidates = [copy.deepcopy(dict(record)) for record in legacy_history]
-        legacy_last_run = cleaned_static_meta.get(last_run_field)
+        legacy_last_run = (
+            cleaned_static_meta.get(last_run_field)
+            if last_run_field is not None
+            else None
+        )
         if legacy_last_run is not None:
             if not isinstance(legacy_last_run, Mapping):
                 raise ValueError(f"legacy {last_run_field} must be a JSON object")

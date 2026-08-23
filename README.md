@@ -203,7 +203,7 @@ python run.py --help
 | 文件或目录 | 用途 |
 | --- | --- |
 | `result_all.csv` | 动态测量结果；每行对应一个资源配置、input scale 和一次 warmup/repeat window。 |
-| `static_meta.json` | 模型 revision、精度、量化、许可证、输入输出格式、硬件与实验命令。 |
+| `static_meta.json` | 模型 revision、精度、量化、许可证、输入输出格式、GPU/主机 RAM、Docker 存储环境与实验命令。 |
 | `collection_history.json` | 补采、超时重试和质量重采等数据修复过程的 provenance；不与静态元数据混放。 |
 | `input_scale_plan.json` | 本次实际执行的 scale 和 payload 计划。 |
 | `compute_profile_plan.json` | Torch / NCU 的 per-scale 结果与错误。 |

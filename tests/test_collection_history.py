@@ -28,6 +28,7 @@ class CollectionHistoryTests(unittest.TestCase):
     def test_migrates_legacy_histories_and_drops_last_run_duplicates(self) -> None:
         posthoc_record = {"completed_at": "2026-08-14T14:35:32+08:00"}
         timeout_record = {"completed_at": "2026-08-21T22:29:33+08:00"}
+        backfill_record = {"completed_at": "2026-08-23T11:00:00+08:00"}
         static_meta = {
             "schema_version": 2,
             "model_name": "example/model",
@@ -35,6 +36,7 @@ class CollectionHistoryTests(unittest.TestCase):
             "posthoc_profile_last_run": posthoc_record,
             "timeout_retry_history": [timeout_record],
             "timeout_retry_last_run": timeout_record,
+            "static_meta_backfill_history": [backfill_record],
         }
         existing = {
             "schema_version": 1,
@@ -48,6 +50,7 @@ class CollectionHistoryTests(unittest.TestCase):
         self.assertEqual(history["posthoc_profile_history"], [posthoc_record])
         self.assertEqual(history["timeout_retry_history"], [timeout_record])
         self.assertEqual(history["quality_retry_history"], [])
+        self.assertEqual(history["static_meta_backfill_history"], [backfill_record])
         self.assertEqual(history["producer"], "unit-test")
 
     def test_last_run_is_recovered_when_legacy_history_is_missing(self) -> None:

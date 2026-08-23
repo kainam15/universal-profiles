@@ -74,6 +74,12 @@ class StaticMeta:
     vcpu_power_method: str
     cpu_governor: str
     cpu_boost: str
+    host_mem_total_bytes: Optional[int] = None
+    docker_storage_total_bytes: Optional[int] = None
+    docker_storage_available_bytes_at_start: Optional[int] = None
+    docker_storage_filesystem: str = "unknown"
+    docker_storage_device: str = "unknown"
+    docker_storage_type: str = "unknown"
     workload: Dict[str, Any] = field(default_factory=dict)
     input_scale_plan_sha256: str = ""
     schema_version: int = STATIC_META_SCHEMA_VERSION
@@ -690,6 +696,168 @@ def _get_gpu_mem_total_bytes(device_index: int = 0) -> Optional[int]:
     except ValueError:
         return None
     return total if total > 0 else None
+
+
+def _host_mem_total_bytes() -> Optional[int]:
+    """Return total physical host RAM in bytes when the OS exposes it."""
+    try:
+        page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        physical_pages = int(os.sysconf("SC_PHYS_PAGES"))
+        total = page_size * physical_pages
+        if total > 0:
+            return total
+    except (AttributeError, OSError, TypeError, ValueError):
+        pass
+
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.startswith("MemTotal:"):
+                    continue
+                parts = line.split()
+                if len(parts) >= 2:
+                    total = int(parts[1]) * 1024
+                    return total if total > 0 else None
+    except (OSError, TypeError, ValueError):
+        pass
+    return None
+
+
+def _docker_root_dir() -> Optional[str]:
+    """Resolve the Docker daemon data directory without assuming a default."""
+    try:
+        result = _run(
+            ["docker", "info", "--format", "{{.DockerRootDir}}"],
+            check=False,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    root = str(result.stdout or "").strip()
+    return root or None
+
+
+def _docker_mount_metadata(path: str) -> Tuple[str, str]:
+    """Return the source device and filesystem containing ``path``."""
+    findmnt = shutil.which("findmnt")
+    if not findmnt:
+        return "unknown", "unknown"
+    try:
+        result = _run(
+            [
+                findmnt,
+                "--json",
+                "--target",
+                path,
+                "--output",
+                "SOURCE,FSTYPE",
+            ],
+            check=False,
+        )
+    except Exception:
+        return "unknown", "unknown"
+    if result.returncode != 0:
+        return "unknown", "unknown"
+    try:
+        payload = json.loads(result.stdout)
+        filesystems = payload.get("filesystems", [])
+        filesystem = filesystems[0] if isinstance(filesystems, list) and filesystems else {}
+        if not isinstance(filesystem, dict):
+            return "unknown", "unknown"
+        source = str(filesystem.get("source") or "unknown").strip() or "unknown"
+        fs_type = str(filesystem.get("fstype") or "unknown").strip() or "unknown"
+        return source, fs_type
+    except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+        return "unknown", "unknown"
+
+
+def _block_device_storage_type(device: str) -> str:
+    """Classify a block device from kernel-reported transport/rotation data."""
+    if not device.startswith("/dev/"):
+        return "unknown"
+    lsblk = shutil.which("lsblk")
+    if not lsblk:
+        return "unknown"
+    query_device = device.split("[", 1)[0]
+    try:
+        result = _run(
+            [
+                lsblk,
+                "--json",
+                "--output",
+                "KNAME,TYPE,PKNAME,ROTA,TRAN",
+                query_device,
+            ],
+            check=False,
+        )
+    except Exception:
+        return "unknown"
+    if result.returncode != 0:
+        return "unknown"
+    try:
+        payload = json.loads(result.stdout)
+        devices = payload.get("blockdevices", [])
+        block_device = devices[0] if isinstance(devices, list) and devices else {}
+        if not isinstance(block_device, dict):
+            return "unknown"
+    except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+        return "unknown"
+
+    transport = str(block_device.get("tran") or "").strip().lower()
+    rotational = block_device.get("rota")
+    if isinstance(rotational, str):
+        normalized = rotational.strip().lower()
+        if normalized in {"0", "false", "no"}:
+            rotational = False
+        elif normalized in {"1", "true", "yes"}:
+            rotational = True
+        else:
+            rotational = None
+    elif isinstance(rotational, int) and not isinstance(rotational, bool):
+        rotational = bool(rotational) if rotational in {0, 1} else None
+
+    if transport == "nvme":
+        return "nvme_ssd"
+    if rotational is True:
+        return "hdd"
+    if rotational is False:
+        return "ssd"
+    return "unknown"
+
+
+def _docker_storage_metadata() -> Dict[str, Any]:
+    """Snapshot capacity and media metadata for Docker's backing filesystem."""
+    metadata: Dict[str, Any] = {
+        "docker_storage_total_bytes": None,
+        "docker_storage_available_bytes_at_start": None,
+        "docker_storage_filesystem": "unknown",
+        "docker_storage_device": "unknown",
+        "docker_storage_type": "unknown",
+    }
+    docker_root = _docker_root_dir()
+    if not docker_root:
+        return metadata
+
+    try:
+        usage = shutil.disk_usage(docker_root)
+        total = int(usage.total)
+        available = int(usage.free)
+        metadata["docker_storage_total_bytes"] = total if total > 0 else None
+        metadata["docker_storage_available_bytes_at_start"] = (
+            available if available >= 0 else None
+        )
+    except (OSError, TypeError, ValueError):
+        pass
+
+    device, fs_type = _docker_mount_metadata(docker_root)
+    metadata["docker_storage_device"] = device
+    metadata["docker_storage_filesystem"] = fs_type
+    if fs_type.lower() in {"tmpfs", "ramfs"}:
+        metadata["docker_storage_type"] = "memory"
+    else:
+        metadata["docker_storage_type"] = _block_device_storage_type(device)
+    return metadata
 
 
 def _parse_cuda_version(raw: str) -> Optional[Tuple[int, int]]:
@@ -1332,6 +1500,7 @@ def collect_static_meta(
     """Collect static metadata for the current model/image pair."""
     cpu_power_source, vcpu_power_method = _cpu_power_metadata()
     cpu_governor, cpu_boost = _cpu_frequency_policy_metadata()
+    docker_storage = _docker_storage_metadata()
     input_format, output_format = _model_io_formats(task_info)
     static_meta = StaticMeta(
         model_name=task_info.model_id,
@@ -1357,8 +1526,20 @@ def collect_static_meta(
         model_download_url=_build_model_download_url(task_info.model_id),
         gpu=_get_gpu_name(device_index=device_index),
         gpu_mem_total_bytes=_get_gpu_mem_total_bytes(device_index=device_index),
+        host_mem_total_bytes=_host_mem_total_bytes(),
         model_weight_bytes=_docker_model_weight_bytes(image_info.tag),
         docker_image_bytes=_docker_image_size_bytes(image_info.tag),
+        docker_storage_total_bytes=docker_storage[
+            "docker_storage_total_bytes"
+        ],
+        docker_storage_available_bytes_at_start=docker_storage[
+            "docker_storage_available_bytes_at_start"
+        ],
+        docker_storage_filesystem=docker_storage[
+            "docker_storage_filesystem"
+        ],
+        docker_storage_device=docker_storage["docker_storage_device"],
+        docker_storage_type=docker_storage["docker_storage_type"],
         environment=_detect_environment(),
         cpu_power_source=cpu_power_source,
         vcpu_power_method=vcpu_power_method,

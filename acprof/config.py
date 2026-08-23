@@ -291,8 +291,14 @@ STATIC_META_FIELDS = [
     "model_download_url",
     "gpu",
     "gpu_mem_total_bytes",
+    "host_mem_total_bytes",
     "model_weight_bytes",
     "docker_image_bytes",
+    "docker_storage_total_bytes",
+    "docker_storage_available_bytes_at_start",
+    "docker_storage_filesystem",
+    "docker_storage_device",
+    "docker_storage_type",
     "environment",
     "cpu_power_source",
     "vcpu_power_method",
@@ -333,7 +339,7 @@ STATIC_META_FIELDS = [
     "execution_profiles_retained",
     "execution_profile_provenance",
 ]
-STATIC_META_SCHEMA_VERSION = 2
+STATIC_META_SCHEMA_VERSION = 3
 
 # ─────────────────────────────────────────────
 # Docker 镜像命名
