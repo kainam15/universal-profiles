@@ -9,6 +9,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import platform
 import shlex
@@ -247,6 +248,111 @@ def require_native_linux_host() -> None:
         _exit_unsupported_host(f"detected host OS {system or 'unknown'}")
     if _process_is_wsl():
         _exit_unsupported_host("WSL was detected")
+
+
+def detect_cgroup_version(
+    *,
+    cgroup_root: str = "/sys/fs/cgroup",
+    proc_self_cgroup_path: str = "/proc/self/cgroup",
+) -> str:
+    """Return the host cgroup hierarchy version used by this process."""
+    if os.path.isfile(os.path.join(cgroup_root, "cgroup.controllers")):
+        return "v2"
+
+    try:
+        with open(proc_self_cgroup_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError:
+        return "unknown"
+
+    for raw_line in lines:
+        parts = raw_line.strip().split(":", 2)
+        if len(parts) == 3 and parts[1].strip():
+            return "v1"
+    return "unknown"
+
+
+def require_cgroup_prerequisites(*, allow_cgroup_v1: bool = False) -> str:
+    """Require unified cgroup v2 unless legacy compatibility was requested."""
+    version = detect_cgroup_version()
+    if version == "v2":
+        return version
+
+    if version == "v1" and allow_cgroup_v1:
+        print(
+            "[cgroup][WARN] cgroup v1 legacy compatibility is enabled. "
+            "memory.events and per-cgroup PSI remain unavailable; do not mix "
+            "this run with the formal cgroup v2 dataset.",
+            file=sys.stderr,
+        )
+        return version
+
+    compatibility_hint = (
+        "\n\nFor legacy diagnostics only, rerun with --allow-cgroup-v1. "
+        "That mode is recorded in static_meta.json and is not equivalent to "
+        "the formal cgroup v2 collection mode."
+        if version == "v1"
+        else ""
+    )
+    print(
+        "[cgroup][ERROR] Formal AC-Prof collection requires the unified "
+        "cgroup v2 hierarchy.\n\n"
+        f"Detected: cgroup_version={version}\n\n"
+        "Verify the host before collecting data:\n"
+        "  test -f /sys/fs/cgroup/cgroup.controllers\n"
+        "  cat /proc/self/cgroup\n\n"
+        "Enable unified cgroup v2 in the host boot/systemd configuration, "
+        "reboot, and rerun AC-Prof."
+        f"{compatibility_hint}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def require_result_cgroup_compatibility(
+    output_dir: str,
+    *,
+    cgroup_version: str,
+) -> None:
+    """Refuse to append partial case rows collected under another hierarchy."""
+    result_dir = Path(output_dir)
+    if not result_dir.is_dir():
+        return
+
+    partial_results = sorted(
+        path
+        for path in result_dir.glob("result_case_*.csv")
+        if path.is_file() and path.stat().st_size > 0
+    )
+    if not partial_results:
+        return
+
+    static_meta_path = result_dir / "static_meta.json"
+    try:
+        with static_meta_path.open("r", encoding="utf-8") as f:
+            existing_meta = json.load(f)
+        existing_version = str(existing_meta.get("cgroup_version") or "unknown")
+    except (OSError, ValueError, TypeError, AttributeError):
+        existing_version = "unknown"
+
+    if existing_version == cgroup_version:
+        return
+
+    examples = ", ".join(path.name for path in partial_results[:3])
+    if len(partial_results) > 3:
+        examples += ", ..."
+    print(
+        "[cgroup][ERROR] Refusing to append to partial result files with a "
+        "different or unknown cgroup provenance.\n\n"
+        f"Current cgroup_version:  {cgroup_version}\n"
+        f"Existing cgroup_version: {existing_version}\n"
+        f"Partial files: {examples}\n\n"
+        "Use a different --output-dir for this run, or archive the existing "
+        "partial result files before retrying. AC-Prof will not mix them "
+        "automatically.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 def _docker_host_is_native_socket(docker_host: str) -> bool:
@@ -682,6 +788,14 @@ Examples:
     parser.add_argument("--sniff-iface", default="docker0", help="Network interface for tcpdump")
     parser.add_argument("--output-dir", default="results", help="Output directory")
     parser.add_argument("--skip-build", action="store_true", help="Skip Docker image build (use existing)")
+    parser.add_argument(
+        "--allow-cgroup-v1",
+        action="store_true",
+        help=(
+            "Allow legacy cgroup v1 for diagnostic compatibility; formal "
+            "collection requires cgroup v2"
+        ),
+    )
 
     args = parser.parse_args()
     run_command = _format_run_command(sys.argv)
@@ -721,6 +835,12 @@ Examples:
 
     require_native_linux_host()
     require_native_docker()
+    cgroup_version = require_cgroup_prerequisites(
+        allow_cgroup_v1=args.allow_cgroup_v1,
+    )
+    cgroup_collection_mode = (
+        "legacy_compatible" if args.allow_cgroup_v1 else "strict_v2"
+    )
 
     try:
         require_packet_latency_prerequisites(
@@ -754,6 +874,17 @@ Examples:
     print(f"  Library:  {task_info.library_name}")
     print(f"  Revision: {task_info.model_revision}")
     print(f"  Detected: {task_info.detection_method}")
+    print(f"  Cgroup:   {cgroup_version} (mode={cgroup_collection_mode})")
+
+    output_dir = os.path.join(
+        PROJECT_DIR,
+        args.output_dir,
+        task_info.model_id.replace("/", "--"),
+    )
+    require_result_cgroup_compatibility(
+        output_dir,
+        cgroup_version=cgroup_version,
+    )
 
     # ── Step 2: Build Docker image ──
     from acprof.host.orchestrator import (
@@ -807,7 +938,6 @@ Examples:
                 f"matrix {resources}"
             )
 
-    output_dir = os.path.join(PROJECT_DIR, args.output_dir, task_info.model_id.replace("/", "--"))
     os.makedirs(output_dir, exist_ok=True)
 
     static_meta_json = os.path.join(output_dir, "static_meta.json")
@@ -821,6 +951,8 @@ Examples:
         batch_size=args.batch_size,
         input_scale_type=input_scale_type,
         run_command=run_command,
+        cgroup_version=cgroup_version,
+        cgroup_collection_mode=cgroup_collection_mode,
         compute_profile_enabled=not compute_profile_disabled,
         execution_profile_enabled=args.execution_profile_tool != "none",
     )

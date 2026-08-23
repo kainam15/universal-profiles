@@ -8,15 +8,15 @@ AC-Prof 是一个面向 Hugging Face 推理服务的零侵入运行时分析工�
 
 ## 先看这两点
 
-> **运行环境：** AC-Prof 只支持原生 Linux 主机和本机 Docker Engine。WSL、Docker Desktop、远程 Docker daemon、Windows 和 macOS 不能作为实验采集环境。当前推荐并验证的是 Ubuntu 24.04。
+> **运行环境：** AC-Prof 只支持原生 Linux 主机和本机 Docker Engine，正式采集默认强制使用统一 cgroup v2。WSL、Docker Desktop、远程 Docker daemon、Windows 和 macOS 不能作为实验采集环境。当前推荐并验证的是 Ubuntu 24.04。
 
 > **时间成本：** 默认 6 档 input scale 时，完整命令会运行 1,344 行主实验，通常至少需要 6 小时，且还不包含模型下载、镜像构建和计算分析器的额外耗时。第一次使用请先跑下面的最小 smoke test。
 
 ## AC-Prof 会采集什么
 
-- 性能：application / packet-level latency、P50/P90/P95、吞吐量、冷启动时间。
-- 能耗：CPU package、估算 vCPU 和 GPU 的 idle、平均/峰值功率与能量。
-- 资源：容器 CPU / 内存、CPU 频率与估算 cycles，以及 GPU utilization、VRAM、SM/显存时钟、P-state 和温度。
+- 性能：application / packet-level latency、P50/P90/P95、标准差/CV/IQR/最大值、吞吐量、冷启动时间。
+- 能耗：CPU package、估算 vCPU 和 GPU 的 idle、平均/峰值功率与能量，以及不增加采集轮次的 container-attributed 能效派生值。
+- 资源：容器 CPU / 内存、cgroup CPU throttling、memory events、CPU/内存/I/O PSI、CPU 频率与估算 cycles，以及 GPU utilization、VRAM、SM/显存时钟、P-state 和温度。
 - PMU：retired-instruction MIPS、cache miss 和 dTLB miss。
 - 计算：PyTorch eager 逻辑 FLOP，以及 NVIDIA Nsight Compute 实际 GPU FLOP。
 - 可选 execution profile：Valgrind Massif 内存峰值、Nsight Systems CUDA timeline。
@@ -40,6 +40,7 @@ AC-Prof 是一个面向 Hugging Face 推理服务的零侵入运行时分析工�
 
 - Python 3.10+。
 - 当前用户可以直接访问 `unix:///var/run/docker.sock`，无需使用 `sudo docker`。
+- Host 使用统一 cgroup v2；`/sys/fs/cgroup/cgroup.controllers` 必须存在。
 - Hugging Face Hub 可访问；私有或 gated 模型还需要 `HF_TOKEN`。
 - Linux RAPL powercap 可读。
 - Linux `perf` 可以访问硬件 `instructions` 事件。
@@ -53,6 +54,8 @@ unset DOCKER_HOST DOCKER_CONTEXT
 docker context use default
 docker context inspect default --format '{{(index .Endpoints "docker").Host}}'
 docker info --format 'OperatingSystem={{.OperatingSystem}}'
+test -f /sys/fs/cgroup/cgroup.controllers
+cat /proc/self/cgroup
 ```
 
 `docker context inspect` 应输出 `unix:///var/run/docker.sock`。再检查采集工具：
@@ -202,8 +205,8 @@ python run.py --help
 
 | 文件或目录 | 用途 |
 | --- | --- |
-| `result_all.csv` | 动态测量结果；每行对应一个资源配置、input scale 和一次 warmup/repeat window，包括容器 swap 使用量与块 I/O 增量。 |
-| `static_meta.json` | 模型 revision、参数量与参数 payload、模型 cache、精度、量化、许可证、输入输出格式、GPU/主机 RAM、主机 swap、Docker 存储环境与实验命令。 |
+| `result_all.csv` | 动态测量结果；每行对应一个资源配置、input scale 和一次 warmup/repeat window，包括延迟波动、能效派生值、cgroup throttling/memory events/PSI、swap 使用量与块 I/O 增量。 |
+| `static_meta.json` | 模型 revision、参数量与参数 payload、模型 cache、精度、量化、许可证、输入输出格式、GPU/主机 RAM、主机 swap、Docker 存储、cgroup 版本/采集模式与实验命令。 |
 | `collection_history.json` | 补采、超时重试和质量重采等数据修复过程的 provenance；不与静态元数据混放。 |
 | `input_scale_plan.json` | 本次实际执行的 scale 和 payload 计划。 |
 | `compute_profile_plan.json` | Torch / NCU 的 per-scale 结果与错误。 |
@@ -292,6 +295,10 @@ ip link show docker0
 ### `[cpu-energy][ERROR]`
 
 AC-Prof 要求 RAPL energy counter 可读。按错误信息检查 `/sys/class/powercap/*/energy_uj` 的存在性和权限；不要用 TDP 或 CPU utilization 伪造缺失功耗。
+
+### `[cgroup][ERROR]`
+
+正式实验要求统一 cgroup v2。检查 `test -f /sys/fs/cgroup/cgroup.controllers` 和 `cat /proc/self/cgroup`；修复主机启动/systemd 配置并重启后再采集。`--allow-cgroup-v1` 只用于旧环境诊断，运行会标记为 `legacy_compatible`，不要与正式 v2 数据合并分析。如果结果目录留有不同版本或版本未知的 `result_case_*.csv`，程序会拒绝续写；请换用新的 `--output-dir` 或先归档旧部分结果。
 
 ### `[mips][ERROR]`
 

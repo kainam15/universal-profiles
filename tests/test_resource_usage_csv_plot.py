@@ -19,6 +19,12 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             "resource_usage_iters",
             "container_cpu_util_avg_pct",
             "container_cpu_util_peak_pct",
+            "container_cpu_nr_periods_delta",
+            "container_cpu_nr_throttled_delta",
+            "container_cpu_throttled_period_ratio_pct",
+            "container_cpu_throttled_time_s_per_request",
+            "container_cpu_pressure_some_stall_pct",
+            "container_cpu_pressure_full_stall_pct",
             "cpu_freq_avg_hz",
             "cpu_freq_peak_hz",
             "cpu_cycles_est_app",
@@ -37,11 +43,19 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             "container_mem_usage_peak_bytes",
             "container_mem_util_avg_pct",
             "container_mem_util_peak_pct",
+            "container_mem_high_events_delta",
+            "container_mem_max_events_delta",
+            "container_mem_oom_events_delta",
+            "container_mem_oom_kill_events_delta",
+            "container_mem_pressure_some_stall_pct",
+            "container_mem_pressure_full_stall_pct",
             "container_swap_limit_bytes",
             "container_swap_usage_avg_bytes",
             "container_swap_usage_peak_bytes",
             "container_io_read_bytes_per_request",
             "container_io_write_bytes_per_request",
+            "container_io_pressure_some_stall_pct",
+            "container_io_pressure_full_stall_pct",
             "gpu_sm_clock_mhz",
             "gpu_memory_clock_mhz",
             "gpu_pstate",
@@ -232,6 +246,68 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
         )
         self.assertEqual(float(df["gpu_mem_used_avg_gib"].iloc[0]), 3.0)
         self.assertEqual(float(df["gpu_mem_total_gib"].iloc[0]), 8.0)
+
+    def test_prepare_df_converts_low_collection_cost_metrics(self) -> None:
+        metric_fields = [
+            "latency_request_count",
+            "latency_std_s",
+            "latency_cv",
+            "latency_iqr_s",
+            "latency_max_s",
+            "latency_app_request_count",
+            "latency_app_std_s",
+            "latency_app_cv",
+            "latency_app_iqr_s",
+            "latency_app_max_s",
+            "container_attributed_energy_eff_j",
+            "container_attributed_samples_per_j",
+            "container_attributed_edp_app_js",
+            "output_tokens_per_s_app",
+            "container_attributed_j_per_output_token",
+            "container_cpu_nr_periods_delta",
+            "container_cpu_nr_throttled_delta",
+            "container_cpu_throttled_period_ratio_pct",
+            "container_cpu_throttled_time_s_per_request",
+            "container_cpu_pressure_some_stall_pct",
+            "container_cpu_pressure_full_stall_pct",
+            "container_mem_high_events_delta",
+            "container_mem_max_events_delta",
+            "container_mem_oom_events_delta",
+            "container_mem_oom_kill_events_delta",
+            "container_mem_pressure_some_stall_pct",
+            "container_mem_pressure_full_stall_pct",
+            "container_io_pressure_some_stall_pct",
+            "container_io_pressure_full_stall_pct",
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = os.path.join(tmp, "result_all.csv")
+            fieldnames = [
+                "cpu_cores",
+                "mem_cap_gb",
+                "gpu_mode",
+                "input_scale",
+                "warmup",
+                "status",
+                *metric_fields,
+            ]
+            with open(csv_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerow({
+                    "cpu_cores": "1",
+                    "mem_cap_gb": "4",
+                    "gpu_mode": "off",
+                    "input_scale": "64",
+                    "warmup": "0",
+                    "status": "ok",
+                    **{field: "1.5" for field in metric_fields},
+                })
+
+            df = plot.prepare_df(csv_path)
+
+        for field in metric_fields:
+            self.assertTrue(pd.api.types.is_numeric_dtype(df[field]), field)
+            self.assertEqual(float(df[field].iloc[0]), 1.5, field)
 
     def test_prepare_df_excludes_error_rows_even_when_they_have_numeric_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

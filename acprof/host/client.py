@@ -421,11 +421,36 @@ def _slow_ratio(xs: List[float]) -> float:
 
 
 def _latency_distribution_metrics(prefix: str, latencies: List[float]) -> Dict[str, float]:
+    values = [
+        value
+        for value in (_to_float_or_nan(item) for item in latencies)
+        if math.isfinite(value)
+    ]
+    mean = _mean(values)
+    std = (
+        math.sqrt(sum((value - mean) ** 2 for value in values) / len(values))
+        if len(values) >= 2
+        else float("nan")
+    )
     return {
-        f"{prefix}_p50_s": _percentile_nearest_rank(latencies, 50.0),
-        f"{prefix}_p90_s": _percentile_nearest_rank(latencies, 90.0),
-        f"{prefix}_p95_s": _percentile_nearest_rank(latencies, 95.0),
-        f"{prefix}_slow_ratio": _slow_ratio(latencies),
+        f"{prefix}_request_count": float(len(values)),
+        f"{prefix}_p50_s": _percentile_nearest_rank(values, 50.0),
+        f"{prefix}_p90_s": _percentile_nearest_rank(values, 90.0),
+        f"{prefix}_p95_s": _percentile_nearest_rank(values, 95.0),
+        f"{prefix}_std_s": std,
+        f"{prefix}_cv": (
+            std / mean
+            if math.isfinite(std) and math.isfinite(mean) and mean > 0.0
+            else float("nan")
+        ),
+        f"{prefix}_iqr_s": (
+            _percentile_nearest_rank(values, 75.0)
+            - _percentile_nearest_rank(values, 25.0)
+            if len(values) >= 2
+            else float("nan")
+        ),
+        f"{prefix}_max_s": max(values) if values else float("nan"),
+        f"{prefix}_slow_ratio": _slow_ratio(values),
     }
 
 
@@ -776,17 +801,31 @@ RESOURCE_USAGE_METRIC_FIELDS = [
     "resource_usage_iters",
     "container_cpu_util_avg_pct",
     "container_cpu_util_peak_pct",
+    "container_cpu_nr_periods_delta",
+    "container_cpu_nr_throttled_delta",
+    "container_cpu_throttled_period_ratio_pct",
+    "container_cpu_throttled_time_s_per_request",
+    "container_cpu_pressure_some_stall_pct",
+    "container_cpu_pressure_full_stall_pct",
     "cpu_freq_avg_hz",
     "cpu_freq_peak_hz",
     "container_mem_usage_avg_bytes",
     "container_mem_usage_peak_bytes",
     "container_mem_util_avg_pct",
     "container_mem_util_peak_pct",
+    "container_mem_high_events_delta",
+    "container_mem_max_events_delta",
+    "container_mem_oom_events_delta",
+    "container_mem_oom_kill_events_delta",
+    "container_mem_pressure_some_stall_pct",
+    "container_mem_pressure_full_stall_pct",
     "container_swap_limit_bytes",
     "container_swap_usage_avg_bytes",
     "container_swap_usage_peak_bytes",
     "container_io_read_bytes_per_request",
     "container_io_write_bytes_per_request",
+    "container_io_pressure_some_stall_pct",
+    "container_io_pressure_full_stall_pct",
     "gpu_util_avg_pct",
     "gpu_util_peak_pct",
     "gpu_mem_used_avg_bytes",
@@ -796,17 +835,35 @@ RESOURCE_USAGE_METRIC_FIELDS = [
 ]
 
 LATENCY_PACKET_DISTRIBUTION_FIELDS = [
+    "latency_request_count",
     "latency_p50_s",
     "latency_p90_s",
     "latency_p95_s",
+    "latency_std_s",
+    "latency_cv",
+    "latency_iqr_s",
+    "latency_max_s",
     "latency_slow_ratio",
 ]
 
 LATENCY_APP_DISTRIBUTION_FIELDS = [
+    "latency_app_request_count",
     "latency_app_p50_s",
     "latency_app_p90_s",
     "latency_app_p95_s",
+    "latency_app_std_s",
+    "latency_app_cv",
+    "latency_app_iqr_s",
+    "latency_app_max_s",
     "latency_app_slow_ratio",
+]
+
+EFFICIENCY_METRIC_FIELDS = [
+    "container_attributed_energy_eff_j",
+    "container_attributed_samples_per_j",
+    "container_attributed_edp_app_js",
+    "output_tokens_per_s_app",
+    "container_attributed_j_per_output_token",
 ]
 
 MIPS_METRIC_FIELDS = [
@@ -868,6 +925,69 @@ def _cpu_metrics_from_result(result: Any, repeat_in_window: int) -> Dict[str, fl
     }
 
 
+def _derived_efficiency_metrics(
+    *,
+    gpu_mode: str,
+    batch_size: int,
+    latency_app_s: float,
+    output_token_count_avg: float,
+    gpu_energy_eff_j: float,
+    vcpu_energy_eff_j: float,
+) -> Dict[str, float]:
+    latency = _to_float_or_nan(latency_app_s)
+    output_tokens = _to_float_or_nan(output_token_count_avg)
+    gpu_energy = _to_float_or_nan(gpu_energy_eff_j)
+    vcpu_energy = _to_float_or_nan(vcpu_energy_eff_j)
+
+    required_energy = [vcpu_energy]
+    if str(gpu_mode).strip().lower() == "on":
+        required_energy.append(gpu_energy)
+    attributed_energy = (
+        sum(required_energy)
+        if all(math.isfinite(value) and value >= 0.0 for value in required_energy)
+        else float("nan")
+    )
+
+    samples_per_j = (
+        float(batch_size) / attributed_energy
+        if math.isfinite(attributed_energy)
+        and attributed_energy > 0.0
+        and batch_size > 0
+        else float("nan")
+    )
+    edp_app = (
+        attributed_energy * latency
+        if math.isfinite(attributed_energy)
+        and attributed_energy >= 0.0
+        and math.isfinite(latency)
+        and latency > 0.0
+        else float("nan")
+    )
+    output_tokens_per_s = (
+        output_tokens / latency
+        if math.isfinite(output_tokens)
+        and output_tokens > 0.0
+        and math.isfinite(latency)
+        and latency > 0.0
+        else float("nan")
+    )
+    joules_per_output_token = (
+        attributed_energy / output_tokens
+        if math.isfinite(attributed_energy)
+        and attributed_energy >= 0.0
+        and math.isfinite(output_tokens)
+        and output_tokens > 0.0
+        else float("nan")
+    )
+    return {
+        "container_attributed_energy_eff_j": attributed_energy,
+        "container_attributed_samples_per_j": samples_per_j,
+        "container_attributed_edp_app_js": edp_app,
+        "output_tokens_per_s_app": output_tokens_per_s,
+        "container_attributed_j_per_output_token": joules_per_output_token,
+    }
+
+
 def _resource_usage_metrics_from_result(
     result: Any,
     repeat_in_window: int,
@@ -888,6 +1008,41 @@ def _resource_usage_metrics_from_result(
         "resource_usage_iters": float(result.resource_usage_iters),
         "container_cpu_util_avg_pct": _to_float_or_nan(result.container_cpu_util_avg_pct),
         "container_cpu_util_peak_pct": _to_float_or_nan(result.container_cpu_util_peak_pct),
+        "container_cpu_nr_periods_delta": _to_float_or_nan(
+            getattr(result, "container_cpu_nr_periods_delta", float("nan"))
+        ),
+        "container_cpu_nr_throttled_delta": _to_float_or_nan(
+            getattr(result, "container_cpu_nr_throttled_delta", float("nan"))
+        ),
+        "container_cpu_throttled_period_ratio_pct": _to_float_or_nan(
+            getattr(
+                result,
+                "container_cpu_throttled_period_ratio_pct",
+                float("nan"),
+            )
+        ),
+        "container_cpu_throttled_time_s_per_request": (
+            _divide_if_number(
+                getattr(result, "container_cpu_throttled_time_s", float("nan")),
+                float(repeat_in_window),
+            )
+            if repeat_in_window > 0
+            else float("nan")
+        ),
+        "container_cpu_pressure_some_stall_pct": _to_float_or_nan(
+            getattr(
+                result,
+                "container_cpu_pressure_some_stall_pct",
+                float("nan"),
+            )
+        ),
+        "container_cpu_pressure_full_stall_pct": _to_float_or_nan(
+            getattr(
+                result,
+                "container_cpu_pressure_full_stall_pct",
+                float("nan"),
+            )
+        ),
         "cpu_freq_avg_hz": _to_float_or_nan(
             getattr(result, "cpu_freq_avg_hz", float("nan"))
         ),
@@ -898,6 +1053,32 @@ def _resource_usage_metrics_from_result(
         "container_mem_usage_peak_bytes": _to_float_or_nan(result.container_mem_usage_peak_bytes),
         "container_mem_util_avg_pct": _to_float_or_nan(result.container_mem_util_avg_pct),
         "container_mem_util_peak_pct": _to_float_or_nan(result.container_mem_util_peak_pct),
+        "container_mem_high_events_delta": _to_float_or_nan(
+            getattr(result, "container_mem_high_events_delta", float("nan"))
+        ),
+        "container_mem_max_events_delta": _to_float_or_nan(
+            getattr(result, "container_mem_max_events_delta", float("nan"))
+        ),
+        "container_mem_oom_events_delta": _to_float_or_nan(
+            getattr(result, "container_mem_oom_events_delta", float("nan"))
+        ),
+        "container_mem_oom_kill_events_delta": _to_float_or_nan(
+            getattr(result, "container_mem_oom_kill_events_delta", float("nan"))
+        ),
+        "container_mem_pressure_some_stall_pct": _to_float_or_nan(
+            getattr(
+                result,
+                "container_mem_pressure_some_stall_pct",
+                float("nan"),
+            )
+        ),
+        "container_mem_pressure_full_stall_pct": _to_float_or_nan(
+            getattr(
+                result,
+                "container_mem_pressure_full_stall_pct",
+                float("nan"),
+            )
+        ),
         "container_swap_limit_bytes": _to_float_or_nan(
             getattr(result, "container_swap_limit_bytes", float("nan"))
         ),
@@ -909,6 +1090,20 @@ def _resource_usage_metrics_from_result(
         ),
         "container_io_read_bytes_per_request": io_read_bytes,
         "container_io_write_bytes_per_request": io_write_bytes,
+        "container_io_pressure_some_stall_pct": _to_float_or_nan(
+            getattr(
+                result,
+                "container_io_pressure_some_stall_pct",
+                float("nan"),
+            )
+        ),
+        "container_io_pressure_full_stall_pct": _to_float_or_nan(
+            getattr(
+                result,
+                "container_io_pressure_full_stall_pct",
+                float("nan"),
+            )
+        ),
         "gpu_util_avg_pct": _to_float_or_nan(result.gpu_util_avg_pct),
         "gpu_util_peak_pct": _to_float_or_nan(result.gpu_util_peak_pct),
         "gpu_mem_used_avg_bytes": _to_float_or_nan(result.gpu_mem_used_avg_bytes),
@@ -1472,6 +1667,7 @@ def main() -> None:
                 err_msg = ""
                 gpu_metrics = _nan_metrics(GPU_METRIC_FIELDS)
                 cpu_metrics = _nan_metrics(CPU_METRIC_FIELDS)
+                efficiency_metrics = _nan_metrics(EFFICIENCY_METRIC_FIELDS)
                 resource_usage_metrics = _nan_metrics(RESOURCE_USAGE_METRIC_FIELDS)
                 gpu_runtime_metrics: Dict[str, Any] = _nan_metrics(
                     GPU_RUNTIME_STATE_FIELDS
@@ -1696,6 +1892,14 @@ def main() -> None:
                             resource_usage_result,
                             actual_repeat_in_window,
                         )
+                    efficiency_metrics = _derived_efficiency_metrics(
+                        gpu_mode=GPU_MODE,
+                        batch_size=BATCH_SIZE,
+                        latency_app_s=latency_app_s,
+                        output_token_count_avg=output_token_count_avg,
+                        gpu_energy_eff_j=gpu_metrics["gpu_energy_eff_j"],
+                        vcpu_energy_eff_j=cpu_metrics["vcpu_energy_eff_j"],
+                    )
                     gpu_runtime_metrics = _gpu_runtime_metrics_from_result(
                         resource_usage_result
                     )
@@ -1789,6 +1993,10 @@ def main() -> None:
                         else "nan"
                     ),
                     **{field: _fmt_float(cpu_metrics[field]) for field in CPU_METRIC_FIELDS},
+                    **{
+                        field: _fmt_float(efficiency_metrics[field])
+                        for field in EFFICIENCY_METRIC_FIELDS
+                    },
                     "cpu_idle_measured_at": cpu_idle_measured_at if IDLE_DEBUG else "nan",
                     "cpu_idle_rel_range_so_far": (
                         _fmt_float(idle_stats["cpu_idle_rel_range_so_far"])

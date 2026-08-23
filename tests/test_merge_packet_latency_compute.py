@@ -169,9 +169,14 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
             fieldnames = [
                 "sniff_group_id",
                 "latency_s",
+                "latency_request_count",
                 "latency_p50_s",
                 "latency_p90_s",
                 "latency_p95_s",
+                "latency_std_s",
+                "latency_cv",
+                "latency_iqr_s",
+                "latency_max_s",
                 "latency_slow_ratio",
             ]
             with open(in_csv, "w", encoding="utf-8", newline="") as f:
@@ -180,9 +185,14 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
                 writer.writerow({
                     "sniff_group_id": "case_seq1_r0",
                     "latency_s": "nan",
+                    "latency_request_count": "nan",
                     "latency_p50_s": "nan",
                     "latency_p90_s": "nan",
                     "latency_p95_s": "nan",
+                    "latency_std_s": "nan",
+                    "latency_cv": "nan",
+                    "latency_iqr_s": "nan",
+                    "latency_max_s": "nan",
                     "latency_slow_ratio": "nan",
                 })
 
@@ -212,9 +222,14 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
                 rows = list(csv.DictReader(f))
 
         self.assertEqual(rows[0]["latency_s"], "0.126000")
+        self.assertEqual(rows[0]["latency_request_count"], "5.000000")
         self.assertEqual(rows[0]["latency_p50_s"], "0.100000")
         self.assertEqual(rows[0]["latency_p90_s"], "0.300000")
         self.assertEqual(rows[0]["latency_p95_s"], "0.300000")
+        self.assertEqual(rows[0]["latency_std_s"], "0.110562")
+        self.assertEqual(rows[0]["latency_cv"], "0.877478")
+        self.assertEqual(rows[0]["latency_iqr_s"], "0.180000")
+        self.assertEqual(rows[0]["latency_max_s"], "0.300000")
         self.assertEqual(rows[0]["latency_slow_ratio"], "0.600000")
 
     def test_merges_packet_latency_with_sidecar_when_csv_omits_sniff_group_id(self) -> None:

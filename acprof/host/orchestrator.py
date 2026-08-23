@@ -74,6 +74,8 @@ class StaticMeta:
     vcpu_power_method: str
     cpu_governor: str
     cpu_boost: str
+    cgroup_version: str = "unknown"
+    cgroup_collection_mode: str = "unknown"
     host_mem_total_bytes: Optional[int] = None
     host_swap_total_bytes: Optional[int] = None
     host_swap_used_bytes_at_start: Optional[int] = None
@@ -1592,6 +1594,8 @@ def collect_static_meta(
     input_scale_type: str,
     run_command: str = "",
     device_index: int = 0,
+    cgroup_version: str = "unknown",
+    cgroup_collection_mode: str = "unknown",
     compute_profile_enabled: bool = True,
     execution_profile_enabled: bool = False,
 ) -> StaticMeta:
@@ -1647,6 +1651,8 @@ def collect_static_meta(
         docker_storage_device=docker_storage["docker_storage_device"],
         docker_storage_type=docker_storage["docker_storage_type"],
         environment=_detect_environment(),
+        cgroup_version=cgroup_version,
+        cgroup_collection_mode=cgroup_collection_mode,
         cpu_power_source=cpu_power_source,
         vcpu_power_method=vcpu_power_method,
         cpu_governor=cpu_governor,

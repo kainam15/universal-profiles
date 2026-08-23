@@ -62,6 +62,39 @@ def _slow_ratio(values: list[float]) -> float:
     return sum(value > SLOW_LATENCY_THRESHOLD_S for value in finite_values) / float(len(finite_values))
 
 
+def _distribution_metrics(values: list[float]) -> dict[str, float]:
+    finite_values = [value for value in values if math.isfinite(value)]
+    mean = _mean(finite_values)
+    std = (
+        math.sqrt(
+            sum((value - mean) ** 2 for value in finite_values)
+            / len(finite_values)
+        )
+        if len(finite_values) >= 2
+        else float("nan")
+    )
+    return {
+        "latency_request_count": float(len(finite_values)),
+        "latency_p50_s": _percentile_nearest_rank(finite_values, 50.0),
+        "latency_p90_s": _percentile_nearest_rank(finite_values, 90.0),
+        "latency_p95_s": _percentile_nearest_rank(finite_values, 95.0),
+        "latency_std_s": std,
+        "latency_cv": (
+            std / mean
+            if math.isfinite(std) and math.isfinite(mean) and mean > 0.0
+            else float("nan")
+        ),
+        "latency_iqr_s": (
+            _percentile_nearest_rank(finite_values, 75.0)
+            - _percentile_nearest_rank(finite_values, 25.0)
+            if len(finite_values) >= 2
+            else float("nan")
+        ),
+        "latency_max_s": max(finite_values) if finite_values else float("nan"),
+        "latency_slow_ratio": _slow_ratio(finite_values),
+    }
+
+
 def _fmt_float(value: float) -> str:
     if not math.isfinite(value):
         return "nan"
@@ -206,10 +239,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         if gid and gid in group_lats and group_lats[gid]:
             latencies = group_lats[gid]
             r["latency_s"] = _fmt_float(_mean(latencies))
-            r["latency_p50_s"] = _fmt_float(_percentile_nearest_rank(latencies, 50.0))
-            r["latency_p90_s"] = _fmt_float(_percentile_nearest_rank(latencies, 90.0))
-            r["latency_p95_s"] = _fmt_float(_percentile_nearest_rank(latencies, 95.0))
-            r["latency_slow_ratio"] = _fmt_float(_slow_ratio(latencies))
+            for field, value in _distribution_metrics(latencies).items():
+                r[field] = _fmt_float(value)
             try:
                 bs = static_batch_size
                 if bs != bs:

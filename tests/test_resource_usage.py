@@ -170,6 +170,9 @@ class ResourceUsageMonitorTests(unittest.TestCase):
                 f.write("0::/docker/abc\n")
             with open(os.path.join(cgroup_root, "docker", "abc", "cpu.stat"), "w", encoding="utf-8") as f:
                 f.write("usage_usec 1500000\n")
+                f.write("nr_periods 20\n")
+                f.write("nr_throttled 5\n")
+                f.write("throttled_usec 250000\n")
             with open(os.path.join(cgroup_root, "docker", "abc", "memory.current"), "w", encoding="utf-8") as f:
                 f.write("12345\n")
             with open(
@@ -191,6 +194,28 @@ class ResourceUsageMonitorTests(unittest.TestCase):
             ) as f:
                 f.write("8:0 rbytes=100 wbytes=200 rios=1 wios=2\n")
                 f.write("8:16 rbytes=300 wbytes=400 rios=3 wios=4\n")
+            with open(
+                os.path.join(cgroup_root, "docker", "abc", "memory.events"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write("low 0\nhigh 2\nmax 3\noom 1\noom_kill 1\n")
+            for leaf, some_total, full_total in (
+                ("cpu.pressure", 1000, 200),
+                ("memory.pressure", 2000, 300),
+                ("io.pressure", 3000, 400),
+            ):
+                with open(
+                    os.path.join(cgroup_root, "docker", "abc", leaf),
+                    "w",
+                    encoding="utf-8",
+                ) as f:
+                    f.write(
+                        f"some avg10=0.00 avg60=0.00 avg300=0.00 total={some_total}\n"
+                    )
+                    f.write(
+                        f"full avg10=0.00 avg60=0.00 avg300=0.00 total={full_total}\n"
+                    )
 
             fake_completed = SimpleNamespace(returncode=0, stdout="123\n", stderr="")
             with patch("acprof.monitors.resource_usage.subprocess.run", return_value=fake_completed):
@@ -205,16 +230,44 @@ class ResourceUsageMonitorTests(unittest.TestCase):
             self.assertIsNotNone(readers.swap)
             self.assertIsNotNone(readers.swap_limit)
             self.assertIsNotNone(readers.io)
+            self.assertIsNotNone(readers.cpu_throttle)
+            self.assertIsNotNone(readers.memory_events)
+            self.assertIsNotNone(readers.cpu_pressure)
+            self.assertIsNotNone(readers.memory_pressure)
+            self.assertIsNotNone(readers.io_pressure)
             assert readers.cpu is not None
             assert readers.memory is not None
             assert readers.swap is not None
             assert readers.swap_limit is not None
             assert readers.io is not None
+            assert readers.cpu_throttle is not None
+            assert readers.memory_events is not None
+            assert readers.cpu_pressure is not None
+            assert readers.memory_pressure is not None
+            assert readers.io_pressure is not None
             self.assertEqual(readers.cpu(), 1.5)
             self.assertEqual(readers.memory(), 12345)
             self.assertEqual(readers.swap(), 2048)
             self.assertEqual(readers.swap_limit(), 4096)
             self.assertEqual(readers.io(), (400, 600))
+            self.assertEqual(
+                readers.cpu_throttle(),
+                {
+                    "nr_periods": 20.0,
+                    "nr_throttled": 5.0,
+                    "throttled_usec": 250000.0,
+                },
+            )
+            self.assertEqual(
+                readers.memory_events(),
+                {"high": 2.0, "max": 3.0, "oom": 1.0, "oom_kill": 1.0},
+            )
+            self.assertEqual(readers.cpu_pressure(), {"some": 1000.0, "full": 200.0})
+            self.assertEqual(
+                readers.memory_pressure(),
+                {"some": 2000.0, "full": 300.0},
+            )
+            self.assertEqual(readers.io_pressure(), {"some": 3000.0, "full": 400.0})
 
     def test_resolves_cgroup_v1_resource_readers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -235,6 +288,12 @@ class ResourceUsageMonitorTests(unittest.TestCase):
                 encoding="utf-8",
             ) as f:
                 f.write("2500000000\n")
+            with open(
+                os.path.join(cgroup_root, "cpu,cpuacct", "docker", "abc", "cpu.stat"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write("nr_periods 10\nnr_throttled 2\nthrottled_time 500000000\n")
             with open(
                 os.path.join(cgroup_root, "memory", "docker", "abc", "memory.usage_in_bytes"),
                 "w",
@@ -307,16 +366,83 @@ class ResourceUsageMonitorTests(unittest.TestCase):
             self.assertIsNotNone(readers.swap)
             self.assertIsNotNone(readers.swap_limit)
             self.assertIsNotNone(readers.io)
+            self.assertIsNotNone(readers.cpu_throttle)
             assert readers.cpu is not None
             assert readers.memory is not None
             assert readers.swap is not None
             assert readers.swap_limit is not None
             assert readers.io is not None
+            assert readers.cpu_throttle is not None
             self.assertEqual(readers.cpu(), 2.5)
             self.assertEqual(readers.memory(), 67890)
             self.assertEqual(readers.swap(), 1000)
             self.assertEqual(readers.swap_limit(), 4000)
             self.assertEqual(readers.io(), (400, 600))
+            self.assertEqual(
+                readers.cpu_throttle(),
+                {
+                    "nr_periods": 10.0,
+                    "nr_throttled": 2.0,
+                    "throttled_usec": 500000.0,
+                },
+            )
+
+    def test_window_counter_metrics_calculate_deltas_and_psi_stalls(self) -> None:
+        result = resource_usage._nan_result(2)
+        start = resource_usage._WindowCounterSnapshots(
+            cpu_throttle={
+                "nr_periods": 100.0,
+                "nr_throttled": 10.0,
+                "throttled_usec": 1_000_000.0,
+            },
+            memory_events={
+                "high": 1.0,
+                "max": 2.0,
+                "oom": 0.0,
+                "oom_kill": 0.0,
+            },
+            cpu_pressure={"some": 1_000_000.0, "full": 200_000.0},
+            memory_pressure={"some": 300_000.0, "full": 100_000.0},
+            io_pressure={"some": 400_000.0, "full": 50_000.0},
+        )
+        end = resource_usage._WindowCounterSnapshots(
+            cpu_throttle={
+                "nr_periods": 110.0,
+                "nr_throttled": 12.0,
+                "throttled_usec": 1_400_000.0,
+            },
+            memory_events={
+                "high": 3.0,
+                "max": 5.0,
+                "oom": 1.0,
+                "oom_kill": 1.0,
+            },
+            cpu_pressure={"some": 1_500_000.0, "full": 300_000.0},
+            memory_pressure={"some": 500_000.0, "full": 140_000.0},
+            io_pressure={"some": 700_000.0, "full": 70_000.0},
+        )
+
+        resource_usage._apply_window_counter_metrics(
+            result,
+            start,
+            end,
+            elapsed_s=2.0,
+        )
+
+        self.assertEqual(result.container_cpu_nr_periods_delta, 10.0)
+        self.assertEqual(result.container_cpu_nr_throttled_delta, 2.0)
+        self.assertEqual(result.container_cpu_throttled_period_ratio_pct, 20.0)
+        self.assertEqual(result.container_cpu_throttled_time_s, 0.4)
+        self.assertEqual(result.container_cpu_pressure_some_stall_pct, 25.0)
+        self.assertEqual(result.container_cpu_pressure_full_stall_pct, 5.0)
+        self.assertEqual(result.container_mem_high_events_delta, 2.0)
+        self.assertEqual(result.container_mem_max_events_delta, 3.0)
+        self.assertEqual(result.container_mem_oom_events_delta, 1.0)
+        self.assertEqual(result.container_mem_oom_kill_events_delta, 1.0)
+        self.assertEqual(result.container_mem_pressure_some_stall_pct, 10.0)
+        self.assertEqual(result.container_mem_pressure_full_stall_pct, 2.0)
+        self.assertEqual(result.container_io_pressure_some_stall_pct, 15.0)
+        self.assertEqual(result.container_io_pressure_full_stall_pct, 1.0)
 
     def test_cgroup_unlimited_limit_uses_negative_one_sentinel(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -429,6 +555,14 @@ class ResourceUsageMonitorTests(unittest.TestCase):
         self.assertTrue(math.isnan(result.container_swap_usage_peak_bytes))
         self.assertTrue(math.isnan(result.container_io_read_bytes))
         self.assertTrue(math.isnan(result.container_io_write_bytes))
+        self.assertTrue(math.isnan(result.container_cpu_nr_periods_delta))
+        self.assertTrue(
+            math.isnan(result.container_cpu_throttled_period_ratio_pct)
+        )
+        self.assertTrue(math.isnan(result.container_mem_oom_kill_events_delta))
+        self.assertTrue(
+            math.isnan(result.container_mem_pressure_full_stall_pct)
+        )
         self.assertTrue(math.isnan(result.gpu_util_avg_pct))
         self.assertTrue(math.isnan(result.gpu_sm_clock_mhz))
         self.assertTrue(math.isnan(result.gpu_memory_clock_mhz))

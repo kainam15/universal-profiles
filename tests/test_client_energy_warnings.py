@@ -1,6 +1,7 @@
 import csv
 import io
 import json
+import math
 import os
 import tempfile
 import unittest
@@ -123,8 +124,8 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(CSV_FIELDS[gpu_idle_index + 1], "gpu_idle_measured_at")
         self.assertEqual(CSV_FIELDS[gpu_idle_index + 2], "gpu_idle_rel_range_so_far")
 
-    def test_schema_v5_includes_swap_and_request_shape_metrics(self) -> None:
-        self.assertEqual(STATIC_META_SCHEMA_VERSION, 5)
+    def test_schema_v6_includes_cgroup_swap_and_request_shape_metrics(self) -> None:
+        self.assertEqual(STATIC_META_SCHEMA_VERSION, 6)
         self.assertIn("parameter_bytes", STATIC_META_FIELDS)
         self.assertIn("model_cache_bytes", STATIC_META_FIELDS)
         self.assertNotIn("model_weight_bytes", STATIC_META_FIELDS)
@@ -136,6 +137,8 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertIn("docker_storage_total_bytes", STATIC_META_FIELDS)
         self.assertIn("workload", STATIC_META_FIELDS)
         self.assertIn("input_scale_plan_sha256", STATIC_META_FIELDS)
+        self.assertIn("cgroup_version", STATIC_META_FIELDS)
+        self.assertIn("cgroup_collection_mode", STATIC_META_FIELDS)
         expected = [
             "input_scale",
             "input_num_samples",
@@ -413,13 +416,33 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
             fields,
         )
 
+    def test_csv_schema_includes_cgroup_pressure_metrics(self) -> None:
+        fields = [
+            "container_cpu_nr_periods_delta",
+            "container_cpu_nr_throttled_delta",
+            "container_cpu_throttled_period_ratio_pct",
+            "container_cpu_throttled_time_s_per_request",
+            "container_cpu_pressure_some_stall_pct",
+            "container_cpu_pressure_full_stall_pct",
+        ]
+        start = CSV_FIELDS.index("container_cpu_util_peak_pct") + 1
+        self.assertEqual(CSV_FIELDS[start:start + len(fields)], fields)
+
     def test_csv_schema_includes_container_swap_and_io_metrics(self) -> None:
         fields = [
+            "container_mem_high_events_delta",
+            "container_mem_max_events_delta",
+            "container_mem_oom_events_delta",
+            "container_mem_oom_kill_events_delta",
+            "container_mem_pressure_some_stall_pct",
+            "container_mem_pressure_full_stall_pct",
             "container_swap_limit_bytes",
             "container_swap_usage_avg_bytes",
             "container_swap_usage_peak_bytes",
             "container_io_read_bytes_per_request",
             "container_io_write_bytes_per_request",
+            "container_io_pressure_some_stall_pct",
+            "container_io_pressure_full_stall_pct",
         ]
 
         start = CSV_FIELDS.index("container_mem_util_peak_pct") + 1
@@ -648,10 +671,55 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                     rows = list(csv.DictReader(f))
 
         self.assertEqual(rows[0]["latency_app_s"], "0.126000")
+        self.assertEqual(rows[0]["latency_app_request_count"], "5.000000")
         self.assertEqual(rows[0]["latency_app_p50_s"], "0.100000")
         self.assertEqual(rows[0]["latency_app_p90_s"], "0.300000")
         self.assertEqual(rows[0]["latency_app_p95_s"], "0.300000")
+        self.assertEqual(rows[0]["latency_app_std_s"], "0.110562")
+        self.assertEqual(rows[0]["latency_app_cv"], "0.877478")
+        self.assertEqual(rows[0]["latency_app_iqr_s"], "0.180000")
+        self.assertEqual(rows[0]["latency_app_max_s"], "0.300000")
         self.assertEqual(rows[0]["latency_app_slow_ratio"], "0.600000")
+
+    def test_efficiency_metrics_are_derived_without_new_measurements(self) -> None:
+        metrics = client._derived_efficiency_metrics(
+            gpu_mode="on",
+            batch_size=2,
+            latency_app_s=0.5,
+            output_token_count_avg=10.0,
+            gpu_energy_eff_j=0.3,
+            vcpu_energy_eff_j=0.2,
+        )
+
+        self.assertAlmostEqual(
+            metrics["container_attributed_energy_eff_j"],
+            0.5,
+        )
+        self.assertAlmostEqual(
+            metrics["container_attributed_samples_per_j"],
+            4.0,
+        )
+        self.assertAlmostEqual(
+            metrics["container_attributed_edp_app_js"],
+            0.25,
+        )
+        self.assertAlmostEqual(metrics["output_tokens_per_s_app"], 20.0)
+        self.assertAlmostEqual(
+            metrics["container_attributed_j_per_output_token"],
+            0.05,
+        )
+
+        missing_gpu = client._derived_efficiency_metrics(
+            gpu_mode="on",
+            batch_size=1,
+            latency_app_s=0.5,
+            output_token_count_avg=float("nan"),
+            gpu_energy_eff_j=float("nan"),
+            vcpu_energy_eff_j=0.2,
+        )
+        self.assertTrue(
+            math.isnan(missing_gpu["container_attributed_energy_eff_j"])
+        )
 
     def test_manual_repeat_in_window_skips_auto_warmup(self) -> None:
         def fake_one_request(scale_value, req_id, payload_override=None):
@@ -1508,17 +1576,31 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                     resource_usage_iters=2,
                     container_cpu_util_avg_pct=25.0,
                     container_cpu_util_peak_pct=50.0,
+                    container_cpu_nr_periods_delta=10.0,
+                    container_cpu_nr_throttled_delta=2.0,
+                    container_cpu_throttled_period_ratio_pct=20.0,
+                    container_cpu_throttled_time_s=0.4,
+                    container_cpu_pressure_some_stall_pct=12.5,
+                    container_cpu_pressure_full_stall_pct=1.5,
                     cpu_freq_avg_hz=3_000_000_000.0,
                     cpu_freq_peak_hz=3_200_000_000.0,
                     container_mem_usage_avg_bytes=1024.0,
                     container_mem_usage_peak_bytes=2048.0,
                     container_mem_util_avg_pct=1.0,
                     container_mem_util_peak_pct=2.0,
+                    container_mem_high_events_delta=3.0,
+                    container_mem_max_events_delta=2.0,
+                    container_mem_oom_events_delta=1.0,
+                    container_mem_oom_kill_events_delta=0.0,
+                    container_mem_pressure_some_stall_pct=4.5,
+                    container_mem_pressure_full_stall_pct=0.5,
                     container_swap_limit_bytes=4096.0,
                     container_swap_usage_avg_bytes=128.0,
                     container_swap_usage_peak_bytes=256.0,
                     container_io_read_bytes=1024.0,
                     container_io_write_bytes=2048.0,
+                    container_io_pressure_some_stall_pct=2.5,
+                    container_io_pressure_full_stall_pct=0.25,
                     gpu_util_avg_pct=30.0,
                     gpu_util_peak_pct=40.0,
                     gpu_sm_clock_mhz=1500.0,
@@ -1580,6 +1662,20 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(rows[0]["status"], "ok")
         self.assertEqual(rows[0]["resource_usage_iters"], "2.000000")
         self.assertEqual(rows[0]["container_cpu_util_avg_pct"], "25.000000")
+        self.assertEqual(rows[0]["container_cpu_nr_periods_delta"], "10.000000")
+        self.assertEqual(rows[0]["container_cpu_nr_throttled_delta"], "2.000000")
+        self.assertEqual(
+            rows[0]["container_cpu_throttled_period_ratio_pct"],
+            "20.000000",
+        )
+        self.assertEqual(
+            rows[0]["container_cpu_throttled_time_s_per_request"],
+            "0.200000",
+        )
+        self.assertEqual(
+            rows[0]["container_cpu_pressure_some_stall_pct"],
+            "12.500000",
+        )
         self.assertEqual(rows[0]["cpu_freq_avg_hz"], "3000000000.000000")
         self.assertEqual(rows[0]["cpu_freq_peak_hz"], "3200000000.000000")
         self.assertEqual(rows[0]["cpu_cycles_est_app"], "375000000.000000")
@@ -1590,6 +1686,12 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(rows[0]["gpu_temp_c"], "61.000000")
         self.assertEqual(rows[0]["gpu_util_avg_pct"], "30.000000")
         self.assertEqual(rows[0]["container_swap_limit_bytes"], "4096.000000")
+        self.assertEqual(rows[0]["container_mem_high_events_delta"], "3.000000")
+        self.assertEqual(rows[0]["container_mem_oom_events_delta"], "1.000000")
+        self.assertEqual(
+            rows[0]["container_mem_pressure_full_stall_pct"],
+            "0.500000",
+        )
         self.assertEqual(
             rows[0]["container_swap_usage_avg_bytes"],
             "128.000000",
@@ -1605,6 +1707,10 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(
             rows[0]["container_io_write_bytes_per_request"],
             "1024.000000",
+        )
+        self.assertEqual(
+            rows[0]["container_io_pressure_full_stall_pct"],
+            "0.250000",
         )
         self.assertNotIn("gpu_power_w", rows[0])
         self.assertNotIn("gpu_util_percent", rows[0])

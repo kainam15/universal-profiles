@@ -7,7 +7,7 @@ import threading
 import time
 from collections import Counter
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 try:
     import pynvml
@@ -62,6 +62,20 @@ class ResourceUsageResult:
     container_swap_usage_peak_bytes: float = float("nan")
     container_io_read_bytes: float = float("nan")
     container_io_write_bytes: float = float("nan")
+    container_cpu_nr_periods_delta: float = float("nan")
+    container_cpu_nr_throttled_delta: float = float("nan")
+    container_cpu_throttled_period_ratio_pct: float = float("nan")
+    container_cpu_throttled_time_s: float = float("nan")
+    container_cpu_pressure_some_stall_pct: float = float("nan")
+    container_cpu_pressure_full_stall_pct: float = float("nan")
+    container_mem_high_events_delta: float = float("nan")
+    container_mem_max_events_delta: float = float("nan")
+    container_mem_oom_events_delta: float = float("nan")
+    container_mem_oom_kill_events_delta: float = float("nan")
+    container_mem_pressure_some_stall_pct: float = float("nan")
+    container_mem_pressure_full_stall_pct: float = float("nan")
+    container_io_pressure_some_stall_pct: float = float("nan")
+    container_io_pressure_full_stall_pct: float = float("nan")
 
 
 @dataclass
@@ -71,6 +85,20 @@ class _ContainerReaders:
     swap: Optional[Callable[[], int]] = None
     swap_limit: Optional[Callable[[], int]] = None
     io: Optional[Callable[[], Tuple[int, int]]] = None
+    cpu_throttle: Optional[Callable[[], Dict[str, float]]] = None
+    memory_events: Optional[Callable[[], Dict[str, float]]] = None
+    cpu_pressure: Optional[Callable[[], Dict[str, float]]] = None
+    memory_pressure: Optional[Callable[[], Dict[str, float]]] = None
+    io_pressure: Optional[Callable[[], Dict[str, float]]] = None
+
+
+@dataclass
+class _WindowCounterSnapshots:
+    cpu_throttle: Optional[Dict[str, float]] = None
+    memory_events: Optional[Dict[str, float]] = None
+    cpu_pressure: Optional[Dict[str, float]] = None
+    memory_pressure: Optional[Dict[str, float]] = None
+    io_pressure: Optional[Dict[str, float]] = None
 
 
 def _nan_result(resource_usage_iters: int = 0) -> ResourceUsageResult:
@@ -203,6 +231,185 @@ def _read_cpu_stat_usage_s(path: str) -> float:
             if key == "usage_usec":
                 return float(value) / 1_000_000.0
     raise RuntimeError(f"usage_usec missing from {path}")
+
+
+def _read_flat_cgroup_stats(path: str) -> Dict[str, float]:
+    stats: Dict[str, float] = {}
+    with open(path, "r", encoding="utf-8") as f:
+        for raw_line in f:
+            parts = raw_line.strip().split()
+            if len(parts) != 2:
+                continue
+            try:
+                stats[parts[0]] = float(parts[1])
+            except ValueError:
+                continue
+    return stats
+
+
+def _read_cgroup_v2_cpu_throttle(path: str) -> Dict[str, float]:
+    stats = _read_flat_cgroup_stats(path)
+    return {
+        "nr_periods": stats.get("nr_periods", float("nan")),
+        "nr_throttled": stats.get("nr_throttled", float("nan")),
+        "throttled_usec": stats.get("throttled_usec", float("nan")),
+    }
+
+
+def _read_cgroup_v1_cpu_throttle(path: str) -> Dict[str, float]:
+    stats = _read_flat_cgroup_stats(path)
+    throttled_time_ns = stats.get("throttled_time", float("nan"))
+    return {
+        "nr_periods": stats.get("nr_periods", float("nan")),
+        "nr_throttled": stats.get("nr_throttled", float("nan")),
+        "throttled_usec": (
+            throttled_time_ns / 1_000.0
+            if throttled_time_ns == throttled_time_ns
+            else float("nan")
+        ),
+    }
+
+
+def _read_cgroup_memory_events(path: str) -> Dict[str, float]:
+    stats = _read_flat_cgroup_stats(path)
+    return {
+        key: stats.get(key, float("nan"))
+        for key in ("high", "max", "oom", "oom_kill")
+    }
+
+
+def _read_pressure_totals(path: str) -> Dict[str, float]:
+    totals: Dict[str, float] = {}
+    with open(path, "r", encoding="utf-8") as f:
+        for raw_line in f:
+            parts = raw_line.strip().split()
+            if not parts:
+                continue
+            scope = parts[0]
+            if scope not in {"some", "full"}:
+                continue
+            for token in parts[1:]:
+                key, separator, value = token.partition("=")
+                if key != "total" or not separator:
+                    continue
+                try:
+                    totals[scope] = float(value)
+                except ValueError:
+                    pass
+                break
+    return totals
+
+
+def _counter_delta(
+    start: Optional[Dict[str, float]],
+    end: Optional[Dict[str, float]],
+    key: str,
+) -> float:
+    if start is None or end is None:
+        return float("nan")
+    start_value = float(start.get(key, float("nan")))
+    end_value = float(end.get(key, float("nan")))
+    if (
+        start_value != start_value
+        or end_value != end_value
+        or end_value < start_value
+    ):
+        return float("nan")
+    return end_value - start_value
+
+
+def _pressure_stall_pct(
+    start: Optional[Dict[str, float]],
+    end: Optional[Dict[str, float]],
+    scope: str,
+    elapsed_s: float,
+) -> float:
+    delta_usec = _counter_delta(start, end, scope)
+    if delta_usec != delta_usec or elapsed_s <= 0.0:
+        return float("nan")
+    return (delta_usec / (elapsed_s * 1_000_000.0)) * 100.0
+
+
+def _apply_window_counter_metrics(
+    result: ResourceUsageResult,
+    start: _WindowCounterSnapshots,
+    end: _WindowCounterSnapshots,
+    elapsed_s: float,
+) -> None:
+    nr_periods = _counter_delta(
+        start.cpu_throttle,
+        end.cpu_throttle,
+        "nr_periods",
+    )
+    nr_throttled = _counter_delta(
+        start.cpu_throttle,
+        end.cpu_throttle,
+        "nr_throttled",
+    )
+    throttled_usec = _counter_delta(
+        start.cpu_throttle,
+        end.cpu_throttle,
+        "throttled_usec",
+    )
+    result.container_cpu_nr_periods_delta = nr_periods
+    result.container_cpu_nr_throttled_delta = nr_throttled
+    if nr_periods == nr_periods and nr_periods > 0.0 and nr_throttled == nr_throttled:
+        result.container_cpu_throttled_period_ratio_pct = (
+            nr_throttled / nr_periods
+        ) * 100.0
+    if throttled_usec == throttled_usec:
+        result.container_cpu_throttled_time_s = throttled_usec / 1_000_000.0
+
+    result.container_cpu_pressure_some_stall_pct = _pressure_stall_pct(
+        start.cpu_pressure,
+        end.cpu_pressure,
+        "some",
+        elapsed_s,
+    )
+    result.container_cpu_pressure_full_stall_pct = _pressure_stall_pct(
+        start.cpu_pressure,
+        end.cpu_pressure,
+        "full",
+        elapsed_s,
+    )
+
+    memory_event_fields = {
+        "high": "container_mem_high_events_delta",
+        "max": "container_mem_max_events_delta",
+        "oom": "container_mem_oom_events_delta",
+        "oom_kill": "container_mem_oom_kill_events_delta",
+    }
+    for event, field in memory_event_fields.items():
+        setattr(
+            result,
+            field,
+            _counter_delta(start.memory_events, end.memory_events, event),
+        )
+
+    result.container_mem_pressure_some_stall_pct = _pressure_stall_pct(
+        start.memory_pressure,
+        end.memory_pressure,
+        "some",
+        elapsed_s,
+    )
+    result.container_mem_pressure_full_stall_pct = _pressure_stall_pct(
+        start.memory_pressure,
+        end.memory_pressure,
+        "full",
+        elapsed_s,
+    )
+    result.container_io_pressure_some_stall_pct = _pressure_stall_pct(
+        start.io_pressure,
+        end.io_pressure,
+        "some",
+        elapsed_s,
+    )
+    result.container_io_pressure_full_stall_pct = _pressure_stall_pct(
+        start.io_pressure,
+        end.io_pressure,
+        "full",
+        elapsed_s,
+    )
 
 
 def _parse_online_cpu_ids(text: str) -> List[int]:
@@ -372,8 +579,31 @@ def _resolve_container_metric_readers(
                 "memory.swap.max",
             )
             io_path = _join_cgroup_path(cgroup_root, parts[2], "io.stat")
+            memory_events_path = _join_cgroup_path(
+                cgroup_root,
+                parts[2],
+                "memory.events",
+            )
+            cpu_pressure_path = _join_cgroup_path(
+                cgroup_root,
+                parts[2],
+                "cpu.pressure",
+            )
+            memory_pressure_path = _join_cgroup_path(
+                cgroup_root,
+                parts[2],
+                "memory.pressure",
+            )
+            io_pressure_path = _join_cgroup_path(
+                cgroup_root,
+                parts[2],
+                "io.pressure",
+            )
             if os.path.exists(cpu_path):
                 readers.cpu = lambda path=cpu_path: _read_cpu_stat_usage_s(path)
+                readers.cpu_throttle = (
+                    lambda path=cpu_path: _read_cgroup_v2_cpu_throttle(path)
+                )
             if os.path.exists(mem_path):
                 readers.memory = lambda path=mem_path: _read_int(path)
             if os.path.exists(swap_path):
@@ -384,6 +614,22 @@ def _resolve_container_metric_readers(
                 )
             if os.path.exists(io_path):
                 readers.io = lambda path=io_path: _read_cgroup_v2_io_stat(path)
+            if os.path.exists(memory_events_path):
+                readers.memory_events = (
+                    lambda path=memory_events_path: _read_cgroup_memory_events(path)
+                )
+            if os.path.exists(cpu_pressure_path):
+                readers.cpu_pressure = (
+                    lambda path=cpu_pressure_path: _read_pressure_totals(path)
+                )
+            if os.path.exists(memory_pressure_path):
+                readers.memory_pressure = (
+                    lambda path=memory_pressure_path: _read_pressure_totals(path)
+                )
+            if os.path.exists(io_pressure_path):
+                readers.io_pressure = (
+                    lambda path=io_pressure_path: _read_pressure_totals(path)
+                )
             return readers
 
     for line in lines:
@@ -392,6 +638,15 @@ def _resolve_container_metric_readers(
             continue
 
         controllers = set(parts[1].split(","))
+        if readers.cpu_throttle is None and "cpu" in controllers:
+            cpu_stat_path = _first_existing(
+                _v1_candidates(cgroup_root, parts[1], parts[2], "cpu.stat")
+            )
+            if cpu_stat_path is not None:
+                readers.cpu_throttle = (
+                    lambda path=cpu_stat_path: _read_cgroup_v1_cpu_throttle(path)
+                )
+
         if readers.cpu is None and "cpuacct" in controllers:
             cpu_path = _first_existing(
                 _v1_candidates(cgroup_root, parts[1], parts[2], "cpuacct.usage")
@@ -660,9 +915,25 @@ class ResourceUsageMonitor:
         self._swap_reader: Optional[Callable[[], int]] = None
         self._swap_limit_reader: Optional[Callable[[], int]] = None
         self._io_reader: Optional[Callable[[], Tuple[int, int]]] = None
+        self._cpu_throttle_reader: Optional[
+            Callable[[], Dict[str, float]]
+        ] = None
+        self._memory_events_reader: Optional[
+            Callable[[], Dict[str, float]]
+        ] = None
+        self._cpu_pressure_reader: Optional[
+            Callable[[], Dict[str, float]]
+        ] = None
+        self._memory_pressure_reader: Optional[
+            Callable[[], Dict[str, float]]
+        ] = None
+        self._io_pressure_reader: Optional[
+            Callable[[], Dict[str, float]]
+        ] = None
         self._swap_limit_bytes: Optional[int] = None
         self._io_start: Optional[Tuple[int, int]] = None
         self._io_end: Optional[Tuple[int, int]] = None
+        self._window_counters_start = _WindowCounterSnapshots()
         self._gpu_handle = None
         self._gpu_initialized = False
         self._thread: Optional[threading.Thread] = None
@@ -684,6 +955,11 @@ class ResourceUsageMonitor:
             self._swap_reader = readers.swap
             self._swap_limit_reader = readers.swap_limit
             self._io_reader = readers.io
+            self._cpu_throttle_reader = readers.cpu_throttle
+            self._memory_events_reader = readers.memory_events
+            self._cpu_pressure_reader = readers.cpu_pressure
+            self._memory_pressure_reader = readers.memory_pressure
+            self._io_pressure_reader = readers.io_pressure
         except Exception as exc:
             self._init_error = str(exc)
 
@@ -707,6 +983,11 @@ class ResourceUsageMonitor:
             or self._swap_reader is not None
             or self._swap_limit_reader is not None
             or self._io_reader is not None
+            or self._cpu_throttle_reader is not None
+            or self._memory_events_reader is not None
+            or self._cpu_pressure_reader is not None
+            or self._memory_pressure_reader is not None
+            or self._io_pressure_reader is not None
             or self._gpu_handle is not None
         )
 
@@ -721,6 +1002,7 @@ class ResourceUsageMonitor:
         self._swap_limit_bytes = None
         self._io_start = None
         self._io_end = None
+        self._window_counters_start = _WindowCounterSnapshots()
         if self._swap_limit_reader is not None:
             try:
                 self._swap_limit_bytes = self._swap_limit_reader()
@@ -731,6 +1013,7 @@ class ResourceUsageMonitor:
                 self._io_start = self._io_reader()
             except Exception as exc:
                 self._runtime_error = str(exc)
+        self._window_counters_start = self._read_window_counter_snapshots()
         self._t_start = time.perf_counter()
         self._t_end = None
         self._append_sample(self._t_start)
@@ -745,6 +1028,7 @@ class ResourceUsageMonitor:
             return _nan_result(0), self._error_message(), []
 
         self._t_end = time.perf_counter()
+        window_counters_end = self._read_window_counter_snapshots()
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=1.0)
@@ -777,6 +1061,12 @@ class ResourceUsageMonitor:
             result.container_io_write_bytes = float(
                 max(0, self._io_end[1] - self._io_start[1])
             )
+        _apply_window_counter_metrics(
+            result,
+            self._window_counters_start,
+            window_counters_end,
+            max(0.0, self._t_end - self._t_start),
+        )
         return (
             result,
             self._error_message(),
@@ -798,6 +1088,24 @@ class ResourceUsageMonitor:
     def _error_message(self) -> str:
         errors = [error for error in (self._init_error, self._runtime_error) if error]
         return "; ".join(errors)
+
+    def _read_window_counter_snapshots(self) -> _WindowCounterSnapshots:
+        snapshots = _WindowCounterSnapshots()
+        readers = (
+            ("cpu_throttle", self._cpu_throttle_reader),
+            ("memory_events", self._memory_events_reader),
+            ("cpu_pressure", self._cpu_pressure_reader),
+            ("memory_pressure", self._memory_pressure_reader),
+            ("io_pressure", self._io_pressure_reader),
+        )
+        for field, reader in readers:
+            if reader is None:
+                continue
+            try:
+                setattr(snapshots, field, reader())
+            except Exception as exc:
+                self._runtime_error = str(exc)
+        return snapshots
 
     def _sample_loop(self) -> None:
         next_t = (self._t_start if self._t_start is not None else time.perf_counter()) + self.dt

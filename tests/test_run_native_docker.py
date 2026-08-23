@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import sys
 import tempfile
@@ -136,6 +137,134 @@ class NativeDockerGuardTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 1)
         self.assertIn("detected host OS Windows", stderr.getvalue())
 
+    def test_detect_cgroup_version_distinguishes_v2_and_v1(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cgroup_root = os.path.join(tmp, "cgroup")
+            proc_self_cgroup = os.path.join(tmp, "self.cgroup")
+            os.makedirs(cgroup_root)
+            with open(
+                os.path.join(cgroup_root, "cgroup.controllers"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write("cpu io memory\n")
+            with open(proc_self_cgroup, "w", encoding="utf-8") as f:
+                f.write("0::/user.slice/test.scope\n")
+
+            self.assertEqual(
+                run.detect_cgroup_version(
+                    cgroup_root=cgroup_root,
+                    proc_self_cgroup_path=proc_self_cgroup,
+                ),
+                "v2",
+            )
+
+            os.remove(os.path.join(cgroup_root, "cgroup.controllers"))
+            with open(proc_self_cgroup, "w", encoding="utf-8") as f:
+                f.write("2:cpu,cpuacct:/docker/test\n")
+                f.write("3:memory:/docker/test\n")
+
+            self.assertEqual(
+                run.detect_cgroup_version(
+                    cgroup_root=cgroup_root,
+                    proc_self_cgroup_path=proc_self_cgroup,
+                ),
+                "v1",
+            )
+
+    def test_cgroup_preflight_requires_v2_by_default(self) -> None:
+        stderr = io.StringIO()
+        with patch(
+            "acprof.cli.run.detect_cgroup_version",
+            return_value="v1",
+        ), self.assertRaises(SystemExit) as raised, redirect_stderr(stderr):
+            run.require_cgroup_prerequisites()
+
+        self.assertEqual(raised.exception.code, 1)
+        message = stderr.getvalue()
+        self.assertIn("requires the unified cgroup v2", message)
+        self.assertIn("cgroup_version=v1", message)
+        self.assertIn("--allow-cgroup-v1", message)
+
+    def test_cgroup_preflight_allows_explicit_v1_compatibility(self) -> None:
+        stderr = io.StringIO()
+        with patch(
+            "acprof.cli.run.detect_cgroup_version",
+            return_value="v1",
+        ), redirect_stderr(stderr):
+            version = run.require_cgroup_prerequisites(allow_cgroup_v1=True)
+
+        self.assertEqual(version, "v1")
+        self.assertIn("legacy compatibility", stderr.getvalue())
+        self.assertIn("do not mix", stderr.getvalue())
+
+    def test_partial_results_require_matching_cgroup_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            partial_path = os.path.join(tmp, "result_case_model_1c_2g_off.csv")
+            static_meta_path = os.path.join(tmp, "static_meta.json")
+            with open(partial_path, "w", encoding="utf-8") as f:
+                f.write("status\nok\n")
+            with open(static_meta_path, "w", encoding="utf-8") as f:
+                json.dump({"cgroup_version": "v1"}, f)
+
+            stderr = io.StringIO()
+            with self.assertRaises(SystemExit) as raised, redirect_stderr(stderr):
+                run.require_result_cgroup_compatibility(
+                    tmp,
+                    cgroup_version="v2",
+                )
+
+            self.assertEqual(raised.exception.code, 1)
+            message = stderr.getvalue()
+            self.assertIn("Current cgroup_version:  v2", message)
+            self.assertIn("Existing cgroup_version: v1", message)
+            self.assertIn("will not mix", message)
+
+            run.require_result_cgroup_compatibility(
+                tmp,
+                cgroup_version="v1",
+            )
+
+    def test_partial_results_without_cgroup_provenance_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(
+                os.path.join(tmp, "result_case_model_1c_2g_off.csv"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write("status\nok\n")
+
+            with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()):
+                run.require_result_cgroup_compatibility(
+                    tmp,
+                    cgroup_version="v2",
+                )
+
+    def test_main_passes_legacy_cgroup_flag_to_preflight(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            ["acprof.cli.run.py", "--model", "dummy-model", "--allow-cgroup-v1"],
+        ), patch(
+            "acprof.cli.run.bootstrap_project_env",
+            return_value=None,
+        ), patch(
+            "acprof.cli.run.require_native_linux_host",
+        ), patch(
+            "acprof.cli.run.require_native_docker",
+        ), patch(
+            "acprof.cli.run.require_cgroup_prerequisites",
+            side_effect=SystemExit(7),
+        ) as preflight, patch(
+            "acprof.host.detect.detect_task",
+            side_effect=AssertionError("task detection must follow cgroup preflight"),
+        ):
+            with self.assertRaises(SystemExit) as raised:
+                run.main()
+
+        self.assertEqual(raised.exception.code, 7)
+        preflight.assert_called_once_with(allow_cgroup_v1=True)
+
     def test_cpu_energy_preflight_exits_with_remediation_when_unavailable(self) -> None:
         stderr = io.StringIO()
 
@@ -167,6 +296,9 @@ class NativeDockerGuardTests(unittest.TestCase):
         ), patch("acprof.cli.run.require_native_linux_host"), patch(
             "acprof.cli.run.require_native_docker"
         ), patch(
+            "acprof.cli.run.require_cgroup_prerequisites",
+            return_value="v2",
+        ), patch(
             "acprof.cli.run.require_packet_latency_prerequisites",
         ), patch(
             "acprof.cli.run.require_cpu_energy_prerequisites",
@@ -189,6 +321,9 @@ class NativeDockerGuardTests(unittest.TestCase):
             return_value=None,
         ), patch("acprof.cli.run.require_native_linux_host"), patch(
             "acprof.cli.run.require_native_docker"
+        ), patch(
+            "acprof.cli.run.require_cgroup_prerequisites",
+            return_value="v2",
         ), patch(
             "acprof.cli.run.require_packet_latency_prerequisites",
         ), patch(
@@ -345,6 +480,9 @@ class NativeDockerGuardTests(unittest.TestCase):
         ), patch("acprof.cli.run.require_native_linux_host"), patch(
             "acprof.cli.run.require_native_docker"
         ), patch(
+            "acprof.cli.run.require_cgroup_prerequisites",
+            return_value="v2",
+        ), patch(
             "acprof.cli.run.require_packet_latency_prerequisites",
             side_effect=SystemExit(2),
         ) as preflight, patch(
@@ -400,6 +538,9 @@ class NativeDockerGuardTests(unittest.TestCase):
             "acprof.cli.run.require_native_linux_host"
         ), patch(
             "acprof.cli.run.require_native_docker"
+        ), patch(
+            "acprof.cli.run.require_cgroup_prerequisites",
+            return_value="v2",
         ), patch(
             "acprof.cli.run.require_packet_latency_prerequisites"
         ), patch(
@@ -473,6 +614,9 @@ class NativeDockerGuardTests(unittest.TestCase):
         ), patch(
             "acprof.cli.run.require_native_docker"
         ), patch(
+            "acprof.cli.run.require_cgroup_prerequisites",
+            return_value="v2",
+        ), patch(
             "acprof.cli.run.require_packet_latency_prerequisites"
         ), patch(
             "acprof.cli.run.require_cpu_energy_prerequisites"
@@ -545,6 +689,9 @@ class NativeDockerGuardTests(unittest.TestCase):
         ), patch(
             "acprof.cli.run.require_native_docker"
         ), patch(
+            "acprof.cli.run.require_cgroup_prerequisites",
+            return_value="v2",
+        ), patch(
             "acprof.cli.run.require_packet_latency_prerequisites"
         ), patch(
             "acprof.cli.run.require_cpu_energy_prerequisites"
@@ -580,6 +727,8 @@ class NativeDockerGuardTests(unittest.TestCase):
             "--cpus 1 --mems 2 --gpus off --output-dir "
             + tmp_dir,
         )
+        self.assertEqual(kwargs["cgroup_version"], "v2")
+        self.assertEqual(kwargs["cgroup_collection_mode"], "strict_v2")
         self.assertTrue(write_static_meta_json.called)
         self.assertEqual(
             write_static_meta_json.call_args_list[0].args[1],

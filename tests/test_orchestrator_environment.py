@@ -504,6 +504,8 @@ class DetectEnvironmentTests(unittest.TestCase):
                 batch_size=1,
                 input_scale_type="seq_length",
                 run_command="python run.py --model google-bert/bert-base-uncased",
+                cgroup_version="v2",
+                cgroup_collection_mode="strict_v2",
             )
             disabled_meta = orchestrator.collect_static_meta(
                 task_info=task_info,
@@ -537,6 +539,8 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(meta.vcpu_power_method, "rapl_cgroup_cpu_share")
         self.assertEqual(meta.cpu_governor, "performance")
         self.assertEqual(meta.cpu_boost, "on")
+        self.assertEqual(meta.cgroup_version, "v2")
+        self.assertEqual(meta.cgroup_collection_mode, "strict_v2")
         self.assertEqual(meta.parameter_count, 110_106_428)
         self.assertEqual(meta.parameter_bytes, 440_425_712)
         self.assertEqual(meta.model_cache_bytes, 123)
@@ -564,7 +568,7 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(meta.execution_profile_provenance, "disabled")
 
     def test_static_meta_compute_profile_fields_follow_host_metadata(self) -> None:
-        self.assertEqual(STATIC_META_SCHEMA_VERSION, 5)
+        self.assertEqual(STATIC_META_SCHEMA_VERSION, 6)
         self.assertIn("parameter_bytes", STATIC_META_FIELDS)
         self.assertIn("model_cache_bytes", STATIC_META_FIELDS)
         self.assertNotIn("model_weight_bytes", STATIC_META_FIELDS)
@@ -575,6 +579,8 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertIn("host_swap_type", STATIC_META_FIELDS)
         self.assertIn("host_vm_swappiness", STATIC_META_FIELDS)
         self.assertIn("docker_storage_total_bytes", STATIC_META_FIELDS)
+        self.assertIn("cgroup_version", STATIC_META_FIELDS)
+        self.assertIn("cgroup_collection_mode", STATIC_META_FIELDS)
         self.assertLess(
             STATIC_META_FIELDS.index("gpu_mem_total_bytes"),
             STATIC_META_FIELDS.index("environment"),
@@ -582,6 +588,10 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertLess(
             STATIC_META_FIELDS.index("docker_storage_type"),
             STATIC_META_FIELDS.index("environment"),
+        )
+        self.assertLess(
+            STATIC_META_FIELDS.index("cgroup_collection_mode"),
+            STATIC_META_FIELDS.index("cpu_power_source"),
         )
         self.assertLess(
             STATIC_META_FIELDS.index("cpu_boost"),
@@ -623,6 +633,8 @@ class DetectEnvironmentTests(unittest.TestCase):
             docker_storage_device="/dev/nvme0n1p2",
             docker_storage_type="nvme_ssd",
             environment="ubuntu24.04",
+            cgroup_version="v2",
+            cgroup_collection_mode="strict_v2",
             cpu_power_source="rapl",
             vcpu_power_method="rapl_cgroup_cpu_share",
             cpu_governor="performance",
@@ -696,6 +708,8 @@ class DetectEnvironmentTests(unittest.TestCase):
             docker_storage_device="/dev/nvme0n1p2",
             docker_storage_type="nvme_ssd",
             environment="ubuntu24.04",
+            cgroup_version="v2",
+            cgroup_collection_mode="strict_v2",
             cpu_power_source="rapl",
             vcpu_power_method="rapl_cgroup_cpu_share",
             cpu_governor="performance",
@@ -735,6 +749,8 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(payload["host_swap_type"], "file")
         self.assertEqual(payload["host_vm_swappiness"], 60)
         self.assertEqual(payload["docker_storage_total_bytes"], 10_000)
+        self.assertEqual(payload["cgroup_version"], "v2")
+        self.assertEqual(payload["cgroup_collection_mode"], "strict_v2")
         self.assertEqual(
             payload["docker_storage_available_bytes_at_start"],
             4_000,
