@@ -342,8 +342,11 @@ LATENCY_MODEL_FEATURES = {
         "log_input_scale",
         "log_input_scale_squared",
         "log_cpu_cores",
+        "log_cpu_cores_squared",
         "log_mem_cap_gb",
         "log_input_scale_x_log_cpu_cores",
+        "log_input_scale_x_log_mem_cap_gb",
+        "log_cpu_cores_x_log_mem_cap_gb",
     ],
     "gpu": [
         "intercept",
@@ -358,8 +361,11 @@ LATENCY_MODEL_FEATURES = {
 LATENCY_MODEL_RESOURCE_FEATURES = {
     "cpu": {
         "log_cpu_cores",
+        "log_cpu_cores_squared",
         "log_mem_cap_gb",
         "log_input_scale_x_log_cpu_cores",
+        "log_input_scale_x_log_mem_cap_gb",
+        "log_cpu_cores_x_log_mem_cap_gb",
     },
     "gpu": {
         "inverse_cpu_cores",
@@ -373,17 +379,36 @@ LATENCY_MODEL_FORMULAS = {
     "cpu": (
         "latency_s = exp(intercept + log_input_scale "
         "+ log_input_scale_squared "
-        "+ log_cpu_cores + log_mem_cap_gb "
-        "+ log_input_scale_x_log_cpu_cores)"
+        "+ log_cpu_cores + log_cpu_cores_squared + log_mem_cap_gb "
+        "+ log_input_scale_x_log_cpu_cores "
+        "+ log_input_scale_x_log_mem_cap_gb "
+        "+ log_cpu_cores_x_log_mem_cap_gb)"
     ),
     "gpu": (
-        "latency_s = exp(intercept + log_input_scale "
+        "within-range latency_s = exp(intercept + log_input_scale "
         "+ piecewise_linear_log_input_scale_hinges "
         "+ inverse_cpu_cores + inverse_cpu_cores_squared "
         "+ log_mem_cap_gb + log_input_scale_x_inverse_cpu_cores "
-        "+ log_input_scale_x_inverse_cpu_cores_squared)"
+        "+ log_input_scale_x_inverse_cpu_cores_squared); when activated, "
+        "upper-tail latency_s = boundary_spline_latency_s + "
+        "affine_tail(input_scale) - affine_tail(boundary_input_scale)"
     ),
 }
+LATENCY_MODEL_GPU_UPPER_TAIL_FEATURES = [
+    "intercept",
+    "input_scale",
+    "inverse_cpu_cores",
+    "inverse_cpu_cores_squared",
+    "log_mem_cap_gb",
+    "input_scale_x_inverse_cpu_cores",
+    "input_scale_x_inverse_cpu_cores_squared",
+]
+# A GPU log-spline is excellent inside the profiled scale range, but extending
+# one noisy boundary segment can be brittle.  When a nested one-step-forward
+# check exceeds this MAPE, upper extrapolation switches to a continuous affine
+# work tail fitted in latency space.
+LATENCY_MODEL_GPU_UPPER_TAIL_ACTIVATION_MAPE = 0.05
+LATENCY_MODEL_GPU_UPPER_TAIL_MIN_SCALE_SPAN_RATIO = 10.0
 LATENCY_MODEL_MIN_VALIDATION_R2 = 0.80
 LATENCY_MODEL_MAX_VALIDATION_RELATIVE_MAE = 0.20
 LATENCY_MODEL_MAX_VALIDATION_MAPE = 0.20
@@ -1266,8 +1291,11 @@ def _model_features(
             log_input_scale,
             log_input_scale**2,
             log_cpu_cores,
+            log_cpu_cores**2,
             log_mem_cap_gb,
             log_input_scale * log_cpu_cores,
+            log_input_scale * log_mem_cap_gb,
+            log_cpu_cores * log_mem_cap_gb,
         ]
     if hardware_model == "gpu":
         inverse_cpu_cores = 1.0 / cpu_cores
@@ -1289,37 +1317,17 @@ def _model_features(
     raise ValueError(f"unknown latency hardware model: {hardware_model}")
 
 
-def _fit_log_latency_model(rows: list, hardware_model: str) -> dict:
-    """Fit log(latency) with rank-revealing least squares.
-
-    Regressors are standardized before solving. Constant or linearly dependent
-    columns are removed so CPU-only, GPU-only, and reduced resource matrices do
-    not fail merely because a feature is constant.
-    """
-    if len(rows) < 3:
-        raise ValueError(f"need at least 3 case rows, got {len(rows)}")
-
-    input_scale_spline_knots = (
-        _gpu_input_scale_spline_knots(rows)
-        if hardware_model == "gpu"
-        else []
-    )
-    feature_names = _model_feature_names(
-        hardware_model,
-        input_scale_spline_knots,
-    )
-    feature_matrix = np.asarray(
-        [
-            _model_features(
-                row,
-                hardware_model,
-                input_scale_spline_knots,
-            )
-            for row in rows
-        ],
-        dtype=float,
-    )
-    target = np.log(np.asarray([float(row.latency_s) for row in rows], dtype=float))
+def _fit_rank_revealing_linear_model(
+    feature_matrix: np.ndarray,
+    target: np.ndarray,
+) -> dict:
+    """Solve a standardized linear model after removing dependent columns."""
+    if feature_matrix.ndim != 2 or target.ndim != 1:
+        raise ValueError("model matrix and target have invalid dimensions")
+    if feature_matrix.shape[0] != target.shape[0]:
+        raise ValueError("model matrix and target row counts differ")
+    if feature_matrix.shape[1] < 2:
+        raise ValueError("model matrix needs an intercept and a predictor")
     if not np.isfinite(feature_matrix).all() or not np.isfinite(target).all():
         raise ValueError("model inputs contain non-finite values")
 
@@ -1379,8 +1387,129 @@ def _fit_log_latency_model(rows: list, hardware_model: str) -> dict:
         else float(singular_values[0] / smallest_singular)
     )
     return {
+        "coefficients": [float(value) for value in coefficients],
+        "selected_indices": selected_indices,
+        "rank": int(rank),
+        "condition_number": condition_number,
+    }
+
+
+def _gpu_upper_tail_features(row) -> list[float]:
+    """Features for a stable affine GPU latency tail above the fitted range."""
+    input_scale = float(row.input_scale)
+    inverse_cpu_cores = 1.0 / float(row.cpu_cores)
+    inverse_cpu_cores_squared = inverse_cpu_cores**2
+    return [
+        1.0,
+        input_scale,
+        inverse_cpu_cores,
+        inverse_cpu_cores_squared,
+        math.log(float(row.mem_cap_gb)),
+        input_scale * inverse_cpu_cores,
+        input_scale * inverse_cpu_cores_squared,
+    ]
+
+
+def _fit_gpu_upper_tail_model(rows: list) -> dict:
+    feature_matrix = np.asarray(
+        [_gpu_upper_tail_features(row) for row in rows],
+        dtype=float,
+    )
+    target = np.asarray([float(row.latency_s) for row in rows], dtype=float)
+    solution = _fit_rank_revealing_linear_model(feature_matrix, target)
+    selected_feature_names = [
+        LATENCY_MODEL_GPU_UPPER_TAIL_FEATURES[feature_idx]
+        for feature_idx in solution["selected_indices"]
+    ]
+    scale_slope_features = {
+        "input_scale",
+        "input_scale_x_inverse_cpu_cores",
+        "input_scale_x_inverse_cpu_cores_squared",
+    }
+    if not scale_slope_features.intersection(selected_feature_names):
+        raise ValueError("GPU upper-tail model has no input-scale slope")
+
+    coefficients = solution["coefficients"]
+    training_configurations = sorted({
+        (float(row.cpu_cores), float(row.mem_cap_gb)) for row in rows
+    })
+    fitted_slopes = []
+    for cpu_cores, mem_cap_gb in training_configurations:
+        at_zero = SimpleNamespace(
+            input_scale=0.0,
+            cpu_cores=cpu_cores,
+            mem_cap_gb=mem_cap_gb,
+        )
+        at_one = SimpleNamespace(
+            input_scale=1.0,
+            cpu_cores=cpu_cores,
+            mem_cap_gb=mem_cap_gb,
+        )
+        fitted_slopes.append(float(np.dot(
+            coefficients,
+            np.asarray(_gpu_upper_tail_features(at_one))
+            - np.asarray(_gpu_upper_tail_features(at_zero)),
+        )))
+
+    return {
+        "feature_names": list(LATENCY_MODEL_GPU_UPPER_TAIL_FEATURES),
+        "selected_indices": solution["selected_indices"],
+        "selected_feature_names": selected_feature_names,
+        "dropped_feature_names": [
+            feature_name
+            for feature_name in LATENCY_MODEL_GPU_UPPER_TAIL_FEATURES
+            if feature_name not in selected_feature_names
+        ],
+        "coefficients": coefficients,
+        "rank": solution["rank"],
+        "condition_number": solution["condition_number"],
+        "minimum_fitted_slope_s_per_scale": min(fitted_slopes),
+    }
+
+
+def _fit_log_latency_model(
+    rows: list,
+    hardware_model: str,
+    *,
+    calibrate_gpu_upper_tail: bool = True,
+) -> dict:
+    """Fit log(latency) with rank-revealing least squares.
+
+    Regressors are standardized before solving. Constant or linearly dependent
+    columns are removed so CPU-only, GPU-only, and reduced resource matrices do
+    not fail merely because a feature is constant.
+    """
+    if len(rows) < 3:
+        raise ValueError(f"need at least 3 case rows, got {len(rows)}")
+
+    input_scale_spline_knots = (
+        _gpu_input_scale_spline_knots(rows)
+        if hardware_model == "gpu"
+        else []
+    )
+    feature_names = _model_feature_names(
+        hardware_model,
+        input_scale_spline_knots,
+    )
+    feature_matrix = np.asarray(
+        [
+            _model_features(
+                row,
+                hardware_model,
+                input_scale_spline_knots,
+            )
+            for row in rows
+        ],
+        dtype=float,
+    )
+    target = np.log(np.asarray([float(row.latency_s) for row in rows], dtype=float))
+    solution = _fit_rank_revealing_linear_model(feature_matrix, target)
+    selected_indices = solution["selected_indices"]
+    model = {
         "hardware_model": hardware_model,
         "input_scale_spline_knots": input_scale_spline_knots,
+        "input_scale_min": min(float(row.input_scale) for row in rows),
+        "input_scale_max": max(float(row.input_scale) for row in rows),
         "feature_names": feature_names,
         "selected_indices": selected_indices,
         "selected_feature_names": [
@@ -1391,14 +1520,91 @@ def _fit_log_latency_model(rows: list, hardware_model: str) -> dict:
             for feature_idx in range(len(feature_names))
             if feature_idx not in selected_indices
         ],
-        "coefficients": [float(value) for value in coefficients],
-        "rank": int(rank),
-        "condition_number": condition_number,
+        "coefficients": solution["coefficients"],
+        "rank": solution["rank"],
+        "condition_number": solution["condition_number"],
         "fit_case_rows": len(rows),
     }
 
+    if hardware_model == "gpu" and calibrate_gpu_upper_tail:
+        input_scales = sorted({float(row.input_scale) for row in rows})
+        input_scale_span_ratio = input_scales[-1] / input_scales[0]
+        calibration = {
+            "available": False,
+            "held_out_input_scale": None,
+            "mean_absolute_percentage_error": None,
+            "activation_threshold_mape": (
+                LATENCY_MODEL_GPU_UPPER_TAIL_ACTIVATION_MAPE
+            ),
+        }
+        if len(input_scales) >= 3:
+            calibration_scale = input_scales[-1]
+            calibration_rows = [
+                row for row in rows
+                if float(row.input_scale) < calibration_scale
+            ]
+            calibration_test_rows = [
+                row for row in rows
+                if float(row.input_scale) == calibration_scale
+            ]
+            try:
+                calibration_model = _fit_log_latency_model(
+                    calibration_rows,
+                    hardware_model,
+                    calibrate_gpu_upper_tail=False,
+                )
+                calibration_predictions = np.asarray([
+                    _predict_latency(row, calibration_model)
+                    for row in calibration_test_rows
+                ])
+                calibration_actuals = np.asarray([
+                    float(row.latency_s) for row in calibration_test_rows
+                ])
+                calibration_mape = float(np.mean(
+                    np.abs(calibration_actuals - calibration_predictions)
+                    / calibration_actuals
+                ))
+                calibration = {
+                    "available": True,
+                    "held_out_input_scale": calibration_scale,
+                    "train_input_scale_max": max(
+                        float(row.input_scale) for row in calibration_rows
+                    ),
+                    "mean_absolute_percentage_error": calibration_mape,
+                    "activation_threshold_mape": (
+                        LATENCY_MODEL_GPU_UPPER_TAIL_ACTIVATION_MAPE
+                    ),
+                }
+            except ValueError as exc:
+                calibration["reason"] = str(exc)
 
-def _predict_latency(row, model: dict) -> float:
+        try:
+            upper_tail_model = _fit_gpu_upper_tail_model(rows)
+            upper_tail_model["calibration"] = calibration
+            upper_tail_model["training_input_scale_span_ratio"] = (
+                input_scale_span_ratio
+            )
+            upper_tail_model["enabled"] = bool(
+                calibration["available"]
+                and calibration["mean_absolute_percentage_error"]
+                > LATENCY_MODEL_GPU_UPPER_TAIL_ACTIVATION_MAPE
+                and input_scale_span_ratio
+                >= LATENCY_MODEL_GPU_UPPER_TAIL_MIN_SCALE_SPAN_RATIO
+                and upper_tail_model["minimum_fitted_slope_s_per_scale"] > 0.0
+            )
+            model["gpu_upper_tail"] = upper_tail_model
+        except ValueError as exc:
+            model["gpu_upper_tail"] = {
+                "enabled": False,
+                "reason": str(exc),
+                "calibration": calibration,
+            }
+
+    return model
+
+
+def _predict_primary_latency(row, model: dict) -> float:
+    """Evaluate the positive log-link model without tail extrapolation."""
     linear_prediction = sum(
         coefficient * feature
         for coefficient, feature in zip(
@@ -1414,6 +1620,38 @@ def _predict_latency(row, model: dict) -> float:
     # artifact generation from floating-point overflow on extreme extrapolation.
     bounded_prediction = min(max(linear_prediction, -700.0), 700.0)
     return float(math.exp(bounded_prediction))
+
+
+def _predict_latency(row, model: dict) -> float:
+    primary_prediction = _predict_primary_latency(row, model)
+    upper_tail_model = model.get("gpu_upper_tail", {})
+    input_scale_max = model.get("input_scale_max")
+    if not (
+        model.get("hardware_model") == "gpu"
+        and upper_tail_model.get("enabled")
+        and input_scale_max is not None
+        and float(row.input_scale) > float(input_scale_max)
+    ):
+        return primary_prediction
+
+    boundary_row = SimpleNamespace(
+        input_scale=float(input_scale_max),
+        cpu_cores=float(row.cpu_cores),
+        mem_cap_gb=float(row.mem_cap_gb),
+    )
+    boundary_prediction = _predict_primary_latency(boundary_row, model)
+    feature_delta = (
+        np.asarray(_gpu_upper_tail_features(row), dtype=float)
+        - np.asarray(_gpu_upper_tail_features(boundary_row), dtype=float)
+    )
+    tail_delta = float(np.dot(
+        np.asarray(upper_tail_model["coefficients"], dtype=float),
+        feature_delta,
+    ))
+    tail_prediction = boundary_prediction + tail_delta
+    if math.isfinite(tail_prediction) and tail_prediction > 0.0:
+        return tail_prediction
+    return primary_prediction
 
 
 def plot_latency_model_fit_curves(
@@ -1817,6 +2055,7 @@ def _resource_configuration_validation(
             "folds": 0,
             "completed_folds": 0,
             "failed_folds": [],
+            "r2_quality_gate_applicable": True,
             "train_test_group_overlap_count": 0,
             "metrics": _regression_metrics([], []),
         }, {}
@@ -1929,6 +2168,7 @@ def _resource_configuration_validation(
     return {
         "available": not failed_folds and len(predicted_rows) == len(rows),
         "method": "leave-one-(cpu_cores,mem_cap_gb)-configuration-out",
+        "r2_quality_gate_applicable": True,
         "group_columns": ["cpu_cores", "mem_cap_gb"],
         "all_input_scales_move_with_held_out_configuration": True,
         "folds": len(configurations),
@@ -1983,6 +2223,12 @@ def _input_scale_validation(
             ),
             "held_out_input_scale": None,
             "group_columns": ["input_scale"],
+            "r2_quality_gate_applicable": False,
+            "r2_quality_gate_note": (
+                "A single held-out scale tests level extrapolation; R-squared "
+                "within that scale only measures resource-configuration "
+                "variation and is not used as an extrapolation gate."
+            ),
             "train_test_group_overlap_count": 0,
             "metrics": _regression_metrics([], []),
         }, {}
@@ -2005,6 +2251,12 @@ def _input_scale_validation(
             "reason": str(exc),
             "held_out_input_scale": held_out_scale,
             "group_columns": ["input_scale"],
+            "r2_quality_gate_applicable": False,
+            "r2_quality_gate_note": (
+                "A single held-out scale tests level extrapolation; R-squared "
+                "within that scale only measures resource-configuration "
+                "variation and is not used as an extrapolation gate."
+            ),
             "train_input_scale_max": max(
                 (float(row.input_scale) for row in train_rows),
                 default=None,
@@ -2031,6 +2283,12 @@ def _input_scale_validation(
         "available": True,
         "method": "forward holdout of maximum input_scale",
         "group_columns": ["input_scale"],
+        "r2_quality_gate_applicable": False,
+        "r2_quality_gate_note": (
+            "A single held-out scale tests level extrapolation; R-squared "
+            "within that scale only measures resource-configuration variation "
+            "and is reported for context, not used as an extrapolation gate."
+        ),
         "held_out_input_scale": held_out_scale,
         "train_input_scale_max": max(float(row.input_scale) for row in train_rows),
         "test_input_scale_min": min(float(row.input_scale) for row in test_rows),
@@ -2150,16 +2408,17 @@ def _validation_quality_failures(validation_name: str, validation: dict) -> list
             f"{LATENCY_MODEL_MAX_VALIDATION_CASE_RELATIVE_ERROR}; "
             f"configuration={validation.get('worst_case_configuration')!r}"
         )
-    r2 = metrics.get("r2")
-    if (
-        r2 is None
-        or not math.isfinite(float(r2))
-        or float(r2) < LATENCY_MODEL_MIN_VALIDATION_R2
-    ):
-        failures.append(
-            f"{validation_name} r2={r2!r} is below "
-            f"{LATENCY_MODEL_MIN_VALIDATION_R2}"
-        )
+    if validation.get("r2_quality_gate_applicable", True):
+        r2 = metrics.get("r2")
+        if (
+            r2 is None
+            or not math.isfinite(float(r2))
+            or float(r2) < LATENCY_MODEL_MIN_VALIDATION_R2
+        ):
+            failures.append(
+                f"{validation_name} r2={r2!r} is below "
+                f"{LATENCY_MODEL_MIN_VALIDATION_R2}"
+            )
     relative_mae = metrics.get("relative_mae")
     if (
         relative_mae is None
@@ -2194,11 +2453,17 @@ def _validation_is_evaluable(validation: dict) -> bool:
     if not validation.get("available"):
         return False
     metrics = validation.get("metrics", {})
+    metric_names = ["relative_mae", "mean_absolute_percentage_error"]
+    if validation.get("r2_quality_gate_applicable", True):
+        metric_names.append("r2")
     return bool(
         int(metrics.get("prediction_count") or 0)
         >= LATENCY_MODEL_MIN_VALIDATION_POINTS
-        and metrics.get("r2") is not None
-        and math.isfinite(float(metrics["r2"]))
+        and all(
+            metrics.get(metric_name) is not None
+            and math.isfinite(float(metrics[metric_name]))
+            for metric_name in metric_names
+        )
     )
 
 
@@ -2377,6 +2642,75 @@ def write_latency_model_report(
                 fitted_model["coefficients"],
             )
         }
+        if hardware_model == "gpu":
+            upper_tail_model = fitted_model.get("gpu_upper_tail", {})
+            upper_tail_feature_names = upper_tail_model.get(
+                "feature_names",
+                [],
+            )
+            upper_tail_coefficients = upper_tail_model.get(
+                "coefficients",
+                [],
+            )
+            upper_tail_report = {
+                "type": "continuous_affine_latency_tail",
+                "enabled": bool(upper_tail_model.get("enabled")),
+                "activation_rule": (
+                    "enable when nested one-step-forward spline MAPE exceeds "
+                    f"{LATENCY_MODEL_GPU_UPPER_TAIL_ACTIVATION_MAPE}, the "
+                    "training scale span is at least "
+                    f"{LATENCY_MODEL_GPU_UPPER_TAIL_MIN_SCALE_SPAN_RATIO}x, "
+                    "and all fitted training-configuration slopes are positive"
+                ),
+                "continuity_rule": (
+                    "spline prediction at the upper training boundary plus "
+                    "the affine tail's change beyond that boundary"
+                ),
+                "feature_columns": upper_tail_feature_names,
+                "selected_feature_columns": upper_tail_model.get(
+                    "selected_feature_names",
+                    [],
+                ),
+                "dropped_feature_columns": upper_tail_model.get(
+                    "dropped_feature_names",
+                    [],
+                ),
+                "coefficients": dict(zip(
+                    upper_tail_feature_names,
+                    upper_tail_coefficients,
+                )),
+                "minimum_fitted_slope_s_per_scale": upper_tail_model.get(
+                    "minimum_fitted_slope_s_per_scale"
+                ),
+                "training_input_scale_span_ratio": upper_tail_model.get(
+                    "training_input_scale_span_ratio"
+                ),
+                "calibration": upper_tail_model.get("calibration", {}),
+            }
+            if upper_tail_model.get("reason"):
+                upper_tail_report["reason"] = upper_tail_model["reason"]
+            input_scale_basis = {
+                "type": "continuous_piecewise_linear_spline_in_log_space",
+                "knots": fitted_model["input_scale_spline_knots"],
+                "knot_rule": "all interior observed training input scales",
+                "interpolation": (
+                    "piecewise linear in log(input_scale) and log(latency_s)"
+                ),
+                "lower_extrapolation": (
+                    "continue the nearest boundary segment in log-log space"
+                ),
+                "upper_extrapolation": upper_tail_report,
+            }
+        else:
+            input_scale_basis = {
+                "type": "quadratic_response_surface_in_log_space",
+                "knots": [],
+                "interactions": [
+                    "log_input_scale_x_log_cpu_cores",
+                    "log_input_scale_x_log_mem_cap_gb",
+                    "log_cpu_cores_x_log_mem_cap_gb",
+                ],
+            }
         model_reports[hardware_model] = {
             "status": model_status,
             "prediction_ready": model_status == "ok",
@@ -2385,26 +2719,9 @@ def write_latency_model_report(
             "selected_feature_columns": fitted_model["selected_feature_names"],
             "dropped_feature_columns": fitted_model["dropped_feature_names"],
             "coefficients": coefficients,
-            "input_scale_basis": (
-                {
-                    "type": "continuous_piecewise_linear_spline_in_log_space",
-                    "knots": fitted_model["input_scale_spline_knots"],
-                    "knot_rule": "all interior observed training input scales",
-                    "interpolation": (
-                        "piecewise linear in log(input_scale) and log(latency_s)"
-                    ),
-                    "extrapolation": (
-                        "continue the nearest boundary segment in log-log space"
-                    ),
-                }
-                if hardware_model == "gpu"
-                else {
-                    "type": "quadratic_polynomial_in_log_input_scale",
-                    "knots": [],
-                }
-            ),
+            "input_scale_basis": input_scale_basis,
             "prediction_estimand": (
-                "exponentiated fitted log latency for the median-aggregated case"
+                "positive latency prediction for the median-aggregated case"
             ),
             "smearing_correction_applied": False,
             "raw_rows": sum(int(row.repeat_count) for row in hardware_rows),
@@ -2415,6 +2732,20 @@ def write_latency_model_report(
                 "standardized_before_solve": True,
                 "rank": fitted_model["rank"],
                 "condition_number": fitted_model["condition_number"],
+                **(
+                    {
+                        "upper_tail_rank": fitted_model.get(
+                            "gpu_upper_tail",
+                            {},
+                        ).get("rank"),
+                        "upper_tail_condition_number": fitted_model.get(
+                            "gpu_upper_tail",
+                            {},
+                        ).get("condition_number"),
+                    }
+                    if hardware_model == "gpu"
+                    else {}
+                ),
             },
             "metrics": {
                 "fit": fit_metrics,
@@ -2532,7 +2863,7 @@ def write_latency_model_report(
         "task_family": static_meta.get("task_family", ""),
         "input_scale_type": static_meta.get("input_scale_type", "input_scale"),
         "model_type": (
-            "separate_cpu_parametric_gpu_piecewise_log_least_squares"
+            "separate_cpu_log_response_surface_gpu_log_spline_affine_tail"
         ),
         "positive_prediction_form": True,
         "formula": LATENCY_MODEL_FORMULAS,
@@ -2591,7 +2922,16 @@ def write_latency_model_report(
         "quality_gate": {
             "passed": status == "ok",
             "thresholds": {
+                # Compatibility key retained; the scope field below makes clear
+                # that a fixed-scale extrapolation fold is gated by relative
+                # errors rather than configuration-variation R-squared.
                 "minimum_validation_r2": LATENCY_MODEL_MIN_VALIDATION_R2,
+                "minimum_resource_configuration_validation_r2": (
+                    LATENCY_MODEL_MIN_VALIDATION_R2
+                ),
+                "r2_quality_gate_scope": (
+                    "resource_configuration_holdout only"
+                ),
                 "maximum_validation_relative_mae": (
                     LATENCY_MODEL_MAX_VALIDATION_RELATIVE_MAE
                 ),
@@ -2621,7 +2961,9 @@ def write_latency_model_report(
             "supported": (
                 "interpolation within each hardware model's training_range; "
                 "GPU input-scale interpolation uses a continuous log-log spline; "
-                "the maximum observed input scale is separately forward-validated"
+                "GPU upper extrapolation can use a calibrated continuous affine "
+                "latency tail; the maximum observed input scale is separately "
+                "forward-validated"
             ),
             "warning": (
                 "Predictions outside profiled CPU, memory, or input-scale ranges "

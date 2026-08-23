@@ -353,6 +353,64 @@ class LatencyModelReportTests(unittest.TestCase):
         ]
         self.assertLess(max(fitted_relative_errors), 1e-6)
 
+    def test_cpu_log_response_surface_captures_resource_interactions(self) -> None:
+        rows = self._rows(gpu_modes=("off",))
+        repeat_factors = (0.99, 1.0, 1.01)
+        for row in rows:
+            cpu = int(row["cpu_cores"])
+            mem = int(row["mem_cap_gb"])
+            input_scale = int(row["input_scale"])
+            log_scale = math.log(input_scale)
+            log_cpu = math.log(cpu)
+            log_mem = math.log(mem)
+            log_latency = (
+                -4.50
+                + 0.40 * log_scale
+                + 0.08 * log_scale**2
+                - 0.70 * log_cpu
+                + 0.11 * log_cpu**2
+                + 0.02 * log_mem
+                - 0.04 * log_scale * log_cpu
+                + 0.03 * log_scale * log_mem
+                - 0.05 * log_cpu * log_mem
+            )
+            repeat_factor = repeat_factors[int(row["repeat_idx"])]
+            row["latency_s"] = (
+                f"{math.exp(log_latency) * repeat_factor:.12f}"
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = self._write_fixture(tmp, rows)
+            df = pd.read_csv(csv_path)
+            plot.write_latency_model_report(
+                df,
+                plot.read_static_meta(csv_path),
+                tmp,
+            )
+            report, _ = self._read_artifacts(tmp)
+
+        cpu_report = report["models"]["cpu"]
+        for feature_name in (
+            "log_cpu_cores_squared",
+            "log_input_scale_x_log_mem_cap_gb",
+            "log_cpu_cores_x_log_mem_cap_gb",
+        ):
+            self.assertIn(
+                feature_name,
+                cpu_report["selected_feature_columns"],
+            )
+        for metric_name in (
+            "fit",
+            "resource_configuration_holdout",
+            "input_scale_holdout",
+        ):
+            self.assertLess(
+                cpu_report["metrics"][metric_name][
+                    "mean_absolute_percentage_error"
+                ],
+                1e-6,
+            )
+
     def test_gpu_inverse_square_feature_captures_cpu_saturation(self) -> None:
         rows = self._rows(gpu_modes=("on",))
         repeat_factors = (0.99, 1.0, 1.01)
@@ -473,6 +531,68 @@ class LatencyModelReportTests(unittest.TestCase):
                 ],
                 1e-6,
             )
+        self.assertEqual(gpu_report["status"], "ok")
+
+    def test_gpu_unstable_upper_boundary_uses_continuous_affine_tail(self) -> None:
+        rows = []
+        scale_latency = {
+            1: 0.335,
+            2: 0.503,
+            5: 0.916,
+            10: 1.534,
+            20: 2.336,
+            30: 3.506,
+        }
+        for cpu in (1, 2, 4, 8):
+            for mem in (4, 8, 16):
+                resource_factor = math.exp(
+                    0.02 / cpu + 0.001 * math.log(mem)
+                )
+                for input_scale, base_latency in scale_latency.items():
+                    latency = base_latency * resource_factor
+                    for repeat_idx, repeat_factor in enumerate((0.99, 1.0, 1.01)):
+                        rows.append({
+                            "cpu_cores": str(cpu),
+                            "mem_cap_gb": str(mem),
+                            "gpu_mode": "on",
+                            "input_scale": str(input_scale),
+                            "repeat_idx": str(repeat_idx),
+                            "warmup": "0",
+                            "status": "ok",
+                            "latency_s": (
+                                f"{latency * repeat_factor:.12f}"
+                            ),
+                        })
+
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = self._write_fixture(tmp, rows)
+            df = pd.read_csv(csv_path)
+            plot.write_latency_model_report(
+                df,
+                plot.read_static_meta(csv_path),
+                tmp,
+            )
+            report, _ = self._read_artifacts(tmp)
+
+        gpu_report = report["models"]["gpu"]
+        upper_tail = gpu_report["input_scale_basis"]["upper_extrapolation"]
+        scale_validation = gpu_report["validation"]["input_scale_holdout"]
+        self.assertTrue(upper_tail["enabled"])
+        self.assertGreater(
+            upper_tail["calibration"]["mean_absolute_percentage_error"],
+            plot.LATENCY_MODEL_GPU_UPPER_TAIL_ACTIVATION_MAPE,
+        )
+        self.assertLess(
+            gpu_report["metrics"]["input_scale_holdout"][
+                "mean_absolute_percentage_error"
+            ],
+            0.04,
+        )
+        self.assertFalse(scale_validation["r2_quality_gate_applicable"])
+        self.assertLess(
+            gpu_report["metrics"]["input_scale_holdout"]["r2"],
+            0.0,
+        )
         self.assertEqual(gpu_report["status"], "ok")
 
     def test_bad_gpu_extrapolation_cannot_hide_behind_cpu_metrics(self) -> None:
