@@ -1,6 +1,7 @@
 import csv
 import io
 import os
+import sys
 import tempfile
 import time
 import unittest
@@ -24,6 +25,7 @@ class RunNotificationLifecycleTests(unittest.TestCase):
             model_id="org/model",
             output_dir="/tmp/results/org--model",
             started_at=time.perf_counter() - 1.0,
+            run_command="python run.py --model org/model",
             total_cases=total_cases,
         )
 
@@ -55,6 +57,7 @@ class RunNotificationLifecycleTests(unittest.TestCase):
                 model_id="org/model",
                 output_dir="/tmp/results/org--model",
                 started_at=time.perf_counter(),
+                run_command="python run.py --model org/model",
             )
 
         from_env.assert_called_once_with()
@@ -72,10 +75,75 @@ class RunNotificationLifecycleTests(unittest.TestCase):
                 model_id="org/model",
                 output_dir="/tmp/results/org--model",
                 started_at=time.perf_counter(),
+                run_command="python run.py --model org/model",
             )
 
         self.assertIsNone(run._ACTIVE_RUN_NOTIFICATION)
         self.assertEqual(stderr.getvalue(), "")
+
+    def test_start_notification_contains_current_command(self) -> None:
+        captured = []
+
+        class CapturingNotifier:
+            def send(self, event):
+                captured.append(event)
+
+        run._ACTIVE_RUN_NOTIFICATION = self._context(CapturingNotifier())
+        run._notify_run_started()
+
+        self.assertEqual(len(captured), 1)
+        event = captured[0]
+        self.assertEqual(event.status, "started")
+        self.assertEqual(event.run_command, "python run.py --model org/model")
+        self.assertIn("环境预检", event.detail)
+        self.assertGreaterEqual(event.elapsed_seconds, 0.0)
+        self.assertIsNone(run._ACTIVE_RUN_NOTIFICATION.event)
+
+    def test_run_main_sends_start_before_native_preflight(self) -> None:
+        argv = [
+            "run.py",
+            "--model",
+            "org/model with space",
+            "--cpus",
+            "1",
+        ]
+        expected_command = run._format_run_command(argv)
+        order = []
+
+        def activate(**kwargs):
+            order.append(("activate", kwargs["run_command"]))
+
+        def preflight():
+            order.append(("preflight", None))
+            raise RuntimeError("stop after ordering check")
+
+        with patch.object(sys, "argv", argv), patch(
+            "acprof.cli.run.bootstrap_project_env"
+        ), patch(
+            "acprof.cli.run._activate_run_notification",
+            side_effect=activate,
+        ), patch(
+            "acprof.cli.run._start_tmux_terminal_log",
+            side_effect=lambda *_args: order.append(("tmux", None)),
+        ), patch(
+            "acprof.cli.run._notify_run_started",
+            side_effect=lambda: order.append(("started", None)),
+        ), patch(
+            "acprof.cli.run.require_native_linux_host",
+            side_effect=preflight,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "ordering check"):
+                run._run_main()
+
+        self.assertEqual(
+            order,
+            [
+                ("activate", expected_command),
+                ("tmux", None),
+                ("started", None),
+                ("preflight", None),
+            ],
+        )
 
     def test_completion_marks_error_rows_as_partial(self) -> None:
         notifier = Mock()

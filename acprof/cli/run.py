@@ -62,6 +62,7 @@ class _RunNotificationContext:
     model_id: str
     output_dir: str
     started_at: float
+    run_command: str = ""
     total_cases: int | None = None
     event: NotificationEvent | None = None
 
@@ -231,6 +232,7 @@ def _activate_run_notification(
     model_id: str,
     output_dir: str,
     started_at: float,
+    run_command: str,
 ) -> None:
     """Configure a notifier without making any network request."""
     global _ACTIVE_RUN_NOTIFICATION
@@ -254,8 +256,32 @@ def _activate_run_notification(
         model_id=model_id,
         output_dir=output_dir,
         started_at=started_at,
+        run_command=run_command,
     )
-    print("[notify] 企业微信通知已启用；每个 case 完成后报告进度并发送最终总结")
+    print(
+        "[notify] 企业微信通知已启用；实验开始、每个 case 完成后和结束时发送通知"
+    )
+
+
+def _notify_run_started() -> None:
+    """Report the command before preflight/build work and any measurements."""
+    context = _ACTIVE_RUN_NOTIFICATION
+    if context is None:
+        return
+
+    event = NotificationEvent(
+        status="started",
+        model_id=context.model_id,
+        output_dir=context.output_dir,
+        elapsed_seconds=time.perf_counter() - context.started_at,
+        run_command=context.run_command,
+        detail="命令已启动，正在执行环境预检",
+    )
+    _send_notification_event(
+        context,
+        event,
+        success_message="[notify] 企业微信实验开始通知已发送",
+    )
 
 
 def _update_run_notification_plan(
@@ -1066,11 +1092,13 @@ Examples:
         model_id=args.model,
         output_dir=terminal_output_dir,
         started_at=start_time,
+        run_command=run_command,
     )
     _ACTIVE_TMUX_TERMINAL_LOG = _start_tmux_terminal_log(
         terminal_output_dir,
         sys.argv,
     )
+    _notify_run_started()
 
     require_native_linux_host()
     require_native_docker()

@@ -1,8 +1,9 @@
-"""Best-effort completion notifications for host-side AC-Prof commands.
+"""Best-effort lifecycle notifications for host-side AC-Prof commands.
 
 Notification delivery is deliberately kept outside measurement windows.  This
-module only formats and sends an already-completed run event; it never starts a
-background worker or opens a connection while profiling is active.
+module sends only before collection begins, after a case has released its
+resources, or after the whole command ends.  It never starts a background
+worker or opens a connection while profiling is active.
 """
 
 from __future__ import annotations
@@ -51,6 +52,7 @@ class NotificationEvent:
     model_id: str
     output_dir: str
     elapsed_seconds: float
+    run_command: Optional[str] = None
     total_cases: Optional[int] = None
     completed_cases: Optional[int] = None
     result_rows: Optional[int] = None
@@ -92,6 +94,7 @@ def _format_elapsed(seconds: float) -> str:
 def render_notification_text(event: NotificationEvent) -> str:
     """Render a compact Enterprise WeChat text message."""
     status_labels = {
+        "started": ("AC-Prof 实验开始", "已启动"),
         "success": ("AC-Prof 采集完成", "成功"),
         "partial": ("AC-Prof 采集部分完成", "部分成功"),
         "no_results": ("AC-Prof 采集无结果", "无结果"),
@@ -111,6 +114,8 @@ def render_notification_text(event: NotificationEvent) -> str:
         f"耗时：{_format_elapsed(event.elapsed_seconds)}",
     ]
 
+    if event.run_command:
+        lines.append(f"指令：{_single_line(event.run_command, limit=1500)}")
     if event.total_cases is not None:
         completed = "?" if event.completed_cases is None else event.completed_cases
         progress_suffix = ""

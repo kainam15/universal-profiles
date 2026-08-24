@@ -100,6 +100,31 @@ class WeComNotificationTests(unittest.TestCase):
         self.assertIn("当前 case 异常行：1", text)
         self.assertIn("CPU=2, MEM=4GB, GPU=off", text)
 
+    def test_render_started_includes_command_and_redacts_webhook(self) -> None:
+        text = render_notification_text(
+            self._event(
+                status="started",
+                elapsed_seconds=0.4,
+                run_command=(
+                    "python run.py --model 'org/model with space' "
+                    f"--callback {WEBHOOK_URL}"
+                ),
+                total_cases=None,
+                completed_cases=None,
+                result_rows=None,
+                error_rows=None,
+                final_csv=None,
+                detail="命令已启动，正在执行环境预检",
+            )
+        )
+
+        self.assertIn("AC-Prof 实验开始", text)
+        self.assertIn("状态：已启动", text)
+        self.assertIn("指令：python run.py --model 'org/model with space'", text)
+        self.assertIn("正在执行环境预检", text)
+        self.assertNotIn(WEBHOOK_KEY, text)
+        self.assertIn("key=<redacted>", text)
+
     def test_send_posts_text_payload_with_short_timeout(self) -> None:
         response = SimpleNamespace(status_code=200, json=lambda: {"errcode": 0})
         notifier = WeComWebhookNotifier(

@@ -123,13 +123,14 @@ python run.py --model google-bert/bert-base-uncased
 python run.py --model google-bert/bert-base-uncased --notify none
 ```
 
-每个 CPU × 内存 × GPU 资源 case 完成且对应容器、监控器和抓包进程停止后，
-程序会同步发送一次进度，包含累计耗时、已完成 case/总 case、百分比、刚完成的
-资源配置以及当前 case 的结果行/异常行；全部结果合并和 tmux 日志收尾后再发送
-最终总结。为了不干扰实验测量，input scale、warmup 和 repeat 窗口内部不发送
-网络通知。最终总结区分成功、部分成功、无结果、失败和用户取消。发送请求超时
-为 5 秒并最多尝试两次；通知失败只产生警告，不改变采集结果或原退出码。不要
-把 Webhook 放进命令行、提交到 Git 或粘贴到日志中。
+程序会在环境预检和 Docker 构建前先发送实验开始通知，内容包含当前运行指令和
+启动后的累计耗时。每个 CPU × 内存 × GPU 资源 case 完成且对应容器、监控器和
+抓包进程停止后，再同步发送一次进度，包含累计耗时、已完成 case/总 case、百分比、
+刚完成的资源配置以及当前 case 的结果行/异常行；全部结果合并和 tmux 日志收尾后
+发送最终总结。为了不干扰实验测量，input scale、warmup 和 repeat 窗口内部不发送
+网络通知。最终总结区分成功、部分成功、无结果、失败和用户取消。发送请求超时为
+5 秒并最多尝试两次；通知失败只产生警告，不改变采集结果或原退出码。不要把
+Webhook 放进命令行、提交到 Git 或粘贴到日志中。
 
 ### 3. 跑一个最小 smoke test
 
