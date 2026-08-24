@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 
 from acprof.cli import plot
@@ -1484,6 +1485,197 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             "cpu_dtlb_load_miss_rate_vs_scale.png",
         ):
             self.assertNotIn(legacy_filename, out_pngs)
+
+    def test_prepare_df_can_keep_failures_and_backfill_historical_attributed_energy(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = os.path.join(tmp, "result_all.csv")
+            fieldnames = [
+                "cpu_cores",
+                "mem_cap_gb",
+                "gpu_mode",
+                "input_scale",
+                "warmup",
+                "status",
+                "error",
+                "latency_app_s",
+                "vcpu_energy_eff_j",
+                "gpu_energy_eff_j",
+            ]
+            with open(csv_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows([
+                    {
+                        "cpu_cores": "1",
+                        "mem_cap_gb": "8",
+                        "gpu_mode": "off",
+                        "input_scale": "64",
+                        "warmup": "0",
+                        "status": "ok",
+                        "error": "",
+                        "latency_app_s": "2",
+                        "vcpu_energy_eff_j": "3",
+                        "gpu_energy_eff_j": "nan",
+                    },
+                    {
+                        "cpu_cores": "1",
+                        "mem_cap_gb": "4",
+                        "gpu_mode": "on",
+                        "input_scale": "64",
+                        "warmup": "0",
+                        "status": "error",
+                        "error": "client_request_timeout",
+                        "latency_app_s": "4",
+                        "vcpu_energy_eff_j": "2",
+                        "gpu_energy_eff_j": "5",
+                    },
+                ])
+
+            prepared = plot.prepare_df(csv_path, only_ok=False)
+
+        self.assertEqual(len(prepared), 2)
+        cpu_row = prepared[prepared["gpu_mode"] == "off"].iloc[0]
+        gpu_row = prepared[prepared["gpu_mode"] == "on"].iloc[0]
+        self.assertEqual(float(cpu_row["container_attributed_energy_eff_j"]), 3.0)
+        self.assertEqual(float(cpu_row["container_attributed_edp_app_js"]), 6.0)
+        self.assertEqual(float(gpu_row["container_attributed_energy_eff_j"]), 7.0)
+        self.assertEqual(float(gpu_row["container_attributed_edp_app_js"]), 28.0)
+
+    def test_resource_feasibility_summary_preserves_failure_reasons(self) -> None:
+        rows = pd.DataFrame([
+            {
+                "cpu_cores": 1,
+                "mem_cap_gb": 8,
+                "gpu_mode": "off",
+                "input_scale": 64,
+                "status": "ok",
+                "error": "",
+            },
+            {
+                "cpu_cores": 1,
+                "mem_cap_gb": 4,
+                "gpu_mode": "off",
+                "input_scale": 64,
+                "status": "error",
+                "error": "container_start_failed: container_oom_killed during startup",
+            },
+            {
+                "cpu_cores": 2,
+                "mem_cap_gb": 8,
+                "gpu_mode": "off",
+                "input_scale": 128,
+                "status": "error",
+                "error": "client_request_timeout",
+            },
+            {
+                "cpu_cores": 4,
+                "mem_cap_gb": 8,
+                "gpu_mode": "off",
+                "input_scale": 128,
+                "status": "ok",
+                "error": "",
+            },
+            {
+                "cpu_cores": 4,
+                "mem_cap_gb": 8,
+                "gpu_mode": "off",
+                "input_scale": 128,
+                "status": "error",
+                "error": "runtime failure",
+            },
+        ])
+
+        summary = plot.summarize_resource_feasibility(rows)
+        states = {
+            (
+                int(row.cpu_cores),
+                int(row.mem_cap_gb),
+                int(row.input_scale),
+            ): row.state
+            for row in summary.itertuples(index=False)
+        }
+
+        self.assertEqual(states[(1, 8, 64)], "ok")
+        self.assertEqual(states[(1, 4, 64)], "startup_oom")
+        self.assertEqual(states[(2, 8, 128)], "timeout")
+        self.assertEqual(states[(4, 8, 128)], "mixed")
+
+    def test_paper_figures_write_with_current_schema_metrics(self) -> None:
+        rows = []
+        for cpu in (1, 2):
+            for mem in (4, 8):
+                for input_scale in (64, 128):
+                    base_latency = input_scale / (100.0 * cpu)
+                    rows.append({
+                        "cpu_cores": cpu,
+                        "mem_cap_gb": mem,
+                        "gpu_mode": "off",
+                        "input_scale": input_scale,
+                        "status": "ok",
+                        "error": "",
+                        "latency_p50_s": base_latency,
+                        "latency_p90_s": base_latency * 1.1,
+                        "latency_p95_s": base_latency * 1.2,
+                        "latency_app_p50_s": base_latency * 1.01,
+                        "latency_app_p90_s": base_latency * 1.11,
+                        "latency_app_p95_s": base_latency * 1.21,
+                        "container_attributed_energy_eff_j": base_latency * cpu,
+                        "cold_start_container_launch_s": 0.1,
+                        "cold_start_server_setup_s": 0.2,
+                        "cold_start_cuda_init_s": 0.0,
+                        "cold_start_model_load_s": 0.6,
+                        "cold_start_ready_wait_s": 0.1,
+                        "cold_start_first_predict_app_s": base_latency,
+                        "cold_start_s": 1.0,
+                    })
+        frame = pd.DataFrame(rows)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            outputs = {
+                "feasibility": os.path.join(tmp, plot.RESOURCE_FEASIBILITY_PLOT),
+                "tail": os.path.join(tmp, plot.TAIL_LATENCY_PLOT),
+                "pareto": os.path.join(tmp, plot.LATENCY_ENERGY_PARETO_PLOT),
+                "cold": os.path.join(tmp, plot.COLD_START_BREAKDOWN_PLOT),
+            }
+            plotted = [
+                plot.plot_resource_feasibility_heatmap(
+                    frame,
+                    xlabel="seq_length",
+                    out_png=outputs["feasibility"],
+                ),
+                plot.plot_tail_latency_overview(
+                    frame,
+                    xlabel="seq_length",
+                    out_png=outputs["tail"],
+                ),
+                plot.plot_latency_energy_pareto(
+                    frame,
+                    xlabel="seq_length",
+                    out_png=outputs["pareto"],
+                ),
+                plot.plot_cold_start_breakdown(
+                    frame,
+                    out_png=outputs["cold"],
+                ),
+            ]
+            output_sizes = {
+                name: os.path.getsize(path)
+                for name, path in outputs.items()
+            }
+
+        self.assertEqual(plotted, [True, True, True, True])
+        self.assertTrue(all(size > 0 for size in output_sizes.values()))
+        tail_rows = plot._aggregate_tail_latency(frame)
+        self.assertEqual(set(tail_rows["mem_cap_gb"]), {8})
+
+    def test_pareto_frontier_excludes_dominated_points(self) -> None:
+        mask = plot._pareto_frontier_mask(
+            np.array([1.0, 2.0, 3.0, 1.5]),
+            np.array([4.0, 2.0, 3.0, 5.0]),
+        )
+        self.assertEqual(mask.tolist(), [True, True, False, False])
 
 
 if __name__ == "__main__":

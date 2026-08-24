@@ -162,7 +162,7 @@ python plot.py \
   results/smoke/google-bert--bert-base-uncased/result_all.csv
 ```
 
-图表会写回模型结果目录下的 `cpu/`、`gpu/`、`gpu+cpu/` 和 `latency_model/`；没有适用数据的分组会自动跳过。
+图表会写回模型结果目录下的 `cpu/`、`gpu/`、`gpu+cpu/` 和 `latency_model/`；没有适用数据的分组会自动跳过。除原有指标总览外，还会按可用字段生成资源失败边界、P50/P90/P95 尾延迟、延迟–能耗 Pareto 前沿和冷启动阶段分解图。历史 CSV 缺少新字段时只跳过对应图，不影响其余图表。
 
 ## 运行正式实验
 
@@ -260,7 +260,7 @@ python run.py --help
 - `input_units_per_request = effective_input_scale × batch_size`；这里的 input unit 沿用任务族的 `input_scale` 单位，CV 中是缩放倍率而不是像素数。
 - `memory.peak`、`pids.peak` 是新建容器 cgroup 自创建以来的峰值；page fault、refault、I/O 操作和 PID max event 则是当前 workload window 的首尾增量。
 - PCAP 的 protocol overhead 是 captured frame bytes 减去 TCP payload，只表示捕获到的 L2/L3/L4 开销，不含 TCP payload 内的 HTTP header/body 拆分。
-- `warmup=1` 的行不会进入默认图表；`status=error` 的占位行也会被排除。
+- `warmup=1` 的行不会进入默认图表；`status=error` 的占位行会被性能图和延迟模型排除，但会保留在 `resource_feasibility_heatmap.png` 中展示 OOM、timeout 和其他失败边界。
 - `gpu_mode=off` 时 GPU 指标为 `nan`、未启用 execution profiler 时 Massif/Nsys 指标为 `nan`，都属于预期行为。
 
 完整字段字典、功率口径、FLOP 口径和延迟模型说明见[完整参考](REFERENCE.md)。
@@ -353,7 +353,7 @@ cat /proc/sys/kernel/perf_event_paranoid
 
 ### `container_oom_killed during startup`
 
-模型加载时超过了 `--mems` 指定的 cgroup 限制。增大内存上限，或使用更小/量化模型。失败 case 会保留 `status=error` 占位行，不会进入图表和延迟模型。
+模型加载时超过了 `--mems` 指定的 cgroup 限制。增大内存上限，或使用更小/量化模型。失败 case 会保留 `status=error` 占位行，不会进入性能图和延迟模型，但会进入资源可行性热力图。
 
 ### 运行中还没有 `result_all.csv`
 
