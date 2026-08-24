@@ -296,6 +296,8 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 - `nsys_gpu_memcpy_time_sum_per_request_vs_scale.png`
 - `cold_start_bar.png`
 
+三张 effective power 图分别对应 GPU、CPU package 和 estimated vCPU；每张图使用相同颜色表示同一资源配置，以实线圆点表示扣除 idle baseline 后的平均功率、虚线三角表示扣除 idle baseline 后的峰值功率。CPU package 来自 RAPL，estimated vCPU 则按 container cgroup CPU share 估算，两者不能混作同一测量口径。
+
 四张 CPU bandwidth behavior 图使用 Linux `perf` generic PMU event，只表示 cache / dTLB miss 的单 request 计数和 miss rate，用于观察访存局部性及地址转换开销；它们不是 DRAM read/write traffic，也不是实际内存带宽 GB/s。不同 CPU 架构、虚拟化环境或 kernel PMU 可能不提供相同事件；结果列不存在或整列为 `nan` 时，`plot.py` 会跳过对应图表。
 
 Massif 图使用 `cpu_heap_peak_total_bytes_massif / 1024^3` 得到绘图期派生列 `cpu_heap_peak_total_gib_massif`；不会改写原始 CSV。Nsight Systems 四张时间图分别展示 host wall、CUDA API sum、GPU kernel sum 和 GPU memcpy sum。未启用对应 probe、字段不存在或该分组内整列为 `nan` 时，这些图与其他可选指标一样自动跳过。

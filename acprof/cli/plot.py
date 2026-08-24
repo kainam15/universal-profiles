@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 
 
 CSV_PATH = "results/result_all.csv"
@@ -88,6 +89,29 @@ EXECUTION_PROFILE_NUMERIC_COLUMNS = [
     "gpu_memcpy_count_per_request_nsys",
     "gpu_memcpy_bytes_per_request_nsys",
 ]
+EFFECTIVE_POWER_PLOTS = [
+    (
+        "gpu_avg_power_eff_w",
+        "gpu_peak_power_eff_w",
+        "GPU Effective Power (Average and Peak) vs. Input Scale",
+        "Effective power (W)",
+        "gpu_avg_power_vs_scale.png",
+    ),
+    (
+        "cpu_avg_power_eff_w",
+        "cpu_peak_power_eff_w",
+        "CPU Package Effective Power (Average and Peak) vs. Input Scale",
+        "Effective power (W)",
+        "cpu_avg_power_vs_scale.png",
+    ),
+    (
+        "vcpu_avg_power_eff_w",
+        "vcpu_peak_power_eff_w",
+        "Estimated vCPU Effective Power (Average and Peak) vs. Input Scale",
+        "Estimated effective power (W)",
+        "vcpu_avg_power_vs_scale.png",
+    ),
+]
 PLOT_METRICS = [
     (
         "latency_s",
@@ -126,34 +150,16 @@ PLOT_METRICS = [
         "latency_app_cv_vs_scale.png",
     ),
     (
-        "gpu_avg_power_eff_w",
-        "GPU Average Effective Power vs. Input Scale",
-        "Power (W)",
-        "gpu_avg_power_vs_scale.png",
-    ),
-    (
         "gpu_energy_eff_j",
         "GPU Effective Energy vs. Input Scale",
         "Energy (J)",
         "gpu_energy_vs_scale.png",
     ),
     (
-        "cpu_avg_power_eff_w",
-        "CPU Package Average Effective Power vs. Input Scale",
-        "Power (W)",
-        "cpu_avg_power_vs_scale.png",
-    ),
-    (
         "cpu_energy_eff_j",
         "CPU Package Effective Energy vs. Input Scale",
         "Energy (J)",
         "cpu_energy_vs_scale.png",
-    ),
-    (
-        "vcpu_avg_power_eff_w",
-        "Estimated vCPU Average Effective Power vs. Input Scale",
-        "Power (W)",
-        "vcpu_avg_power_vs_scale.png",
     ),
     (
         "vcpu_energy_eff_j",
@@ -947,6 +953,138 @@ def plot_metric(df: pd.DataFrame, metric: str, title: str, ylabel: str, xlabel: 
     plt.ylabel(ylabel)
     plt.grid(True, which="both", linestyle="-", alpha=0.5)
     plt.legend(fontsize=8, ncol=2)
+    plt.tight_layout()
+
+    if out_png:
+        plt.savefig(out_png, dpi=200)
+        print(f"[saved] {out_png}")
+
+    if SHOW_PLOTS:
+        plt.show()
+    plt.close()
+
+
+def plot_effective_power_avg_peak(
+    df: pd.DataFrame,
+    *,
+    avg_metric: str,
+    peak_metric: str,
+    title: str,
+    ylabel: str,
+    xlabel: str,
+    out_png: str | None,
+) -> None:
+    """Plot average and peak effective power with shared config colors."""
+    series_specs = (
+        (avg_metric, "Average", "-", "o"),
+        (peak_metric, "Peak", "--", "^"),
+    )
+    available_series = []
+    for metric, statistic, linestyle, marker in series_specs:
+        if metric not in df.columns:
+            print(f"[skip] Column {metric} not in CSV")
+            continue
+        agg_df = aggregate_metric(df, metric)
+        if agg_df.empty:
+            print(f"[skip] {metric} all NaN")
+            continue
+        available_series.append(
+            (metric, statistic, linestyle, marker, agg_df)
+        )
+
+    if not available_series:
+        return
+
+    combined_df = pd.concat(
+        [series[-1] for series in available_series],
+        ignore_index=True,
+    )
+    cpu_values = sorted(int(value) for value in combined_df["cpu_cores"].unique())
+    mem_values = sorted(int(value) for value in combined_df["mem_cap_gb"].unique())
+    cpu_colors = build_cpu_base_colors(cpu_values)
+    mem_rank_map = {mem: index for index, mem in enumerate(mem_values)}
+    configs = sorted(
+        {
+            (int(row.cpu_cores), int(row.mem_cap_gb), bool(row.gpu_on))
+            for row in combined_df.itertuples(index=False)
+        },
+        key=_sort_key,
+    )
+    has_cpu_series = any(not gpu_on for _, _, gpu_on in configs)
+    gpu_mixed_colors = build_gpu_mixed_colors(configs) if has_cpu_series else {}
+
+    plt.figure(figsize=(10, 6))
+    config_handles = []
+    config_labels = []
+    for cpu, mem, gpu_on in configs:
+        if gpu_on and has_cpu_series:
+            color = gpu_mixed_colors[(cpu, mem, gpu_on)]
+        else:
+            color = shade_for_mem(
+                cpu_colors[cpu],
+                mem_rank_map[mem],
+                len(mem_values),
+            )
+
+        plotted = False
+        for _metric, _statistic, linestyle, marker, agg_df in available_series:
+            sub_df = agg_df[
+                (agg_df["cpu_cores"] == cpu)
+                & (agg_df["mem_cap_gb"] == mem)
+                & (agg_df["gpu_on"] == gpu_on)
+            ].sort_values("input_scale")
+            if sub_df.empty:
+                continue
+            plt.plot(
+                sub_df["input_scale"],
+                sub_df[_metric],
+                color=color,
+                linestyle=linestyle,
+                marker=marker,
+                linewidth=2,
+                markersize=6,
+                label="_nolegend_",
+            )
+            plotted = True
+
+        if plotted:
+            label_prefix = "GPU" if gpu_on else "CPU"
+            config_labels.append(f"{label_prefix}+CPU{cpu}+Mem{mem}")
+            config_handles.append(
+                Line2D([0], [0], color=color, linestyle="-", linewidth=2)
+            )
+
+    plt.title(title)
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    plt.grid(True, which="both", linestyle="-", alpha=0.5)
+    config_legend = plt.legend(
+        handles=config_handles,
+        labels=config_labels,
+        title="Configuration",
+        fontsize=8,
+        ncol=2,
+        loc="upper left",
+    )
+    plt.gca().add_artist(config_legend)
+    plt.legend(
+        handles=[
+            Line2D(
+                [0],
+                [0],
+                color="black",
+                linestyle=linestyle,
+                marker=marker,
+                linewidth=2,
+                markersize=6,
+                label=statistic,
+            )
+            for _metric, statistic, linestyle, marker, _agg_df in available_series
+        ],
+        title="Statistic",
+        fontsize=8,
+        loc="upper right",
+    )
     plt.tight_layout()
 
     if out_png:
@@ -3191,6 +3329,21 @@ def main(argv=None):
             plot_metric(
                 group_df,
                 metric=metric,
+                title=title,
+                ylabel=ylabel,
+                xlabel=xlabel,
+                out_png=(
+                    os.path.join(group_output_dir, filename)
+                    if SAVE_PNG
+                    else None
+                ),
+            )
+
+        for avg_metric, peak_metric, title, ylabel, filename in EFFECTIVE_POWER_PLOTS:
+            plot_effective_power_avg_peak(
+                group_df,
+                avg_metric=avg_metric,
+                peak_metric=peak_metric,
                 title=title,
                 ylabel=ylabel,
                 xlabel=xlabel,

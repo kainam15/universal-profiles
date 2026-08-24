@@ -770,6 +770,86 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             metrics,
         )
 
+    def test_effective_power_avg_peak_plot_specs_are_registered(self) -> None:
+        specs = {
+            avg_metric: (peak_metric, title, ylabel, filename)
+            for avg_metric, peak_metric, title, ylabel, filename
+            in plot.EFFECTIVE_POWER_PLOTS
+        }
+
+        self.assertEqual(
+            specs,
+            {
+                "gpu_avg_power_eff_w": (
+                    "gpu_peak_power_eff_w",
+                    "GPU Effective Power (Average and Peak) vs. Input Scale",
+                    "Effective power (W)",
+                    "gpu_avg_power_vs_scale.png",
+                ),
+                "cpu_avg_power_eff_w": (
+                    "cpu_peak_power_eff_w",
+                    (
+                        "CPU Package Effective Power (Average and Peak) "
+                        "vs. Input Scale"
+                    ),
+                    "Effective power (W)",
+                    "cpu_avg_power_vs_scale.png",
+                ),
+                "vcpu_avg_power_eff_w": (
+                    "vcpu_peak_power_eff_w",
+                    (
+                        "Estimated vCPU Effective Power (Average and Peak) "
+                        "vs. Input Scale"
+                    ),
+                    "Estimated effective power (W)",
+                    "vcpu_avg_power_vs_scale.png",
+                ),
+            },
+        )
+        single_metrics = {metric for metric, *_rest in plot.PLOT_METRICS}
+        for avg_metric in specs:
+            self.assertNotIn(avg_metric, single_metrics)
+
+    def test_effective_power_plot_uses_shared_config_color_and_distinct_styles(self) -> None:
+        df = pd.DataFrame([
+            {
+                "cpu_cores": 2,
+                "mem_cap_gb": 4,
+                "gpu_mode": "on",
+                "input_scale": input_scale,
+                "gpu_avg_power_eff_w": avg_power,
+                "gpu_peak_power_eff_w": peak_power,
+            }
+            for input_scale, avg_power, peak_power in (
+                (64, 20.0, 30.0),
+                (128, 25.0, 38.0),
+            )
+        ])
+        plot_calls = []
+
+        def capture_plot(x_values, y_values, **kwargs):
+            plot_calls.append((list(x_values), list(y_values), kwargs))
+
+        with patch.object(plot.plt, "plot", side_effect=capture_plot):
+            plot.plot_effective_power_avg_peak(
+                df,
+                avg_metric="gpu_avg_power_eff_w",
+                peak_metric="gpu_peak_power_eff_w",
+                title="GPU Effective Power (Average and Peak) vs. Input Scale",
+                ylabel="Effective power (W)",
+                xlabel="input_scale",
+                out_png=None,
+            )
+
+        self.assertEqual(len(plot_calls), 2)
+        avg_call, peak_call = plot_calls
+        self.assertEqual(avg_call[0], [64, 128])
+        self.assertEqual(avg_call[1], [20.0, 25.0])
+        self.assertEqual(peak_call[1], [30.0, 38.0])
+        self.assertEqual(avg_call[2]["color"], peak_call[2]["color"])
+        self.assertEqual((avg_call[2]["linestyle"], avg_call[2]["marker"]), ("-", "o"))
+        self.assertEqual((peak_call[2]["linestyle"], peak_call[2]["marker"]), ("--", "^"))
+
     def test_execution_profile_plot_metrics_are_registered(self) -> None:
         metrics = {
             metric: (title, ylabel, filename)
@@ -960,6 +1040,7 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                         "warmup",
                         "status",
                         "gpu_avg_power_eff_w",
+                        "gpu_peak_power_eff_w",
                         "gpu_energy_eff_j",
                     ],
                 )
@@ -972,6 +1053,7 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                     "warmup": "0",
                     "status": "ok",
                     "gpu_avg_power_eff_w": "2.5",
+                    "gpu_peak_power_eff_w": "3.5",
                     "gpu_energy_eff_j": "0.25",
                 })
 
@@ -982,11 +1064,16 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
 
             with patch.object(sys, "argv", ["plot.py", csv_path]), patch.object(
                 plot, "plot_metric", side_effect=capture_plot_metric
+            ), patch.object(
+                plot,
+                "plot_effective_power_avg_peak",
+                side_effect=capture_plot_metric,
             ), patch.object(plot, "plot_cold_start_bar"):
                 plot.main()
 
         self.assertIn("gpu_avg_power_vs_scale.png", out_pngs)
         self.assertIn("gpu_energy_vs_scale.png", out_pngs)
+        self.assertNotIn("gpu_effective_power_avg_peak_vs_scale.png", out_pngs)
         self.assertNotIn("avg_power_vs_scale.png", out_pngs)
         self.assertNotIn("energy_vs_scale.png", out_pngs)
 
