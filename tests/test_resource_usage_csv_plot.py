@@ -14,6 +14,22 @@ from acprof.config import CSV_FIELDS
 
 
 class ResourceUsageCsvPlotTests(unittest.TestCase):
+    @staticmethod
+    def _overview_spec(filename: str):
+        return next(
+            spec
+            for spec in plot.METRIC_OVERVIEW_PLOTS
+            if spec[1] == filename
+        )
+
+    @staticmethod
+    def _overview_metric_names(spec) -> tuple[str, ...]:
+        return tuple(
+            panel[0]
+            for panel in spec[4]
+            if panel is not None
+        )
+
     def test_resource_usage_fields_are_before_cold_start(self) -> None:
         expected = [
             "resource_usage_iters",
@@ -723,134 +739,291 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
         self.assertEqual(ncu_row["gpu_executed_mflops_app_ncu"], 600.0)
         self.assertEqual(ncu_row["gpu_executed_mflops_packet_ncu"], 750.0)
 
-    def test_compute_plot_metrics_separate_torch_eager_from_ncu(self) -> None:
-        metrics = {
-            metric: (title, ylabel, filename)
-            for metric, title, ylabel, filename in plot.PLOT_METRICS
-        }
+    def test_compute_overviews_separate_torch_eager_from_ncu(self) -> None:
+        torch_spec = self._overview_spec(
+            "torch_compute_overview_vs_scale.png"
+        )
+        ncu_arithmetic_spec = self._overview_spec(
+            "ncu_arithmetic_overview_vs_scale.png"
+        )
+        ncu_runtime_spec = self._overview_spec(
+            "ncu_runtime_overview_vs_scale.png"
+        )
 
-        self.assertNotIn("compute_mflops", metrics)
         self.assertEqual(
-            metrics["model_logical_mflops_packet_torch_profiler_eager"],
+            self._overview_metric_names(torch_spec),
             (
-                (
-                    "Torch Profiler Eager Logical Compute Throughput "
-                    "(Packet Latency) vs. Input Scale"
-                ),
-                "Logical MFLOPS (packet latency)",
-                "torch_profiler_eager_logical_mflops_packet_vs_scale.png",
+                "model_logical_mflop_per_request_torch_profiler_eager",
+                "model_logical_mflops_app_torch_profiler_eager",
+                "model_logical_mflops_packet_torch_profiler_eager",
             ),
         )
         self.assertEqual(
-            metrics["gpu_executed_mflops_packet_ncu"],
+            self._overview_metric_names(ncu_arithmetic_spec),
             (
-                (
-                    "NCU GPU-Executed Compute Throughput "
-                    "(Packet Latency) vs. Input Scale"
-                ),
-                "GPU-executed MFLOPS (packet latency)",
-                "ncu_gpu_executed_mflops_packet_vs_scale.png",
+                "gpu_executed_mflop_per_request_ncu",
+                "gpu_executed_tensor_mflop_per_request_ncu",
+                "gpu_executed_scalar_mflop_per_request_ncu",
+                "gpu_executed_tensor_share_pct_ncu",
             ),
         )
-        self.assertIn(
-            "gpu_executed_tensor_mflop_per_request_ncu",
-            metrics,
-        )
-        self.assertIn(
-            "gpu_executed_scalar_mflop_per_request_ncu",
-            metrics,
-        )
-        self.assertIn("gpu_executed_tensor_share_pct_ncu", metrics)
-        self.assertIn(
-            "gpu_kernel_launch_count_per_request_ncu",
-            metrics,
-        )
-        self.assertIn(
-            "gpu_kernel_time_sum_ms_per_request_ncu",
-            metrics,
-        )
-
-    def test_effective_power_avg_peak_plot_specs_are_registered(self) -> None:
-        specs = {
-            avg_metric: (peak_metric, title, ylabel, filename)
-            for avg_metric, peak_metric, title, ylabel, filename
-            in plot.EFFECTIVE_POWER_PLOTS
-        }
-
         self.assertEqual(
-            specs,
+            self._overview_metric_names(ncu_runtime_spec),
+            (
+                "gpu_executed_mflops_app_ncu",
+                "gpu_executed_mflops_packet_ncu",
+                "gpu_kernel_launch_count_per_request_ncu",
+                "gpu_kernel_time_sum_ms_per_request_ncu",
+            ),
+        )
+        overview_metrics = {
+            metric
+            for spec in plot.METRIC_OVERVIEW_PLOTS
+            for metric in self._overview_metric_names(spec)
+        }
+        self.assertNotIn("compute_mflops", overview_metrics)
+
+    def test_thirteen_overviews_and_massif_cover_all_legacy_metrics_once(
+        self,
+    ) -> None:
+        grouped_metrics = [
+            metric
+            for spec in plot.METRIC_OVERVIEW_PLOTS
+            for metric in self._overview_metric_names(spec)
+        ]
+        standalone_metrics = [spec[0] for spec in plot.PLOT_METRICS]
+        legacy_metrics = [spec[0] for spec in plot.LEGACY_PLOT_METRICS]
+
+        self.assertEqual(len(plot.METRIC_OVERVIEW_PLOTS), 13)
+        self.assertEqual(standalone_metrics, ["cpu_heap_peak_total_gib_massif"])
+        self.assertEqual(len(grouped_metrics), 49)
+        self.assertEqual(len(set(grouped_metrics + standalone_metrics)), 50)
+        self.assertEqual(
+            set(grouped_metrics + standalone_metrics),
+            set(legacy_metrics),
+        )
+        self.assertTrue(
+            all(
+                rows * columns <= 6
+                for _title, _filename, rows, columns, _panels, _shared
+                in plot.METRIC_OVERVIEW_PLOTS
+            )
+        )
+        self.assertEqual(
+            {spec[1] for spec in plot.METRIC_OVERVIEW_PLOTS},
             {
-                "gpu_avg_power_eff_w": (
-                    "gpu_peak_power_eff_w",
-                    "GPU Effective Power (Average and Peak) vs. Input Scale",
-                    "Effective power (W)",
-                    "gpu_avg_power_vs_scale.png",
-                ),
-                "cpu_avg_power_eff_w": (
-                    "cpu_peak_power_eff_w",
-                    (
-                        "CPU Package Effective Power (Average and Peak) "
-                        "vs. Input Scale"
-                    ),
-                    "Effective power (W)",
-                    "cpu_avg_power_vs_scale.png",
-                ),
-                "vcpu_avg_power_eff_w": (
-                    "vcpu_peak_power_eff_w",
-                    (
-                        "Estimated vCPU Effective Power (Average and Peak) "
-                        "vs. Input Scale"
-                    ),
-                    "Estimated effective power (W)",
-                    "vcpu_avg_power_vs_scale.png",
-                ),
+                "latency_overview_vs_scale.png",
+                "service_efficiency_overview_vs_scale.png",
+                "packet_overview_vs_scale.png",
+                "torch_compute_overview_vs_scale.png",
+                "ncu_arithmetic_overview_vs_scale.png",
+                "ncu_runtime_overview_vs_scale.png",
+                "nsys_timing_overview_vs_scale.png",
+                "container_cpu_overview_vs_scale.png",
+                "cpu_execution_overview_vs_scale.png",
+                "cpu_memory_behavior_overview_vs_scale.png",
+                "container_memory_process_overview_vs_scale.png",
+                "container_io_overview_vs_scale.png",
+                "gpu_resource_overview_vs_scale.png",
             },
         )
-        single_metrics = {metric for metric, *_rest in plot.PLOT_METRICS}
-        for avg_metric in specs:
-            self.assertNotIn(avg_metric, single_metrics)
 
-    def test_effective_power_plot_uses_shared_config_color_and_distinct_styles(self) -> None:
+    def test_metric_overview_handles_partial_data_and_empty_slot(self) -> None:
+        df = pd.DataFrame([
+            {
+                "cpu_cores": 2,
+                "mem_cap_gb": 4,
+                "gpu_mode": "off",
+                "input_scale": input_scale,
+                "throughput_samples_per_s": throughput,
+            }
+            for input_scale, throughput in ((64, 5.0), (128, 7.0))
+        ])
+        title, _filename, rows, columns, panels, shared_y_groups = (
+            self._overview_spec("service_efficiency_overview_vs_scale.png")
+        )
+
+        with patch.object(plot.plt, "close"):
+            plot.plot_metric_overview(
+                df,
+                panels=panels,
+                rows=rows,
+                columns=columns,
+                shared_y_groups=shared_y_groups,
+                title=title,
+                xlabel="input_scale",
+                out_png=None,
+            )
+            figure = plot.plt.gcf()
+
+        try:
+            self.assertEqual(len(figure.axes), 6)
+            self.assertEqual(
+                list(figure.axes[0].lines[0].get_ydata()),
+                [5.0, 7.0],
+            )
+            for axis in figure.axes[1:5]:
+                self.assertEqual([text.get_text() for text in axis.texts], ["No data"])
+            self.assertFalse(figure.axes[5].get_visible())
+            self.assertEqual(figure.axes[4].get_xlabel(), "input_scale")
+            self.assertEqual(figure.axes[3].get_xlabel(), "input_scale")
+        finally:
+            plot.plt.close(figure)
+
+    def test_energy_power_overview_specs_are_registered(self) -> None:
+        self.assertEqual(
+            plot.ENERGY_POWER_OVERVIEW_PLOTS,
+            [
+                (
+                    (
+                        "gpu_energy_eff_j",
+                        "gpu_avg_power_eff_w",
+                        "gpu_peak_power_eff_w",
+                    ),
+                    (
+                        "gpu_energy_total_j",
+                        "gpu_avg_power_total_w",
+                        "gpu_peak_power_total_w",
+                    ),
+                    "GPU Board Energy and Power Overview vs. Input Scale",
+                    "gpu_energy_power_overview_vs_scale.png",
+                ),
+                (
+                    (
+                        "cpu_energy_eff_j",
+                        "cpu_avg_power_eff_w",
+                        "cpu_peak_power_eff_w",
+                    ),
+                    (
+                        "cpu_energy_total_j",
+                        "cpu_avg_power_total_w",
+                        "cpu_peak_power_total_w",
+                    ),
+                    "CPU Package Energy and Power Overview vs. Input Scale",
+                    "cpu_package_energy_power_overview_vs_scale.png",
+                ),
+                (
+                    (
+                        "vcpu_energy_eff_j",
+                        "vcpu_avg_power_eff_w",
+                        "vcpu_peak_power_eff_w",
+                    ),
+                    (
+                        "vcpu_energy_total_j",
+                        "vcpu_avg_power_total_w",
+                        "vcpu_peak_power_total_w",
+                    ),
+                    (
+                        "Estimated vCPU-Attributed Energy and Power Overview "
+                        "vs. Input Scale"
+                    ),
+                    "vcpu_estimated_energy_power_overview_vs_scale.png",
+                ),
+            ],
+        )
+        single_metrics = {metric for metric, *_rest in plot.PLOT_METRICS}
+        for effective_metrics, total_metrics, *_rest in (
+            plot.ENERGY_POWER_OVERVIEW_PLOTS
+        ):
+            for metric in (*effective_metrics, *total_metrics):
+                self.assertNotIn(metric, single_metrics)
+
+    def test_energy_power_overview_contains_six_comparable_panels(self) -> None:
         df = pd.DataFrame([
             {
                 "cpu_cores": 2,
                 "mem_cap_gb": 4,
                 "gpu_mode": "on",
                 "input_scale": input_scale,
-                "gpu_avg_power_eff_w": avg_power,
-                "gpu_peak_power_eff_w": peak_power,
+                "gpu_energy_eff_j": energy_eff,
+                "gpu_avg_power_eff_w": avg_power_eff,
+                "gpu_peak_power_eff_w": peak_power_eff,
+                "gpu_energy_total_j": energy_total,
+                "gpu_avg_power_total_w": avg_power_total,
+                "gpu_peak_power_total_w": peak_power_total,
             }
-            for input_scale, avg_power, peak_power in (
-                (64, 20.0, 30.0),
-                (128, 25.0, 38.0),
+            for (
+                input_scale,
+                energy_eff,
+                avg_power_eff,
+                peak_power_eff,
+                energy_total,
+                avg_power_total,
+                peak_power_total,
+            ) in (
+                (64, 0.8, 20.0, 38.0, 1.0, 30.0, 48.0),
+                (128, 1.2, 25.0, 45.0, 1.5, 35.0, 55.0),
             )
         ])
-        plot_calls = []
 
-        def capture_plot(x_values, y_values, **kwargs):
-            plot_calls.append((list(x_values), list(y_values), kwargs))
-
-        with patch.object(plot.plt, "plot", side_effect=capture_plot):
-            plot.plot_effective_power_avg_peak(
+        with patch.object(plot.plt, "close"):
+            plot.plot_energy_power_overview(
                 df,
-                avg_metric="gpu_avg_power_eff_w",
-                peak_metric="gpu_peak_power_eff_w",
-                title="GPU Effective Power (Average and Peak) vs. Input Scale",
-                ylabel="Effective power (W)",
+                effective_metrics=(
+                    "gpu_energy_eff_j",
+                    "gpu_avg_power_eff_w",
+                    "gpu_peak_power_eff_w",
+                ),
+                total_metrics=(
+                    "gpu_energy_total_j",
+                    "gpu_avg_power_total_w",
+                    "gpu_peak_power_total_w",
+                ),
+                title="GPU Board Energy and Power Overview vs. Input Scale",
                 xlabel="input_scale",
                 out_png=None,
             )
+            figure = plot.plt.gcf()
 
-        self.assertEqual(len(plot_calls), 2)
-        avg_call, peak_call = plot_calls
-        self.assertEqual(avg_call[0], [64, 128])
-        self.assertEqual(avg_call[1], [20.0, 25.0])
-        self.assertEqual(peak_call[1], [30.0, 38.0])
-        self.assertEqual(avg_call[2]["color"], peak_call[2]["color"])
-        self.assertEqual((avg_call[2]["linestyle"], avg_call[2]["marker"]), ("-", "o"))
-        self.assertEqual((peak_call[2]["linestyle"], peak_call[2]["marker"]), ("--", "^"))
+        try:
+            self.assertEqual(len(figure.axes), 6)
+            self.assertEqual(
+                [axis.get_title() for axis in figure.axes],
+                [
+                    "Effective Energy per Request",
+                    "Total Energy per Request",
+                    "Average Effective Power",
+                    "Average Total Power",
+                    "Peak Effective Power",
+                    "Peak Total Power",
+                ],
+            )
+            self.assertEqual(
+                [list(axis.lines[0].get_ydata()) for axis in figure.axes],
+                [
+                    [0.8, 1.2],
+                    [1.0, 1.5],
+                    [20.0, 25.0],
+                    [30.0, 35.0],
+                    [38.0, 45.0],
+                    [48.0, 55.0],
+                ],
+            )
+            self.assertEqual(
+                [axis.lines[0].get_marker() for axis in figure.axes],
+                ["s", "s", "o", "o", "^", "^"],
+            )
+            self.assertEqual(
+                len({axis.lines[0].get_color() for axis in figure.axes}),
+                1,
+            )
+            for left_index, right_index in ((0, 1), (2, 3), (4, 5)):
+                shared_y = figure.axes[left_index].get_shared_y_axes()
+                self.assertTrue(
+                    shared_y.joined(
+                        figure.axes[left_index],
+                        figure.axes[right_index],
+                    )
+                )
+            self.assertEqual(
+                [axis.get_xlabel() for axis in figure.axes[-2:]],
+                ["input_scale", "input_scale"],
+            )
+            self.assertEqual(len(figure.legends), 1)
+        finally:
+            plot.plt.close(figure)
 
-    def test_execution_profile_plot_metrics_are_registered(self) -> None:
+    def test_execution_profile_overview_and_massif_are_registered(self) -> None:
         metrics = {
             metric: (title, ylabel, filename)
             for metric, title, ylabel, filename in plot.PLOT_METRICS
@@ -864,28 +1037,19 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 "massif_cpu_heap_peak_total_vs_scale.png",
             ),
         )
+        self.assertEqual(len(metrics), 1)
+        nsys_spec = self._overview_spec("nsys_timing_overview_vs_scale.png")
         self.assertEqual(
-            metrics["host_inference_wall_time_ms_per_request_nsys"],
+            self._overview_metric_names(nsys_spec),
             (
-                "Nsight Systems Host Inference Wall Time vs. Input Scale",
-                "Host wall time (ms/request)",
-                "nsys_host_inference_wall_time_per_request_vs_scale.png",
+                "host_inference_wall_time_ms_per_request_nsys",
+                "cuda_api_time_sum_ms_per_request_nsys",
+                "gpu_kernel_time_sum_ms_per_request_nsys",
+                "gpu_memcpy_time_sum_ms_per_request_nsys",
             ),
         )
-        self.assertEqual(
-            metrics["cuda_api_time_sum_ms_per_request_nsys"][2],
-            "nsys_cuda_api_time_sum_per_request_vs_scale.png",
-        )
-        self.assertEqual(
-            metrics["gpu_kernel_time_sum_ms_per_request_nsys"][2],
-            "nsys_gpu_kernel_time_sum_per_request_vs_scale.png",
-        )
-        self.assertEqual(
-            metrics["gpu_memcpy_time_sum_ms_per_request_nsys"][2],
-            "nsys_gpu_memcpy_time_sum_per_request_vs_scale.png",
-        )
 
-    def test_execution_profile_plot_skips_all_nan_column(self) -> None:
+    def test_execution_profile_overview_skips_when_all_panels_lack_data(self) -> None:
         df = pd.DataFrame([{
             "cpu_cores": 1,
             "mem_cap_gb": 4,
@@ -893,61 +1057,39 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             "input_scale": 64,
             "gpu_kernel_time_sum_ms_per_request_nsys": float("nan"),
         }])
+        title, _filename, rows, columns, panels, shared_y_groups = (
+            self._overview_spec("nsys_timing_overview_vs_scale.png")
+        )
 
-        with patch.object(plot.plt, "figure") as figure, patch.object(
-            plot.plt,
-            "savefig",
-        ) as savefig:
-            plot.plot_metric(
+        with patch.object(plot.plt, "subplots") as subplots:
+            plot.plot_metric_overview(
                 df,
-                metric="gpu_kernel_time_sum_ms_per_request_nsys",
-                title="Nsight Systems GPU Kernel Time vs. Input Scale",
-                ylabel="Summed GPU kernel time (ms/request)",
+                panels=panels,
+                rows=rows,
+                columns=columns,
+                shared_y_groups=shared_y_groups,
+                title=title,
                 xlabel="input_scale",
                 out_png="unused.png",
             )
 
-        figure.assert_not_called()
-        savefig.assert_not_called()
+        subplots.assert_not_called()
 
-    def test_bandwidth_behavior_plot_metrics_are_registered(self) -> None:
-        metrics = {
-            metric: (title, ylabel, filename)
-            for metric, title, ylabel, filename in plot.PLOT_METRICS
-        }
-
-        self.assertEqual(
-            metrics["cpu_cache_misses_per_request"],
-            (
-                "CPU Cache Misses per Request vs. Input Scale",
-                "Cache misses/request",
-                "cpu_cache_misses_per_request_vs_scale.png",
-            ),
+    def test_bandwidth_behavior_overview_is_registered(self) -> None:
+        spec = self._overview_spec(
+            "cpu_memory_behavior_overview_vs_scale.png"
         )
         self.assertEqual(
-            metrics["cpu_cache_miss_rate_pct"],
+            self._overview_metric_names(spec),
             (
-                "CPU Cache Miss Rate vs. Input Scale",
-                "Cache miss rate (%)",
-                "cpu_cache_miss_rate_vs_scale.png",
+                "cpu_cache_misses_per_request",
+                "cpu_cache_miss_rate_pct",
+                "cpu_dtlb_load_misses_per_request",
+                "cpu_dtlb_load_miss_rate_pct",
             ),
         )
-        self.assertEqual(
-            metrics["cpu_dtlb_load_misses_per_request"],
-            (
-                "CPU dTLB Load Misses per Request vs. Input Scale",
-                "dTLB load misses/request",
-                "cpu_dtlb_load_misses_per_request_vs_scale.png",
-            ),
-        )
-        self.assertEqual(
-            metrics["cpu_dtlb_load_miss_rate_pct"],
-            (
-                "CPU dTLB Load Miss Rate vs. Input Scale",
-                "dTLB load miss rate (%)",
-                "cpu_dtlb_load_miss_rate_vs_scale.png",
-            ),
-        )
+        self.assertEqual(spec[2:4], (2, 2))
+        self.assertEqual(spec[5], ((0, 2), (1, 3)))
 
     def test_prepare_df_converts_bandwidth_behavior_fields_to_numeric(self) -> None:
         bandwidth_fields = [
@@ -994,6 +1136,60 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
         self.assertEqual(float(df["cpu_cache_misses_per_request"].iloc[0]), 125.0)
         self.assertEqual(float(df["cpu_dtlb_load_miss_rate_pct"].iloc[0]), 2.5)
 
+    def test_prepare_df_converts_total_energy_and_power_fields(self) -> None:
+        total_fields = [
+            "gpu_energy_total_j",
+            "gpu_avg_power_total_w",
+            "gpu_peak_power_total_w",
+            "cpu_energy_total_j",
+            "cpu_avg_power_total_w",
+            "cpu_peak_power_total_w",
+            "vcpu_energy_total_j",
+            "vcpu_avg_power_total_w",
+            "vcpu_peak_power_total_w",
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = os.path.join(tmp, "result_all.csv")
+            fieldnames = [
+                "cpu_cores",
+                "mem_cap_gb",
+                "gpu_mode",
+                "input_scale",
+                "warmup",
+                "status",
+                *total_fields,
+            ]
+            with open(csv_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows([
+                    {
+                        "cpu_cores": "1",
+                        "mem_cap_gb": "4",
+                        "gpu_mode": "on",
+                        "input_scale": "64",
+                        "warmup": "0",
+                        "status": "ok",
+                        **{field: "12.5" for field in total_fields},
+                    },
+                    {
+                        "cpu_cores": "1",
+                        "mem_cap_gb": "4",
+                        "gpu_mode": "on",
+                        "input_scale": "128",
+                        "warmup": "0",
+                        "status": "ok",
+                        **{field: "not-available" for field in total_fields},
+                    },
+                ])
+
+            df = plot.prepare_df(csv_path)
+
+        for field in total_fields:
+            self.assertTrue(pd.api.types.is_numeric_dtype(df[field]), field)
+            self.assertEqual(float(df[field].iloc[0]), 12.5)
+            self.assertTrue(pd.isna(df[field].iloc[1]))
+
     def test_prepare_df_aliases_legacy_gpu_energy_columns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             csv_path = os.path.join(tmp, "result_all.csv")
@@ -1026,7 +1222,7 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
         self.assertEqual(float(df["gpu_avg_power_eff_w"].iloc[0]), 2.5)
         self.assertEqual(float(df["gpu_energy_eff_j"].iloc[0]), 0.25)
 
-    def test_main_names_gpu_power_and_energy_plots_with_gpu_prefix(self) -> None:
+    def test_main_generates_one_gpu_energy_power_overview(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             csv_path = os.path.join(tmp, "result_all.csv")
             with open(csv_path, "w", encoding="utf-8", newline="") as f:
@@ -1042,6 +1238,9 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                         "gpu_avg_power_eff_w",
                         "gpu_peak_power_eff_w",
                         "gpu_energy_eff_j",
+                        "gpu_avg_power_total_w",
+                        "gpu_peak_power_total_w",
+                        "gpu_energy_total_j",
                     ],
                 )
                 writer.writeheader()
@@ -1055,6 +1254,9 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                     "gpu_avg_power_eff_w": "2.5",
                     "gpu_peak_power_eff_w": "3.5",
                     "gpu_energy_eff_j": "0.25",
+                    "gpu_avg_power_total_w": "12.5",
+                    "gpu_peak_power_total_w": "13.5",
+                    "gpu_energy_total_j": "1.25",
                 })
 
             out_pngs = []
@@ -1066,14 +1268,20 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 plot, "plot_metric", side_effect=capture_plot_metric
             ), patch.object(
                 plot,
-                "plot_effective_power_avg_peak",
+                "plot_metric_overview",
+                side_effect=capture_plot_metric,
+            ), patch.object(
+                plot,
+                "plot_energy_power_overview",
                 side_effect=capture_plot_metric,
             ), patch.object(plot, "plot_cold_start_bar"):
                 plot.main()
 
-        self.assertIn("gpu_avg_power_vs_scale.png", out_pngs)
-        self.assertIn("gpu_energy_vs_scale.png", out_pngs)
-        self.assertNotIn("gpu_effective_power_avg_peak_vs_scale.png", out_pngs)
+        self.assertIn("gpu_energy_power_overview_vs_scale.png", out_pngs)
+        self.assertNotIn("gpu_effective_energy_power_vs_scale.png", out_pngs)
+        self.assertNotIn("gpu_total_energy_power_vs_scale.png", out_pngs)
+        self.assertNotIn("gpu_avg_power_vs_scale.png", out_pngs)
+        self.assertNotIn("gpu_energy_vs_scale.png", out_pngs)
         self.assertNotIn("avg_power_vs_scale.png", out_pngs)
         self.assertNotIn("energy_vs_scale.png", out_pngs)
 
@@ -1126,8 +1334,13 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
 
             modes_by_directory = {}
 
-            def capture_plot_metric(group_df, *_args, **kwargs):
-                if kwargs["metric"] != "latency_s":
+            def capture_plot_overview(group_df, *_args, **kwargs):
+                metrics = {
+                    panel[0]
+                    for panel in kwargs["panels"]
+                    if panel is not None
+                }
+                if "latency_s" not in metrics:
                     return
                 output_directory = os.path.basename(
                     os.path.dirname(kwargs["out_png"])
@@ -1135,7 +1348,13 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 modes_by_directory[output_directory] = set(group_df["gpu_mode"])
 
             with patch.object(
-                plot, "plot_metric", side_effect=capture_plot_metric
+                plot,
+                "plot_metric_overview",
+                side_effect=capture_plot_overview,
+            ), patch.object(
+                plot, "plot_metric"
+            ), patch.object(
+                plot, "plot_energy_power_overview"
             ), patch.object(plot, "plot_cold_start_bar"), patch.object(
                 plot, "write_latency_model_report"
             ):
@@ -1152,7 +1371,9 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             for directory in ("cpu", "gpu", "gpu+cpu"):
                 self.assertTrue(os.path.isdir(os.path.join(tmp, directory)))
 
-    def test_main_plots_packet_and_bandwidth_cpu_metrics_vs_input_scale(self) -> None:
+    def test_main_consolidates_cpu_execution_and_memory_behavior_metrics(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             csv_path = os.path.join(tmp, "result_all.csv")
             with open(csv_path, "w", encoding="utf-8", newline="") as f:
@@ -1197,17 +1418,26 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 out_pngs.append(os.path.basename(kwargs["out_png"]))
 
             with patch.object(sys, "argv", ["plot.py", csv_path]), patch.object(
-                plot, "plot_metric", side_effect=capture_plot_metric
+                plot,
+                "plot_metric_overview",
+                side_effect=capture_plot_metric,
+            ), patch.object(plot, "plot_metric"), patch.object(
+                plot, "plot_energy_power_overview"
             ), patch.object(plot, "plot_cold_start_bar"):
                 plot.main()
 
-        self.assertIn("cpu_mips_packet_vs_scale.png", out_pngs)
-        self.assertIn("cpu_instructions_per_request_vs_scale.png", out_pngs)
-        self.assertIn("cpu_cycles_est_packet_vs_scale.png", out_pngs)
-        self.assertIn("cpu_cache_misses_per_request_vs_scale.png", out_pngs)
-        self.assertIn("cpu_cache_miss_rate_vs_scale.png", out_pngs)
-        self.assertIn("cpu_dtlb_load_misses_per_request_vs_scale.png", out_pngs)
-        self.assertIn("cpu_dtlb_load_miss_rate_vs_scale.png", out_pngs)
+        self.assertIn("cpu_execution_overview_vs_scale.png", out_pngs)
+        self.assertIn("cpu_memory_behavior_overview_vs_scale.png", out_pngs)
+        for legacy_filename in (
+            "cpu_mips_packet_vs_scale.png",
+            "cpu_instructions_per_request_vs_scale.png",
+            "cpu_cycles_est_packet_vs_scale.png",
+            "cpu_cache_misses_per_request_vs_scale.png",
+            "cpu_cache_miss_rate_vs_scale.png",
+            "cpu_dtlb_load_misses_per_request_vs_scale.png",
+            "cpu_dtlb_load_miss_rate_vs_scale.png",
+        ):
+            self.assertNotIn(legacy_filename, out_pngs)
 
 
 if __name__ == "__main__":

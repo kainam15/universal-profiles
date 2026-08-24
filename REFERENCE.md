@@ -250,57 +250,34 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 - `gpu/`：只使用 `gpu_mode=on` 的 GPU 数据
 - `gpu+cpu/`：同时包含 GPU 和 CPU 数据，用于对比
 
-每个有对应数据的目录会按可用指标生成以下图表（整列为空的指标会跳过）：
+每个有对应数据的目录会按可用指标生成以下图表。原先 50 种通用单指标图所覆盖的指标中，49 项已归入 13 张总览图，只有与 cgroup 窗口内存口径不同的 Massif 保持独立：
 
-- `latency_vs_scale.png`
-- `latency_app_vs_scale.png`
-- `latency_per_input_unit_vs_scale.png`
-- `latency_app_per_input_unit_vs_scale.png`
-- `latency_cv_vs_scale.png`
-- `latency_app_cv_vs_scale.png`
-- `gpu_avg_power_vs_scale.png`
-- `gpu_energy_vs_scale.png`
-- `cpu_avg_power_vs_scale.png`
-- `cpu_energy_vs_scale.png`
-- `vcpu_avg_power_vs_scale.png`
-- `vcpu_energy_vs_scale.png`
-- `container_attributed_energy_vs_scale.png`
-- `container_attributed_samples_per_j_vs_scale.png`
-- `throughput_vs_scale.png`
-- `throughput_per_cpu_core_vs_scale.png`
-- `container_attributed_j_per_input_unit_vs_scale.png`
-- `packet_total_wire_bytes_per_request_vs_scale.png`
-- `packet_protocol_overhead_ratio_vs_scale.png`
-- `container_cpu_util_vs_scale.png`
-- `container_cpu_throttled_period_ratio_vs_scale.png`
-- `container_cpu_pressure_some_vs_scale.png`
-- `cpu_cache_misses_per_request_vs_scale.png`
-- `cpu_cache_miss_rate_vs_scale.png`
-- `cpu_dtlb_load_misses_per_request_vs_scale.png`
-- `cpu_dtlb_load_miss_rate_vs_scale.png`
-- `container_mem_util_vs_scale.png`
-- `container_mem_pressure_full_vs_scale.png`
-- `container_mem_usage_vs_scale.png`
-- `container_mem_peak_cgroup_vs_scale.png`
-- `container_mem_pgmajfault_delta_vs_scale.png`
-- `container_io_read_ops_per_request_vs_scale.png`
-- `container_io_write_ops_per_request_vs_scale.png`
-- `container_pids_peak_cgroup_vs_scale.png`
-- `gpu_util_vs_scale.png`
-- `gpu_mem_util_vs_scale.png`
-- `gpu_mem_used_vs_scale.png`
+- `latency_overview_vs_scale.png`
+- `service_efficiency_overview_vs_scale.png`
+- `packet_overview_vs_scale.png`
+- `torch_compute_overview_vs_scale.png`
+- `ncu_arithmetic_overview_vs_scale.png`
+- `ncu_runtime_overview_vs_scale.png`
+- `nsys_timing_overview_vs_scale.png`
+- `container_cpu_overview_vs_scale.png`
+- `cpu_execution_overview_vs_scale.png`
+- `cpu_memory_behavior_overview_vs_scale.png`
+- `container_memory_process_overview_vs_scale.png`
+- `container_io_overview_vs_scale.png`
+- `gpu_resource_overview_vs_scale.png`
+- `gpu_energy_power_overview_vs_scale.png`
+- `cpu_package_energy_power_overview_vs_scale.png`
+- `vcpu_estimated_energy_power_overview_vs_scale.png`
 - `massif_cpu_heap_peak_total_vs_scale.png`
-- `nsys_host_inference_wall_time_per_request_vs_scale.png`
-- `nsys_cuda_api_time_sum_per_request_vs_scale.png`
-- `nsys_gpu_kernel_time_sum_per_request_vs_scale.png`
-- `nsys_gpu_memcpy_time_sum_per_request_vs_scale.png`
 - `cold_start_bar.png`
 
-三张 effective power 图分别对应 GPU、CPU package 和 estimated vCPU；每张图使用相同颜色表示同一资源配置，以实线圆点表示扣除 idle baseline 后的平均功率、虚线三角表示扣除 idle baseline 后的峰值功率。CPU package 来自 RAPL，estimated vCPU 则按 container cgroup CPU share 估算，两者不能混作同一测量口径。
+13 张通用总览图统一使用 input scale 横轴、配置颜色和共享图例；每张最多 6 个子图。只有单位和语义可以直接比较的子图才共享纵轴，例如 packet/application latency、NCU application/packet MFLOPS 以及 cache/dTLB 的同类计数或比率。某个指标没有数据时，对应位置显示 `No data`；整张总览图的全部指标都没有数据时才跳过该 PNG。延迟总览使用 `3×2` 布局，同时展示 packet/application 的原始延迟、每 input unit 延迟和 CV；service efficiency 总览集中展示吞吐、每 CPU core 吞吐、container-attributed energy、每 input unit 能耗和 samples/J。
 
-四张 CPU bandwidth behavior 图使用 Linux `perf` generic PMU event，只表示 cache / dTLB miss 的单 request 计数和 miss rate，用于观察访存局部性及地址转换开销；它们不是 DRAM read/write traffic，也不是实际内存带宽 GB/s。不同 CPU 架构、虚拟化环境或 kernel PMU 可能不提供相同事件；结果列不存在或整列为 `nan` 时，`plot.py` 会跳过对应图表。
+三张 energy/power 总览图分别对应 GPU board、CPU package 和 estimated vCPU-attributed 口径。每张 PNG 使用 `3×2` 子图：三行依次为 energy/request、average power 和 peak power，左列展示扣除 idle baseline 的 effective 指标，右列展示保留 idle baseline 的 total 指标；同行共享纵轴，所有子图共享 input-scale 横轴、配置颜色与图例。这样可以直接观察 idle 对各指标的影响，不再单独生成 effective 或 total PNG。CPU package 来自 RAPL，estimated vCPU 则按 container cgroup CPU share 估算，两者不能混作同一测量口径。
 
-Massif 图使用 `cpu_heap_peak_total_bytes_massif / 1024^3` 得到绘图期派生列 `cpu_heap_peak_total_gib_massif`；不会改写原始 CSV。Nsight Systems 四张时间图分别展示 host wall、CUDA API sum、GPU kernel sum 和 GPU memcpy sum。未启用对应 probe、字段不存在或该分组内整列为 `nan` 时，这些图与其他可选指标一样自动跳过。
+`cpu_memory_behavior_overview_vs_scale.png` 使用 `2×2` 布局汇总 Linux `perf` generic PMU event，只表示 cache / dTLB miss 的单 request 计数和 miss rate，用于观察访存局部性及地址转换开销；它们不是 DRAM read/write traffic，也不是实际内存带宽 GB/s。不同 CPU 架构、虚拟化环境或 kernel PMU 可能不提供相同事件；部分字段不可用时仍会保留其余可用子图。
+
+Massif 图使用 `cpu_heap_peak_total_bytes_massif / 1024^3` 得到绘图期派生列 `cpu_heap_peak_total_gib_massif`；不会改写原始 CSV。它衡量进程生命周期内的 heap peak，与 container cgroup 测量窗口指标口径不同，因此保留为独立 PNG。`nsys_timing_overview_vs_scale.png` 使用 `2×2` 布局展示 host wall、CUDA API sum、GPU kernel sum 和 GPU memcpy sum。未启用对应 probe、字段不存在或整组字段均为 `nan` 时，这些可选图表会自动跳过。
 
 延迟建模产物统一写入结果目录下的 `latency_model/`：
 
