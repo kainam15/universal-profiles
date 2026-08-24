@@ -30,8 +30,11 @@ AC-Prof 是一个面向 Hugging Face 推理服务的零侵入运行时分析工�
 | CV | 基础图像尺寸的缩放倍率 | 图像分类、目标检测 |
 | Audio | 音频时长（秒） | Whisper ASR、音频分类 |
 | Time series | context length | Chronos 时间序列预测 |
+| Diffusion | 方形输出图像边长（像素） | Stable Diffusion 文生图 |
 
 大多数 Hugging Face 模型会自动识别任务族和后端；识别失败时再使用 `--task`、`--task-family` 或 `--backend` 覆盖。
+
+`text-to-image` 模型会自动选择 `diffusion` 任务族和 `diffusers` 后端。内置 workload 固定提示词、随机种子、guidance scale 和 20 个去噪步，只改变输出分辨率；服务端仅返回生成图像的数量与尺寸元数据，避免图片响应体影响网络和应用延迟测量。
 
 ## 快速开始
 
@@ -144,6 +147,16 @@ python run.py --model google-bert/bert-base-uncased \
   --compute-profile-tool none \
   --execution-profile-tool none \
   --output-dir results/smoke
+```
+
+Stable Diffusion 建议先做单 GPU、单分辨率 smoke test：
+
+```bash
+python run.py --model stable-diffusion-v1-5/stable-diffusion-v1-5 \
+  --cpus 4 --mems 16 --gpus on --input-scales 256 \
+  --warmup 0 --repeat 1 --repeat-in-window 1 \
+  --compute-profile-tool none --execution-profile-tool none \
+  --output-dir results/sd-smoke
 ```
 
 首次运行仍需下载模型并构建镜像。成功后，主要结果位于：

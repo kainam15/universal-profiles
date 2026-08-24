@@ -96,6 +96,10 @@ def _auto_register():
         from acprof.workloads import timeseries  # noqa: F401
     except ImportError:
         pass
+    try:
+        from acprof.workloads import diffusion  # noqa: F401
+    except ImportError:
+        pass
 
 
 _auto_register()

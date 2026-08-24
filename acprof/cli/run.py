@@ -836,6 +836,7 @@ Examples:
   python run.py --model bert-base-uncased
   python run.py --model google/vit-base-patch16-224 --cpus 1,2 --mems 4,8 --gpus off
   python run.py --model amazon/chronos-bolt-base --task-family timeseries --backend chronos
+  python run.py --model stable-diffusion-v1-5/stable-diffusion-v1-5 --gpus on
         """,
     )
 
@@ -844,7 +845,11 @@ Examples:
 
     # Detection overrides
     parser.add_argument("--task", default=None, help="Override pipeline_tag (e.g., text-generation)")
-    parser.add_argument("--task-family", default=None, help="Override task family (nlp/cv/audio/timeseries)")
+    parser.add_argument(
+        "--task-family",
+        default=None,
+        help="Override task family (nlp/cv/audio/timeseries/diffusion)",
+    )
     parser.add_argument("--backend", default=None, help="Override runtime backend (transformers_pipeline/chronos/...)")
 
     # Resource matrix

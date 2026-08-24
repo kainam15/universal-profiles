@@ -387,14 +387,16 @@ CPU 模型除共同的二次 log input-scale 项外，还使用二次 log CPU �
 | `cv` | `resolution_scale` | 图像基础尺寸的缩放倍率。 |
 | `audio` | `duration_s` | 输入音频时长，单位秒。 |
 | `timeseries` | `context_length` | 时间序列 context length。 |
+| `diffusion` | `resolution_px` | 方形输出图像边长，单位像素。 |
 
 未提供 `--input-scales` 时，当前内置 workload/legacy 配置通常会为一次 profiling run 规划 6 档 input scale；自定义音频清单则使用清单中声明的档数：
 
 - `nlp` 会启动容器读取 tokenizer / handler 的可用最大输入长度，最后一档尽量贴近有效上限。
 - `audio` 从 workload 清单读取默认尺度；内置英文 ASR 清单固定为 `1,2,5,10,20,30` 秒。`cv`、`timeseries` 仍根据各自 generator 的最大尺度或配置默认值生成。
+- `diffusion` 使用固定的 `128,192,256,320,384,512` 像素输出边长；提示词、随机种子、guidance scale 和去噪步数在各尺度间保持不变。
 - 同一次 run 的所有资源配置共用同一组 scale。
 - 所有任务族都会把已确定尺度的 payload 写入唯一的 `input_scale_plan.json`；主采集与 compute profiler 共同读取该文件，保证实际执行 payload、FLOP profiling 和 CSV 中记录的 `input_scale` 一致。
-- 手动传入 `--input-scales` 时以手动值为准；`nlp`、`audio` 和 `timeseries` 会在 sweep 前验证合法性。
+- 手动传入 `--input-scales` 时以手动值为准；`nlp`、`audio`、`timeseries` 和 `diffusion` 会在 sweep 前验证合法性（文生图分辨率至少为 64 且必须是 8 的倍数）。
 
 ### 真实音频 workload
 

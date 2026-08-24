@@ -10,6 +10,29 @@ from acprof.host import detect
 
 
 class DetectTaskTests(unittest.TestCase):
+    def test_hub_detection_routes_text_to_image_to_diffusers(self) -> None:
+        hub_info = SimpleNamespace(
+            pipeline_tag="text-to-image",
+            library_name="diffusers",
+            sha="diffusion-revision",
+            safetensors=None,
+            card_data={},
+            config={},
+            tags=["diffusers"],
+        )
+
+        with patch("huggingface_hub.model_info", return_value=hub_info):
+            info = detect._detect_from_hub(
+                "stable-diffusion-v1-5/stable-diffusion-v1-5"
+            )
+
+        self.assertIsNotNone(info)
+        assert info is not None
+        self.assertEqual(info.pipeline_tag, "text-to-image")
+        self.assertEqual(info.task_family, "diffusion")
+        self.assertEqual(info.runtime_backend, "diffusers")
+        self.assertEqual(info.model_revision, "diffusion-revision")
+
     def test_hub_detection_collects_model_metadata(self) -> None:
         hub_info = SimpleNamespace(
             pipeline_tag="fill-mask",

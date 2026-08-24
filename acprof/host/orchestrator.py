@@ -1641,6 +1641,40 @@ def _model_io_formats(task_info: TaskInfo) -> Tuple[Dict[str, Any], Dict[str, An
                 "enum": ["forecast"],
             },
         }
+    elif task_info.task_family == "diffusion":
+        input_properties = {
+            "prompt": {
+                "oneOf": [
+                    string_schema,
+                    {
+                        "type": "array",
+                        "items": string_schema,
+                        "minItems": 1,
+                    },
+                ],
+            },
+            "resolution": {
+                "type": "integer",
+                "minimum": 64,
+                "multipleOf": 8,
+                "unit": "px",
+            },
+            "params": params_schema,
+        }
+        input_required = ["prompt", "resolution"]
+        output_properties = {
+            "task": string_schema,
+            "output_type": {
+                "type": "string",
+                "enum": ["image"],
+            },
+            "n_results": {"type": "integer"},
+            "output_length": {"type": "integer"},
+            "image_width": {"type": ["integer", "null"], "unit": "px"},
+            "image_height": {"type": ["integer", "null"], "unit": "px"},
+            "effective_input_scale": {"type": "number"},
+        }
+        output_required.extend(["output_type", "n_results"])
     else:
         input_properties = {}
         input_required = []
@@ -1669,6 +1703,11 @@ def _model_io_formats(task_info: TaskInfo) -> Tuple[Dict[str, Any], Dict[str, An
 
 
 def _inference_precision_by_device(task_info: TaskInfo) -> Dict[str, str]:
+    if (
+        task_info.runtime_backend == "diffusers"
+        and task_info.task_family == "diffusion"
+    ):
+        return {"cpu": "FP32", "gpu": "FP16"}
     if (
         task_info.runtime_backend in {"transformers_pipeline", "transformers_model"}
         and task_info.task_family in {"nlp", "cv", "audio"}
@@ -2034,7 +2073,7 @@ def build_image(task_info: TaskInfo, project_dir: str) -> ImageInfo:
             "--secret",
             "id=hf_token,env=HF_TOKEN",
         ])
-    if task_info.task_family == "nlp":
+    if task_info.task_family in {"nlp", "diffusion"}:
         torch_index_url = _select_nlp_torch_index_url()
         torch_spec = _select_nlp_torch_spec(torch_index_url)
         family_build_args.extend([
@@ -2043,8 +2082,9 @@ def build_image(task_info: TaskInfo, project_dir: str) -> ImageInfo:
             "--build-arg",
             f"TORCH_PACKAGE_SPEC={torch_spec}",
         ])
-        print(f"[build] NLP torch index: {torch_index_url}")
-        print(f"[build] NLP torch spec:  {torch_spec}")
+        family_label = task_info.task_family.upper()
+        print(f"[build] {family_label} torch index: {torch_index_url}")
+        print(f"[build] {family_label} torch spec:  {torch_spec}")
 
     result = _run([
         "docker", "build",
@@ -2906,6 +2946,33 @@ def plan_input_scales(
             output_dir=output_dir,
             source="workload_spec",
             workload_spec_path=workload_spec_path,
+        )
+
+    if task_info.task_family == "diffusion":
+        from acprof.workloads import get_generator
+
+        workload_gen = get_generator(
+            task_info.task_family,
+            task_info.model_id,
+            task_info.pipeline_tag,
+            batch_size,
+        )
+        default_scales = workload_gen.default_input_scales()
+        if not default_scales:
+            raise RuntimeError(
+                "diffusion workload did not provide default output resolutions"
+            )
+        scales = [float(scale) for scale in default_scales]
+        print(
+            "[scale] Using diffusion output resolutions: "
+            f"{serialize_input_scales(scales)}"
+        )
+        return _materialize_scale_plan(
+            task_info=task_info,
+            scales=scales,
+            batch_size=batch_size,
+            output_dir=output_dir,
+            source="workload_default",
         )
 
     max_scale = _default_family_max_scale(task_info, batch_size)

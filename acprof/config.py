@@ -28,6 +28,8 @@ PIPELINE_TAG_TO_FAMILY: Dict[str, str] = {
     "image-to-text": "cv",
     "zero-shot-image-classification": "cv",
     "image-feature-extraction": "cv",
+    # Diffusion / generative vision
+    "text-to-image": "diffusion",
     # Audio
     "automatic-speech-recognition": "audio",
     "audio-classification": "audio",
@@ -101,6 +103,11 @@ SCALING_DIMENSIONS: Dict[str, ScalingConfig] = {
         values=[64, 128, 256, 512, 1024, 2048],
         description="context length (time steps)",
     ),
+    "diffusion": ScalingConfig(
+        param_name="resolution_px",
+        values=[128, 192, 256, 320, 384, 512],
+        description="square output image side length (pixels)",
+    ),
 }
 
 # ─────────────────────────────────────────────
@@ -111,6 +118,7 @@ DEFAULT_TASK_PARAMS: Dict[str, Dict[str, Any]] = {
     "cv": {},
     "audio": {},
     "timeseries": {"prediction_length": 64},
+    "diffusion": {"num_inference_steps": 20, "guidance_scale": 7.5},
 }
 
 # ─────────────────────────────────────────────

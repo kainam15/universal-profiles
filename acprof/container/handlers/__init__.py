@@ -123,6 +123,10 @@ def _auto_register():
         from acprof.container.handlers import timeseries  # noqa: F401
     except ImportError:
         pass
+    try:
+        from acprof.container.handlers import diffusion  # noqa: F401
+    except ImportError:
+        pass
 
 
 _auto_register()
