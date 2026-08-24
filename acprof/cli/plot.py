@@ -1461,6 +1461,7 @@ def plot_metric_overview(
     title: str,
     xlabel: str,
     out_png: str | None,
+    figure_note: str | None = None,
 ) -> None:
     """Plot several related metrics with shared configuration colors."""
     if rows < 1 or columns < 1 or len(panels) != rows * columns:
@@ -1588,7 +1589,9 @@ def plot_metric_overview(
         max(1, len(config_handles)),
     )
     legend_rows = math.ceil(len(config_handles) / legend_columns)
-    top_margin_inches = 0.8 + 0.23 * legend_rows
+    note_lines = figure_note.count("\n") + 1 if figure_note else 0
+    note_height_inches = 0.12 + 0.22 * note_lines if figure_note else 0.0
+    top_margin_inches = 0.8 + 0.23 * legend_rows + note_height_inches
     layout_top = max(
         0.68,
         min(0.9, 1.0 - top_margin_inches / figure_height),
@@ -1603,6 +1606,28 @@ def plot_metric_overview(
         loc="upper center",
         bbox_to_anchor=(0.5, 0.965),
     )
+    if figure_note:
+        note_y = min(
+            0.9,
+            layout_top
+            + note_height_inches / (2.0 * figure_height)
+            + 0.012,
+        )
+        fig.text(
+            0.5,
+            note_y,
+            figure_note,
+            ha="center",
+            va="center",
+            fontsize=8.5,
+            linespacing=1.35,
+            bbox={
+                "boxstyle": "round,pad=0.35",
+                "facecolor": "#f2f2f2",
+                "edgecolor": "#bdbdbd",
+                "alpha": 0.95,
+            },
+        )
     fig.tight_layout(rect=(0.0, 0.0, 1.0, layout_top))
 
     if out_png:
@@ -1612,6 +1637,169 @@ def plot_metric_overview(
     if SHOW_PLOTS:
         plt.show()
     plt.close(fig)
+
+
+def _finite_numeric_values(
+    df: pd.DataFrame,
+    column: str,
+    *,
+    nonnegative: bool = False,
+    positive: bool = False,
+) -> pd.Series:
+    """Return finite numeric values suitable for a figure-level summary."""
+    if column not in df.columns:
+        return pd.Series(dtype=float)
+    values = pd.to_numeric(df[column], errors="coerce")
+    values = values[np.isfinite(values)]
+    if positive:
+        values = values[values > 0.0]
+    elif nonnegative:
+        values = values[values >= 0.0]
+    return values.astype(float)
+
+
+def _idle_mean_and_max_relative_range(
+    df: pd.DataFrame,
+    *,
+    power_column: str,
+    relative_range_column: str,
+) -> tuple[float, float]:
+    power_values = _finite_numeric_values(
+        df,
+        power_column,
+        positive=True,
+    )
+    relative_ranges = _finite_numeric_values(
+        df,
+        relative_range_column,
+        nonnegative=True,
+    )
+    mean_power = (
+        float(power_values.mean())
+        if not power_values.empty
+        else float("nan")
+    )
+    max_relative_range = (
+        float(relative_ranges.max())
+        if not relative_ranges.empty
+        else float("nan")
+    )
+    return mean_power, max_relative_range
+
+
+def _format_idle_summary(
+    *,
+    mean_power_w: float,
+    max_relative_range: float,
+    range_label: str = "max within-case range/mean",
+) -> str:
+    mean_text = (
+        f"{mean_power_w:.2f} W"
+        if math.isfinite(mean_power_w)
+        else "N/A"
+    )
+    range_text = (
+        f"{max_relative_range * 100.0:.2f}%"
+        if math.isfinite(max_relative_range)
+        else "N/A"
+    )
+    return f"mean {mean_text} | {range_label} {range_text}"
+
+
+def _energy_idle_annotation(
+    df: pd.DataFrame,
+    *,
+    effective_metrics: tuple[str, str, str],
+    total_metrics: tuple[str, str, str],
+) -> str:
+    """Describe the idle baseline and its worst within-case variation."""
+    metric = effective_metrics[0]
+    if metric.startswith("gpu_"):
+        mean_power, max_range = _idle_mean_and_max_relative_range(
+            df,
+            power_column="gpu_idle_power_w",
+            relative_range_column="gpu_idle_rel_range_so_far",
+        )
+        return "Measured GPU board idle: " + _format_idle_summary(
+            mean_power_w=mean_power,
+            max_relative_range=max_range,
+        )
+
+    mode_specs = (
+        ("CPU-only", df["gpu_mode"].map(is_gpu_off)),
+        ("GPU-enabled", df["gpu_mode"].map(is_gpu_on)),
+    )
+    lines = []
+    if metric.startswith("cpu_"):
+        for mode_label, mode_mask in mode_specs:
+            mode_df = df[mode_mask]
+            if mode_df.empty:
+                continue
+            mean_power, max_range = _idle_mean_and_max_relative_range(
+                mode_df,
+                power_column="cpu_idle_power_w",
+                relative_range_column="cpu_idle_rel_range_so_far",
+            )
+            lines.append(
+                f"{mode_label} measured package idle: "
+                + _format_idle_summary(
+                    mean_power_w=mean_power,
+                    max_relative_range=max_range,
+                )
+            )
+        return "\n".join(lines) or "Measured CPU package idle: N/A"
+
+    if metric.startswith("vcpu_"):
+        for mode_label, mode_mask in mode_specs:
+            mode_df = df[mode_mask]
+            if mode_df.empty:
+                continue
+            if (
+                total_metrics[1] in mode_df.columns
+                and effective_metrics[1] in mode_df.columns
+            ):
+                total_values = pd.to_numeric(
+                    mode_df[total_metrics[1]],
+                    errors="coerce",
+                )
+                effective_values = pd.to_numeric(
+                    mode_df[effective_metrics[1]],
+                    errors="coerce",
+                )
+                attributed_idle = total_values - effective_values
+                attributed_idle = attributed_idle[
+                    np.isfinite(attributed_idle)
+                    & (attributed_idle >= 0.0)
+                ]
+            else:
+                attributed_idle = pd.Series(dtype=float)
+            mean_attributed_idle = (
+                float(attributed_idle.mean())
+                if not attributed_idle.empty
+                else float("nan")
+            )
+            _source_mean, source_max_range = (
+                _idle_mean_and_max_relative_range(
+                    mode_df,
+                    power_column="cpu_idle_power_w",
+                    relative_range_column="cpu_idle_rel_range_so_far",
+                )
+            )
+            lines.append(
+                f"{mode_label} estimated attributed idle "
+                "(package baseline x interval CPU share): "
+                + _format_idle_summary(
+                    mean_power_w=mean_attributed_idle,
+                    max_relative_range=source_max_range,
+                    range_label="source package max range/mean",
+                )
+            )
+        return "\n".join(lines) or (
+            "Estimated attributed idle "
+            "(CPU package baseline x interval CPU share): N/A"
+        )
+
+    return "Idle baseline: N/A"
 
 
 def plot_energy_power_overview(
@@ -1656,6 +1844,11 @@ def plot_energy_power_overview(
         title=title,
         xlabel=xlabel,
         out_png=out_png,
+        figure_note=_energy_idle_annotation(
+            df,
+            effective_metrics=effective_metrics,
+            total_metrics=total_metrics,
+        ),
     )
 
 

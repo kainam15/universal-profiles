@@ -942,6 +942,8 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 "gpu_energy_total_j": energy_total,
                 "gpu_avg_power_total_w": avg_power_total,
                 "gpu_peak_power_total_w": peak_power_total,
+                "gpu_idle_power_w": idle_power,
+                "gpu_idle_rel_range_so_far": idle_relative_range,
             }
             for (
                 input_scale,
@@ -951,9 +953,11 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 energy_total,
                 avg_power_total,
                 peak_power_total,
+                idle_power,
+                idle_relative_range,
             ) in (
-                (64, 0.8, 20.0, 38.0, 1.0, 30.0, 48.0),
-                (128, 1.2, 25.0, 45.0, 1.5, 35.0, 55.0),
+                (64, 0.8, 20.0, 38.0, 1.0, 30.0, 48.0, 10.0, 0.05),
+                (128, 1.2, 25.0, 45.0, 1.5, 35.0, 55.0, 12.0, 0.08),
             )
         ])
 
@@ -1021,8 +1025,158 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 ["input_scale", "input_scale"],
             )
             self.assertEqual(len(figure.legends), 1)
+            self.assertIn(
+                (
+                    "Measured GPU board idle: mean 11.00 W | "
+                    "max within-case range/mean 8.00%"
+                ),
+                [text.get_text() for text in figure.texts],
+            )
         finally:
             plot.plt.close(figure)
+
+    def test_energy_idle_annotations_distinguish_measurement_scopes(
+        self,
+    ) -> None:
+        df = pd.DataFrame([
+            {
+                "gpu_mode": "off",
+                "gpu_idle_power_w": float("nan"),
+                "gpu_idle_rel_range_so_far": float("nan"),
+                "cpu_idle_power_w": 4.0,
+                "cpu_idle_rel_range_so_far": 0.10,
+                "vcpu_avg_power_total_w": 7.0,
+                "vcpu_avg_power_eff_w": 4.0,
+            },
+            {
+                "gpu_mode": "off",
+                "gpu_idle_power_w": float("nan"),
+                "gpu_idle_rel_range_so_far": float("nan"),
+                "cpu_idle_power_w": 6.0,
+                "cpu_idle_rel_range_so_far": 0.20,
+                "vcpu_avg_power_total_w": 9.0,
+                "vcpu_avg_power_eff_w": 5.0,
+            },
+            {
+                "gpu_mode": "on",
+                "gpu_idle_power_w": 15.0,
+                "gpu_idle_rel_range_so_far": 0.02,
+                "cpu_idle_power_w": 8.0,
+                "cpu_idle_rel_range_so_far": 0.05,
+                "vcpu_avg_power_total_w": 12.0,
+                "vcpu_avg_power_eff_w": 5.0,
+            },
+            {
+                "gpu_mode": "on",
+                "gpu_idle_power_w": 17.0,
+                "gpu_idle_rel_range_so_far": 0.04,
+                "cpu_idle_power_w": 10.0,
+                "cpu_idle_rel_range_so_far": 0.08,
+                "vcpu_avg_power_total_w": 14.0,
+                "vcpu_avg_power_eff_w": 6.0,
+            },
+        ])
+
+        gpu_note = plot._energy_idle_annotation(
+            df,
+            effective_metrics=(
+                "gpu_energy_eff_j",
+                "gpu_avg_power_eff_w",
+                "gpu_peak_power_eff_w",
+            ),
+            total_metrics=(
+                "gpu_energy_total_j",
+                "gpu_avg_power_total_w",
+                "gpu_peak_power_total_w",
+            ),
+        )
+        cpu_note = plot._energy_idle_annotation(
+            df,
+            effective_metrics=(
+                "cpu_energy_eff_j",
+                "cpu_avg_power_eff_w",
+                "cpu_peak_power_eff_w",
+            ),
+            total_metrics=(
+                "cpu_energy_total_j",
+                "cpu_avg_power_total_w",
+                "cpu_peak_power_total_w",
+            ),
+        )
+        vcpu_note = plot._energy_idle_annotation(
+            df,
+            effective_metrics=(
+                "vcpu_energy_eff_j",
+                "vcpu_avg_power_eff_w",
+                "vcpu_peak_power_eff_w",
+            ),
+            total_metrics=(
+                "vcpu_energy_total_j",
+                "vcpu_avg_power_total_w",
+                "vcpu_peak_power_total_w",
+            ),
+        )
+
+        self.assertEqual(
+            gpu_note,
+            (
+                "Measured GPU board idle: mean 16.00 W | "
+                "max within-case range/mean 4.00%"
+            ),
+        )
+        self.assertEqual(
+            cpu_note.splitlines(),
+            [
+                (
+                    "CPU-only measured package idle: mean 5.00 W | "
+                    "max within-case range/mean 20.00%"
+                ),
+                (
+                    "GPU-enabled measured package idle: mean 9.00 W | "
+                    "max within-case range/mean 8.00%"
+                ),
+            ],
+        )
+        self.assertEqual(
+            vcpu_note.splitlines(),
+            [
+                (
+                    "CPU-only estimated attributed idle "
+                    "(package baseline x interval CPU share): mean 3.50 W | "
+                    "source package max range/mean 20.00%"
+                ),
+                (
+                    "GPU-enabled estimated attributed idle "
+                    "(package baseline x interval CPU share): mean 7.50 W | "
+                    "source package max range/mean 8.00%"
+                ),
+            ],
+        )
+
+    def test_energy_idle_annotation_reports_unavailable_debug_range(
+        self,
+    ) -> None:
+        note = plot._energy_idle_annotation(
+            pd.DataFrame([{"gpu_mode": "on", "gpu_idle_power_w": 15.0}]),
+            effective_metrics=(
+                "gpu_energy_eff_j",
+                "gpu_avg_power_eff_w",
+                "gpu_peak_power_eff_w",
+            ),
+            total_metrics=(
+                "gpu_energy_total_j",
+                "gpu_avg_power_total_w",
+                "gpu_peak_power_total_w",
+            ),
+        )
+
+        self.assertEqual(
+            note,
+            (
+                "Measured GPU board idle: mean 15.00 W | "
+                "max within-case range/mean N/A"
+            ),
+        )
 
     def test_execution_profile_overview_and_massif_are_registered(self) -> None:
         metrics = {
