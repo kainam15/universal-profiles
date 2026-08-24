@@ -1089,7 +1089,53 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             ),
         )
         self.assertEqual(spec[2:4], (2, 2))
-        self.assertEqual(spec[5], ((0, 2), (1, 3)))
+        self.assertEqual(spec[5], ((1, 3),))
+
+    def test_bandwidth_behavior_count_panels_scale_independently(self) -> None:
+        df = pd.DataFrame([
+            {
+                "cpu_cores": 2,
+                "mem_cap_gb": 4,
+                "gpu_mode": "off",
+                "input_scale": input_scale,
+                "cpu_cache_misses_per_request": cache_misses,
+                "cpu_cache_miss_rate_pct": cache_rate,
+                "cpu_dtlb_load_misses_per_request": dtlb_misses,
+                "cpu_dtlb_load_miss_rate_pct": dtlb_rate,
+            }
+            for input_scale, cache_misses, cache_rate, dtlb_misses, dtlb_rate in (
+                (1, 1.0e10, 10.0, 1.0e8, 4.0),
+                (2, 1.3e10, 12.0, 5.0e8, 8.0),
+            )
+        ])
+        title, _filename, rows, columns, panels, shared_y_groups = (
+            self._overview_spec("cpu_memory_behavior_overview_vs_scale.png")
+        )
+
+        with patch.object(plot.plt, "close"):
+            plot.plot_metric_overview(
+                df,
+                panels=panels,
+                rows=rows,
+                columns=columns,
+                shared_y_groups=shared_y_groups,
+                title=title,
+                xlabel="input_scale",
+                out_png=None,
+            )
+            figure = plot.plt.gcf()
+
+        try:
+            cache_count_axis, cache_rate_axis, dtlb_count_axis, dtlb_rate_axis = (
+                figure.axes
+            )
+            shared_y = cache_count_axis.get_shared_y_axes()
+            self.assertFalse(shared_y.joined(cache_count_axis, dtlb_count_axis))
+            self.assertTrue(shared_y.joined(cache_rate_axis, dtlb_rate_axis))
+            self.assertGreater(cache_count_axis.get_ylim()[1], 1.0e10)
+            self.assertLess(dtlb_count_axis.get_ylim()[1], 1.0e9)
+        finally:
+            plot.plt.close(figure)
 
     def test_prepare_df_converts_bandwidth_behavior_fields_to_numeric(self) -> None:
         bandwidth_fields = [

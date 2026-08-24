@@ -392,7 +392,11 @@ METRIC_OVERVIEW_PLOTS = [
                 "Miss rate (%)",
             ),
         ),
-        ((0, 2), (1, 3)),
+        # Cache-miss and dTLB-miss counts use the same unit, but their
+        # magnitudes can differ by orders of magnitude.  Give the count
+        # panels independent scales so the smaller dTLB series stays legible;
+        # the two percentage panels remain directly comparable.
+        ((1, 3),),
     ),
     (
         "Container Memory and Process Overview vs. Input Scale",
