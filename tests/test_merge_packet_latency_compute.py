@@ -232,6 +232,107 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
         self.assertEqual(rows[0]["latency_max_s"], "0.300000")
         self.assertEqual(rows[0]["latency_slow_ratio"], "0.600000")
 
+    def test_merges_schema_v2_network_and_normalized_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            in_csv = os.path.join(tmp, "result.csv")
+            lat_json = os.path.join(tmp, "lat.json")
+            out_csv = os.path.join(tmp, "result.merged.csv")
+            static_meta = os.path.join(tmp, "static_meta.json")
+            with open(static_meta, "w", encoding="utf-8") as f:
+                json.dump({"batch_size": 2}, f)
+
+            fieldnames = [
+                "sniff_group_id",
+                "cpu_cores",
+                "input_scale",
+                "input_units_per_request",
+                "latency_s",
+                "latency_s_per_input_unit",
+                "throughput_samples_per_s",
+                "throughput_samples_per_s_per_cpu_core",
+                "packet_request_wire_bytes_per_request",
+                "packet_response_wire_bytes_per_request",
+                "packet_total_wire_bytes_per_request",
+                "packet_tcp_payload_bytes_per_request",
+                "packet_protocol_overhead_bytes_per_request",
+                "packet_protocol_overhead_ratio",
+            ]
+            with open(in_csv, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerow({
+                    "sniff_group_id": "case_seq4_r0",
+                    "cpu_cores": "2",
+                    "input_scale": "4",
+                    "input_units_per_request": "8",
+                    **{field: "nan" for field in fieldnames[4:]},
+                })
+            with open(lat_json, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "schema_version": 2,
+                        "requests": {
+                            "case_seq4_r0:1": {
+                                "latency_s": 0.4,
+                                "request_wire_bytes": 300,
+                                "response_wire_bytes": 500,
+                                "total_wire_bytes": 800,
+                                "tcp_payload_bytes": 600,
+                                "protocol_overhead_bytes": 200,
+                                "protocol_overhead_ratio": 0.25,
+                            },
+                            "case_seq4_r0:2": {
+                                "latency_s": 0.6,
+                                "request_wire_bytes": 400,
+                                "response_wire_bytes": 600,
+                                "total_wire_bytes": 1000,
+                                "tcp_payload_bytes": 700,
+                                "protocol_overhead_bytes": 300,
+                                "protocol_overhead_ratio": 0.3,
+                            },
+                        },
+                    },
+                    f,
+                )
+
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "acprof.packet.merge_packet_latency",
+                    in_csv,
+                    lat_json,
+                    out_csv,
+                ],
+                check=True,
+                cwd=os.path.dirname(os.path.dirname(__file__)),
+            )
+            with open(out_csv, "r", encoding="utf-8", newline="") as f:
+                row = next(csv.DictReader(f))
+
+        self.assertEqual(row["latency_s"], "0.500000")
+        self.assertEqual(row["latency_s_per_input_unit"], "0.062500")
+        self.assertEqual(row["throughput_samples_per_s"], "4.000000")
+        self.assertEqual(
+            row["throughput_samples_per_s_per_cpu_core"],
+            "2.000000",
+        )
+        self.assertEqual(
+            row["packet_request_wire_bytes_per_request"],
+            "350.000000",
+        )
+        self.assertEqual(
+            row["packet_response_wire_bytes_per_request"],
+            "550.000000",
+        )
+        self.assertEqual(row["packet_total_wire_bytes_per_request"], "900.000000")
+        self.assertEqual(row["packet_tcp_payload_bytes_per_request"], "650.000000")
+        self.assertEqual(
+            row["packet_protocol_overhead_bytes_per_request"],
+            "250.000000",
+        )
+        self.assertEqual(row["packet_protocol_overhead_ratio"], "0.277778")
+
     def test_merges_packet_latency_with_sidecar_when_csv_omits_sniff_group_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             in_csv = os.path.join(tmp, "result.csv")

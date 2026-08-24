@@ -370,6 +370,30 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertNotIn("HF_TOKEN", docker_run)
         self.assertNotIn("HUGGING_FACE_HUB_TOKEN", docker_run)
 
+    def test_cold_start_breakdown_uses_container_startup_timestamps(self) -> None:
+        metrics = orchestrator._cold_start_breakdown(
+            {
+                "load_time_s": 9.0,
+                "startup_timing": {
+                    "server_process_started_at_epoch_s": 101.0,
+                    "server_setup_s": 0.5,
+                    "cuda_init_s": 0.25,
+                    "model_load_completed_at_epoch_s": 104.0,
+                    "model_load_s": 2.25,
+                },
+            },
+            docker_started_at_epoch_s=100.0,
+            ready_received_at_epoch_s=105.0,
+        )
+
+        self.assertEqual(metrics["cold_start_container_launch_s"], 1.0)
+        self.assertEqual(metrics["cold_start_server_setup_s"], 0.5)
+        self.assertEqual(metrics["cold_start_cuda_init_s"], 0.25)
+        self.assertEqual(metrics["cold_start_model_load_s"], 2.25)
+        self.assertEqual(metrics["cold_start_ready_wait_s"], 1.0)
+        self.assertNotEqual(metrics["cold_start_started_at"], "nan")
+        self.assertNotEqual(metrics["cold_start_ready_at"], "nan")
+
     def test_start_container_session_reports_oom_before_ready_timeout(self) -> None:
         task_info = TaskInfo(
             model_id="openai/whisper-large-v3",
@@ -1225,6 +1249,13 @@ class DetectEnvironmentTests(unittest.TestCase):
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
                 cold_start_s=1.0,
+                cold_start_started_at="2026-08-23T10:00:00.000+08:00",
+                cold_start_ready_at="2026-08-23T10:00:01.000+08:00",
+                cold_start_container_launch_s=0.1,
+                cold_start_server_setup_s=0.2,
+                cold_start_cuda_init_s=0.0,
+                cold_start_model_load_s=0.6,
+                cold_start_ready_wait_s=0.1,
             ),
         ), patch("acprof.host.orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
             "acprof.host.orchestrator._stop_container_session"
@@ -1249,6 +1280,13 @@ class DetectEnvironmentTests(unittest.TestCase):
             "case_google-bert--bert-base-uncased_1c_4g_off",
         )
         self.assertEqual(captured_env["USE_MIPS"], "1")
+        self.assertEqual(
+            captured_env["COLD_START_STARTED_AT"],
+            "2026-08-23T10:00:00.000+08:00",
+        )
+        self.assertEqual(captured_env["COLD_START_CONTAINER_LAUNCH_S"], "0.1")
+        self.assertEqual(captured_env["COLD_START_MODEL_LOAD_S"], "0.6")
+        self.assertEqual(captured_env["COLD_START_READY_WAIT_S"], "0.1")
 
     def test_run_single_case_passes_compute_profile_plan_to_client(self) -> None:
         task_info = TaskInfo(

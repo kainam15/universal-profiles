@@ -92,6 +92,16 @@ REQUEST_TIMEOUT_SECONDS = float(
 SLOW_LATENCY_THRESHOLD_S = float(os.getenv("SLOW_LATENCY_THRESHOLD_S", "0.06"))
 
 COLD_START_S = os.getenv("COLD_START_S", "nan")
+COLD_START_STARTED_AT = os.getenv("COLD_START_STARTED_AT", "nan")
+COLD_START_READY_AT = os.getenv("COLD_START_READY_AT", "nan")
+COLD_START_CONTAINER_LAUNCH_S = os.getenv(
+    "COLD_START_CONTAINER_LAUNCH_S",
+    "nan",
+)
+COLD_START_SERVER_SETUP_S = os.getenv("COLD_START_SERVER_SETUP_S", "nan")
+COLD_START_CUDA_INIT_S = os.getenv("COLD_START_CUDA_INIT_S", "nan")
+COLD_START_MODEL_LOAD_S = os.getenv("COLD_START_MODEL_LOAD_S", "nan")
+COLD_START_READY_WAIT_S = os.getenv("COLD_START_READY_WAIT_S", "nan")
 OUT_CSV = os.getenv("OUT_CSV", "result.csv")
 CASE_NAME = os.getenv("CASE_NAME", "").strip()
 CONTAINER_NAME = os.getenv("CONTAINER_NAME", "").strip()
@@ -101,6 +111,8 @@ IDLE_DIAG_PATH = os.getenv("IDLE_DIAG_PATH", "").strip()
 CLIENT_ERROR_PATH = os.getenv("CLIENT_ERROR_PATH", "").strip()
 IDLE_DEBUG_TRACE_INTERVAL_S = float(os.getenv("IDLE_DEBUG_TRACE_INTERVAL_S", "0.1"))
 USE_MIPS = os.getenv("USE_MIPS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+_FIRST_PREDICT_APP_S = float("nan")
 
 SAMPLE_HZ = float(os.getenv("SAMPLE_HZ", "20"))
 IDLE_SECONDS = float(os.getenv("IDLE_SECONDS", "3"))
@@ -171,6 +183,36 @@ def _now_iso() -> str:
 def _finite_positive(value: Any) -> bool:
     number = _to_float_or_nan(value)
     return math.isfinite(number) and number > 0.0
+
+
+def _input_units_per_request(input_scale: Any, batch_size: Any) -> float:
+    scale = _to_float_or_nan(input_scale)
+    batch = _to_float_or_nan(batch_size)
+    if math.isfinite(scale) and scale > 0.0 and math.isfinite(batch) and batch > 0.0:
+        return scale * batch
+    return float("nan")
+
+
+def _per_positive_denominator(value: Any, denominator: Any) -> float:
+    numerator = _to_float_or_nan(value)
+    divisor = _to_float_or_nan(denominator)
+    if math.isfinite(numerator) and math.isfinite(divisor) and divisor > 0.0:
+        return numerator / divisor
+    return float("nan")
+
+
+def _cold_start_row_metrics() -> Dict[str, str]:
+    return {
+        "cold_start_started_at": COLD_START_STARTED_AT or "nan",
+        "cold_start_ready_at": COLD_START_READY_AT or "nan",
+        "cold_start_container_launch_s": COLD_START_CONTAINER_LAUNCH_S or "nan",
+        "cold_start_server_setup_s": COLD_START_SERVER_SETUP_S or "nan",
+        "cold_start_cuda_init_s": COLD_START_CUDA_INIT_S or "nan",
+        "cold_start_model_load_s": COLD_START_MODEL_LOAD_S or "nan",
+        "cold_start_ready_wait_s": COLD_START_READY_WAIT_S or "nan",
+        "cold_start_first_predict_app_s": _fmt_float(_FIRST_PREDICT_APP_S),
+        "cold_start_s": COLD_START_S or "nan",
+    }
 
 
 def _compute_profile_row_metrics(
@@ -598,6 +640,7 @@ def _generic_scale_label(scale_value: float) -> str:
 
 
 def _one_request(scale_value: float, req_id: str, payload_override: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    global _FIRST_PREDICT_APP_S
     if payload_override is not None:
         payload = payload_override
     else:
@@ -637,8 +680,11 @@ def _one_request(scale_value: float, req_id: str, payload_override: Optional[Dic
             detail = r.text[:500]
         raise RuntimeError(f"HTTP {r.status_code}: {detail or r.reason}")
     resp = r.json()
+    request_latency_s = t1 - t0
+    if not math.isfinite(_FIRST_PREDICT_APP_S):
+        _FIRST_PREDICT_APP_S = request_latency_s
     return {
-        "latency_app_s": (t1 - t0),
+        "latency_app_s": request_latency_s,
         "resp": resp,
         "effective_input_scale": _parse_effective_input_scale(resp),
         "request_payload_bytes": _prepared_body_size_bytes(r),
@@ -813,6 +859,13 @@ RESOURCE_USAGE_METRIC_FIELDS = [
     "container_mem_usage_peak_bytes",
     "container_mem_util_avg_pct",
     "container_mem_util_peak_pct",
+    "container_mem_peak_cgroup_bytes",
+    "container_mem_anon_bytes_end",
+    "container_mem_file_bytes_end",
+    "container_mem_slab_bytes_end",
+    "container_mem_pgfault_delta",
+    "container_mem_pgmajfault_delta",
+    "container_mem_workingset_refault_delta",
     "container_mem_high_events_delta",
     "container_mem_max_events_delta",
     "container_mem_oom_events_delta",
@@ -824,8 +877,13 @@ RESOURCE_USAGE_METRIC_FIELDS = [
     "container_swap_usage_peak_bytes",
     "container_io_read_bytes_per_request",
     "container_io_write_bytes_per_request",
+    "container_io_read_ops_per_request",
+    "container_io_write_ops_per_request",
     "container_io_pressure_some_stall_pct",
     "container_io_pressure_full_stall_pct",
+    "container_pids_current_end",
+    "container_pids_peak_cgroup",
+    "container_pids_max_events_delta",
     "gpu_util_avg_pct",
     "gpu_util_peak_pct",
     "gpu_mem_used_avg_bytes",
@@ -864,6 +922,7 @@ EFFICIENCY_METRIC_FIELDS = [
     "container_attributed_edp_app_js",
     "output_tokens_per_s_app",
     "container_attributed_j_per_output_token",
+    "container_attributed_j_per_input_unit",
 ]
 
 MIPS_METRIC_FIELDS = [
@@ -933,6 +992,7 @@ def _derived_efficiency_metrics(
     output_token_count_avg: float,
     gpu_energy_eff_j: float,
     vcpu_energy_eff_j: float,
+    input_units_per_request: float = float("nan"),
 ) -> Dict[str, float]:
     latency = _to_float_or_nan(latency_app_s)
     output_tokens = _to_float_or_nan(output_token_count_avg)
@@ -979,12 +1039,17 @@ def _derived_efficiency_metrics(
         and output_tokens > 0.0
         else float("nan")
     )
+    joules_per_input_unit = _per_positive_denominator(
+        attributed_energy,
+        input_units_per_request,
+    )
     return {
         "container_attributed_energy_eff_j": attributed_energy,
         "container_attributed_samples_per_j": samples_per_j,
         "container_attributed_edp_app_js": edp_app,
         "output_tokens_per_s_app": output_tokens_per_s,
         "container_attributed_j_per_output_token": joules_per_output_token,
+        "container_attributed_j_per_input_unit": joules_per_input_unit,
     }
 
 
@@ -998,12 +1063,22 @@ def _resource_usage_metrics_from_result(
     io_write_bytes = _to_float_or_nan(
         getattr(result, "container_io_write_bytes", float("nan"))
     )
+    io_read_ops = _to_float_or_nan(
+        getattr(result, "container_io_read_ops", float("nan"))
+    )
+    io_write_ops = _to_float_or_nan(
+        getattr(result, "container_io_write_ops", float("nan"))
+    )
     if repeat_in_window > 0:
         io_read_bytes /= float(repeat_in_window)
         io_write_bytes /= float(repeat_in_window)
+        io_read_ops /= float(repeat_in_window)
+        io_write_ops /= float(repeat_in_window)
     else:
         io_read_bytes = float("nan")
         io_write_bytes = float("nan")
+        io_read_ops = float("nan")
+        io_write_ops = float("nan")
     return {
         "resource_usage_iters": float(result.resource_usage_iters),
         "container_cpu_util_avg_pct": _to_float_or_nan(result.container_cpu_util_avg_pct),
@@ -1053,6 +1128,31 @@ def _resource_usage_metrics_from_result(
         "container_mem_usage_peak_bytes": _to_float_or_nan(result.container_mem_usage_peak_bytes),
         "container_mem_util_avg_pct": _to_float_or_nan(result.container_mem_util_avg_pct),
         "container_mem_util_peak_pct": _to_float_or_nan(result.container_mem_util_peak_pct),
+        "container_mem_peak_cgroup_bytes": _to_float_or_nan(
+            getattr(result, "container_mem_peak_cgroup_bytes", float("nan"))
+        ),
+        "container_mem_anon_bytes_end": _to_float_or_nan(
+            getattr(result, "container_mem_anon_bytes_end", float("nan"))
+        ),
+        "container_mem_file_bytes_end": _to_float_or_nan(
+            getattr(result, "container_mem_file_bytes_end", float("nan"))
+        ),
+        "container_mem_slab_bytes_end": _to_float_or_nan(
+            getattr(result, "container_mem_slab_bytes_end", float("nan"))
+        ),
+        "container_mem_pgfault_delta": _to_float_or_nan(
+            getattr(result, "container_mem_pgfault_delta", float("nan"))
+        ),
+        "container_mem_pgmajfault_delta": _to_float_or_nan(
+            getattr(result, "container_mem_pgmajfault_delta", float("nan"))
+        ),
+        "container_mem_workingset_refault_delta": _to_float_or_nan(
+            getattr(
+                result,
+                "container_mem_workingset_refault_delta",
+                float("nan"),
+            )
+        ),
         "container_mem_high_events_delta": _to_float_or_nan(
             getattr(result, "container_mem_high_events_delta", float("nan"))
         ),
@@ -1090,6 +1190,8 @@ def _resource_usage_metrics_from_result(
         ),
         "container_io_read_bytes_per_request": io_read_bytes,
         "container_io_write_bytes_per_request": io_write_bytes,
+        "container_io_read_ops_per_request": io_read_ops,
+        "container_io_write_ops_per_request": io_write_ops,
         "container_io_pressure_some_stall_pct": _to_float_or_nan(
             getattr(
                 result,
@@ -1103,6 +1205,15 @@ def _resource_usage_metrics_from_result(
                 "container_io_pressure_full_stall_pct",
                 float("nan"),
             )
+        ),
+        "container_pids_current_end": _to_float_or_nan(
+            getattr(result, "container_pids_current_end", float("nan"))
+        ),
+        "container_pids_peak_cgroup": _to_float_or_nan(
+            getattr(result, "container_pids_peak_cgroup", float("nan"))
+        ),
+        "container_pids_max_events_delta": _to_float_or_nan(
+            getattr(result, "container_pids_max_events_delta", float("nan"))
         ),
         "gpu_util_avg_pct": _to_float_or_nan(result.gpu_util_avg_pct),
         "gpu_util_peak_pct": _to_float_or_nan(result.gpu_util_peak_pct),
@@ -1582,6 +1693,9 @@ def _append_row(
 
 
 def main() -> None:
+    global _FIRST_PREDICT_APP_S
+    _FIRST_PREDICT_APP_S = float("nan")
+
     if USE_ENERGY and energy_mod is None:
         raise EnergyAbort(
             "GPU energy monitoring is required for gpu_mode=on but NVML/pynvml is unavailable. "
@@ -1630,7 +1744,7 @@ def main() -> None:
                 "cpu_cores": CPU_CORES,
                 "mem_cap_gb": MEM_CAP_GB,
                 "gpu_mode": GPU_MODE,
-                "cold_start_s": COLD_START_S,
+                **_cold_start_row_metrics(),
                 "status": "error",
                 "error": f"ready_failed: {repr(e)}",
             })
@@ -1659,6 +1773,13 @@ def main() -> None:
                 sniff_group_id = f"{CASE_NAME}_{scale_label}_{phase}{repeat_idx}"
 
                 latency_app_s = float("nan")
+                resolved_input_scale = scale_val
+                input_units_per_request = _input_units_per_request(
+                    resolved_input_scale,
+                    BATCH_SIZE,
+                )
+                latency_app_s_per_input_unit = float("nan")
+                throughput_per_cpu_core = float("nan")
                 request_payload_bytes = float("nan")
                 output_length_avg = float("nan")
                 output_token_count_avg = float("nan")
@@ -1892,6 +2013,15 @@ def main() -> None:
                             resource_usage_result,
                             actual_repeat_in_window,
                         )
+                    resolved_input_scale = (
+                        effective_input_scale
+                        if effective_input_scale is not None
+                        else scale_val
+                    )
+                    input_units_per_request = _input_units_per_request(
+                        resolved_input_scale,
+                        BATCH_SIZE,
+                    )
                     efficiency_metrics = _derived_efficiency_metrics(
                         gpu_mode=GPU_MODE,
                         batch_size=BATCH_SIZE,
@@ -1899,6 +2029,7 @@ def main() -> None:
                         output_token_count_avg=output_token_count_avg,
                         gpu_energy_eff_j=gpu_metrics["gpu_energy_eff_j"],
                         vcpu_energy_eff_j=cpu_metrics["vcpu_energy_eff_j"],
+                        input_units_per_request=input_units_per_request,
                     )
                     gpu_runtime_metrics = _gpu_runtime_metrics_from_result(
                         resource_usage_result
@@ -1928,6 +2059,14 @@ def main() -> None:
                         throughput = float(BATCH_SIZE) / float(latency_app_s)
                     else:
                         throughput = float("nan")
+                    latency_app_s_per_input_unit = _per_positive_denominator(
+                        latency_app_s,
+                        input_units_per_request,
+                    )
+                    throughput_per_cpu_core = _per_positive_denominator(
+                        throughput,
+                        CPU_CORES,
+                    )
 
                 except RequestTimeoutAbort:
                     raise
@@ -1941,6 +2080,7 @@ def main() -> None:
                     status = "error"
                     err_msg = repr(e)
                     throughput = float("nan")
+                    throughput_per_cpu_core = float("nan")
 
                 gpu_idle_stats = _idle_power_debug_stats(gpu_idle_values_so_far, "gpu")
                 if IDLE_DEBUG and _finite_positive(gpu_metrics["gpu_idle_power_w"]):
@@ -1963,11 +2103,18 @@ def main() -> None:
                     "cpu_cores": CPU_CORES,
                     "mem_cap_gb": MEM_CAP_GB,
                     "gpu_mode": GPU_MODE,
-                    "input_scale": str(
-                        effective_input_scale if effective_input_scale is not None else scale_val
+                    "input_scale": str(resolved_input_scale),
+                    "input_units_per_request": _fmt_float(
+                        input_units_per_request
                     ),
                     "input_num_samples": _fmt_float(input_num_samples),
                     "request_payload_bytes": _fmt_float(request_payload_bytes),
+                    "packet_request_wire_bytes_per_request": "nan",
+                    "packet_response_wire_bytes_per_request": "nan",
+                    "packet_total_wire_bytes_per_request": "nan",
+                    "packet_tcp_payload_bytes_per_request": "nan",
+                    "packet_protocol_overhead_bytes_per_request": "nan",
+                    "packet_protocol_overhead_ratio": "nan",
                     "task_param": (
                         executed_task_param
                         if executed_task_param is not None
@@ -1981,10 +2128,17 @@ def main() -> None:
                     "warmup": str(warmup_flag),
                     "repeat_in_window": str(actual_repeat_in_window),
                     "latency_s": "nan",  # Placeholder: filled by merge_packet_latency
+                    "latency_s_per_input_unit": "nan",
                     **{field: _fmt_float(latency_packet_distribution_metrics[field]) for field in LATENCY_PACKET_DISTRIBUTION_FIELDS},
                     "latency_app_s": _fmt_float(latency_app_s),
+                    "latency_app_s_per_input_unit": _fmt_float(
+                        latency_app_s_per_input_unit
+                    ),
                     **{field: _fmt_float(latency_app_distribution_metrics[field]) for field in LATENCY_APP_DISTRIBUTION_FIELDS},
                     "throughput_samples_per_s": _fmt_float(throughput),
+                    "throughput_samples_per_s_per_cpu_core": _fmt_float(
+                        throughput_per_cpu_core
+                    ),
                     **{field: _fmt_float(gpu_metrics[field]) for field in GPU_METRIC_FIELDS},
                     "gpu_idle_measured_at": gpu_idle_measured_at if IDLE_DEBUG else "nan",
                     "gpu_idle_rel_range_so_far": (
@@ -2015,7 +2169,7 @@ def main() -> None:
                     "cpu_cycles_est_app": _fmt_float(cpu_cycles_est_app),
                     "cpu_cycles_est_packet": "nan",
                     **{field: _fmt_float(mips_metrics[field]) for field in MIPS_METRIC_FIELDS},
-                    "cold_start_s": COLD_START_S if COLD_START_S else "nan",
+                    **_cold_start_row_metrics(),
                     "status": status,
                     "error": err_msg,
                 }

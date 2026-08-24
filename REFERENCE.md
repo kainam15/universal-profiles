@@ -11,7 +11,7 @@
 - [故障排查](#troubleshooting)
 - [扩展新模型或任务族](#12-扩展新模型或任务族)
 
-AC-Prof 是一个面向 containerized HuggingFace inference service 的运行时 profiling 工具。它会把模型权重 bake 进 Docker image，在不同 CPU / Memory / GPU 资源限制和不同 input scale 下运行推理 workload，并输出 latency、latency variability、throughput、cold start、GPU / CPU power 与 energy、container-attributed energy efficiency、container CPU / memory / swap usage、cgroup throttling / memory events / PSI、block I/O、CPU frequency、estimated CPU cycles、perf retired-instruction MIPS、CPU cache / dTLB miss behavior、packet-level latency 等指标。
+AC-Prof 是一个面向 containerized HuggingFace inference service 的运行时 profiling 工具。它会把模型权重 bake 进 Docker image，在不同 CPU / Memory / GPU 资源限制和不同 input scale 下运行推理 workload，并输出 latency、latency variability、归一化 throughput/energy、cold-start phase、GPU / CPU power 与 energy、container-attributed energy efficiency、container CPU / memory / swap usage、cgroup memory/stat/PID/throttling/events/PSI、block I/O、CPU frequency、estimated CPU cycles、perf retired-instruction MIPS、CPU cache / dTLB miss behavior，以及 packet-level latency/bytes 等指标。
 
 本项目采用保守包化结构：核心代码位于 `acprof/`，根目录保留 [run.py](run.py)、[plot.py](plot.py) 和 [profile.py](profile.py) 三个用户入口；内部工具统一通过 `python -m acprof...` 调用。当前不引入 `pyproject.toml` / `setup.py`，仍通过 `.venv` + `requirements.txt` 运行。
 
@@ -49,10 +49,10 @@ acprof/
 
 - NVIDIA GPU + NVIDIA Container Toolkit：用于 `--gpus on`、GPU energy metrics、GPU utilization 和 VRAM metrics。
 - Linux RAPL powercap（`/sys/class/powercap/*/energy_uj`）：必需，用于 CPU package power / energy 和 estimated vCPU energy metrics；不可读时 preflight 会退出。
-- Docker cgroup v2 CPU / memory / swap / I/O、`memory.events` 与 per-cgroup PSI files：用于 container CPU utilization、vCPU CPU time/share、memory/swap footprint、throttling、压力/事件、窗口 block-I/O 增量，以及 estimated CPU cycles 的 CPU utilization 输入。
+- Docker cgroup v2 CPU / memory / swap / I/O / PID、`memory.peak`、`memory.stat`、`memory.events`、`io.stat`、`pids.*` 与 per-cgroup PSI files：用于 container CPU utilization、vCPU CPU time/share、memory/swap footprint、内存构成/缺页/refault、throttling、压力/事件、窗口 block-I/O 字节/操作数、PID footprint，以及 estimated CPU cycles 的 CPU utilization 输入。
 - Linux CPU frequency sysfs 或 `/proc/cpuinfo`：用于 `cpu_freq_*` 和 estimated CPU cycles。优先读取 `/sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq` / `cpuinfo_cur_freq`，不可用时回退到 `/proc/cpuinfo` 的 `cpu MHz`。
 - Linux `perf` + PMU hardware events：`instructions` 用于真实 retired-instruction MIPS；`cache-references`、`cache-misses`、`dTLB-loads` 和 `dTLB-load-misses` 用于 CPU bandwidth behavior 的 cache / address-translation miss 计数和比例。`run.py` 启动时会先做 preflight；如果 `perf_event_paranoid`、sudo 或 PMU 权限不足，会直接退出并给出修复命令。generic cache 事件的具体硬件含义由 CPU 架构和 kernel PMU 映射决定，部分架构可能不支持全部事件。
-- `tcpdump` + `tshark`：必需，用于填充 `result_all.csv` 的 `latency_s` packet-level latency。`run.py` 启动时会先做 preflight；不满足条件会直接退出并给出恢复提示。
+- `tcpdump` + `tshark`：必需，用于填充 `result_all.csv` 的 `latency_s` packet-level latency，并从同一 PCAP 派生每请求 captured frame bytes、TCP payload 和 L2–L4 overhead。`run.py` 启动时会先做 preflight；不满足条件会直接退出并给出恢复提示。
 - PyTorch profiler：默认独立采集 `torch_profiler_eager` 逻辑 FLOP。该 probe 会强制并验证 eager attention，只影响临时 profiler container，不改变正常 latency / energy workload 的运行时 attention 实现。
 - NVIDIA Nsight Compute CLI (`ncu`)：默认独立采集 `gpu_mode=on` 行的 GPU 实际执行 FLOP，并把 Tensor 与 Scalar FLOP 分列。通过 `--ncu-root` 挂载到临时 profiler container；不可用、不兼容当前 CUDA/driver、或性能计数器被限制时只会令 NCU 字段为 `nan`，不会影响 Torch probe 或主采集。Ubuntu multiverse 的 `nsight-compute` 可能过旧，推荐使用 NVIDIA CUDA apt 源里的版本化包，例如 `/opt/nvidia/nsight-compute/<version>/ncu`。
 - Valgrind Massif (`valgrind`)：仅在显式启用 execution profiling 时用于 `gpu_mode=off` 的 process-lifetime CPU memory peak。AC-Prof 会基于模型镜像构建 `dockerfiles/massif.Dockerfile` 派生镜像并在其中安装 Valgrind，不要求 host 预装；首次启用需要 Docker build 的 apt 网络访问。未启用或 probe 失败不会影响主采集。
@@ -254,6 +254,8 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 
 - `latency_vs_scale.png`
 - `latency_app_vs_scale.png`
+- `latency_per_input_unit_vs_scale.png`
+- `latency_app_per_input_unit_vs_scale.png`
 - `latency_cv_vs_scale.png`
 - `latency_app_cv_vs_scale.png`
 - `gpu_avg_power_vs_scale.png`
@@ -265,6 +267,10 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 - `container_attributed_energy_vs_scale.png`
 - `container_attributed_samples_per_j_vs_scale.png`
 - `throughput_vs_scale.png`
+- `throughput_per_cpu_core_vs_scale.png`
+- `container_attributed_j_per_input_unit_vs_scale.png`
+- `packet_total_wire_bytes_per_request_vs_scale.png`
+- `packet_protocol_overhead_ratio_vs_scale.png`
 - `container_cpu_util_vs_scale.png`
 - `container_cpu_throttled_period_ratio_vs_scale.png`
 - `container_cpu_pressure_some_vs_scale.png`
@@ -275,6 +281,11 @@ python plot.py results/google-bert--bert-base-uncased/result_all.csv
 - `container_mem_util_vs_scale.png`
 - `container_mem_pressure_full_vs_scale.png`
 - `container_mem_usage_vs_scale.png`
+- `container_mem_peak_cgroup_vs_scale.png`
+- `container_mem_pgmajfault_delta_vs_scale.png`
+- `container_io_read_ops_per_request_vs_scale.png`
+- `container_io_write_ops_per_request_vs_scale.png`
+- `container_pids_peak_cgroup_vs_scale.png`
 - `gpu_util_vs_scale.png`
 - `gpu_mem_util_vs_scale.png`
 - `gpu_mem_used_vs_scale.png`
@@ -372,7 +383,7 @@ CPU 模型除共同的二次 log input-scale 项外，还使用二次 log CPU �
 | `--sniff-iface` | `docker0` | 本机 Docker 默认 bridge 对应的 `tcpdump` 抓包网卡。只有 daemon 改过 bridge 名时才覆盖。 |
 | `--output-dir` | `results` | 输出根目录。最终还会追加 model name 子目录。 |
 | `--skip-build` | false | 跳过 Docker build，直接使用已存在的 image tag。 |
-| `--allow-cgroup-v1` | false | 仅用于旧主机诊断的兼容开关。默认正式模式要求 cgroup v2；启用后允许 v1，但会记录 `legacy_compatible`，且 memory events/per-cgroup PSI 不具备同等口径。 |
+| `--allow-cgroup-v1` | false | 仅用于旧主机诊断的兼容开关。默认正式模式要求 cgroup v2；启用后允许 v1，但会记录 `legacy_compatible`，且 memory peak/stat、I/O 操作数、PID、memory events 与 per-cgroup PSI 不具备同等口径。 |
 
 结果目录存在异常中断留下的 `result_case_*.csv` 时，`run.py` 会先读取同目录 `static_meta.json/cgroup_version`。只有版本与当前 host 一致才允许续写；版本不同、缺失或元数据不可读时会退出，避免把 v1/v2 窗口合并到同一结果文件。
 
@@ -416,7 +427,7 @@ python run.py --model openai/whisper-large-v3 \
 
 | 文件 | 说明 |
 | --- | --- |
-| `result_all.csv` | 动态测量结果。每一行对应一个 resource config、一个 input scale、一次 warmup/repeat iteration，并记录该窗口的容器 swap 与块 I/O。 |
+| `result_all.csv` | 动态测量结果。每一行对应一个 resource config、一个 input scale、一次 warmup/repeat iteration，并记录归一化指标、PCAP 网络字节、cold-start phases，以及该窗口的 cgroup memory/stat/PID、swap、块 I/O 与压力/事件。 |
 | `static_meta.json` | 单个 JSON object 的静态元数据。记录模型版本、参数/精度/量化/许可证、输入输出格式、per-scale 静态逻辑 FLOPs、推理后端、镜像、GPU/主机 RAM、主机 swap、Docker 存储和环境信息。 |
 | `collection_history.json` | schema v1 的采集/修复 provenance。分别记录 post-hoc profiler 补采、timeout retry、quality retry 和静态元数据回填历史；最新一次状态由对应 history 的最后一项得到。 |
 | `input_scale_plan.json` | 所有任务族共用的 input scale/payload 计划。schema v2 额外记录 workload provenance、per-scale 输入元数据和模型约束；读取端继续兼容无版本字段的 v1 计划。主采集和 compute profiler 复用同一份 payload。 |
@@ -523,8 +534,14 @@ python -m acprof.cli.backfill_compute \
 | `mem_cap_gb` | 当前 Docker container 的 memory cap，单位 GB，来自 `--mems`。 |
 | `gpu_mode` | `on` 或 `off`。`on` 表示容器使用 Docker `--gpus all`。 |
 | `input_scale` | 本行实际执行的主输入尺度。语义见 `static_meta.json/input_scale_type`。 |
+| `input_units_per_request` | `effective input_scale × batch_size`。input unit 沿用任务族尺度：NLP/时序通常是 token/context step，Audio 是秒，CV 是缩放倍率而不是像素数。 |
 | `input_num_samples` | 音频 payload 的实际采样点数；其他任务或旧计划无法推导时为 `nan`。它是诊断字段，音频主尺度仍为 `duration_s`。 |
 | `request_payload_bytes` | `requests` 实际发送的 prepared HTTP JSON body 字节数，在同一 workload window 内取平均。 |
+| `packet_request_wire_bytes_per_request` / `packet_response_wire_bytes_per_request` | 从同一 PCAP 中属于该 `/predict` TCP stream 的 client→server / server→client captured `frame.len` 总和，再对本行请求求平均。客户端使用 `Connection: close`，因此每个 stream 对应一个请求；握手、ACK、关闭包和重传都保留。 |
+| `packet_total_wire_bytes_per_request` | 上述请求与响应 captured frame bytes 之和。它不含 capture 未保留的 Ethernet FCS，也不包含物理层 preamble / inter-frame gap，不能直接当作插座侧链路能耗输入。 |
+| `packet_tcp_payload_bytes_per_request` | 同一 TCP stream 内 `tcp.len` 的总和，再对本行请求求平均；重传 payload 会按实际捕获次数计入。 |
+| `packet_protocol_overhead_bytes_per_request` | `packet_total_wire_bytes_per_request - packet_tcp_payload_bytes_per_request`，表示捕获到的 L2/L3/L4 header、ACK/握手/关闭等开销；不拆分 TCP payload 内的 HTTP header 与 JSON body。 |
+| `packet_protocol_overhead_ratio` | 本行所有请求的 protocol overhead bytes 总和 / total wire bytes 总和；分母无效时为 `nan`。 |
 | `task_param` | 本行 payload 真正发送给 handler 的二级参数，使用稳定排序的 JSON 字符串；通常来自 `params`，时序任务同时记录顶层 `prediction_length`，不再记录未执行的任务族默认值。 |
 | `output_length_avg` | 同一 workload window 内响应文本字符数的平均值；不适用时为 `nan`。 |
 | `output_token_count_avg` | 同一 workload window 内响应文本 tokenizer token 数的平均值；用于解释 ASR 解码器工作量，不适用时为 `nan`。 |
@@ -532,16 +549,19 @@ python -m acprof.cli.backfill_compute \
 | `warmup` | `1` 表示 warmup 行，`0` 表示正式测量行。`plot.py` 默认排除 warmup 行。 |
 | `repeat_in_window` | 本行内部连续发送的 request 数量。`latency_app_s` 和 `latency_s` 都是该 window 内 request 的平均值。 |
 | `latency_s` | packet-level latency，来自 `tcpdump` PCAP + `tshark` 解析 + `acprof.packet.merge_packet_latency` merge。当前默认要求该字段完整；抓包不可用、PCAP 为空、解析为空或 merge 后仍有缺失时，程序会退出并给出恢复提示。 |
+| `latency_s_per_input_unit` | `latency_s / input_units_per_request`，在 packet merge 阶段更新。 |
 | `latency_request_count` | 本行实际合并到 packet-level latency 分布中的有效 request 数。可与 `repeat_in_window` 对照检查抓包完整性。 |
 | `latency_p50_s` / `latency_p90_s` / `latency_p95_s` | packet-level latency 在本行 request window 内的 empirical nearest-rank 分位数，由 merge 阶段从同一组 packet latency 明细计算。 |
 | `latency_std_s` / `latency_cv` / `latency_iqr_s` / `latency_max_s` | 同一 packet-level request window 的总体标准差、变异系数 `std / mean`、nearest-rank `P75 - P25` 和最大值。少于 2 个有效 request 时，std、CV 和 IQR 为 `nan`；max 仍保留。 |
 | `latency_slow_ratio` | packet-level latency 中超过 `SLOW_LATENCY_THRESHOLD_S` 的 request 比例，默认阈值为 `0.06` 秒，用于观察尾延迟或双峰分布。 |
 | `latency_app_s` | host-side application latency。`acprof.host.client` 用 `requests.post()` 外层 `time.perf_counter()` 测得，通常比 `latency_s` 更容易稳定产出。 |
+| `latency_app_s_per_input_unit` | `latency_app_s / input_units_per_request`。 |
 | `latency_app_request_count` | 本行 application latency 分布中的有效 request 数；正常成功窗口通常等于 `repeat_in_window`。 |
 | `latency_app_p50_s` / `latency_app_p90_s` / `latency_app_p95_s` | host-side application latency 在本行 request window 内的 empirical nearest-rank 分位数。 |
 | `latency_app_std_s` / `latency_app_cv` / `latency_app_iqr_s` / `latency_app_max_s` | application latency 的总体标准差、变异系数、nearest-rank IQR 和最大值；少于 2 个有效 request 时 std、CV 和 IQR 为 `nan`。 |
 | `latency_app_slow_ratio` | host-side application latency 中超过 `SLOW_LATENCY_THRESHOLD_S` 的 request 比例，默认阈值为 `0.06` 秒。 |
 | `throughput_samples_per_s` | 吞吐量，约等于 `batch_size / latency`。如果 `latency_s` 成功 merge，会优先按 `latency_s` 更新；否则按 `latency_app_s` 计算。 |
+| `throughput_samples_per_s_per_cpu_core` | `throughput_samples_per_s / cpu_cores`；packet latency merge 后会与 throughput 一起重算。它表示按配置 CPU quota 归一化的吞吐，不是实际 CPU utilization 归一化值。 |
 | `model_logical_mflop_per_request_torch_profiler_eager` | `torch_profiler_eager` 根据 eager operator shape 统计的单 request 模型逻辑计算量，单位 MFLOP。 |
 | `model_logical_mflops_app_torch_profiler_eager` | Torch eager 逻辑 MFLOP 除以 `latency_app_s`，单位 MFLOPS。 |
 | `model_logical_mflops_packet_torch_profiler_eager` | Torch eager 逻辑 MFLOP 除以 packet latency，单位 MFLOPS；packet latency 无效时回退到 application latency。 |
@@ -603,6 +623,7 @@ python -m acprof.cli.backfill_compute \
 | `container_attributed_edp_app_js` | `container_attributed_energy_eff_j * latency_app_s`，即 application-latency energy-delay product，单位 J·s/request。 |
 | `output_tokens_per_s_app` | `output_token_count_avg / latency_app_s`。只在 handler 能可靠返回 output token count 时有值，当前主要用于 ASR。 |
 | `container_attributed_j_per_output_token` | `container_attributed_energy_eff_j / output_token_count_avg`；没有可靠 output token count 时为 `nan`。 |
+| `container_attributed_j_per_input_unit` | `container_attributed_energy_eff_j / input_units_per_request`；沿用上述任务族 input unit 语义，不增加能耗采集窗口。 |
 | `resource_usage_iters` | resource usage monitor 在本行测量窗口内保留的 sample 数。 |
 | `container_cpu_util_avg_pct` | 当前 Docker container 在测量窗口内的平均 CPU 占用率，按 `container_cpu_time_delta / (elapsed_seconds * cpu_cores) * 100` 计算。 |
 | `container_cpu_util_peak_pct` | 当前 Docker container 在相邻采样间隔中的峰值 CPU 占用率，单位 `%`。 |
@@ -628,6 +649,10 @@ python -m acprof.cli.backfill_compute \
 | `container_mem_usage_peak_bytes` | 当前 Docker container 在测量窗口内的峰值 memory usage，单位 bytes。 |
 | `container_mem_util_avg_pct` | 当前 Docker container 平均 memory usage / `mem_cap_gb` 的百分比。 |
 | `container_mem_util_peak_pct` | 当前 Docker container 峰值 memory usage / `mem_cap_gb` 的百分比。 |
+| `container_mem_peak_cgroup_bytes` | workload 窗口结束时读取 cgroup v2 `memory.peak`。它是该新建 container cgroup 自创建以来的内存峰值，因此能捕获 `sample_hz` 之间的瞬时峰值，也可能包含模型加载期；不是单个 workload window 可重置的峰值。文件不存在或 cgroup v1 时为 `nan`。 |
+| `container_mem_anon_bytes_end` / `container_mem_file_bytes_end` / `container_mem_slab_bytes_end` | workload 窗口结束时 cgroup v2 `memory.stat` 的匿名内存、文件页和 slab 当前字节数。`slab` 缺失时使用 `slab_reclaimable + slab_unreclaimable`；无法读取时为 `nan`。 |
+| `container_mem_pgfault_delta` / `container_mem_pgmajfault_delta` | cgroup v2 `memory.stat` 的 page fault / major page fault 计数器在 workload 窗口首尾的增量。它们是整个 cgroup 的事件数，不按 request 归一化。 |
+| `container_mem_workingset_refault_delta` | cgroup v2 `memory.stat` 的 workingset refault 窗口增量；内核只提供 anon/file 分项时取两者之和，用于观察页被回收后再次访问。 |
 | `container_mem_high_events_delta` / `container_mem_max_events_delta` | cgroup v2 `memory.events` 的 `high` 和 `max` 计数器在 workload 窗口内的增量，分别表示 memory high 边界触发和 memory max 边界命中次数。cgroup v1 无同口径字段时为 `nan`。 |
 | `container_mem_oom_events_delta` / `container_mem_oom_kill_events_delta` | cgroup v2 `memory.events` 的 `oom` 与 `oom_kill` 窗口增量；前者表示 cgroup 内分配进入 OOM，后者表示实际发生进程 OOM kill。 |
 | `container_mem_pressure_some_stall_pct` / `container_mem_pressure_full_stall_pct` | cgroup v2 `memory.pressure` 的 `some/full total` 窗口增量占窗口时长的比例。`full` 表示窗口内所有相关任务同时因内存压力停顿。 |
@@ -636,7 +661,11 @@ python -m acprof.cli.backfill_compute \
 | `container_swap_usage_peak_bytes` | 同一测量窗口内采样到的 container swap 使用量峰值，单位 bytes；它不是 host 全局 swap 使用量。 |
 | `container_io_read_bytes_per_request` | 本行测量窗口首尾 container cgroup block-I/O read bytes 计数器之差，再除以实际 `repeat_in_window`；聚合 cgroup 报告的全部设备，无法读取或本行未完成请求时为 `nan`。 |
 | `container_io_write_bytes_per_request` | 本行测量窗口首尾 container cgroup block-I/O write bytes 计数器之差，再除以实际 `repeat_in_window`；page-cache hit 不产生块设备读取，因此该值不等于应用读取的文件字节数。 |
+| `container_io_read_ops_per_request` / `container_io_write_ops_per_request` | cgroup v2 `io.stat` 中全部设备 `rios/wios` 的窗口增量除以实际 `repeat_in_window`。它们表示 block-I/O operation 数，不是 POSIX read/write syscall 数；cgroup v1 兼容模式为 `nan`。 |
 | `container_io_pressure_some_stall_pct` / `container_io_pressure_full_stall_pct` | cgroup v2 `io.pressure` 的 `some/full total` 窗口增量占窗口时长的比例，用于区分真实 I/O stall 与仅有块 I/O 字节增量的情况。 |
+| `container_pids_current_end` | workload 窗口结束时 cgroup v2 `pids.current`，统计该 cgroup 当前 tasks 数。 |
+| `container_pids_peak_cgroup` | workload 窗口结束时读取 cgroup v2 `pids.peak`；与 `memory.peak` 一样是新建 container cgroup 生命周期峰值。旧内核未提供该文件时为 `nan`。 |
+| `container_pids_max_events_delta` | cgroup v2 `pids.events/max` 在 workload 窗口内的增量，表示因 PID hard limit 拒绝创建 task 的次数。 |
 | `gpu_sm_clock_mhz` | NVML device 0 在 workload 测量窗口内的 SM clock 成功采样值算术平均，单位 MHz。仅 `gpu_mode=on` 且 NVML 支持该查询时有值；不采集 graphics clock。 |
 | `gpu_memory_clock_mhz` | NVML device 0 在 workload 测量窗口内的 memory clock 成功采样值算术平均，单位 MHz。 |
 | `gpu_pstate` | NVML device 0 在 workload 测量窗口内出现次数最多的 performance state（`P0`–`P15`）；次数并列时取性能等级更高的较小编号。它是运行状态解释变量，不代表锁频。 |
@@ -647,6 +676,13 @@ python -m acprof.cli.backfill_compute \
 | `gpu_mem_used_peak_bytes` | NVML device 0 在测量窗口内的峰值 used VRAM，单位 bytes。 |
 | `gpu_mem_util_avg_pct` | NVML device 0 平均 used VRAM / total VRAM 的百分比。 |
 | `gpu_mem_util_peak_pct` | NVML device 0 峰值 used VRAM / total VRAM 的百分比。 |
+| `cold_start_started_at` / `cold_start_ready_at` | host 侧开始执行 `docker run` 与首次成功收到 `/ready` 的本地 ISO-8601 时间戳。 |
+| `cold_start_container_launch_s` | host 开始 `docker run` 到 container 内 Python server process 开始执行的时间；使用共享系统 wall clock 对齐。旧镜像未返回启动时间戳时为 `nan`。 |
+| `cold_start_server_setup_s` | server process 开始到 model load 开始之间的 setup 时间，扣除单独列出的显式 CUDA 初始化，包括 Python/framework/handler import 与配置。 |
+| `cold_start_cuda_init_s` | 现有启动路径中 `torch.cuda.is_available()` 与 `torch.cuda.init()` 的显式计时；CPU case 为 `0`，不发送 probe inference。 |
+| `cold_start_model_load_s` | container handler `load()` 的持续时间，使用 `time.perf_counter()`。 |
+| `cold_start_ready_wait_s` | model load 完成到 host 首次收到成功 `/ready` 的时间，包括 Flask 开始监听、poll interval 和本地 HTTP 往返。 |
+| `cold_start_first_predict_app_s` | workload client 发出的第一个成功 `/predict` 的 application latency；默认 auto-window 模式下通常是已有 auto-warmup 请求，固定窗口模式下是已有首个 warmup/measurement 请求，不会为此新增请求。 |
 | `cold_start_s` | 当前 container 从 `docker run` 到 `/ready` 成功的时间，单位秒。 |
 | `status` | `ok`、`warn` 或 `error`。`warn` 常用于可继续分析但存在异常值的行。 |
 | `error` | 错误或 warning 文本。正常行为空；`status=error` 时强制非空。请求超时会区分实际发出但未完成的请求（`client_request_timeout`）与未发请求、因前序超时跳过的计划行（`not_measured_after_timeout`），并记录触发尺度、timeout 下界、请求阶段和 request ID。 |
@@ -813,6 +849,8 @@ auto_warmup_s_per_case_scale ~= 5 * mean_latency_app_s
 
 如果显式指定 `--repeat-in-window N`，这段 auto warmup 成本为 `0`。
 
+本节新增的低成本字段不会扩大上述实验矩阵：`memory.peak`、`memory.stat`、`io.stat` 操作数与 `pids.*` 只在既有 workload window 首尾各读一次小型 cgroup 文件；归一化指标只做算术运算；网络字节复用已有 PCAP；cold-start phases 复用已有启动和首个推理路径。它们不增加 `/predict` 数量。PCAP parser 多做一次离线 `tshark` fields pass，通常只增加与 PCAP 大小相关的解析时间，不增加模型运行时间。
+
 整体主采集时间可以按 resource case 累加：
 
 ```text
@@ -916,7 +954,7 @@ GPU idle baseline 波动 warning：
 资源占用率字段全是 `nan`：
 
 - `container_*` usage/I/O 字段依赖被测容器的 cgroup CPU、memory、swap 与 I/O 文件；如果 Docker inspect、`/proc/<pid>/cgroup` 或 `/sys/fs/cgroup` 不可读，对应字段会保持 `nan`，不会影响其他可用指标。
-- 默认正式模式已在启动阶段强制 cgroup v2。只有显式使用 `--allow-cgroup-v1` 的兼容运行才会走 v1 fallback；其 `memory.events` 和 per-cgroup PSI 字段保持 `nan`，不会使用 host 全局 PSI 冒充 container 指标。
+- 默认正式模式已在启动阶段强制 cgroup v2。只有显式使用 `--allow-cgroup-v1` 的兼容运行才会走 v1 fallback；其 `memory.peak` / `memory.stat` 分解与计数器、`io.stat` 操作数、`pids.*`、`memory.events` 和 per-cgroup PSI 字段保持 `nan`，不会使用 host 全局数据冒充 container 指标。
 - `cpu_freq_*` 字段依赖 Linux cpufreq sysfs 或 `/proc/cpuinfo`。如果当前内核、虚拟化环境或权限不暴露当前频率，会保持 `nan`。
 - `cpu_cycles_est_app` 依赖 `latency_app_s`、`cpu_freq_avg_hz`、`cpu_cores` 和 `container_cpu_util_avg_pct` 都有效；`cpu_cycles_est_packet` 还额外依赖 packet latency merge 成功回填 `latency_s`。
 - `gpu_*` utilization / VRAM 字段仅在 `gpu_mode=on` 且 NVML 可用时采集；口径是 NVML device-level，可能包含同一 GPU 上其他进程的占用。

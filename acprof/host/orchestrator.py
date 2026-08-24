@@ -5,6 +5,7 @@ Python replacement for run_case.sh / run_matrix.sh.
 from __future__ import annotations
 
 import csv
+import datetime
 import hashlib
 import json
 import math
@@ -145,6 +146,13 @@ class RunningContainer:
     base_url: str
     host_port: int
     cold_start_s: float
+    cold_start_started_at: str = "nan"
+    cold_start_ready_at: str = "nan"
+    cold_start_container_launch_s: float = float("nan")
+    cold_start_server_setup_s: float = float("nan")
+    cold_start_cuda_init_s: float = float("nan")
+    cold_start_model_load_s: float = float("nan")
+    cold_start_ready_wait_s: float = float("nan")
 
 
 @dataclass
@@ -484,6 +492,81 @@ def _parse_csv_float(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return float("nan")
+
+
+def _nonnegative_float_or_nan(value: Any) -> float:
+    parsed = _parse_csv_float(value)
+    return parsed if math.isfinite(parsed) and parsed >= 0.0 else float("nan")
+
+
+def _iso_from_epoch(epoch_s: float) -> str:
+    if not math.isfinite(epoch_s):
+        return "nan"
+    return datetime.datetime.fromtimestamp(
+        epoch_s,
+        tz=datetime.timezone.utc,
+    ).astimezone().isoformat(timespec="milliseconds")
+
+
+def _cold_start_breakdown(
+    body: Optional[Dict[str, Any]],
+    docker_started_at_epoch_s: float,
+    ready_received_at_epoch_s: float,
+) -> Dict[str, Any]:
+    timing = body.get("startup_timing", {}) if isinstance(body, dict) else {}
+    if not isinstance(timing, dict):
+        timing = {}
+
+    process_started_at = _parse_csv_float(
+        timing.get("server_process_started_at_epoch_s")
+    )
+    model_load_completed_at = _parse_csv_float(
+        timing.get("model_load_completed_at_epoch_s")
+    )
+    container_launch_s = (
+        process_started_at - docker_started_at_epoch_s
+        if math.isfinite(process_started_at)
+        and process_started_at >= docker_started_at_epoch_s
+        else float("nan")
+    )
+    ready_wait_s = (
+        ready_received_at_epoch_s - model_load_completed_at
+        if math.isfinite(model_load_completed_at)
+        and ready_received_at_epoch_s >= model_load_completed_at
+        else float("nan")
+    )
+    model_load_s = _nonnegative_float_or_nan(timing.get("model_load_s"))
+    if not math.isfinite(model_load_s) and isinstance(body, dict):
+        model_load_s = _nonnegative_float_or_nan(body.get("load_time_s"))
+
+    return {
+        "cold_start_started_at": _iso_from_epoch(docker_started_at_epoch_s),
+        "cold_start_ready_at": _iso_from_epoch(ready_received_at_epoch_s),
+        "cold_start_container_launch_s": container_launch_s,
+        "cold_start_server_setup_s": _nonnegative_float_or_nan(
+            timing.get("server_setup_s")
+        ),
+        "cold_start_cuda_init_s": _nonnegative_float_or_nan(
+            timing.get("cuda_init_s")
+        ),
+        "cold_start_model_load_s": model_load_s,
+        "cold_start_ready_wait_s": ready_wait_s,
+    }
+
+
+def _cold_start_client_env(session: RunningContainer) -> Dict[str, str]:
+    return {
+        "COLD_START_STARTED_AT": session.cold_start_started_at,
+        "COLD_START_READY_AT": session.cold_start_ready_at,
+        "COLD_START_CONTAINER_LAUNCH_S": str(
+            session.cold_start_container_launch_s
+        ),
+        "COLD_START_SERVER_SETUP_S": str(session.cold_start_server_setup_s),
+        "COLD_START_CUDA_INIT_S": str(session.cold_start_cuda_init_s),
+        "COLD_START_MODEL_LOAD_S": str(session.cold_start_model_load_s),
+        "COLD_START_READY_WAIT_S": str(session.cold_start_ready_wait_s),
+        "COLD_START_S": f"{session.cold_start_s:.6f}",
+    }
 
 
 def _row_has_error_status(row: Dict[str, Any]) -> bool:
@@ -2005,6 +2088,7 @@ def _start_container_session(
         image_info.tag,
     ]
 
+    t0_wall = time.time()
     t0 = time.perf_counter()
     result = _run(docker_cmd, check=False)
     if result.returncode != 0:
@@ -2028,6 +2112,7 @@ def _start_container_session(
                 headers={"Connection": "close"},
             )
             if response.status_code == 200:
+                ready_received_at = time.time()
                 try:
                     body = response.json()
                 except Exception:
@@ -2035,6 +2120,11 @@ def _start_container_session(
 
                 if isinstance(body, dict) and body.get("status") == "ok":
                     cold_start_s = time.perf_counter() - t0
+                    breakdown = _cold_start_breakdown(
+                        body,
+                        t0_wall,
+                        ready_received_at,
+                    )
                     print(
                         f"{log_prefix} Model: {body.get('model_id')}, "
                         f"device: {body.get('device')}, load: {body.get('load_time_s')}s"
@@ -2045,16 +2135,23 @@ def _start_container_session(
                         base_url=base_url,
                         host_port=host_port,
                         cold_start_s=cold_start_s,
+                        **breakdown,
                     )
 
                 if response.text.strip() == "ok":
                     cold_start_s = time.perf_counter() - t0
+                    breakdown = _cold_start_breakdown(
+                        None,
+                        t0_wall,
+                        ready_received_at,
+                    )
                     print(f"{log_prefix} Server ready. cold_start={cold_start_s:.3f}s")
                     return RunningContainer(
                         name=container_name,
                         base_url=base_url,
                         host_port=host_port,
                         cold_start_s=cold_start_s,
+                        **breakdown,
                     )
         except Exception:
             pass
@@ -3197,7 +3294,7 @@ def run_single_case(
             "REPEAT": str(repeat),
             "REPEAT_IN_WINDOW": str(repeat_in_window),
             "REPEAT_WINDOW_SECONDS": str(repeat_window_seconds),
-            "COLD_START_S": f"{cold_start_s:.3f}",
+            **_cold_start_client_env(session),
             "OUT_CSV": out_csv,
             "CASE_NAME": case_name,
             "CONTAINER_NAME": container_name,
@@ -3300,7 +3397,13 @@ def run_single_case(
                         "pcap parser produced invalid JSON",
                         repr(exc),
                     ) from exc
-                if not latency_payload:
+                latency_records = (
+                    latency_payload.get("requests")
+                    if isinstance(latency_payload, dict)
+                    and "requests" in latency_payload
+                    else latency_payload
+                )
+                if not isinstance(latency_records, dict) or not latency_records:
                     raise _packet_latency_error(
                         "pcap parser did not find matching request latency records"
                     )

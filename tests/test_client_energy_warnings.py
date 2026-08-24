@@ -141,8 +141,15 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertIn("cgroup_collection_mode", STATIC_META_FIELDS)
         expected = [
             "input_scale",
+            "input_units_per_request",
             "input_num_samples",
             "request_payload_bytes",
+            "packet_request_wire_bytes_per_request",
+            "packet_response_wire_bytes_per_request",
+            "packet_total_wire_bytes_per_request",
+            "packet_tcp_payload_bytes_per_request",
+            "packet_protocol_overhead_bytes_per_request",
+            "packet_protocol_overhead_ratio",
             "task_param",
             "output_length_avg",
             "output_token_count_avg",
@@ -223,13 +230,15 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
             client.time,
             "perf_counter",
             side_effect=[10.0, 10.25],
-        ):
+        ), patch.object(client, "_FIRST_PREDICT_APP_S", float("nan")):
             result = client._one_request(3.0, "req", payload_override=payload)
+            first_predict_app_s = client._FIRST_PREDICT_APP_S
 
         self.assertEqual(result["request_payload_bytes"], 14.0)
         self.assertEqual(result["output_length"], 12.0)
         self.assertEqual(result["output_token_count"], 5.0)
         self.assertEqual(result["task_param"], '{"a":2,"z":1}')
+        self.assertEqual(first_predict_app_s, 0.25)
 
     def test_task_param_includes_top_level_timeseries_prediction_length(self) -> None:
         payload = {
@@ -271,6 +280,8 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                 client, "WARMUP", 0
             ), patch.object(client, "REPEAT", 1), patch.object(
                 client, "REPEAT_IN_WINDOW", 2
+            ), patch.object(client, "BATCH_SIZE", 2), patch.object(
+                client, "CPU_CORES", "2"
             ), patch.object(client, "USE_ENERGY", False), patch.object(
                 client, "USE_MIPS", False
             ), patch.object(client, "energy_mod", None), patch.object(
@@ -296,10 +307,16 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
             with open(out_csv, "r", encoding="utf-8", newline="") as f:
                 row = next(csv.DictReader(f))
 
+        self.assertEqual(row["input_units_per_request"], "2.000000")
         self.assertEqual(row["input_num_samples"], "16000.000000")
         self.assertEqual(row["request_payload_bytes"], "102.000000")
         self.assertEqual(row["output_length_avg"], "12.000000")
         self.assertEqual(row["output_token_count_avg"], "4.000000")
+        self.assertEqual(row["latency_app_s_per_input_unit"], "0.075000")
+        self.assertEqual(
+            row["throughput_samples_per_s_per_cpu_core"],
+            "6.666667",
+        )
         self.assertEqual(
             row["task_param"],
             '{"language":"english","task":"transcribe"}',
@@ -430,6 +447,13 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
 
     def test_csv_schema_includes_container_swap_and_io_metrics(self) -> None:
         fields = [
+            "container_mem_peak_cgroup_bytes",
+            "container_mem_anon_bytes_end",
+            "container_mem_file_bytes_end",
+            "container_mem_slab_bytes_end",
+            "container_mem_pgfault_delta",
+            "container_mem_pgmajfault_delta",
+            "container_mem_workingset_refault_delta",
             "container_mem_high_events_delta",
             "container_mem_max_events_delta",
             "container_mem_oom_events_delta",
@@ -441,8 +465,13 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
             "container_swap_usage_peak_bytes",
             "container_io_read_bytes_per_request",
             "container_io_write_bytes_per_request",
+            "container_io_read_ops_per_request",
+            "container_io_write_ops_per_request",
             "container_io_pressure_some_stall_pct",
             "container_io_pressure_full_stall_pct",
+            "container_pids_current_end",
+            "container_pids_peak_cgroup",
+            "container_pids_max_events_delta",
         ]
 
         start = CSV_FIELDS.index("container_mem_util_peak_pct") + 1
@@ -689,6 +718,7 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
             output_token_count_avg=10.0,
             gpu_energy_eff_j=0.3,
             vcpu_energy_eff_j=0.2,
+            input_units_per_request=8.0,
         )
 
         self.assertAlmostEqual(
@@ -708,6 +738,10 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
             metrics["container_attributed_j_per_output_token"],
             0.05,
         )
+        self.assertAlmostEqual(
+            metrics["container_attributed_j_per_input_unit"],
+            0.0625,
+        )
 
         missing_gpu = client._derived_efficiency_metrics(
             gpu_mode="on",
@@ -720,6 +754,52 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertTrue(
             math.isnan(missing_gpu["container_attributed_energy_eff_j"])
         )
+
+    def test_cold_start_row_metrics_include_phases_and_first_predict(self) -> None:
+        with patch.object(
+            client,
+            "COLD_START_STARTED_AT",
+            "2026-08-23T10:00:00.000+08:00",
+        ), patch.object(
+            client,
+            "COLD_START_READY_AT",
+            "2026-08-23T10:00:01.000+08:00",
+        ), patch.object(
+            client,
+            "COLD_START_CONTAINER_LAUNCH_S",
+            "0.1",
+        ), patch.object(
+            client,
+            "COLD_START_SERVER_SETUP_S",
+            "0.2",
+        ), patch.object(
+            client,
+            "COLD_START_CUDA_INIT_S",
+            "0.05",
+        ), patch.object(
+            client,
+            "COLD_START_MODEL_LOAD_S",
+            "0.55",
+        ), patch.object(
+            client,
+            "COLD_START_READY_WAIT_S",
+            "0.1",
+        ), patch.object(
+            client,
+            "COLD_START_S",
+            "1.0",
+        ), patch.object(
+            client,
+            "_FIRST_PREDICT_APP_S",
+            0.25,
+        ):
+            metrics = client._cold_start_row_metrics()
+
+        self.assertEqual(metrics["cold_start_container_launch_s"], "0.1")
+        self.assertEqual(metrics["cold_start_cuda_init_s"], "0.05")
+        self.assertEqual(metrics["cold_start_model_load_s"], "0.55")
+        self.assertEqual(metrics["cold_start_first_predict_app_s"], "0.250000")
+        self.assertEqual(metrics["cold_start_s"], "1.0")
 
     def test_manual_repeat_in_window_skips_auto_warmup(self) -> None:
         def fake_one_request(scale_value, req_id, payload_override=None):
@@ -1588,6 +1668,13 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                     container_mem_usage_peak_bytes=2048.0,
                     container_mem_util_avg_pct=1.0,
                     container_mem_util_peak_pct=2.0,
+                    container_mem_peak_cgroup_bytes=4096.0,
+                    container_mem_anon_bytes_end=1536.0,
+                    container_mem_file_bytes_end=512.0,
+                    container_mem_slab_bytes_end=256.0,
+                    container_mem_pgfault_delta=30.0,
+                    container_mem_pgmajfault_delta=2.0,
+                    container_mem_workingset_refault_delta=4.0,
                     container_mem_high_events_delta=3.0,
                     container_mem_max_events_delta=2.0,
                     container_mem_oom_events_delta=1.0,
@@ -1599,8 +1686,13 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                     container_swap_usage_peak_bytes=256.0,
                     container_io_read_bytes=1024.0,
                     container_io_write_bytes=2048.0,
+                    container_io_read_ops=6.0,
+                    container_io_write_ops=8.0,
                     container_io_pressure_some_stall_pct=2.5,
                     container_io_pressure_full_stall_pct=0.25,
+                    container_pids_current_end=7.0,
+                    container_pids_peak_cgroup=9.0,
+                    container_pids_max_events_delta=1.0,
                     gpu_util_avg_pct=30.0,
                     gpu_util_peak_pct=40.0,
                     gpu_sm_clock_mhz=1500.0,
@@ -1687,6 +1779,12 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(rows[0]["gpu_util_avg_pct"], "30.000000")
         self.assertEqual(rows[0]["container_swap_limit_bytes"], "4096.000000")
         self.assertEqual(rows[0]["container_mem_high_events_delta"], "3.000000")
+        self.assertEqual(
+            rows[0]["container_mem_peak_cgroup_bytes"],
+            "4096.000000",
+        )
+        self.assertEqual(rows[0]["container_mem_pgfault_delta"], "30.000000")
+        self.assertEqual(rows[0]["container_mem_pgmajfault_delta"], "2.000000")
         self.assertEqual(rows[0]["container_mem_oom_events_delta"], "1.000000")
         self.assertEqual(
             rows[0]["container_mem_pressure_full_stall_pct"],
@@ -1709,9 +1807,20 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
             "1024.000000",
         )
         self.assertEqual(
+            rows[0]["container_io_read_ops_per_request"],
+            "3.000000",
+        )
+        self.assertEqual(
+            rows[0]["container_io_write_ops_per_request"],
+            "4.000000",
+        )
+        self.assertEqual(
             rows[0]["container_io_pressure_full_stall_pct"],
             "0.250000",
         )
+        self.assertEqual(rows[0]["container_pids_current_end"], "7.000000")
+        self.assertEqual(rows[0]["container_pids_peak_cgroup"], "9.000000")
+        self.assertEqual(rows[0]["container_pids_max_events_delta"], "1.000000")
         self.assertNotIn("gpu_power_w", rows[0])
         self.assertNotIn("gpu_util_percent", rows[0])
         self.assertNotIn("gpu_mem_total_bytes", rows[0])

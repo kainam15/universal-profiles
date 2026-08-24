@@ -8,6 +8,13 @@ from typing import Sequence
 
 SNIFF_GROUP_FIELD = "sniff_group_id"
 SLOW_LATENCY_THRESHOLD_S = float(os.getenv("SLOW_LATENCY_THRESHOLD_S", "0.06"))
+NETWORK_RECORD_TO_CSV_FIELD = {
+    "request_wire_bytes": "packet_request_wire_bytes_per_request",
+    "response_wire_bytes": "packet_response_wire_bytes_per_request",
+    "total_wire_bytes": "packet_total_wire_bytes_per_request",
+    "tcp_payload_bytes": "packet_tcp_payload_bytes_per_request",
+    "protocol_overhead_bytes": "packet_protocol_overhead_bytes_per_request",
+}
 
 
 def _read_static_batch_size(csv_path: str) -> float:
@@ -39,6 +46,69 @@ def _to_float(value: object) -> float:
         return float(value)
     except Exception:
         return float("nan")
+
+
+def _request_records(payload: object) -> dict[str, dict[str, float]]:
+    """Normalize both the legacy flat map and packet schema v2."""
+    if not isinstance(payload, dict):
+        return {}
+    raw_requests = payload.get("requests")
+    if isinstance(raw_requests, dict):
+        records = {}
+        for request_id, raw_record in raw_requests.items():
+            if not isinstance(raw_record, dict):
+                continue
+            records[str(request_id)] = {
+                key: _to_float(value)
+                for key, value in raw_record.items()
+            }
+        return records
+
+    records = {}
+    for request_id, latency in payload.items():
+        parsed = _to_float(latency)
+        if math.isfinite(parsed):
+            records[str(request_id)] = {"latency_s": parsed}
+    return records
+
+
+def _input_units_per_request(row: dict, batch_size: float) -> float:
+    explicit = _to_float(row.get("input_units_per_request", "nan"))
+    if math.isfinite(explicit) and explicit > 0.0:
+        return explicit
+    input_scale = _to_float(row.get("input_scale", "nan"))
+    if (
+        math.isfinite(input_scale)
+        and input_scale > 0.0
+        and math.isfinite(batch_size)
+        and batch_size > 0.0
+    ):
+        return input_scale * batch_size
+    return float("nan")
+
+
+def _set_packet_network_metrics(row: dict, records: list[dict[str, float]]) -> None:
+    for record_field, csv_field in NETWORK_RECORD_TO_CSV_FIELD.items():
+        value = _mean([record.get(record_field, float("nan")) for record in records])
+        if math.isfinite(value):
+            row[csv_field] = _fmt_float(value)
+
+    overhead_values = [
+        record.get("protocol_overhead_bytes", float("nan"))
+        for record in records
+    ]
+    finite_overhead_values = [
+        value for value in overhead_values if math.isfinite(value)
+    ]
+    wire_values = [
+        record.get("total_wire_bytes", float("nan")) for record in records
+    ]
+    finite_wire_values = [value for value in wire_values if math.isfinite(value)]
+    total_wire_sum = sum(finite_wire_values)
+    if finite_overhead_values and finite_wire_values and total_wire_sum > 0.0:
+        row["packet_protocol_overhead_ratio"] = _fmt_float(
+            sum(finite_overhead_values) / total_wire_sum
+        )
 
 
 def _mean(values: list[float]) -> float:
@@ -214,13 +284,14 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     in_csv, lat_json, out_csv = args
     with open(lat_json, "r", encoding="utf-8") as f:
-        lat_map = json.load(f)
+        packet_payload = json.load(f)
+    request_records = _request_records(packet_payload)
     static_batch_size = _read_static_batch_size(in_csv)
 
-    group_lats = defaultdict(list)
-    for req_id, lat in lat_map.items():
+    group_records = defaultdict(list)
+    for req_id, record in request_records.items():
         group_id = req_id.split(":", 1)[0]
-        group_lats[group_id].append(float(lat))
+        group_records[group_id].append(record)
 
     with open(in_csv, "r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
@@ -236,8 +307,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         gid = r.get(SNIFF_GROUP_FIELD, "")
         if not gid and idx < len(sidecar_groups):
             gid = sidecar_groups[idx]
-        if gid and gid in group_lats and group_lats[gid]:
-            latencies = group_lats[gid]
+        if gid and gid in group_records and group_records[gid]:
+            records = group_records[gid]
+            latencies = [record.get("latency_s", float("nan")) for record in records]
             r["latency_s"] = _fmt_float(_mean(latencies))
             for field, value in _distribution_metrics(latencies).items():
                 r[field] = _fmt_float(value)
@@ -248,6 +320,20 @@ def main(argv: Sequence[str] | None = None) -> None:
                 lat = float(r["latency_s"])
                 if lat > 0:
                     r["throughput_samples_per_s"] = f"{(bs / lat):.6f}"
+                    input_units = _input_units_per_request(r, bs)
+                    if math.isfinite(input_units) and input_units > 0.0:
+                        r["latency_s_per_input_unit"] = _fmt_float(
+                            lat / input_units
+                        )
+                    cpu_cores = _to_float(r.get("cpu_cores", "nan"))
+                    if math.isfinite(cpu_cores) and cpu_cores > 0.0:
+                        r["throughput_samples_per_s_per_cpu_core"] = _fmt_float(
+                            (bs / lat) / cpu_cores
+                        )
+            except Exception:
+                pass
+            try:
+                _set_packet_network_metrics(r, records)
             except Exception:
                 pass
             try:

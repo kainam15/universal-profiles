@@ -74,8 +74,20 @@ class ResourceUsageResult:
     container_mem_oom_kill_events_delta: float = float("nan")
     container_mem_pressure_some_stall_pct: float = float("nan")
     container_mem_pressure_full_stall_pct: float = float("nan")
+    container_mem_peak_cgroup_bytes: float = float("nan")
+    container_mem_anon_bytes_end: float = float("nan")
+    container_mem_file_bytes_end: float = float("nan")
+    container_mem_slab_bytes_end: float = float("nan")
+    container_mem_pgfault_delta: float = float("nan")
+    container_mem_pgmajfault_delta: float = float("nan")
+    container_mem_workingset_refault_delta: float = float("nan")
+    container_io_read_ops: float = float("nan")
+    container_io_write_ops: float = float("nan")
     container_io_pressure_some_stall_pct: float = float("nan")
     container_io_pressure_full_stall_pct: float = float("nan")
+    container_pids_current_end: float = float("nan")
+    container_pids_peak_cgroup: float = float("nan")
+    container_pids_max_events_delta: float = float("nan")
 
 
 @dataclass
@@ -90,6 +102,10 @@ class _ContainerReaders:
     cpu_pressure: Optional[Callable[[], Dict[str, float]]] = None
     memory_pressure: Optional[Callable[[], Dict[str, float]]] = None
     io_pressure: Optional[Callable[[], Dict[str, float]]] = None
+    memory_peak: Optional[Callable[[], Dict[str, float]]] = None
+    memory_stat: Optional[Callable[[], Dict[str, float]]] = None
+    io_operations: Optional[Callable[[], Dict[str, float]]] = None
+    pids: Optional[Callable[[], Dict[str, float]]] = None
 
 
 @dataclass
@@ -99,6 +115,10 @@ class _WindowCounterSnapshots:
     cpu_pressure: Optional[Dict[str, float]] = None
     memory_pressure: Optional[Dict[str, float]] = None
     io_pressure: Optional[Dict[str, float]] = None
+    memory_peak: Optional[Dict[str, float]] = None
+    memory_stat: Optional[Dict[str, float]] = None
+    io_operations: Optional[Dict[str, float]] = None
+    pids: Optional[Dict[str, float]] = None
 
 
 def _nan_result(resource_usage_iters: int = 0) -> ResourceUsageResult:
@@ -208,6 +228,23 @@ def _read_cgroup_v2_io_stat(path: str) -> Tuple[int, int]:
     return read_bytes, write_bytes
 
 
+def _read_cgroup_v2_io_operations(path: str) -> Dict[str, float]:
+    read_ops = 0
+    write_ops = 0
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            parts = line.split()
+            for token in parts[1:]:
+                key, separator, raw_value = token.partition("=")
+                if not separator:
+                    continue
+                if key == "rios":
+                    read_ops += int(raw_value)
+                elif key == "wios":
+                    write_ops += int(raw_value)
+    return {"read_ops": float(read_ops), "write_ops": float(write_ops)}
+
+
 def _read_cgroup_v1_io_service_bytes(path: str) -> Tuple[int, int]:
     read_bytes = 0
     write_bytes = 0
@@ -245,6 +282,57 @@ def _read_flat_cgroup_stats(path: str) -> Dict[str, float]:
             except ValueError:
                 continue
     return stats
+
+
+def _read_cgroup_memory_peak(path: str) -> Dict[str, float]:
+    return {"peak": float(_read_int(path))}
+
+
+def _read_cgroup_memory_stat(path: str) -> Dict[str, float]:
+    stats = _read_flat_cgroup_stats(path)
+    slab = stats.get("slab", float("nan"))
+    if slab != slab:
+        slab_reclaimable = stats.get("slab_reclaimable", float("nan"))
+        slab_unreclaimable = stats.get("slab_unreclaimable", float("nan"))
+        if slab_reclaimable == slab_reclaimable and slab_unreclaimable == slab_unreclaimable:
+            slab = slab_reclaimable + slab_unreclaimable
+
+    refault_anon = stats.get("workingset_refault_anon", float("nan"))
+    refault_file = stats.get("workingset_refault_file", float("nan"))
+    refault_total = stats.get("workingset_refault", float("nan"))
+    if refault_total != refault_total and refault_anon == refault_anon and refault_file == refault_file:
+        refault_total = refault_anon + refault_file
+
+    return {
+        "anon": stats.get("anon", float("nan")),
+        "file": stats.get("file", float("nan")),
+        "slab": slab,
+        "pgfault": stats.get("pgfault", float("nan")),
+        "pgmajfault": stats.get("pgmajfault", float("nan")),
+        "workingset_refault": refault_total,
+    }
+
+
+def _read_cgroup_pids(
+    current_path: Optional[str],
+    peak_path: Optional[str],
+    events_path: Optional[str],
+) -> Dict[str, float]:
+    result = {
+        "current": float("nan"),
+        "peak": float("nan"),
+        "max_events": float("nan"),
+    }
+    if current_path is not None:
+        result["current"] = float(_read_int(current_path))
+    if peak_path is not None:
+        result["peak"] = float(_read_int(peak_path))
+    if events_path is not None:
+        result["max_events"] = _read_flat_cgroup_stats(events_path).get(
+            "max",
+            float("nan"),
+        )
+    return result
 
 
 def _read_cgroup_v2_cpu_throttle(path: str) -> Dict[str, float]:
@@ -316,6 +404,15 @@ def _counter_delta(
     ):
         return float("nan")
     return end_value - start_value
+
+
+def _snapshot_value(snapshot: Optional[Dict[str, float]], key: str) -> float:
+    if snapshot is None:
+        return float("nan")
+    try:
+        return float(snapshot.get(key, float("nan")))
+    except (TypeError, ValueError):
+        return float("nan")
 
 
 def _pressure_stall_pct(
@@ -398,6 +495,49 @@ def _apply_window_counter_metrics(
         "full",
         elapsed_s,
     )
+
+    result.container_mem_peak_cgroup_bytes = _snapshot_value(
+        end.memory_peak,
+        "peak",
+    )
+    result.container_mem_anon_bytes_end = _snapshot_value(
+        end.memory_stat,
+        "anon",
+    )
+    result.container_mem_file_bytes_end = _snapshot_value(
+        end.memory_stat,
+        "file",
+    )
+    result.container_mem_slab_bytes_end = _snapshot_value(
+        end.memory_stat,
+        "slab",
+    )
+    result.container_mem_pgfault_delta = _counter_delta(
+        start.memory_stat,
+        end.memory_stat,
+        "pgfault",
+    )
+    result.container_mem_pgmajfault_delta = _counter_delta(
+        start.memory_stat,
+        end.memory_stat,
+        "pgmajfault",
+    )
+    result.container_mem_workingset_refault_delta = _counter_delta(
+        start.memory_stat,
+        end.memory_stat,
+        "workingset_refault",
+    )
+
+    result.container_io_read_ops = _counter_delta(
+        start.io_operations,
+        end.io_operations,
+        "read_ops",
+    )
+    result.container_io_write_ops = _counter_delta(
+        start.io_operations,
+        end.io_operations,
+        "write_ops",
+    )
     result.container_io_pressure_some_stall_pct = _pressure_stall_pct(
         start.io_pressure,
         end.io_pressure,
@@ -409,6 +549,13 @@ def _apply_window_counter_metrics(
         end.io_pressure,
         "full",
         elapsed_s,
+    )
+    result.container_pids_current_end = _snapshot_value(end.pids, "current")
+    result.container_pids_peak_cgroup = _snapshot_value(end.pids, "peak")
+    result.container_pids_max_events_delta = _counter_delta(
+        start.pids,
+        end.pids,
+        "max_events",
     )
 
 
@@ -579,6 +726,16 @@ def _resolve_container_metric_readers(
                 "memory.swap.max",
             )
             io_path = _join_cgroup_path(cgroup_root, parts[2], "io.stat")
+            memory_peak_path = _join_cgroup_path(
+                cgroup_root,
+                parts[2],
+                "memory.peak",
+            )
+            memory_stat_path = _join_cgroup_path(
+                cgroup_root,
+                parts[2],
+                "memory.stat",
+            )
             memory_events_path = _join_cgroup_path(
                 cgroup_root,
                 parts[2],
@@ -599,6 +756,21 @@ def _resolve_container_metric_readers(
                 parts[2],
                 "io.pressure",
             )
+            pids_current_path = _join_cgroup_path(
+                cgroup_root,
+                parts[2],
+                "pids.current",
+            )
+            pids_peak_path = _join_cgroup_path(
+                cgroup_root,
+                parts[2],
+                "pids.peak",
+            )
+            pids_events_path = _join_cgroup_path(
+                cgroup_root,
+                parts[2],
+                "pids.events",
+            )
             if os.path.exists(cpu_path):
                 readers.cpu = lambda path=cpu_path: _read_cpu_stat_usage_s(path)
                 readers.cpu_throttle = (
@@ -614,6 +786,17 @@ def _resolve_container_metric_readers(
                 )
             if os.path.exists(io_path):
                 readers.io = lambda path=io_path: _read_cgroup_v2_io_stat(path)
+                readers.io_operations = (
+                    lambda path=io_path: _read_cgroup_v2_io_operations(path)
+                )
+            if os.path.exists(memory_peak_path):
+                readers.memory_peak = (
+                    lambda path=memory_peak_path: _read_cgroup_memory_peak(path)
+                )
+            if os.path.exists(memory_stat_path):
+                readers.memory_stat = (
+                    lambda path=memory_stat_path: _read_cgroup_memory_stat(path)
+                )
             if os.path.exists(memory_events_path):
                 readers.memory_events = (
                     lambda path=memory_events_path: _read_cgroup_memory_events(path)
@@ -629,6 +812,31 @@ def _resolve_container_metric_readers(
             if os.path.exists(io_pressure_path):
                 readers.io_pressure = (
                     lambda path=io_pressure_path: _read_pressure_totals(path)
+                )
+            existing_pids_paths = [
+                path
+                for path in (
+                    pids_current_path,
+                    pids_peak_path,
+                    pids_events_path,
+                )
+                if os.path.exists(path)
+            ]
+            if existing_pids_paths:
+                readers.pids = (
+                    lambda current=(
+                        pids_current_path
+                        if os.path.exists(pids_current_path)
+                        else None
+                    ), peak=(
+                        pids_peak_path
+                        if os.path.exists(pids_peak_path)
+                        else None
+                    ), events=(
+                        pids_events_path
+                        if os.path.exists(pids_events_path)
+                        else None
+                    ): _read_cgroup_pids(current, peak, events)
                 )
             return readers
 
@@ -930,6 +1138,18 @@ class ResourceUsageMonitor:
         self._io_pressure_reader: Optional[
             Callable[[], Dict[str, float]]
         ] = None
+        self._memory_peak_reader: Optional[
+            Callable[[], Dict[str, float]]
+        ] = None
+        self._memory_stat_reader: Optional[
+            Callable[[], Dict[str, float]]
+        ] = None
+        self._io_operations_reader: Optional[
+            Callable[[], Dict[str, float]]
+        ] = None
+        self._pids_reader: Optional[
+            Callable[[], Dict[str, float]]
+        ] = None
         self._swap_limit_bytes: Optional[int] = None
         self._io_start: Optional[Tuple[int, int]] = None
         self._io_end: Optional[Tuple[int, int]] = None
@@ -960,6 +1180,10 @@ class ResourceUsageMonitor:
             self._cpu_pressure_reader = readers.cpu_pressure
             self._memory_pressure_reader = readers.memory_pressure
             self._io_pressure_reader = readers.io_pressure
+            self._memory_peak_reader = readers.memory_peak
+            self._memory_stat_reader = readers.memory_stat
+            self._io_operations_reader = readers.io_operations
+            self._pids_reader = readers.pids
         except Exception as exc:
             self._init_error = str(exc)
 
@@ -988,6 +1212,10 @@ class ResourceUsageMonitor:
             or self._cpu_pressure_reader is not None
             or self._memory_pressure_reader is not None
             or self._io_pressure_reader is not None
+            or self._memory_peak_reader is not None
+            or self._memory_stat_reader is not None
+            or self._io_operations_reader is not None
+            or self._pids_reader is not None
             or self._gpu_handle is not None
         )
 
@@ -1097,6 +1325,10 @@ class ResourceUsageMonitor:
             ("cpu_pressure", self._cpu_pressure_reader),
             ("memory_pressure", self._memory_pressure_reader),
             ("io_pressure", self._io_pressure_reader),
+            ("memory_peak", self._memory_peak_reader),
+            ("memory_stat", self._memory_stat_reader),
+            ("io_operations", self._io_operations_reader),
+            ("pids", self._pids_reader),
         )
         for field, reader in readers:
             if reader is None:

@@ -176,6 +176,24 @@ class ResourceUsageMonitorTests(unittest.TestCase):
             with open(os.path.join(cgroup_root, "docker", "abc", "memory.current"), "w", encoding="utf-8") as f:
                 f.write("12345\n")
             with open(
+                os.path.join(cgroup_root, "docker", "abc", "memory.peak"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write("23456\n")
+            with open(
+                os.path.join(cgroup_root, "docker", "abc", "memory.stat"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write("anon 10000\n")
+                f.write("file 2000\n")
+                f.write("slab 300\n")
+                f.write("pgfault 40\n")
+                f.write("pgmajfault 2\n")
+                f.write("workingset_refault_anon 3\n")
+                f.write("workingset_refault_file 4\n")
+            with open(
                 os.path.join(cgroup_root, "docker", "abc", "memory.swap.current"),
                 "w",
                 encoding="utf-8",
@@ -216,6 +234,24 @@ class ResourceUsageMonitorTests(unittest.TestCase):
                     f.write(
                         f"full avg10=0.00 avg60=0.00 avg300=0.00 total={full_total}\n"
                     )
+            with open(
+                os.path.join(cgroup_root, "docker", "abc", "pids.current"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write("7\n")
+            with open(
+                os.path.join(cgroup_root, "docker", "abc", "pids.peak"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write("9\n")
+            with open(
+                os.path.join(cgroup_root, "docker", "abc", "pids.events"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write("max 1\n")
 
             fake_completed = SimpleNamespace(returncode=0, stdout="123\n", stderr="")
             with patch("acprof.monitors.resource_usage.subprocess.run", return_value=fake_completed):
@@ -235,6 +271,10 @@ class ResourceUsageMonitorTests(unittest.TestCase):
             self.assertIsNotNone(readers.cpu_pressure)
             self.assertIsNotNone(readers.memory_pressure)
             self.assertIsNotNone(readers.io_pressure)
+            self.assertIsNotNone(readers.memory_peak)
+            self.assertIsNotNone(readers.memory_stat)
+            self.assertIsNotNone(readers.io_operations)
+            self.assertIsNotNone(readers.pids)
             assert readers.cpu is not None
             assert readers.memory is not None
             assert readers.swap is not None
@@ -245,11 +285,32 @@ class ResourceUsageMonitorTests(unittest.TestCase):
             assert readers.cpu_pressure is not None
             assert readers.memory_pressure is not None
             assert readers.io_pressure is not None
+            assert readers.memory_peak is not None
+            assert readers.memory_stat is not None
+            assert readers.io_operations is not None
+            assert readers.pids is not None
             self.assertEqual(readers.cpu(), 1.5)
             self.assertEqual(readers.memory(), 12345)
             self.assertEqual(readers.swap(), 2048)
             self.assertEqual(readers.swap_limit(), 4096)
             self.assertEqual(readers.io(), (400, 600))
+            self.assertEqual(readers.io_operations(), {"read_ops": 4.0, "write_ops": 6.0})
+            self.assertEqual(readers.memory_peak(), {"peak": 23456.0})
+            self.assertEqual(
+                readers.memory_stat(),
+                {
+                    "anon": 10000.0,
+                    "file": 2000.0,
+                    "slab": 300.0,
+                    "pgfault": 40.0,
+                    "pgmajfault": 2.0,
+                    "workingset_refault": 7.0,
+                },
+            )
+            self.assertEqual(
+                readers.pids(),
+                {"current": 7.0, "peak": 9.0, "max_events": 1.0},
+            )
             self.assertEqual(
                 readers.cpu_throttle(),
                 {
@@ -404,6 +465,17 @@ class ResourceUsageMonitorTests(unittest.TestCase):
             cpu_pressure={"some": 1_000_000.0, "full": 200_000.0},
             memory_pressure={"some": 300_000.0, "full": 100_000.0},
             io_pressure={"some": 400_000.0, "full": 50_000.0},
+            memory_peak={"peak": 4096.0},
+            memory_stat={
+                "anon": 1000.0,
+                "file": 200.0,
+                "slab": 50.0,
+                "pgfault": 10.0,
+                "pgmajfault": 1.0,
+                "workingset_refault": 2.0,
+            },
+            io_operations={"read_ops": 20.0, "write_ops": 30.0},
+            pids={"current": 5.0, "peak": 6.0, "max_events": 0.0},
         )
         end = resource_usage._WindowCounterSnapshots(
             cpu_throttle={
@@ -420,6 +492,17 @@ class ResourceUsageMonitorTests(unittest.TestCase):
             cpu_pressure={"some": 1_500_000.0, "full": 300_000.0},
             memory_pressure={"some": 500_000.0, "full": 140_000.0},
             io_pressure={"some": 700_000.0, "full": 70_000.0},
+            memory_peak={"peak": 8192.0},
+            memory_stat={
+                "anon": 1500.0,
+                "file": 300.0,
+                "slab": 75.0,
+                "pgfault": 25.0,
+                "pgmajfault": 3.0,
+                "workingset_refault": 7.0,
+            },
+            io_operations={"read_ops": 26.0, "write_ops": 39.0},
+            pids={"current": 7.0, "peak": 9.0, "max_events": 1.0},
         )
 
         resource_usage._apply_window_counter_metrics(
@@ -441,8 +524,20 @@ class ResourceUsageMonitorTests(unittest.TestCase):
         self.assertEqual(result.container_mem_oom_kill_events_delta, 1.0)
         self.assertEqual(result.container_mem_pressure_some_stall_pct, 10.0)
         self.assertEqual(result.container_mem_pressure_full_stall_pct, 2.0)
+        self.assertEqual(result.container_mem_peak_cgroup_bytes, 8192.0)
+        self.assertEqual(result.container_mem_anon_bytes_end, 1500.0)
+        self.assertEqual(result.container_mem_file_bytes_end, 300.0)
+        self.assertEqual(result.container_mem_slab_bytes_end, 75.0)
+        self.assertEqual(result.container_mem_pgfault_delta, 15.0)
+        self.assertEqual(result.container_mem_pgmajfault_delta, 2.0)
+        self.assertEqual(result.container_mem_workingset_refault_delta, 5.0)
+        self.assertEqual(result.container_io_read_ops, 6.0)
+        self.assertEqual(result.container_io_write_ops, 9.0)
         self.assertEqual(result.container_io_pressure_some_stall_pct, 15.0)
         self.assertEqual(result.container_io_pressure_full_stall_pct, 1.0)
+        self.assertEqual(result.container_pids_current_end, 7.0)
+        self.assertEqual(result.container_pids_peak_cgroup, 9.0)
+        self.assertEqual(result.container_pids_max_events_delta, 1.0)
 
     def test_cgroup_unlimited_limit_uses_negative_one_sentinel(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

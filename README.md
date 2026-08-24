@@ -14,9 +14,10 @@ AC-Prof 是一个面向 Hugging Face 推理服务的零侵入运行时分析工�
 
 ## AC-Prof 会采集什么
 
-- 性能：application / packet-level latency、P50/P90/P95、标准差/CV/IQR/最大值、吞吐量、冷启动时间。
-- 能耗：CPU package、估算 vCPU 和 GPU 的 idle、平均/峰值功率与能量，以及不增加采集轮次的 container-attributed 能效派生值。
-- 资源：容器 CPU / 内存、cgroup CPU throttling、memory events、CPU/内存/I/O PSI、CPU 频率与估算 cycles，以及 GPU utilization、VRAM、SM/显存时钟、P-state 和温度。
+- 性能：application / packet-level latency、P50/P90/P95、标准差/CV/IQR/最大值、吞吐量、每 input unit 延迟、每 CPU core 吞吐，以及容器启动、server setup、CUDA 初始化、模型加载、ready wait 和首次推理的冷启动分解。
+- 能耗：CPU package、估算 vCPU 和 GPU 的 idle、平均/峰值功率与能量，以及不增加采集轮次的 container-attributed 能效派生值（包括 J/input unit）。
+- 资源：容器 CPU / 内存、cgroup CPU throttling、memory events、CPU/内存/I/O PSI、`memory.peak`、anon/file/slab、page fault/refault、块 I/O 字节与操作数、PID 当前值/峰值/上限事件、CPU 频率与估算 cycles，以及 GPU utilization、VRAM、SM/显存时钟、P-state 和温度。
+- 网络：从同一份 PCAP 派生每请求的请求/响应 frame bytes、TCP payload 和 L2–L4 协议开销，不增加抓包轮次。
 - PMU：retired-instruction MIPS、cache miss 和 dTLB miss。
 - 计算：PyTorch eager 逻辑 FLOP，以及 NVIDIA Nsight Compute 实际 GPU FLOP。
 - 可选 execution profile：Valgrind Massif 内存峰值、Nsight Systems CUDA timeline。
@@ -205,7 +206,7 @@ python run.py --help
 
 | 文件或目录 | 用途 |
 | --- | --- |
-| `result_all.csv` | 动态测量结果；每行对应一个资源配置、input scale 和一次 warmup/repeat window，包括延迟波动、能效派生值、cgroup throttling/memory events/PSI、swap 使用量与块 I/O 增量。 |
+| `result_all.csv` | 动态测量结果；每行对应一个资源配置、input scale 和一次 warmup/repeat window，包括延迟波动、归一化吞吐/能效、PCAP 网络字节、冷启动分解、cgroup memory/stat/PID/throttling/events/PSI、swap 与块 I/O 增量。 |
 | `static_meta.json` | 模型 revision、参数量与参数 payload、模型 cache、精度、量化、许可证、输入输出格式、GPU/主机 RAM、主机 swap、Docker 存储、cgroup 版本/采集模式与实验命令。 |
 | `collection_history.json` | 补采、超时重试和质量重采等数据修复过程的 provenance；不与静态元数据混放。 |
 | `input_scale_plan.json` | 本次实际执行的 scale 和 payload 计划。 |
@@ -220,6 +221,9 @@ python run.py --help
 
 - `latency_app_s` 是 client 在 `requests.post()` 外层测得的 application latency。
 - `latency_s` 来自 `tcpdump + tshark` 的 packet-level latency。
+- `input_units_per_request = effective_input_scale × batch_size`；这里的 input unit 沿用任务族的 `input_scale` 单位，CV 中是缩放倍率而不是像素数。
+- `memory.peak`、`pids.peak` 是新建容器 cgroup 自创建以来的峰值；page fault、refault、I/O 操作和 PID max event 则是当前 workload window 的首尾增量。
+- PCAP 的 protocol overhead 是 captured frame bytes 减去 TCP payload，只表示捕获到的 L2/L3/L4 开销，不含 TCP payload 内的 HTTP header/body 拆分。
 - `warmup=1` 的行不会进入默认图表；`status=error` 的占位行也会被排除。
 - `gpu_mode=off` 时 GPU 指标为 `nan`、未启用 execution profiler 时 Massif/Nsys 指标为 `nan`，都属于预期行为。
 
