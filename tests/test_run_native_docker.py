@@ -98,6 +98,15 @@ class TmuxTerminalLogTests(unittest.TestCase):
 
 
 class NativeDockerGuardTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Local developer credentials must never make CLI tests send messages.
+        notification_env = patch.dict(
+            "acprof.cli.run.os.environ",
+            {"ACPROF_WECOM_WEBHOOK_URL": ""},
+        )
+        notification_env.start()
+        self.addCleanup(notification_env.stop)
+
     def test_native_linux_host_allows_ubuntu(self) -> None:
         with patch("acprof.cli.run.platform.system", return_value="Linux"), patch(
             "acprof.cli.run.platform.release",
@@ -290,7 +299,11 @@ class NativeDockerGuardTests(unittest.TestCase):
             run.require_cpu_energy_prerequisites()
 
     def test_main_runs_cpu_energy_preflight_before_task_detection(self) -> None:
-        with patch.object(sys, "argv", ["acprof.cli.run.py", "--model", "dummy-model"]), patch(
+        with patch.object(
+            sys,
+            "argv",
+            ["acprof.cli.run.py", "--model", "dummy-model", "--notify", "none"],
+        ), patch(
             "acprof.cli.run.bootstrap_project_env",
             return_value=None,
         ), patch("acprof.cli.run.require_native_linux_host"), patch(
@@ -316,7 +329,11 @@ class NativeDockerGuardTests(unittest.TestCase):
         preflight.assert_called_once_with()
 
     def test_main_runs_mips_preflight_before_task_detection(self) -> None:
-        with patch.object(sys, "argv", ["acprof.cli.run.py", "--model", "dummy-model"]), patch(
+        with patch.object(
+            sys,
+            "argv",
+            ["acprof.cli.run.py", "--model", "dummy-model", "--notify", "none"],
+        ), patch(
             "acprof.cli.run.bootstrap_project_env",
             return_value=None,
         ), patch("acprof.cli.run.require_native_linux_host"), patch(
@@ -453,7 +470,11 @@ class NativeDockerGuardTests(unittest.TestCase):
         self.assertIn("docker-native.sock", stderr.getvalue())
 
     def test_main_invokes_native_linux_guard_after_parsing_args(self) -> None:
-        with patch.object(sys, "argv", ["acprof.cli.run.py", "--model", "dummy-model"]), patch(
+        with patch.object(
+            sys,
+            "argv",
+            ["acprof.cli.run.py", "--model", "dummy-model", "--notify", "none"],
+        ), patch(
             "acprof.cli.run.require_native_linux_host",
             side_effect=RuntimeError("host guard called"),
         ), patch(
@@ -464,7 +485,11 @@ class NativeDockerGuardTests(unittest.TestCase):
                 run.main()
 
     def test_main_invokes_native_docker_guard_after_host_guard(self) -> None:
-        with patch.object(sys, "argv", ["acprof.cli.run.py", "--model", "dummy-model"]), patch(
+        with patch.object(
+            sys,
+            "argv",
+            ["acprof.cli.run.py", "--model", "dummy-model", "--notify", "none"],
+        ), patch(
             "acprof.cli.run.require_native_linux_host",
         ), patch(
             "acprof.cli.run.require_native_docker",

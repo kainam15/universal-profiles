@@ -96,6 +96,41 @@ HF_TOKEN=hf_xxx
 
 令牌只用于 host 检测和镜像构建；构建时通过 BuildKit secret 临时挂载，不会写入镜像历史，也不会传给正式推理容器。
 
+### 可选：企业微信采集通知
+
+先在企业微信群中添加群机器人，把完整 Webhook 只保存在项目根目录的
+`.env.local`（该文件已被 Git 忽略）：
+
+```env
+ACPROF_WECOM_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx
+```
+
+建议限制本地配置文件权限：
+
+```bash
+chmod 600 .env.local
+```
+
+配置 Webhook 后，`run.py` 默认启用企业微信通知，无需额外参数：
+
+```bash
+python run.py --model google-bert/bert-base-uncased
+```
+
+如需临时关闭：
+
+```bash
+python run.py --model google-bert/bert-base-uncased --notify none
+```
+
+每个 CPU × 内存 × GPU 资源 case 完成且对应容器、监控器和抓包进程停止后，
+程序会同步发送一次进度，包含累计耗时、已完成 case/总 case、百分比、刚完成的
+资源配置以及当前 case 的结果行/异常行；全部结果合并和 tmux 日志收尾后再发送
+最终总结。为了不干扰实验测量，input scale、warmup 和 repeat 窗口内部不发送
+网络通知。最终总结区分成功、部分成功、无结果、失败和用户取消。发送请求超时
+为 5 秒并最多尝试两次；通知失败只产生警告，不改变采集结果或原退出码。不要
+把 Webhook 放进命令行、提交到 Git 或粘贴到日志中。
+
 ### 3. 跑一个最小 smoke test
 
 下面只运行一个 CPU、一个内存限制、一个输入尺度和一个请求，并暂时关闭高开销 profiler：
@@ -173,6 +208,7 @@ python run.py --model google-bert/bert-base-uncased
 | 每行 workload | 自动持续到累计 application latency 约 10 秒 |
 | compute profiler | `both`：Torch eager + GPU 行 NCU |
 | execution profiler | `none` |
+| 企业微信通知 | 配置 Webhook 后自动启用；`--notify none` 可关闭 |
 
 主实验行数约为：
 

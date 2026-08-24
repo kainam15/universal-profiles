@@ -19,7 +19,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass, field, replace
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from acprof.config import (
@@ -162,6 +162,18 @@ class PlannedInputScales:
     plan_file: Optional[str] = None
     workload: Dict[str, Any] = field(default_factory=dict)
     plan_sha256: str = ""
+
+
+@dataclass(frozen=True)
+class MatrixProgress:
+    """One safely completed resource case in a matrix sweep."""
+
+    completed_cases: int
+    total_cases: int
+    cpu: int
+    mem: int
+    gpu: str
+    result_csv: Optional[str]
 
 
 @dataclass
@@ -3311,6 +3323,9 @@ def run_single_case(
             "COMPUTE_PROFILE_PLAN_FILE": compute_profile_plan_file or "",
             "EXECUTION_PROFILE_PLAN_FILE": execution_profile_plan_file or "",
         }
+        # The host-side client never sends notifications.  Keep the webhook
+        # credential out of the measured subprocess environment entirely.
+        client_env.pop("ACPROF_WECOM_WEBHOOK_URL", None)
 
         client_result = _run(
             [sys.executable, "-m", "acprof.host.client"],
@@ -3697,6 +3712,7 @@ def run_matrix(
     input_scale_plan_file: Optional[str] = None,
     compute_profile_plan_file: Optional[str] = None,
     execution_profile_plan_file: Optional[str] = None,
+    progress_callback: Optional[Callable[[MatrixProgress], None]] = None,
 ) -> List[str]:
     """Sweep all resource combinations."""
     os.makedirs(output_dir, exist_ok=True)
@@ -3738,6 +3754,26 @@ def run_matrix(
                 )
                 if csv_path:
                     result_csvs.append(csv_path)
+                if progress_callback is not None:
+                    try:
+                        progress_callback(
+                            MatrixProgress(
+                                completed_cases=current,
+                                total_cases=total,
+                                cpu=cpu,
+                                mem=mem,
+                                gpu=gpu,
+                                result_csv=csv_path or None,
+                            )
+                        )
+                    except Exception as exc:
+                        # Progress reporting is ancillary and must never abort
+                        # or change the result of an experiment matrix.
+                        print(
+                            "[progress][WARN] Progress callback failed: "
+                            f"{type(exc).__name__}",
+                            file=sys.stderr,
+                        )
 
     return result_csvs
 

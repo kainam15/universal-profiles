@@ -1242,7 +1242,10 @@ class DetectEnvironmentTests(unittest.TestCase):
                 _write_cpu_case_csv(captured_env["OUT_CSV"], [5.0])
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-        with patch(
+        with patch.dict(
+            "acprof.host.orchestrator.os.environ",
+            {"ACPROF_WECOM_WEBHOOK_URL": "https://example.invalid/secret"},
+        ), patch(
             "acprof.host.orchestrator._start_container_session",
             return_value=orchestrator.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_off",
@@ -1287,6 +1290,7 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(captured_env["COLD_START_CONTAINER_LAUNCH_S"], "0.1")
         self.assertEqual(captured_env["COLD_START_MODEL_LOAD_S"], "0.6")
         self.assertEqual(captured_env["COLD_START_READY_WAIT_S"], "0.1")
+        self.assertNotIn("ACPROF_WECOM_WEBHOOK_URL", captured_env)
 
     def test_run_single_case_passes_compute_profile_plan_to_client(self) -> None:
         task_info = TaskInfo(

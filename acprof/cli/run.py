@@ -9,6 +9,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import csv
+from dataclasses import dataclass, replace
 import json
 import os
 import platform
@@ -32,16 +34,39 @@ from acprof.host.collection_history import (
 )
 from acprof.host.orchestrator import (
     EnergyProfilingError,
+    MatrixProgress,
     MIPSProfilingError,
     PacketLatencyError,
     require_packet_latency_prerequisites,
 )
 from acprof.monitors.perf_mips import require_mips_prerequisites
+from acprof.notifications import (
+    NotificationConfigError,
+    NotificationError,
+    NotificationEvent,
+    WeComWebhookNotifier,
+)
 
 PROJECT_DIR = str(Path(__file__).resolve().parents[2])
 NATIVE_DOCKER_SOCKET = "/var/run/docker.sock"
 TMUX_TERMINAL_LOG_FILENAME = "tmux_all.log"
+DEFAULT_NOTIFY_PROVIDER = "auto"
 _ACTIVE_TMUX_TERMINAL_LOG: tuple[str, str, str] | None = None
+
+
+@dataclass
+class _RunNotificationContext:
+    """Mutable lifecycle state; the webhook itself is never logged or persisted."""
+
+    notifier: WeComWebhookNotifier
+    model_id: str
+    output_dir: str
+    started_at: float
+    total_cases: int | None = None
+    event: NotificationEvent | None = None
+
+
+_ACTIVE_RUN_NOTIFICATION: _RunNotificationContext | None = None
 
 
 def _parse_int_list(s: str) -> list:
@@ -198,6 +223,205 @@ def _stop_tmux_terminal_log(
 
     print(f"[terminal-log] Saved terminal display: {log_path}")
     return True
+
+
+def _activate_run_notification(
+    *,
+    provider: str,
+    model_id: str,
+    output_dir: str,
+    started_at: float,
+) -> None:
+    """Configure a notifier without making any network request."""
+    global _ACTIVE_RUN_NOTIFICATION
+
+    _ACTIVE_RUN_NOTIFICATION = None
+    if provider == "none":
+        return
+    if provider not in {"auto", "wecom"}:
+        print(f"[notify][WARN] Unsupported notification provider: {provider}")
+        return
+
+    try:
+        notifier = WeComWebhookNotifier.from_env()
+    except NotificationConfigError as exc:
+        if provider == "wecom":
+            print(f"[notify][WARN] 企业微信通知未启用：{exc}", file=sys.stderr)
+        return
+
+    _ACTIVE_RUN_NOTIFICATION = _RunNotificationContext(
+        notifier=notifier,
+        model_id=model_id,
+        output_dir=output_dir,
+        started_at=started_at,
+    )
+    print("[notify] 企业微信通知已启用；每个 case 完成后报告进度并发送最终总结")
+
+
+def _update_run_notification_plan(
+    *,
+    model_id: str,
+    output_dir: str,
+    total_cases: int,
+) -> None:
+    context = _ACTIVE_RUN_NOTIFICATION
+    if context is None:
+        return
+    context.model_id = model_id
+    context.output_dir = output_dir
+    context.total_cases = total_cases
+
+
+def _result_status_counts(result_csv: str) -> tuple[int, int]:
+    result_rows = 0
+    error_rows = 0
+    with open(result_csv, "r", encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            result_rows += 1
+            if str(row.get("status") or "").strip().lower() == "error":
+                error_rows += 1
+    return result_rows, error_rows
+
+
+def _record_run_completion(
+    *,
+    final_csv: str | None,
+    completed_cases: int,
+) -> None:
+    """Create a completion event after all measurements and result writes."""
+    context = _ACTIVE_RUN_NOTIFICATION
+    if context is None:
+        return
+
+    result_rows: int | None = None
+    error_rows: int | None = None
+    detail: str | None = None
+    if final_csv:
+        try:
+            result_rows, error_rows = _result_status_counts(final_csv)
+        except (OSError, csv.Error, UnicodeError) as exc:
+            detail = f"结果已生成，但通知摘要读取失败（{type(exc).__name__}）"
+
+    if not final_csv or result_rows == 0:
+        status = "no_results"
+        if detail is None:
+            detail = "本次运行未产生结果数据行"
+    elif (
+        (error_rows or 0) > 0
+        or (
+            context.total_cases is not None
+            and completed_cases < context.total_cases
+        )
+    ):
+        status = "partial"
+    else:
+        status = "success"
+
+    context.event = NotificationEvent(
+        status=status,
+        model_id=context.model_id,
+        output_dir=context.output_dir,
+        elapsed_seconds=time.perf_counter() - context.started_at,
+        total_cases=context.total_cases,
+        completed_cases=completed_cases,
+        result_rows=result_rows,
+        error_rows=error_rows,
+        final_csv=final_csv,
+        detail=detail,
+    )
+
+
+def _record_run_termination(status: str, detail: str) -> None:
+    context = _ACTIVE_RUN_NOTIFICATION
+    if context is None:
+        return
+    context.event = NotificationEvent(
+        status=status,
+        model_id=context.model_id,
+        output_dir=context.output_dir,
+        elapsed_seconds=time.perf_counter() - context.started_at,
+        total_cases=context.total_cases,
+        detail=detail,
+    )
+
+
+def _send_notification_event(
+    context: _RunNotificationContext,
+    event: NotificationEvent,
+    *,
+    success_message: str,
+) -> None:
+    """Deliver one event without allowing notification errors to escape."""
+    try:
+        context.notifier.send(event)
+    except NotificationError as exc:
+        print(f"[notify][WARN] 企业微信通知发送失败：{exc}", file=sys.stderr)
+    except Exception as exc:
+        # Unknown provider errors may embed request details.  Print only the
+        # exception type so credentials can never be copied into terminal logs.
+        print(
+            "[notify][WARN] 企业微信通知发送失败："
+            f"{type(exc).__name__}",
+            file=sys.stderr,
+        )
+    else:
+        print(success_message)
+
+
+def _notify_case_progress(progress: MatrixProgress) -> None:
+    """Send progress only after run_single_case has stopped its resources."""
+    context = _ACTIVE_RUN_NOTIFICATION
+    if context is None:
+        return
+
+    result_rows: int | None = None
+    error_rows: int | None = None
+    summary_note = ""
+    if progress.result_csv:
+        try:
+            result_rows, error_rows = _result_status_counts(progress.result_csv)
+        except (OSError, csv.Error, UnicodeError) as exc:
+            summary_note = f"；结果摘要读取失败（{type(exc).__name__}）"
+
+    detail = (
+        f"刚完成：CPU={progress.cpu}, MEM={progress.mem}GB, GPU={progress.gpu}"
+        f"{summary_note}"
+    )
+    event = NotificationEvent(
+        status="progress",
+        model_id=context.model_id,
+        output_dir=context.output_dir,
+        elapsed_seconds=time.perf_counter() - context.started_at,
+        total_cases=progress.total_cases,
+        completed_cases=progress.completed_cases,
+        result_rows=result_rows,
+        error_rows=error_rows,
+        detail=detail,
+    )
+    _send_notification_event(
+        context,
+        event,
+        success_message=(
+            "[notify] 企业微信进度通知已发送："
+            f"case {progress.completed_cases}/{progress.total_cases}"
+        ),
+    )
+
+
+def _deliver_run_notification(terminal_log: str | None = None) -> None:
+    """Send the recorded event best-effort without changing command outcome."""
+    context = _ACTIVE_RUN_NOTIFICATION
+    if context is None or context.event is None:
+        return
+
+    event = context.event
+    if terminal_log:
+        event = replace(event, terminal_log=terminal_log)
+    _send_notification_event(
+        context,
+        event,
+        success_message="[notify] 企业微信最终通知已发送",
+    )
 
 
 def _docker_info_is_docker_desktop(info: str) -> bool:
@@ -789,6 +1013,15 @@ Examples:
     parser.add_argument("--output-dir", default="results", help="Output directory")
     parser.add_argument("--skip-build", action="store_true", help="Skip Docker image build (use existing)")
     parser.add_argument(
+        "--notify",
+        choices=("auto", "none", "wecom"),
+        default=DEFAULT_NOTIFY_PROVIDER,
+        help=(
+            "Notification mode: auto (default) enables WeCom when "
+            "ACPROF_WECOM_WEBHOOK_URL is configured; none disables notifications"
+        ),
+    )
+    parser.add_argument(
         "--allow-cgroup-v1",
         action="store_true",
         help=(
@@ -827,6 +1060,12 @@ Examples:
         PROJECT_DIR,
         args.output_dir,
         args.model.replace("/", "--"),
+    )
+    _activate_run_notification(
+        provider=args.notify,
+        model_id=args.model,
+        output_dir=terminal_output_dir,
+        started_at=start_time,
     )
     _ACTIVE_TMUX_TERMINAL_LOG = _start_tmux_terminal_log(
         terminal_output_dir,
@@ -1068,6 +1307,11 @@ Examples:
             )
 
     total_cases = len(cpu_list) * len(mem_list) * len(gpu_list)
+    _update_run_notification_plan(
+        model_id=task_info.model_id,
+        output_dir=output_dir,
+        total_cases=total_cases,
+    )
     n_scales = len(planned_input_scales.scales)
     total_iters = total_cases * n_scales * (args.warmup + args.repeat)
 
@@ -1108,6 +1352,11 @@ Examples:
             input_scale_plan_file=planned_input_scales.plan_file,
             compute_profile_plan_file=compute_profile_plan_file,
             execution_profile_plan_file=execution_profile_plan_file,
+            progress_callback=(
+                _notify_case_progress
+                if _ACTIVE_RUN_NOTIFICATION is not None
+                else None
+            ),
         )
     except PacketLatencyError as exc:
         print(f"\n[sniff][ERROR] {exc}", file=sys.stderr)
@@ -1133,23 +1382,51 @@ Examples:
         print(f"  Total elapsed:    {elapsed}")
         print(f"  Intermediate files from this run were cleaned up.")
         print(f"{'='*60}")
+        _record_run_completion(
+            final_csv=final_csv,
+            completed_cases=len(csv_paths),
+        )
     else:
         elapsed = _format_elapsed(time.perf_counter() - start_time)
         print(f"\n[WARN] No results produced after {elapsed}. Static meta is still available: {static_meta_json}")
+        _record_run_completion(final_csv=None, completed_cases=0)
 
 
 def main():
-    """Run profiling and always finalize an active tmux terminal recording."""
-    global _ACTIVE_TMUX_TERMINAL_LOG
+    """Run profiling, finalize terminal logging, then notify best-effort."""
+    global _ACTIVE_TMUX_TERMINAL_LOG, _ACTIVE_RUN_NOTIFICATION
 
     _ACTIVE_TMUX_TERMINAL_LOG = None
+    _ACTIVE_RUN_NOTIFICATION = None
     try:
         return _run_main()
+    except KeyboardInterrupt:
+        _record_run_termination("cancelled", "用户中断了采集")
+        raise
+    except SystemExit as exc:
+        if exc.code not in (None, 0):
+            _record_run_termination(
+                "failed",
+                f"采集命令以退出码 {exc.code!r} 结束",
+            )
+        raise
+    except Exception as exc:
+        detail = str(exc).strip()
+        if detail:
+            detail = f"{type(exc).__name__}: {detail}"
+        else:
+            detail = type(exc).__name__
+        _record_run_termination("failed", detail)
+        raise
     finally:
         terminal_log = _ACTIVE_TMUX_TERMINAL_LOG
         _ACTIVE_TMUX_TERMINAL_LOG = None
+        finalized_log_path = None
         if terminal_log is not None:
-            _stop_tmux_terminal_log(terminal_log)
+            if _stop_tmux_terminal_log(terminal_log):
+                finalized_log_path = terminal_log[2]
+        _deliver_run_notification(finalized_log_path)
+        _ACTIVE_RUN_NOTIFICATION = None
 
 
 if __name__ == "__main__":
