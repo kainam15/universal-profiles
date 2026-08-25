@@ -822,6 +822,12 @@ FEASIBILITY_STATE_SPECS = (
     ("mixed", "Partial failure", "#ff9800", "PART"),
     ("timeout", "Request timeout", "#7b1fa2", "TIME"),
     ("startup_oom", "Startup OOM", "#e53935", "OOM-S"),
+    (
+        "pruned_startup_oom",
+        "Inferred startup OOM (not measured)",
+        "#b71c1c",
+        "P-OOM",
+    ),
     ("runtime_oom", "Runtime OOM", "#8e0000", "OOM-R"),
     ("skipped", "Skipped after timeout", "#90a4ae", "SKIP"),
     ("error", "Other error", "#5d4037", "ERR"),
@@ -835,6 +841,7 @@ FEASIBILITY_STATE_INDEX = {
 FEASIBILITY_TEXT_COLORS = {
     "timeout": "white",
     "startup_oom": "white",
+    "pruned_startup_oom": "white",
     "runtime_oom": "white",
     "error": "white",
 }
@@ -1955,6 +1962,13 @@ def _classify_feasibility_rows(rows: pd.DataFrame) -> str:
     if has_error:
         error_messages = errors[error_mask]
         nonempty_errors = error_messages[error_messages.ne("")]
+        if (
+            not nonempty_errors.empty
+            and nonempty_errors.str.contains(
+                "not_measured_after_startup_oom_pruning"
+            ).all()
+        ):
+            return "pruned_startup_oom"
         if (
             not nonempty_errors.empty
             and nonempty_errors.str.contains("not_measured_after_timeout").all()

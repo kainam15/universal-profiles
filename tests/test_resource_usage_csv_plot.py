@@ -1739,6 +1739,17 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 "status": "error",
                 "error": "runtime failure",
             },
+            {
+                "cpu_cores": 8,
+                "mem_cap_gb": 4,
+                "gpu_mode": "off",
+                "input_scale": 64,
+                "status": "error",
+                "error": (
+                    "not_measured_after_startup_oom_pruning: "
+                    "planned_request_attempted=false"
+                ),
+            },
         ])
 
         summary = plot.summarize_resource_feasibility(rows)
@@ -1755,6 +1766,7 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
         self.assertEqual(states[(1, 4, 64)], "startup_oom")
         self.assertEqual(states[(2, 8, 128)], "timeout")
         self.assertEqual(states[(4, 8, 128)], "mixed")
+        self.assertEqual(states[(8, 4, 64)], "pruned_startup_oom")
 
     def test_paper_figures_write_with_current_schema_metrics(self) -> None:
         rows = []

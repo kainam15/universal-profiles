@@ -856,6 +856,25 @@ Examples:
     parser.add_argument("--cpus", default="1,2,4,8", help="CPU core counts (comma-separated)")
     parser.add_argument("--mems", default="2,4,8,16", help="Memory caps in GB (comma-separated)")
     parser.add_argument("--gpus", default="off,on", help="GPU modes (comma-separated: off,on)")
+    startup_oom_pruning_group = parser.add_mutually_exclusive_group()
+    startup_oom_pruning_group.add_argument(
+        "--prune-startup-oom",
+        dest="prune_startup_oom",
+        action="store_true",
+        help=(
+            "Explicitly enable the default startup-OOM pruning behavior"
+        ),
+    )
+    startup_oom_pruning_group.add_argument(
+        "--no-prune-startup-oom",
+        dest="prune_startup_oom",
+        action="store_false",
+        help=(
+            "Disable startup-OOM pruning and independently attempt every "
+            "selected CPU/memory/GPU case"
+        ),
+    )
+    parser.set_defaults(prune_startup_oom=True)
 
     # Experiment parameters
     parser.add_argument("--batch-size", type=int, default=1, help="Batch size")
@@ -1185,6 +1204,23 @@ Examples:
     cpu_list = _parse_int_list(args.cpus)
     mem_list = _parse_int_list(args.mems)
     gpu_list = _parse_str_list(args.gpus)
+    if args.prune_startup_oom:
+        if not cpu_list or not mem_list or not gpu_list:
+            parser.error("--prune-startup-oom requires non-empty resource lists")
+        if len(set(cpu_list)) != len(cpu_list):
+            parser.error("--prune-startup-oom requires unique --cpus values")
+        if len(set(mem_list)) != len(mem_list):
+            parser.error("--prune-startup-oom requires unique --mems values")
+        normalized_gpu_modes = [
+            "on" if str(gpu).lower() == "on" else "off"
+            for gpu in gpu_list
+        ]
+        if len(set(normalized_gpu_modes)) != len(normalized_gpu_modes):
+            parser.error("--prune-startup-oom requires unique --gpus modes")
+        if any(cpu <= 0 for cpu in cpu_list):
+            parser.error("--prune-startup-oom requires positive --cpus values")
+        if any(mem <= 0 for mem in mem_list):
+            parser.error("--prune-startup-oom requires positive --mems values")
     massif_selected = args.execution_profile_tool in {"massif", "both"}
     nsys_selected = args.execution_profile_tool in {"nsys", "both"}
     reference_checks = []
@@ -1353,6 +1389,14 @@ Examples:
     print(f"  Scale source: {planned_input_scales.source}")
     print(f"  Validated scales: {input_scales_arg}")
     print(f"  Iterations per case: {args.warmup} warmup + {args.repeat} repeat")
+    print(
+        "  Startup OOM pruning: "
+        + (
+            f"enabled (reference CPU={min(cpu_list)}, startup-only)"
+            if args.prune_startup_oom
+            else "disabled"
+        )
+    )
     if args.repeat_in_window > 0:
         repeat_desc = str(args.repeat_in_window)
     else:
@@ -1390,6 +1434,7 @@ Examples:
                 if _ACTIVE_RUN_NOTIFICATION is not None
                 else None
             ),
+            prune_startup_oom=args.prune_startup_oom,
         )
     except PacketLatencyError as exc:
         print(f"\n[sniff][ERROR] {exc}", file=sys.stderr)
@@ -1411,6 +1456,11 @@ Examples:
         print(f"Profiling complete!")
         print(f"  Static meta:      {static_meta_json}")
         print(f"  Collection log:   {collection_history_json}")
+        if args.prune_startup_oom:
+            print(
+                "  OOM pruning plan:  "
+                f"{os.path.join(output_dir, 'startup_oom_pruning.json')}"
+            )
         print(f"  Merged results:   {final_csv}")
         print(f"  Total elapsed:    {elapsed}")
         print(f"  Intermediate files from this run were cleaned up.")

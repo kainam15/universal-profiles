@@ -599,6 +599,7 @@ class NativeDockerGuardTests(unittest.TestCase):
         self.assertEqual(kwargs["repeat_in_window"], 0)
         self.assertEqual(kwargs["repeat_window_seconds"], 10.0)
         self.assertEqual(kwargs["compute_profile_plan_file"], "")
+        self.assertTrue(kwargs["prune_startup_oom"])
         self.assertFalse(
             collect_static_meta.call_args.kwargs["compute_profile_enabled"]
         )
@@ -628,6 +629,7 @@ class NativeDockerGuardTests(unittest.TestCase):
                 "2",
                 "--gpus",
                 "off,on",
+                "--no-prune-startup-oom",
                 "--output-dir",
                 tmp_dir,
             ],
@@ -668,7 +670,7 @@ class NativeDockerGuardTests(unittest.TestCase):
         ) as collect_compute_profile_plan, patch(
             "acprof.host.orchestrator.run_matrix",
             return_value=[],
-        ):
+        ) as run_matrix:
             run.main()
 
         _, kwargs = collect_compute_profile_plan.call_args
@@ -676,6 +678,7 @@ class NativeDockerGuardTests(unittest.TestCase):
         self.assertEqual(kwargs["torch_profiler_repeat"], 1)
         self.assertEqual(kwargs["ncu_repeat"], 1)
         self.assertTrue(kwargs["keep_profiles"])
+        self.assertFalse(run_matrix.call_args.kwargs["prune_startup_oom"])
 
     def test_main_records_invocation_command_in_static_meta(self) -> None:
         task_info = TaskInfo(

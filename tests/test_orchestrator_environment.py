@@ -2163,6 +2163,148 @@ class DetectEnvironmentTests(unittest.TestCase):
                 ignore_error_rows=True,
             )
 
+    def test_case_startup_outcome_only_accepts_explicit_startup_oom(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = {
+                "startup_oom": os.path.join(tmp, "startup_oom.csv"),
+                "startup_failure": os.path.join(tmp, "startup_failure.csv"),
+                "runtime_oom": os.path.join(tmp, "runtime_oom.csv"),
+            }
+            errors = {
+                "startup_oom": (
+                    "container_start_failed: container_oom_killed during startup"
+                ),
+                "startup_failure": (
+                    "container_start_failed: server not ready after 180s"
+                ),
+                "runtime_oom": "HTTP 500: CUDA out of memory",
+            }
+            for key, path in paths.items():
+                with open(path, "w", encoding="utf-8", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=("status", "error"))
+                    writer.writeheader()
+                    writer.writerow({"status": "error", "error": errors[key]})
+
+            outcomes = {
+                key: orchestrator._case_startup_outcome(path)[0]
+                for key, path in paths.items()
+            }
+
+        self.assertEqual(outcomes["startup_oom"], "startup_oom")
+        self.assertEqual(outcomes["startup_failure"], "startup_failure")
+        self.assertEqual(outcomes["runtime_oom"], "startup_feasible")
+
+    def test_run_matrix_prunes_only_reference_cpu_startup_oom_prefix(self) -> None:
+        task_info = TaskInfo(
+            model_id="org/model",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="unit",
+        )
+        calls = []
+
+        def fake_case(**kwargs):
+            cpu = kwargs["cpu"]
+            mem = kwargs["mem"]
+            gpu = kwargs["gpu"]
+            calls.append((cpu, mem, gpu))
+            model_tag = orchestrator._sanitize_model_id(task_info.model_id)
+            path = os.path.join(
+                kwargs["output_dir"],
+                f"result_case_{model_tag}_{cpu}c_{mem}g_{gpu}.csv",
+            )
+            row = {field: "nan" for field in CSV_FIELDS}
+            row.update({
+                "cpu_cores": str(cpu),
+                "mem_cap_gb": str(mem),
+                "gpu_mode": gpu,
+                "input_scale": "64",
+                "repeat_idx": "0",
+                "warmup": "0",
+                "repeat_in_window": "1",
+                "status": "ok",
+                "error": "",
+            })
+            if cpu == 1 and mem == 2:
+                row.update({
+                    "status": "error",
+                    "error": (
+                        "container_start_failed: container_oom_killed during "
+                        "startup (memory_limit=2g)"
+                    ),
+                })
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+                writer.writeheader()
+                writer.writerow(row)
+            return path
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "acprof.host.orchestrator.run_single_case",
+            side_effect=fake_case,
+        ):
+            result_csvs = orchestrator.run_matrix(
+                task_info=task_info,
+                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                cpu_list=[2, 1],
+                mem_list=[4, 2],
+                gpu_list=["off"],
+                output_dir=tmp,
+                project_dir=tmp,
+                warmup=0,
+                repeat=1,
+                repeat_in_window=1,
+                input_scales="64",
+                prune_startup_oom=True,
+            )
+
+            plan_path = os.path.join(
+                tmp,
+                orchestrator.STARTUP_OOM_PRUNING_PLAN_NAME,
+            )
+            with open(plan_path, "r", encoding="utf-8") as f:
+                plan = json.load(f)
+
+            pruned_path = next(
+                path
+                for path in result_csvs
+                if "_2c_2g_off.csv" in path
+            )
+            with open(pruned_path, "r", encoding="utf-8", newline="") as f:
+                pruned_rows = list(csv.DictReader(f))
+
+        self.assertEqual(
+            calls,
+            [(1, 2, "off"), (1, 4, "off"), (2, 4, "off")],
+        )
+        self.assertEqual(len(result_csvs), 4)
+        self.assertEqual(plan["status"], "complete")
+        self.assertEqual(plan["reference_cpu_cores"], 1)
+        self.assertEqual(
+            plan["gpu_mode_results"]["off"][
+                "confirmed_startup_oom_prefix_gb"
+            ],
+            [2],
+        )
+        self.assertEqual(
+            plan["gpu_mode_results"]["off"][
+                "minimum_startup_feasible_mem_cap_gb"
+            ],
+            4,
+        )
+        self.assertEqual(plan["pruned_case_count"], 1)
+        self.assertEqual(plan["attempted_case_count"], 3)
+        self.assertEqual({row["status"] for row in pruned_rows}, {"error"})
+        self.assertTrue(
+            all(
+                "not_measured_after_startup_oom_pruning" in row["error"]
+                for row in pruned_rows
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

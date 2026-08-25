@@ -202,6 +202,8 @@ python run.py --model google-bert/bert-base-uncased \
 
 上面两个例子先完成主矩阵，之后可用 `profile.py` 补采计算指标。若希望在矩阵开始前直接采集 Torch / NCU，删除 `--compute-profile-tool none` 即可。`--execution-profile-tool` 默认已经是 `none`。
 
+启动 OOM 剪枝默认开启。程序先按内存从小到大完整采集最低 CPU；只有 Docker 明确报告 `OOMKilled` 且这些失败构成连续低内存前缀时，才在后续更高 CPU 中跳过同 GPU mode、同内存上限的 case。运行期 OOM、CUDA OOM、普通启动失败和请求超时不会触发剪枝。可运行 case 的 warmup、repeat、监控器和指标口径完全不变；跳过的 case 仍写入 `status=error` 占位行，并在 `startup_oom_pruning.json` 中记录推断依据，不能作为实测性能值使用。论文若要求每个资源格都独立启动验证，传入 `--no-prune-startup-oom`。
+
 如果已有对应模型镜像，可加 `--skip-build`。该选项只复用当前本机 Docker image store 中已存在的镜像。
 
 ### 默认完整矩阵
@@ -260,6 +262,7 @@ python run.py --help
 | `static_meta.json` | 模型 revision、参数量与参数 payload、模型 cache、精度、量化、许可证、输入输出格式、GPU/主机 RAM、主机 swap、Docker 存储、cgroup 版本/采集模式与实验命令。 |
 | `collection_history.json` | 补采、超时重试和质量重采等数据修复过程的 provenance；不与静态元数据混放。 |
 | `input_scale_plan.json` | 本次实际执行的 scale 和 payload 计划。 |
+| `startup_oom_pruning.json` | 使用 `--prune-startup-oom` 时的参考 CPU、实测启动 OOM 前缀、推断跳过 case 和适用假设。 |
 | `compute_profile_plan.json` | Torch / NCU 的 per-scale 结果与错误。 |
 | `execution_profile_plan.json` | Massif / Nsys 的采样来源、复用 provenance、per-resource/per-scale 结果与错误。 |
 | `compute_profiles/`、`execution_profiles/` | 启用对应 profiler 时默认保留的原始 artifacts。 |
@@ -274,7 +277,7 @@ python run.py --help
 - `input_units_per_request = effective_input_scale × batch_size`；这里的 input unit 沿用任务族的 `input_scale` 单位，CV 中是缩放倍率而不是像素数。
 - `memory.peak`、`pids.peak` 是新建容器 cgroup 自创建以来的峰值；page fault、refault、I/O 操作和 PID max event 则是当前 workload window 的首尾增量。
 - PCAP 的 protocol overhead 是 captured frame bytes 减去 TCP payload，只表示捕获到的 L2/L3/L4 开销，不含 TCP payload 内的 HTTP header/body 拆分。
-- `warmup=1` 的行不会进入默认图表；`status=error` 的占位行会被性能图和延迟模型排除，但会保留在 `resource_feasibility_heatmap.png` 中展示 OOM、timeout 和其他失败边界。
+- `warmup=1` 的行不会进入默认图表；`status=error` 的占位行会被性能图和延迟模型排除，但会保留在 `resource_feasibility_heatmap.png` 中展示 OOM、timeout 和其他失败边界。剪枝推断的启动 OOM 会单独显示为 `P-OOM`，不会冒充实测 `OOM-S`。
 - `gpu_mode=off` 时 GPU 指标为 `nan`、未启用 execution profiler 时 Massif/Nsys 指标为 `nan`，都属于预期行为。
 
 完整字段字典、功率口径、FLOP 口径和延迟模型说明见[完整参考](REFERENCE.md)。
@@ -368,6 +371,8 @@ cat /proc/sys/kernel/perf_event_paranoid
 ### `container_oom_killed during startup`
 
 模型加载时超过了 `--mems` 指定的 cgroup 限制。增大内存上限，或使用更小/量化模型。失败 case 会保留 `status=error` 占位行，不会进入性能图和延迟模型，但会进入资源可行性热力图。
+
+默认启用的启动 OOM 剪枝只把最低 CPU 上连续实测的启动 OOM 前缀外推到更高 CPU，并保留 `startup_oom_pruning.json`；论文中应将 `P-OOM` 表述为基于资源单调性假设的不可行配置推断，而不是独立实测样本。需要逐格验证完整矩阵时传入 `--no-prune-startup-oom`。
 
 ### 运行中还没有 `result_all.csv`
 
