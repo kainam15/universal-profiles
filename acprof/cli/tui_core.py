@@ -21,6 +21,7 @@ from typing import Callable, Iterable, Sequence
 
 from acprof.config import (
     DEFAULT_IDLE_COOLDOWN_SECONDS,
+    DEFAULT_IDLE_SECONDS,
     DEFAULT_REPEAT_IN_WINDOW,
     DEFAULT_REPEAT_WINDOW_SECONDS,
 )
@@ -105,7 +106,7 @@ class RunConfig:
     repeat_in_window: int = DEFAULT_REPEAT_IN_WINDOW
     repeat_window_seconds: float = DEFAULT_REPEAT_WINDOW_SECONDS
     sample_hz: float = 20.0
-    idle_seconds: float = 3.0
+    idle_seconds: float = DEFAULT_IDLE_SECONDS
     idle_cooldown_seconds: float = DEFAULT_IDLE_COOLDOWN_SECONDS
     compute_profile_tool: str = "both"
     execution_profile_tool: str = "none"

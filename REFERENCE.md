@@ -346,8 +346,8 @@ CPU 模型除共同的二次 log input-scale 项外，还使用二次 log CPU �
 | `--repeat-in-window` | `0` | 每一行内部连续发送的 `/predict` request 数量。`0` 表示 auto 模式：每行至少发送 1 个请求，并持续到累计 `latency_app_s` 达到 `--repeat-window-seconds`。 |
 | `--repeat-window-seconds` | `10.0` | `--repeat-in-window 0` 时的目标 workload window 秒数。auto 模式不再额外跑一个 10 秒校准窗口。 |
 | `--sample-hz` | `20.0` | GPU power sampling rate，单位 Hz；CPU workload 和 matched control window 期间也用它控制 RAPL、container cgroup、CPU frequency 和 GPU/resource usage 的采样间隔，以估计 average/peak power、vCPU share、CPU utilization 和 CPU cycles。perf MIPS 使用独立的 `perf stat` 窗口，不受该采样率影响。 |
-| `--idle-seconds` | `3.0` | 每个 workload window 前 matched control window 的目标时长。CPU、GPU、resource usage 以及启用时的 perf MIPS monitor 会按与 workload 相同的 `start()` / `stop()` 生命周期同时运行，但 control window 内不发送 `/predict` 请求。CPU baseline 为整段 RAPL 能耗 / 实际 duration；GPU baseline 为 NVML samples 的时间加权平均功率。case 结束后会复查该 case CSV 中所有有效 CPU/GPU baseline 的相对极差，达到或超过 5% 会输出 warning，实验继续运行。 |
-| `--idle-cooldown-seconds` | `3.0` | 每个 workload window 采集 idle baseline 前的统一冷却等待时间。CPU-only 和 GPU+CPU case 都使用同一个值，避免上一轮推理刚结束后的短时热状态、Docker/server 收尾或 GPU clock/power 瞬态直接进入 idle baseline。 |
+| `--idle-seconds` | `20.0` | 每个 workload window 前 matched control window 的目标时长。CPU、GPU、resource usage 以及启用时的 perf MIPS monitor 会按与 workload 相同的 `start()` / `stop()` 生命周期同时运行，但 control window 内不发送 `/predict` 请求。CPU baseline 为整段 RAPL 能耗 / 实际 duration；GPU baseline 为 NVML samples 的时间加权平均功率。case 结束后会复查该 case CSV 中所有有效 CPU/GPU baseline 的相对极差，达到或超过 5% 会输出 warning，实验继续运行。 |
+| `--idle-cooldown-seconds` | `5.0` | 每个 workload window 采集 idle baseline 前的统一冷却等待时间。CPU-only 和 GPU+CPU case 都使用同一个值，避免上一轮推理刚结束后的短时热状态、Docker/server 收尾或 GPU clock/power 瞬态直接进入 idle baseline。 |
 | `--idle-debug` | false | 开启 baseline 调试输出。主 CSV 会填充 GPU 的 `gpu_idle_measured_at` / `gpu_idle_rel_range_so_far` 和 CPU 的 `cpu_idle_measured_at` / `cpu_idle_rel_range_so_far`，并写出 `debug_idle_diag/result_case_*.csv.idle_diag.jsonl`。诊断文件记录 matched control window 的 GPU NVML trace、CPU RAPL 子窗口、host/container CPU delta，以及 control 结束后的 `nvidia-smi`、loadavg、top CPU processes、Docker 容器和 `docker stats` 快照。为避免诊断本身污染 baseline，逐进程 `/proc` 快照移到 control window 外，不再归入 RAPL control 能量。 |
 | `--input-scales` | auto | 手动覆盖 input scale 列表。未提供时自动规划 6 档。 |
 | `--workload-spec` | task default | workload 清单 JSON。ASR 默认使用仓库内置的 LibriSpeech 英文短音频清单；其他音频任务必须显式提供清单。 |
@@ -814,25 +814,23 @@ len(cpus) * len(mems) * len(gpus) * len(input_scales) * (warmup + repeat) * repe
 
 ```text
 row_window_s ~= active_workload_s
-              + cpu_idle_baseline_s
-              + gpu_idle_baseline_s
-              + gpu_cooldown_s
+              + idle_cooldown_s
+              + matched_control_s
               + monitor_stop_overhead_s
 ```
 
 其中：
 
 - `active_workload_s`：正式连续发送 `/predict` 的时间。`--repeat-in-window 0` 时约等于 `--repeat-window-seconds`，默认约 `10s`；固定 `--repeat-in-window N` 时约等于 `N * mean_latency_app_s`。已生成 CSV 后，也可以用 `latency_app_s * repeat_in_window` 反推该行的实际 active window。
-- `cpu_idle_baseline_s`：CPU RAPL 可用时约等于 `--idle-seconds`，默认 `3s`；RAPL 不可用时约为 `0s`。
-- `gpu_idle_baseline_s`：`gpu_mode=on` 且 NVML 可用时约等于 `--idle-seconds`，默认 `3s`；`gpu_mode=off` 时为 `0s`。
-- `gpu_cooldown_s`：`gpu_mode=on` 且 NVML 可用时每行前固定约 `3s`，用于保留已有 GPU cooldown 行为。
+- `idle_cooldown_s`：每行采集 matched control 前的统一等待，约等于 `--idle-cooldown-seconds`，默认 `5s`。
+- `matched_control_s`：CPU/GPU/resource usage monitor 同时运行的无请求对照窗口，约等于 `--idle-seconds`，默认 `20s`；GPU 关闭时不会额外增加一段 GPU baseline。
 - `monitor_stop_overhead_s`：停止 `perf`、energy/resource monitor、写 CSV 等小额开销，通常按秒级以内预留；慢机器或 `perf`/权限异常时可能更高。
 
-因此在默认 `--repeat-in-window 0 --repeat-window-seconds 10 --idle-seconds 3` 下，单行主采集窗口通常可按以下方式估算：
+因此在默认 `--repeat-in-window 0 --repeat-window-seconds 10 --idle-seconds 20 --idle-cooldown-seconds 5` 下，单行主采集窗口通常可按以下方式估算：
 
 ```text
-gpu_mode=off 且 CPU RAPL 可用: 约 10 + 3 = 13s / row
-gpu_mode=on  且 CPU RAPL 和 NVML 可用: 约 10 + 3 + 3 + 3 = 19s / row
+gpu_mode=off 且 CPU RAPL 可用: 约 10 + 5 + 20 = 35s / row
+gpu_mode=on  且 CPU RAPL 和 NVML 可用: 约 10 + 5 + 20 = 35s / row
 ```
 
 auto 模式会在每个 resource case / input scale 前发送少量 auto warmup 请求；这部分不写入 CSV 行数，也不会再跑一个 `--repeat-window-seconds` 长度的校准窗口：

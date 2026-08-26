@@ -219,7 +219,7 @@ class AcprofTui(App[None]):
 
     .option-checkbox.-on {
         color: $text;
-        background: $success 25%;
+        background: $success 45%;
         border: tall $success;
         text-style: bold;
     }
@@ -473,16 +473,21 @@ class AcprofTui(App[None]):
                                     id="sample-hz",
                                     classes="config-control",
                                 )
-                                yield Label("Idle / 冷却秒")
+                                yield Label("Idle 基线测量秒")
                                 yield Input(
-                                    value=(
-                                        f"{self.initial_config.idle_seconds},"
-                                        f"{self.initial_config.idle_cooldown_seconds}"
-                                    ),
-                                    placeholder="3,3",
-                                    id="idle-times",
+                                    value=str(self.initial_config.idle_seconds),
+                                    id="idle-seconds",
                                     classes="config-control",
                                 )
+
+                                yield Label("基线前冷却秒")
+                                yield Input(
+                                    value=str(self.initial_config.idle_cooldown_seconds),
+                                    id="idle-cooldown-seconds",
+                                    classes="config-control",
+                                )
+                                yield Label("")
+                                yield Static("")
 
                                 yield Label("计算分析器")
                                 yield Select(
@@ -759,7 +764,6 @@ class AcprofTui(App[None]):
 
     def _collect_config(self) -> RunConfig:
         warmup, repeat = self._pair(self._input("warmup-repeat"), "Warmup / Repeat")
-        idle_seconds, cooldown = self._pair(self._input("idle-times"), "Idle / 冷却秒")
         config = RunConfig(
             model=self._input("model"),
             task=self._input("task"),
@@ -777,8 +781,8 @@ class AcprofTui(App[None]):
             repeat_in_window=self._input("repeat-in-window"),
             repeat_window_seconds=self._input("repeat-window-seconds"),
             sample_hz=self._input("sample-hz"),
-            idle_seconds=idle_seconds,
-            idle_cooldown_seconds=cooldown,
+            idle_seconds=self._input("idle-seconds"),
+            idle_cooldown_seconds=self._input("idle-cooldown-seconds"),
             compute_profile_tool=self._select("compute-profile-tool"),
             execution_profile_tool=self._select("execution-profile-tool"),
             sniff_iface=self._input("sniff-iface"),
@@ -806,7 +810,8 @@ class AcprofTui(App[None]):
             "repeat-in-window": str(config.repeat_in_window),
             "repeat-window-seconds": str(config.repeat_window_seconds),
             "sample-hz": str(config.sample_hz),
-            "idle-times": f"{config.idle_seconds},{config.idle_cooldown_seconds}",
+            "idle-seconds": str(config.idle_seconds),
+            "idle-cooldown-seconds": str(config.idle_cooldown_seconds),
             "sniff-iface": config.sniff_iface,
         }
         for widget_id, value in values.items():

@@ -598,6 +598,8 @@ class NativeDockerGuardTests(unittest.TestCase):
         _, kwargs = run_matrix.call_args
         self.assertEqual(kwargs["repeat_in_window"], 0)
         self.assertEqual(kwargs["repeat_window_seconds"], 10.0)
+        self.assertEqual(kwargs["idle_seconds"], 20.0)
+        self.assertEqual(kwargs["idle_cooldown_seconds"], 5.0)
         self.assertEqual(kwargs["compute_profile_plan_file"], "")
         self.assertTrue(kwargs["prune_startup_oom"])
         self.assertFalse(

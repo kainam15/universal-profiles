@@ -189,6 +189,8 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
             preview = str(app.query_one("#command-preview", Static).render())
             self.assertIn("/.venv/bin/python", preview)
             self.assertIn("--warmup 0", preview)
+            self.assertIn("--idle-seconds 20", preview)
+            self.assertIn("--idle-cooldown-seconds 5", preview)
             with self.assertRaises(NoMatches):
                 app.query_one("#preview-command")
             with self.assertRaises(NoMatches):

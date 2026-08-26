@@ -36,6 +36,7 @@ from acprof.config import (
     CLIENT_REQUEST_TIMEOUT_EXIT_CODE,
     CSV_FIELDS,
     DEFAULT_IDLE_COOLDOWN_SECONDS,
+    DEFAULT_IDLE_SECONDS,
     DEFAULT_REQUEST_TIMEOUT_SECONDS,
     DEFAULT_REPEAT_IN_WINDOW,
     DEFAULT_REPEAT_WINDOW_SECONDS,
@@ -115,7 +116,7 @@ USE_MIPS = os.getenv("USE_MIPS", "").strip().lower() in {"1", "true", "yes", "on
 _FIRST_PREDICT_APP_S = float("nan")
 
 SAMPLE_HZ = float(os.getenv("SAMPLE_HZ", "20"))
-IDLE_SECONDS = float(os.getenv("IDLE_SECONDS", "3"))
+IDLE_SECONDS = float(os.getenv("IDLE_SECONDS", str(DEFAULT_IDLE_SECONDS)))
 DEVICE_INDEX = int(os.getenv("DEVICE_INDEX", "0"))
 IDLE_COOLDOWN_SECONDS = float(
     os.getenv("IDLE_COOLDOWN_SECONDS", str(DEFAULT_IDLE_COOLDOWN_SECONDS))

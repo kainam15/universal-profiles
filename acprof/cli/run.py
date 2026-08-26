@@ -22,6 +22,7 @@ from pathlib import Path
 
 from acprof.config import (
     DEFAULT_IDLE_COOLDOWN_SECONDS,
+    DEFAULT_IDLE_SECONDS,
     DEFAULT_REPEAT_IN_WINDOW,
     DEFAULT_REPEAT_WINDOW_SECONDS,
     SCALING_DIMENSIONS,
@@ -896,7 +897,7 @@ Examples:
     parser.add_argument(
         "--idle-seconds",
         type=float,
-        default=3.0,
+        default=DEFAULT_IDLE_SECONDS,
         help="Idle baseline measurement duration before each workload window",
     )
     parser.add_argument(

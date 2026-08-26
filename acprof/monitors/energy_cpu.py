@@ -15,6 +15,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from acprof.config import DEFAULT_IDLE_SECONDS
+
 
 @dataclass
 class RaplDomain:
@@ -559,7 +561,7 @@ class CPUEnergyMonitor:
     def __init__(
         self,
         sample_hz: float = 20.0,
-        idle_seconds: float = 3.0,
+        idle_seconds: float = DEFAULT_IDLE_SECONDS,
         container_name: str = "",
         powercap_root: str = "/sys/class/powercap",
         cgroup_root: str = "/sys/fs/cgroup",
@@ -789,7 +791,7 @@ class CPUEnergyMonitor:
 def measure_energy_threaded(
     fn: Callable[[], object],
     sample_hz: float = 20.0,
-    idle_seconds: float = 3.0,
+    idle_seconds: float = DEFAULT_IDLE_SECONDS,
     container_name: str = "",
 ) -> Tuple[CPUEnergyResult, str, List[CPUSample]]:
     monitor = CPUEnergyMonitor(

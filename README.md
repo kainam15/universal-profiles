@@ -10,7 +10,7 @@ AC-Prof 是一个面向 Hugging Face 推理服务的零侵入运行时分析工�
 
 > **运行环境：** AC-Prof 只支持原生 Linux 主机和本机 Docker Engine，正式采集默认强制使用统一 cgroup v2。WSL、Docker Desktop、远程 Docker daemon、Windows 和 macOS 不能作为实验采集环境。当前推荐并验证的是 Ubuntu 24.04。
 
-> **时间成本：** 默认 6 档 input scale 时，完整命令会运行 1,344 行主实验，通常至少需要 6 小时，且还不包含模型下载、镜像构建和计算分析器的额外耗时。第一次使用请先跑下面的最小 smoke test。
+> **时间成本：** 默认 6 档 input scale 时，完整命令会运行 1,344 行主实验。按默认每行约 10 秒 workload、20 秒 Idle 基线和 5 秒前置冷却估算，仅主测量窗口就约 13 小时，且还不包含模型下载、镜像构建、case 切换和计算分析器的额外耗时。第一次使用请先跑下面的最小 smoke test。
 
 ## AC-Prof 会采集什么
 
@@ -247,6 +247,7 @@ python run.py --model google-bert/bert-base-uncased
 | input scale | 自动规划，通常 6 档 |
 | warmup / repeat | `2 / 5` |
 | 每行 workload | 自动持续到累计 application latency 约 10 秒 |
+| Idle 基线 / 前置冷却 | `20 / 5` 秒 |
 | compute profiler | `both`：Torch eager + GPU 行 NCU |
 | execution profiler | `none` |
 | 企业微信通知 | 配置 Webhook 后自动启用；`--notify none` 可关闭 |

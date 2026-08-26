@@ -5,6 +5,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pynvml
 
+from acprof.config import DEFAULT_IDLE_SECONDS
+
 
 @dataclass
 class EnergyResult:
@@ -107,7 +109,7 @@ class GPUEnergyMonitor:
     def __init__(
         self,
         sample_hz: float = 20.0,
-        idle_seconds: float = 3.0,
+        idle_seconds: float = DEFAULT_IDLE_SECONDS,
         device_index: int = 0,
     ) -> None:
         self.sample_hz = float(sample_hz)
@@ -320,7 +322,7 @@ class GPUEnergyMonitor:
 def measure_energy_threaded(
     fn: Callable[[], Any],
     sample_hz: float = 20.0,
-    idle_seconds: float = 3.0,
+    idle_seconds: float = DEFAULT_IDLE_SECONDS,
     device_index: int = 0,
     align_to_fn: bool = True,
 ) -> Tuple[EnergyResult, str, str, List[Tuple[float, float]]]:
