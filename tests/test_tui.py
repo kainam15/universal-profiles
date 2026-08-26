@@ -5,7 +5,7 @@ import sys
 import tempfile
 import unittest
 
-from textual.widgets import Input, Select, Static
+from textual.widgets import DataTable, Input, Select, Static
 from textual.css.query import NoMatches
 
 from acprof.cli.tui import (
@@ -278,6 +278,59 @@ class TuiCoreTests(unittest.TestCase):
             )
             self.assertEqual(profile[-1], "--dry-run")
 
+    def test_summarize_result_csv_with_latencies(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            result_csv = Path(temporary_dir) / "result_all.csv"
+            with result_csv.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=(
+                        "status",
+                        "warmup",
+                        "cpu_cores",
+                        "mem_cap_gb",
+                        "gpu_mode",
+                        "latency_app_s",
+                    ),
+                )
+                writer.writeheader()
+                writer.writerows(
+                    (
+                        {
+                            "status": "ok",
+                            "warmup": "1",
+                            "cpu_cores": "1",
+                            "mem_cap_gb": "4",
+                            "gpu_mode": "off",
+                            "latency_app_s": "0.100",
+                        },
+                        {
+                            "status": "ok",
+                            "warmup": "0",
+                            "cpu_cores": "1",
+                            "mem_cap_gb": "4",
+                            "gpu_mode": "off",
+                            "latency_app_s": "0.050",
+                        },
+                        {
+                            "status": "ok",
+                            "warmup": "0",
+                            "cpu_cores": "2",
+                            "mem_cap_gb": "4",
+                            "gpu_mode": "off",
+                            "latency_app_s": "0.030",
+                        },
+                    )
+                )
+            summary = summarize_result_csv(result_csv)
+            self.assertEqual(summary.rows, 3)
+            self.assertEqual(summary.ok_rows, 3)
+            self.assertEqual(summary.warmup_rows, 1)
+            self.assertEqual(summary.cases, 2)
+            self.assertAlmostEqual(summary.min_latency_s, 0.030)
+            self.assertAlmostEqual(summary.max_latency_s, 0.050)
+            self.assertAlmostEqual(summary.avg_latency_s, 0.040)
+
     def test_rapl_check_does_not_follow_cyclic_sysfs_links(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
@@ -440,6 +493,106 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app._latest_snapshot.stage, "探测完成")
             self.assertIn("单次请求 4.321s", app._latest_snapshot.detail)
             self.assertEqual(app._latest_snapshot.probe_summary, "/tmp/probe.json")
+
+    async def test_elapsed_timer_skips_during_measurement(self):
+        """Elapsed ticker must not cause widget updates during measurement."""
+        script = "\n".join(
+            (
+                "import time",
+                "print('Resource matrix: x = 1 cases', flush=True)",
+                "print('# Case 1/1: CPU=1, MEM=4GB, GPU=off', flush=True)",
+                "print('[case] Running workload...', flush=True)",
+                "time.sleep(0.2)",
+                "print('[case] Stopping container...', flush=True)",
+                "print('[case] Done. Output: result.csv', flush=True)",
+                "print('Profiling complete!', flush=True)",
+            )
+        )
+        app = AcprofTui(RunConfig.smoke("demo/model"))
+        async with app.run_test(size=(140, 48)) as pilot:
+            await pilot.pause()
+            app._launch(
+                PendingLaunch(
+                    (sys.executable, "-u", "-c", script),
+                    "run",
+                    RunConfig.smoke("demo/model"),
+                )
+            )
+            # The elapsed timer should be active during the run.
+            self.assertIsNotNone(app._elapsed_timer)
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if not app._is_busy():
+                    break
+            # After completion the timer is stopped.
+            self.assertIsNone(app._elapsed_timer)
+            self.assertFalse(app._is_busy())
+
+    async def test_matrix_board_populates_for_run(self):
+        """The resource matrix DataTable should populate on run launch."""
+        config = RunConfig.smoke("demo/model")
+        app = AcprofTui(config)
+        async with app.run_test(size=(140, 48)) as pilot:
+            await pilot.pause()
+            table = app.query_one("#matrix-table", DataTable)
+            self.assertEqual(table.row_count, 0)
+            script = "\n".join(
+                (
+                    "print('Resource matrix: x = 1 cases', flush=True)",
+                    "print('# Case 1/1: CPU=1, MEM=4GB, GPU=off', flush=True)",
+                    "print('[case] Running workload...', flush=True)",
+                    "print('[case] Stopping container...', flush=True)",
+                    "print('[case] Done. Output: result.csv', flush=True)",
+                    "print('Profiling complete!', flush=True)",
+                )
+            )
+            app._launch(
+                PendingLaunch(
+                    (sys.executable, "-u", "-c", script),
+                    "run",
+                    config,
+                )
+            )
+            await pilot.pause(0.1)
+            self.assertEqual(table.row_count, 1)
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if not app._is_busy():
+                    break
+            self.assertFalse(app._is_busy())
+
+    async def test_stage_gets_color_class(self):
+        """The status-stage widget should receive CSS classes for visual state."""
+        from acprof.cli.tui_core import ProgressSnapshot
+        app = AcprofTui(RunConfig.smoke("demo/model"))
+        async with app.run_test(size=(140, 48)) as pilot:
+            await pilot.pause()
+            stage_widget = app.query_one("#status-stage", Static)
+            app._render_snapshot(ProgressSnapshot(stage="已完成"))
+            await pilot.pause()
+            self.assertTrue(stage_widget.has_class("stage-success"))
+            app._render_snapshot(ProgressSnapshot(stage="失败"))
+            await pilot.pause()
+            self.assertTrue(stage_widget.has_class("stage-error"))
+            self.assertFalse(stage_widget.has_class("stage-success"))
+            app._render_snapshot(ProgressSnapshot(stage="正式测量"))
+            await pilot.pause()
+            self.assertTrue(stage_widget.has_class("stage-measuring"))
+
+    async def test_matrix_slash_command_toggles_board(self):
+        """Slash command /matrix toggles the matrix board collapsible."""
+        from textual.widgets import Collapsible
+        app = AcprofTui(RunConfig.smoke("demo/model"))
+        async with app.run_test(size=(140, 48)) as pilot:
+            await pilot.pause()
+            board = app.query_one("#matrix-board", Collapsible)
+            self.assertTrue(board.collapsed)
+            input_widget = app.query_one("#slash-command", Input)
+            input_widget.focus()
+            input_widget.value = "/matrix"
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertFalse(board.collapsed)
 
 
 if __name__ == "__main__":

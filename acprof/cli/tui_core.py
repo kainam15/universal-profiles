@@ -933,6 +933,9 @@ class ResultSummary:
     error_rows: int
     warmup_rows: int
     cases: int
+    min_latency_s: float | None = None
+    max_latency_s: float | None = None
+    avg_latency_s: float | None = None
 
 
 def summarize_result_csv(result_csv: str | Path) -> ResultSummary:
@@ -940,15 +943,29 @@ def summarize_result_csv(result_csv: str | Path) -> ResultSummary:
     path = Path(result_csv).expanduser()
     rows = ok_rows = error_rows = warmup_rows = 0
     cases: set[tuple[str, str, str]] = set()
+    latencies: list[float] = []
     with path.open("r", encoding="utf-8", newline="") as handle:
         for row in csv.DictReader(handle):
             rows += 1
             status = str(row.get("status") or "").strip().lower()
+            is_warmup = str(row.get("warmup") or "0").strip() == "1"
             if status == "ok":
                 ok_rows += 1
+                if not is_warmup:
+                    raw_lat = (
+                        row.get("latency_app_s")
+                        or row.get("latency_s")
+                        or ""
+                    ).strip()
+                    try:
+                        lat_val = float(raw_lat)
+                        if math.isfinite(lat_val) and lat_val > 0:
+                            latencies.append(lat_val)
+                    except ValueError:
+                        pass
             elif status == "error":
                 error_rows += 1
-            if str(row.get("warmup") or "0").strip() == "1":
+            if is_warmup:
                 warmup_rows += 1
             cases.add(
                 (
@@ -957,12 +974,18 @@ def summarize_result_csv(result_csv: str | Path) -> ResultSummary:
                     str(row.get("gpu_mode") or ""),
                 )
             )
+    min_lat = min(latencies) if latencies else None
+    max_lat = max(latencies) if latencies else None
+    avg_lat = (sum(latencies) / len(latencies)) if latencies else None
     return ResultSummary(
         rows=rows,
         ok_rows=ok_rows,
         error_rows=error_rows,
         warmup_rows=warmup_rows,
         cases=len(cases),
+        min_latency_s=min_lat,
+        max_latency_s=max_lat,
+        avg_latency_s=avg_lat,
     )
 
 

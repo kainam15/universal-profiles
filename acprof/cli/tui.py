@@ -23,6 +23,7 @@ try:
         Button,
         Checkbox,
         Collapsible,
+        DataTable,
         Footer,
         Header,
         Input,
@@ -374,6 +375,39 @@ class AcprofTui(App[None]):
     #slash-command:focus {
         border: round $accent;
     }
+
+    .stage-idle {
+        color: $text-muted;
+    }
+
+    .stage-running {
+        color: $accent;
+        text-style: bold;
+    }
+
+    .stage-measuring {
+        color: $warning;
+        text-style: bold;
+    }
+
+    .stage-success {
+        color: $success;
+        text-style: bold;
+    }
+
+    .stage-error {
+        color: $error;
+        text-style: bold;
+    }
+
+    #matrix-board {
+        margin-top: 1;
+    }
+
+    #matrix-table {
+        height: auto;
+        max-height: 16;
+    }
     """
 
     def __init__(self, initial_config: RunConfig | None = None):
@@ -394,6 +428,8 @@ class AcprofTui(App[None]):
         self._preview_timer = None
         self._ignored_preset_event: str | None = None
         self._initial_preset = self._infer_preset(self.initial_config)
+        self._elapsed_timer = None
+        self._matrix_rows: dict[int, object] = {}
 
     def compose(self) -> ComposeResult:
         # A ticking clock would force periodic redraws during RAPL windows.
@@ -677,6 +713,15 @@ class AcprofTui(App[None]):
                         show_eta=False,
                         id="case-progress",
                     )
+                    with Collapsible(
+                        title="资源矩阵",
+                        collapsed=True,
+                        id="matrix-board",
+                    ):
+                        yield DataTable(
+                            id="matrix-table",
+                            show_cursor=False,
+                        )
                     with Horizontal(classes="button-row"):
                         yield Button("终止当前任务", id="stop-run", variant="error", disabled=True)
                         yield Button("清空显示日志", id="clear-log")
@@ -722,6 +767,12 @@ class AcprofTui(App[None]):
     def on_mount(self) -> None:
         self._form_ready = True
         self._refresh_command_preview(notify=False)
+        table = self.query_one("#matrix-table", DataTable)
+        table.add_column("Case", key="case")
+        table.add_column("CPU", key="cpu")
+        table.add_column("MEM (GB)", key="mem")
+        table.add_column("GPU", key="gpu")
+        table.add_column("状态", key="status")
         self.query_one("#model", Input).focus()
 
     @staticmethod
@@ -1076,11 +1127,84 @@ class AcprofTui(App[None]):
         # Move focus away from Input widgets so their caret-blink timers do
         # not cause redraws while a scientific measurement is active.
         self.query_one("#stop-run", Button).focus()
+        # Start the elapsed-time ticker; it self-gates on measurement_active
+        # to avoid any redraws during formal energy/latency windows.
+        if self._elapsed_timer is not None:
+            self._elapsed_timer.stop()
+        self._elapsed_timer = self.set_interval(1.0, self._tick_elapsed)
+        # Populate the resource matrix board for run tasks.
+        if pending.kind == "run" and pending.config is not None:
+            self._init_matrix_for_run(pending.config)
+        else:
+            self._clear_matrix()
         log = self.query_one("#run-log", RichLog)
         log.write(f"$ {format_command(pending.command, project_dir=PROJECT_DIR)}")
         log.write("[TUI] 子进程输出通过管道读取；tmux pane 捕获已对该子进程禁用。")
         self._render_snapshot(self._latest_snapshot)
         self._execute_command(list(pending.command), pending.kind)
+
+    def _tick_elapsed(self) -> None:
+        """Update elapsed time display; skipped during measurement windows."""
+        if self._latest_snapshot.measurement_active:
+            return  # Zero redraws during RAPL/latency measurement windows.
+        if not self._started_monotonic or not self._is_busy():
+            return
+        elapsed = self._format_elapsed(time.monotonic() - self._started_monotonic)
+        self.query_one("#status-elapsed", Static).update(elapsed)
+
+    def _init_matrix_for_run(self, config: RunConfig) -> None:
+        """Pre-populate the resource matrix board from the run configuration."""
+        table = self.query_one("#matrix-table", DataTable)
+        table.clear()
+        self._matrix_rows.clear()
+        # run.py iterates CPU → MEM → GPU (innermost).
+        cpus = config.cpus.split(",")
+        mems = config.mems.split(",")
+        gpus = config.gpus.split(",")
+        case_num = 0
+        for cpu in cpus:
+            for mem in mems:
+                for gpu in gpus:
+                    case_num += 1
+                    key = table.add_row(
+                        str(case_num), cpu.strip(), mem.strip(),
+                        gpu.strip(), "⋯ 等待",
+                    )
+                    self._matrix_rows[case_num] = key
+        self.query_one("#matrix-board", Collapsible).collapsed = False
+
+    def _clear_matrix(self) -> None:
+        """Clear the matrix board for non-run tasks."""
+        self.query_one("#matrix-table", DataTable).clear()
+        self._matrix_rows.clear()
+
+    _STAGE_CSS_CLASS = {
+        "等待": "stage-idle",
+        "已完成": "stage-success",
+        "探测完成": "stage-success",
+        "case 完成": "stage-success",
+        "失败": "stage-error",
+        "探测失败": "stage-error",
+        "已终止": "stage-error",
+        "正式测量": "stage-measuring",
+        "最大尺度探测": "stage-measuring",
+    }
+    _STAGE_CLASSES = frozenset({
+        "stage-idle", "stage-running", "stage-measuring",
+        "stage-success", "stage-error",
+    })
+
+    _MATRIX_STATUS = {
+        "启动容器": "▶ 准备中",
+        "构建镜像": "🔧 构建",
+        "规划输入": "📐 规划",
+        "服务就绪": "▶ 就绪",
+        "正式测量": "⏱ 测量中",
+        "清理 case": "⏳ 清理",
+        "case 完成": "✓ 完成",
+        "OOM 剪枝": "⊘ 剪枝",
+        "失败": "✗ 失败",
+    }
 
     @work(thread=True, group="process", exclusive=True, exit_on_error=False)
     def _execute_command(self, command: list[str], kind: str) -> None:
@@ -1240,7 +1364,12 @@ class AcprofTui(App[None]):
             if self._started_monotonic
             else "-"
         )
-        self.query_one("#status-stage", Static).update(snapshot.stage)
+        # Stage text with visual category coloring.
+        stage_widget = self.query_one("#status-stage", Static)
+        stage_widget.update(snapshot.stage)
+        stage_widget.set_classes(
+            self._STAGE_CSS_CLASS.get(snapshot.stage, "stage-running")
+        )
         self.query_one("#status-elapsed", Static).update(elapsed)
         self.query_one("#status-case", Static).update(
             f"当前 {snapshot.current_case or '-'} · "
@@ -1258,6 +1387,27 @@ class AcprofTui(App[None]):
             total=total,
             progress=min(snapshot.completed_cases, total),
         )
+        # Update the resource matrix board.
+        self._update_matrix_status(snapshot)
+
+    def _update_matrix_status(self, snapshot: ProgressSnapshot) -> None:
+        """Update the matrix board row for the current case."""
+        case_num = snapshot.current_case
+        if case_num <= 0 or not self._matrix_rows:
+            return
+        table = self.query_one("#matrix-table", DataTable)
+        row_key = self._matrix_rows.get(case_num)
+        if row_key is None:
+            return
+        # Correct resource columns with actual values from the log.
+        if snapshot.cpu != "-":
+            table.update_cell(row_key, "cpu", snapshot.cpu)
+            table.update_cell(row_key, "mem", snapshot.mem)
+            table.update_cell(row_key, "gpu", snapshot.gpu)
+        # Update status column.
+        status = self._MATRIX_STATUS.get(snapshot.stage)
+        if status:
+            table.update_cell(row_key, "status", status)
 
     def _process_finished(
         self,
@@ -1266,6 +1416,16 @@ class AcprofTui(App[None]):
         snapshot: ProgressSnapshot | None,
         launch_error: str,
     ) -> None:
+        # Stop the elapsed-time ticker.
+        if self._elapsed_timer is not None:
+            self._elapsed_timer.stop()
+            self._elapsed_timer = None
+        # Show the final elapsed time.
+        if self._started_monotonic:
+            final_elapsed = self._format_elapsed(
+                time.monotonic() - self._started_monotonic
+            )
+            self.query_one("#status-elapsed", Static).update(final_elapsed)
         self._set_busy(False)
         log = self.query_one("#run-log", RichLog)
         if launch_error:
@@ -1463,9 +1623,29 @@ class AcprofTui(App[None]):
             log.write(f"[TUI][ERROR] 环境检查失败：{error}")
             self.notify(error, severity="error")
             return
-        symbols = {"ok": "✓", "warn": "!", "fail": "✗"}
+        # Render a structured Rich table instead of plain text lines.
+        from rich.table import Table as RichTable
+        from rich.text import Text as RichText
+        table = RichTable(
+            title="环境检查结果",
+            show_header=True,
+            title_style="bold",
+            border_style="dim",
+        )
+        table.add_column("检查项", style="bold", min_width=16)
+        table.add_column("状态", justify="center", min_width=4)
+        table.add_column("详情")
+        status_style = {"ok": "green", "warn": "yellow", "fail": "red bold"}
+        status_symbol = {"ok": "✓", "warn": "!", "fail": "✗"}
         for check in checks:
-            log.write(f"[{symbols.get(check.status, '?')}] {check.label}: {check.detail}")
+            style = status_style.get(check.status, "")
+            symbol = status_symbol.get(check.status, "?")
+            table.add_row(
+                check.label,
+                RichText(symbol, style=style),
+                check.detail,
+            )
+        log.write(table)
         failures = sum(check.status == "fail" for check in checks)
         warnings = sum(check.status == "warn" for check in checks)
         log.write(
@@ -1502,11 +1682,21 @@ class AcprofTui(App[None]):
             if notify:
                 self.notify(str(exc), severity="error")
             return
+        latency_info = ""
+        if summary.avg_latency_s is not None:
+            min_ms = summary.min_latency_s * 1000 if summary.min_latency_s is not None else 0
+            max_ms = summary.max_latency_s * 1000 if summary.max_latency_s is not None else 0
+            avg_ms = summary.avg_latency_s * 1000
+            latency_info = (
+                f"\n应用延迟（均值）：{avg_ms:.1f}ms "
+                f"（范围 {min_ms:.1f}ms ~ {max_ms:.1f}ms）"
+            )
         self.query_one("#result-summary", Static).update(
             "结果已读取\n"
             f"行数：{summary.rows}（成功 {summary.ok_rows} / 错误 {summary.error_rows}）\n"
             f"资源 case：{summary.cases}\n"
             f"Warmup 行：{summary.warmup_rows}（正常绘图会排除）"
+            f"{latency_info}"
         )
         if notify:
             self.notify("结果摘要已更新", timeout=3)
@@ -1648,8 +1838,12 @@ class AcprofTui(App[None]):
             self._activate_tab("monitor-tab")
         elif command == "smoke":
             self.preset_smoke()
-        elif command in {"main", "matrix"}:
+        elif command == "main":
             self.preset_main()
+        elif command in {"matrix", "board"}:
+            board = self.query_one("#matrix-board", Collapsible)
+            board.collapsed = not board.collapsed
+            self._activate_tab("monitor-tab")
         elif command in {"defaults", "default"}:
             self.preset_default()
         elif command == "preview":
@@ -1681,7 +1875,7 @@ class AcprofTui(App[None]):
                 "[TUI] /run 采集 · /probe 最大输入探测 · /check 环境检查 · "
                 "/status 状态 · /stop 终止 · "
                 "/smoke 最小预设 · /main 主矩阵 · /defaults 默认 · /preview 命令预览 · "
-                "/plot [csv] 绘图 · /profile [dir] [tools] 补采计划 · "
+                "/matrix 切换矩阵看板 · /plot [csv] 绘图 · /profile [dir] [tools] 补采计划 · "
                 "/profile-run [dir] [tools] 执行补采 · /results [csv] 摘要 · "
                 "/clear 清日志 · /quit 退出"
             )
