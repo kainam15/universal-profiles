@@ -20,8 +20,10 @@ import sys
 from typing import Callable, Iterable, Sequence
 
 from acprof.config import (
+    DEFAULT_COMPUTE_PROFILE_TOOL,
     DEFAULT_IDLE_COOLDOWN_SECONDS,
     DEFAULT_IDLE_SECONDS,
+    DEFAULT_REQUEST_TIMEOUT_SECONDS,
     DEFAULT_REPEAT_IN_WINDOW,
     DEFAULT_REPEAT_WINDOW_SECONDS,
 )
@@ -108,7 +110,7 @@ class RunConfig:
     sample_hz: float = 20.0
     idle_seconds: float = DEFAULT_IDLE_SECONDS
     idle_cooldown_seconds: float = DEFAULT_IDLE_COOLDOWN_SECONDS
-    compute_profile_tool: str = "both"
+    compute_profile_tool: str = DEFAULT_COMPUTE_PROFILE_TOOL
     execution_profile_tool: str = "none"
     sniff_iface: str = "docker0"
     notify: str = "auto"
@@ -348,6 +350,49 @@ def build_run_command(
     return command
 
 
+def build_probe_command(
+    config: RunConfig,
+    *,
+    project_dir: Path,
+    python_executable: str | Path = sys.executable,
+) -> list[str]:
+    """Build a one-request largest-scale diagnostic probe command."""
+    config = config.validate(project_dir=project_dir)
+    command = [
+        str(python_executable),
+        "-u",
+        str(project_dir / "probe.py"),
+        "--model",
+        config.model,
+        "--cpus",
+        config.cpus,
+        "--mems",
+        config.mems,
+        "--gpus",
+        config.gpus,
+        "--batch-size",
+        str(config.batch_size),
+        "--timeout-seconds",
+        _format_number(DEFAULT_REQUEST_TIMEOUT_SECONDS),
+        "--output-dir",
+        config.output_dir,
+    ]
+    for option, value in (
+        ("--task", config.task),
+        ("--task-family", config.task_family),
+        ("--backend", config.backend),
+        ("--input-scales", config.input_scales),
+        ("--workload-spec", config.workload_spec),
+    ):
+        if value:
+            command.extend((option, value))
+    if config.skip_build:
+        command.append("--skip-build")
+    if config.allow_cgroup_v1:
+        command.append("--allow-cgroup-v1")
+    return command
+
+
 def build_plot_command(
     result_csv: str | Path,
     *,
@@ -398,6 +443,7 @@ def format_command(command: Sequence[str], *, project_dir: Path | None = None) -
                 continue
             if item_path.parent == project_dir and item_path.name in {
                 "run.py",
+                "probe.py",
                 "plot.py",
                 "profile.py",
             }:
@@ -413,6 +459,49 @@ CASE_RE = re.compile(
 MATRIX_RE = re.compile(r"Resource matrix:.*=\s*(?P<total>\d+)\s+cases")
 FINAL_CSV_RE = re.compile(r"Merged results:\s+(?P<path>.+)$")
 MERGE_CSV_RE = re.compile(r"\[merge\]\s+Final CSV:\s+(?P<path>.+?)\s+\(\d+\s+rows\)")
+LARGEST_PROBE_START_RE = re.compile(
+    r"\[largest-probe\] Starting minimum configuration:\s+"
+    r"CPU=(?P<cpu>\d+),\s+MEM=(?P<mem>\d+)GB,\s+"
+    r"GPU=(?P<gpu>\S+),\s+input_scale=(?P<scale>\S+)"
+)
+LARGEST_PROBE_SCAN_RE = re.compile(
+    r"\[largest-probe\] MEMORY_SCAN\s+"
+    r"cpu=(?P<cpu>\d+)\s+gpu=(?P<gpu>\S+)\s+"
+    r"candidates=(?P<candidates>[\d,]+)\s+"
+    r"input_scale=(?P<scale>\S+)"
+)
+LARGEST_PROBE_MEMORY_TRY_RE = re.compile(
+    r"\[largest-probe\] MEMORY_TRY\s+"
+    r"current=(?P<current>\d+)\s+total=(?P<total>\d+)\s+"
+    r"cpu=(?P<cpu>\d+)\s+mem=(?P<mem>\d+)\s+"
+    r"gpu=(?P<gpu>\S+)\s+input_scale=(?P<scale>\S+)"
+)
+LARGEST_PROBE_MEMORY_RESULT_RE = re.compile(
+    r"\[largest-probe\] MEMORY_RESULT\s+"
+    r"mem=(?P<mem>\d+)\s+status=(?P<status>\S+)"
+)
+LARGEST_PROBE_RESULT_RE = re.compile(
+    r"\[largest-probe\] RESULT\s+"
+    r"status=(?P<status>\S+)\s+"
+    r"input_scale=(?P<scale>\S+)\s+"
+    r"cpu=(?P<cpu>\d+)\s+"
+    r"mem=(?P<mem>\S+)\s+"
+    r"gpu=(?P<gpu>\S+)\s+"
+    r"cold_start_s=(?P<cold>\S+)\s+"
+    r"request_s=(?P<request>\S+)\s+"
+    r"ready_plus_request_s=(?P<total>\S+)"
+)
+LARGEST_PROBE_SUMMARY_RE = re.compile(
+    r"\[largest-probe\] Summary JSON:\s+(?P<path>.+)$"
+)
+
+
+def _format_probe_duration(raw: str) -> str:
+    try:
+        value = float(raw)
+    except ValueError:
+        return "不可用"
+    return f"{value:.3f}s" if math.isfinite(value) else "不可用"
 
 
 @dataclass(frozen=True)
@@ -429,6 +518,7 @@ class ProgressSnapshot:
     warnings: int = 0
     errors: int = 0
     final_csv: str = ""
+    probe_summary: str = ""
 
 
 class RunProgressTracker:
@@ -446,6 +536,109 @@ class RunProgressTracker:
             updates["warnings"] = state.warnings + 1
         if "[ERROR]" in line or line.startswith("Traceback"):
             updates["errors"] = state.errors + 1
+
+        probe_start = LARGEST_PROBE_START_RE.search(line)
+        if probe_start:
+            updates.update(
+                stage="启动探测容器",
+                detail=(
+                    f"最低配置 · 最大尺度 {probe_start.group('scale')}"
+                ),
+                current_case=1,
+                completed_cases=0,
+                total_cases=1,
+                cpu=probe_start.group("cpu"),
+                mem=probe_start.group("mem"),
+                gpu=probe_start.group("gpu"),
+                measurement_active=False,
+            )
+
+        probe_scan = LARGEST_PROBE_SCAN_RE.search(line)
+        if probe_scan:
+            candidates = probe_scan.group("candidates").split(",")
+            updates.update(
+                stage="准备内存探测",
+                detail=(
+                    f"候选内存 {probe_scan.group('candidates')}GB · "
+                    f"最大尺度 {probe_scan.group('scale')}"
+                ),
+                current_case=0,
+                completed_cases=0,
+                total_cases=len(candidates),
+                cpu=probe_scan.group("cpu"),
+                mem="-",
+                gpu=probe_scan.group("gpu"),
+                measurement_active=False,
+            )
+
+        memory_try = LARGEST_PROBE_MEMORY_TRY_RE.search(line)
+        if memory_try:
+            current = int(memory_try.group("current"))
+            updates.update(
+                stage="探测最低可用内存",
+                detail=(
+                    f"正在尝试 {memory_try.group('mem')}GB · "
+                    f"最大尺度 {memory_try.group('scale')}"
+                ),
+                current_case=current,
+                completed_cases=max(state.completed_cases, current - 1),
+                total_cases=int(memory_try.group("total")),
+                cpu=memory_try.group("cpu"),
+                mem=memory_try.group("mem"),
+                gpu=memory_try.group("gpu"),
+                measurement_active=False,
+            )
+
+        memory_result = LARGEST_PROBE_MEMORY_RESULT_RE.search(line)
+        if memory_result:
+            memory_status = memory_result.group("status")
+            status_labels = {
+                "ok": "可运行，已找到最低内存",
+                "startup_oom": "启动 OOM，继续下一档",
+                "runtime_oom": "推理 OOM，继续下一档",
+                "cuda_oom": "CUDA OOM，继续下一档",
+                "timeout": "请求超时",
+                "error": "探测失败",
+            }
+            updates.update(
+                stage=(
+                    "找到最低可用内存"
+                    if memory_status == "ok"
+                    else "内存可行性探测"
+                ),
+                detail=(
+                    f"{memory_result.group('mem')}GB · "
+                    f"{status_labels.get(memory_status, memory_status)}"
+                ),
+                completed_cases=max(state.completed_cases, state.current_case),
+                measurement_active=False,
+            )
+
+        probe_result = LARGEST_PROBE_RESULT_RE.search(line)
+        if probe_result:
+            status = probe_result.group("status")
+            completed = max(1, state.current_case)
+            updates.update(
+                stage="探测完成" if status == "ok" else "探测失败",
+                detail=(
+                    f"最低可用内存 {probe_result.group('mem')}GB · "
+                    f"最大尺度 {probe_result.group('scale')} · "
+                    f"单次请求 {_format_probe_duration(probe_result.group('request'))} · "
+                    f"冷启动 {_format_probe_duration(probe_result.group('cold'))} · "
+                    f"就绪+请求 {_format_probe_duration(probe_result.group('total'))}"
+                ),
+                current_case=completed,
+                completed_cases=completed,
+                total_cases=completed,
+                cpu=probe_result.group("cpu"),
+                mem=probe_result.group("mem"),
+                gpu=probe_result.group("gpu"),
+                measurement_active=False,
+            )
+
+        probe_summary = LARGEST_PROBE_SUMMARY_RE.search(line)
+        if probe_summary:
+            updates["probe_summary"] = probe_summary.group("path").strip()
 
         match = MATRIX_RE.search(line)
         if match:
@@ -467,6 +660,18 @@ class RunProgressTracker:
                 cpu=match.group("cpu"),
                 mem=match.group("mem"),
                 gpu=match.group("gpu"),
+                measurement_active=False,
+            )
+        elif line.startswith("[largest-probe] Running one largest-scale request"):
+            updates.update(
+                stage="最大尺度探测",
+                detail=f"正在用 {state.mem}GB 执行一次 /predict 请求",
+                measurement_active=True,
+            )
+        elif line.startswith("[largest-probe][ERROR]"):
+            updates.update(
+                stage="探测失败",
+                detail=line.partition("] ")[2] or line,
                 measurement_active=False,
             )
         elif line.startswith("[build]"):

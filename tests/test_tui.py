@@ -19,6 +19,7 @@ from acprof.cli.tui_core import (
     RunConfig,
     RunProgressTracker,
     TuiConfigError,
+    build_probe_command,
     build_profile_command,
     build_run_command,
     format_command,
@@ -31,6 +32,20 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 
 class TuiCoreTests(unittest.TestCase):
+    def test_default_config_disables_compute_profiler(self):
+        config = RunConfig(model="demo/model")
+        command = build_run_command(
+            config,
+            project_dir=PROJECT_DIR,
+            python_executable="python",
+        )
+
+        self.assertEqual(config.compute_profile_tool, "none")
+        self.assertEqual(
+            command[command.index("--compute-profile-tool") + 1],
+            "none",
+        )
+
     def test_smoke_command_delegates_to_existing_run_entrypoint(self):
         config = RunConfig.smoke("google-bert/bert-base-uncased")
         command = build_run_command(
@@ -50,6 +65,36 @@ class TuiCoreTests(unittest.TestCase):
         )
         self.assertNotIn("--allow-cgroup-v1", command)
         self.assertIn("run.py", format_command(command, project_dir=PROJECT_DIR))
+
+    def test_probe_command_uses_matrix_bounds_without_collection_options(self):
+        config = RunConfig(
+            model="demo/model",
+            cpus="1,4",
+            mems="2,8",
+            gpus="off,on",
+            input_scales="64,512",
+            warmup=9,
+            repeat=11,
+            idle_seconds=99,
+            skip_build=True,
+        )
+
+        command = build_probe_command(
+            config,
+            project_dir=PROJECT_DIR,
+            python_executable="python",
+        )
+
+        self.assertEqual(command[1:3], ["-u", str(PROJECT_DIR / "probe.py")])
+        self.assertEqual(command[command.index("--cpus") + 1], "1,4")
+        self.assertEqual(command[command.index("--mems") + 1], "2,8")
+        self.assertEqual(command[command.index("--input-scales") + 1], "64,512")
+        self.assertIn("--skip-build", command)
+        self.assertNotIn("--warmup", command)
+        self.assertNotIn("--repeat", command)
+        self.assertNotIn("--idle-seconds", command)
+        self.assertNotIn("--compute-profile-tool", command)
+        self.assertIn("probe.py", format_command(command, project_dir=PROJECT_DIR))
 
     def test_invalid_matrix_is_rejected_before_launch(self):
         with self.assertRaises(TuiConfigError) as context:
@@ -106,6 +151,81 @@ class TuiCoreTests(unittest.TestCase):
         self.assertEqual(complete.warnings, 1)
         self.assertEqual(complete.final_csv, "/tmp/result_all.csv")
         self.assertEqual(complete.stage, "已完成")
+
+    def test_progress_tracker_reports_largest_scale_probe_timings(self):
+        tracker = RunProgressTracker()
+        starting = tracker.feed(
+            "[largest-probe] Starting minimum configuration: "
+            "CPU=1, MEM=2GB, GPU=off, input_scale=512"
+        )
+        self.assertEqual(starting.stage, "启动探测容器")
+        self.assertEqual((starting.cpu, starting.mem, starting.gpu), ("1", "2", "off"))
+        measuring = tracker.feed(
+            "[largest-probe] Running one largest-scale request..."
+        )
+        self.assertTrue(measuring.measurement_active)
+
+        complete = tracker.feed(
+            "[largest-probe] RESULT status=ok input_scale=512 cpu=1 mem=2 "
+            "gpu=off cold_start_s=12.500000 request_s=4.321000 "
+            "ready_plus_request_s=16.821000"
+        )
+        complete = tracker.feed(
+            "[largest-probe] Summary JSON: /tmp/probes/largest_scale_probe.json"
+        )
+
+        self.assertFalse(complete.measurement_active)
+        self.assertEqual(complete.stage, "探测完成")
+        self.assertEqual(complete.completed_cases, 1)
+        self.assertIn("单次请求 4.321s", complete.detail)
+        self.assertEqual(
+            complete.probe_summary,
+            "/tmp/probes/largest_scale_probe.json",
+        )
+
+    def test_progress_tracker_shows_memory_scan_before_timing(self):
+        tracker = RunProgressTracker()
+        scan = tracker.feed(
+            "[largest-probe] MEMORY_SCAN cpu=1 gpu=off "
+            "candidates=2,4,8 input_scale=512"
+        )
+        self.assertEqual(scan.stage, "准备内存探测")
+        self.assertEqual(scan.total_cases, 3)
+
+        tracker.feed(
+            "[largest-probe] MEMORY_TRY current=1 total=3 "
+            "cpu=1 mem=2 gpu=off input_scale=512"
+        )
+        first = tracker.feed(
+            "[largest-probe] MEMORY_RESULT mem=2 status=startup_oom"
+        )
+        self.assertFalse(first.measurement_active)
+        self.assertIn("启动 OOM", first.detail)
+        self.assertEqual(first.completed_cases, 1)
+
+        tracker.feed(
+            "[largest-probe] MEMORY_TRY current=2 total=3 "
+            "cpu=1 mem=4 gpu=off input_scale=512"
+        )
+        measuring = tracker.feed(
+            "[largest-probe] Running one largest-scale request..."
+        )
+        self.assertTrue(measuring.measurement_active)
+        found = tracker.feed(
+            "[largest-probe] MEMORY_RESULT mem=4 status=ok"
+        )
+        self.assertEqual(found.stage, "找到最低可用内存")
+        self.assertIn("4GB", found.detail)
+
+        complete = tracker.feed(
+            "[largest-probe] RESULT status=ok input_scale=512 cpu=1 mem=4 "
+            "gpu=off cold_start_s=5 request_s=2 "
+            "ready_plus_request_s=7"
+        )
+        self.assertEqual(complete.stage, "探测完成")
+        self.assertEqual(complete.total_cases, 2)
+        self.assertEqual(complete.completed_cases, 2)
+        self.assertIn("最低可用内存 4GB", complete.detail)
 
     def test_result_summary_and_profile_dry_run(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -189,6 +309,22 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(app.ENABLE_COMMAND_PALETTE)
             self.assertFalse(app.use_command_palette)
             self.assertFalse(app.query_one("HeaderIcon").display)
+            self.assertFalse(
+                app.query_one("#allow-cgroup-v1", StatusCheckbox).display
+            )
+            command_bar = app.query_one("#slash-command-bar")
+            self.assertEqual(command_bar.styles.padding.top, 1)
+            self.assertEqual(command_bar.styles.padding.right, 2)
+            self.assertEqual(command_bar.styles.padding.bottom, 1)
+            self.assertEqual(command_bar.styles.padding.left, 2)
+            slash_command = app.query_one("#slash-command", Input)
+            self.assertEqual(slash_command.parent.id, "slash-command-bar")
+            self.assertTrue(slash_command.placeholder.startswith("快捷命令："))
+            self.assertIn("/help", slash_command.placeholder)
+            footer = app.query_one("Footer")
+            self.assertEqual(command_bar.region.bottom, footer.region.y)
+            self.assertEqual(slash_command.region.y - command_bar.region.y, 1)
+            self.assertEqual(footer.region.y - slash_command.region.bottom, 1)
             preview = str(app.query_one("#command-preview", Static).render())
             self.assertIn("/.venv/bin/python", preview)
             self.assertIn("--warmup 0", preview)
@@ -200,6 +336,10 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
                 app.query_one("#back-config")
             self.assertTrue(app.query_one("#advanced-settings").collapsed)
             self.assertTrue(app.query_one("#command-details").collapsed)
+            self.assertEqual(
+                str(app.query_one("#probe-largest").label),
+                "探测最大输入",
+            )
 
             prune = app.query_one("#prune-startup-oom", StatusCheckbox)
             reuse = app.query_one("#skip-build", StatusCheckbox)
@@ -221,6 +361,15 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.query_one("#cpus", Input).value, "1,2,4,8")
             self.assertIn("--cpus 1,2,4,8", preset_preview)
             self.assertIn("--compute-profile-tool none", preset_preview)
+
+            app.action_request_probe()
+            await pilot.pause()
+            self.assertIsInstance(app.screen, ConfirmActionScreen)
+            self.assertIsNotNone(app._pending_launch)
+            self.assertEqual(app._pending_launch.kind, "probe")
+            await pilot.press("escape")
+            await pilot.pause()
+            self.assertNotIsInstance(app.screen, ConfirmActionScreen)
 
             app.action_request_run()
             await pilot.pause()
@@ -259,6 +408,38 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(app._is_busy())
             self.assertEqual(app._latest_snapshot.stage, "已完成")
             self.assertEqual(app._latest_snapshot.completed_cases, 1)
+
+    async def test_probe_subprocess_keeps_timing_result_in_monitor(self):
+        script = "\n".join(
+            (
+                "print('[largest-probe] Starting minimum configuration: "
+                "CPU=1, MEM=2GB, GPU=off, input_scale=512', flush=True)",
+                "print('[largest-probe] Running one largest-scale request...', flush=True)",
+                "print('[largest-probe] RESULT status=ok input_scale=512 "
+                "cpu=1 mem=2 gpu=off cold_start_s=12.5 request_s=4.321 "
+                "ready_plus_request_s=16.821', flush=True)",
+                "print('[largest-probe] Summary JSON: /tmp/probe.json', flush=True)",
+            )
+        )
+        app = AcprofTui(RunConfig.smoke("demo/model"))
+        async with app.run_test(size=(140, 48)) as pilot:
+            await pilot.pause()
+            app._launch(
+                PendingLaunch(
+                    (sys.executable, "-u", "-c", script),
+                    "probe",
+                    RunConfig.smoke("demo/model"),
+                )
+            )
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if not app._is_busy():
+                    break
+
+            self.assertFalse(app._is_busy())
+            self.assertEqual(app._latest_snapshot.stage, "探测完成")
+            self.assertIn("单次请求 4.321s", app._latest_snapshot.detail)
+            self.assertEqual(app._latest_snapshot.probe_summary, "/tmp/probe.json")
 
 
 if __name__ == "__main__":

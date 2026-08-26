@@ -10,7 +10,7 @@ AC-Prof 是一个面向 Hugging Face 推理服务的零侵入运行时分析工�
 
 > **运行环境：** AC-Prof 只支持原生 Linux 主机和本机 Docker Engine，正式采集默认强制使用统一 cgroup v2。WSL、Docker Desktop、远程 Docker daemon、Windows 和 macOS 不能作为实验采集环境。当前推荐并验证的是 Ubuntu 24.04。
 
-> **时间成本：** 默认 6 档 input scale 时，完整命令会运行 1,344 行主实验。按默认每行约 10 秒 workload、20 秒 Idle 基线和 5 秒前置冷却估算，仅主测量窗口就约 13 小时，且还不包含模型下载、镜像构建、case 切换和计算分析器的额外耗时。第一次使用请先跑下面的最小 smoke test。
+> **时间成本：** 默认 6 档 input scale 时，完整命令会运行 1,344 行主实验。按默认每行约 10 秒 workload、20 秒 Idle 基线和 5 秒前置冷却估算，仅主测量窗口就约 13 小时，且还不包含模型下载、镜像构建、case 切换，以及显式启用计算分析器时的额外耗时。第一次使用请先跑下面的最小 smoke test。
 
 ## AC-Prof 会采集什么
 
@@ -105,16 +105,36 @@ python -m pip install -r requirements.txt
 ./acprof-tui --model google-bert/bert-base-uncased --preset smoke
 ```
 
-TUI 提供精简实验表单、三种预设、只读环境检查、自动命令预览、case 级进度、
-日志、结果摘要、绘图和 profiler 补采入口。开始采集和执行补采前都会显示确认页；
+TUI 提供精简实验表单、三种预设、只读环境检查、最大输入探测、自动命令预览、
+case 级进度、日志、结果摘要、绘图和 profiler 补采入口。开始探测、采集和执行补采前都会显示确认页；
 `F5` 开始采集，`F6` 执行环境检查，`Ctrl+X` 安全终止当前任务。底部输入框支持
-`/run`、`/check`、`/status`、`/stop`、`/plot`、`/profile` 和 `/help` 等快捷命令。
+`/run`、`/probe`、`/check`、`/status`、`/stop`、`/plot`、`/profile` 和 `/help` 等快捷命令。
 
-界面不会重写采集逻辑，而是启动现有 `run.py`、`plot.py` 和 `profile.py`。为了降低
+“探测最大输入”会从表单中选择最小 CPU、最小内存，并在可选时优先使用 `GPU=off`；
+输入规模留空时取自动规划结果的最大档，手动填写时取最大值。它用全新容器只运行一次
+`/predict`，显示容器冷启动、单次请求以及两者合计耗时。探测结果位于独立的
+`probes/` 目录，不会写入或修改正式实验 CSV。
+
+界面不会重写采集逻辑，而是启动现有 `run.py`、`probe.py`、`plot.py` 和 `profile.py`。为了降低
 对能耗与延迟实验的影响，正式 workload 窗口内停止常规日志重绘，不运行实时绘图，
 也不轮询正在写入的 CSV；状态仅从已有进程输出中事件驱动更新。TUI 内运行时还会
 禁用子进程的 tmux pane 捕获，避免把全屏 ANSI 重绘写进 `tmux_all.log`。论文复现仍可
 直接复制界面显示的完整命令，在普通 CLI 或自动化脚本中执行。
+
+同一功能也可以直接从 CLI 运行：
+
+```bash
+.venv/bin/python probe.py --model google-bert/bert-base-uncased --skip-build
+```
+
+例如传入 `--cpus 1,2,4 --mems 2,4,8 --gpus off,on` 时，实际测速资源为
+`CPU=1, MEM=2GB, GPU=off`。单次请求默认最多等待 300 秒，可通过
+`--timeout-seconds` 调整。每次运行写入新的
+`results/<model-dir>/probes/largest_scale_<timestamp>/largest_scale_probe.json`；其中
+`timing.request_s` 是模型 ready 后第一且唯一一次请求的端到端耗时，
+`cold_start.total_s` 是全新容器到 ready 的耗时，`timing.ready_plus_request_s` 是两者之和。
+镜像构建和输入规划等完整命令开销另记在 `timing.command_s`。该功能不启动 idle、
+能耗、抓包或 profiler 采集，因此是运行时间预估，不替代正式实验行。
 
 私有或 gated 模型可在项目根目录创建 `.env.local`：
 
@@ -225,7 +245,7 @@ python run.py --model google-bert/bert-base-uncased \
   --output-dir results/bert-cpu-gpu
 ```
 
-上面两个例子先完成主矩阵，之后可用 `profile.py` 补采计算指标。若希望在矩阵开始前直接采集 Torch / NCU，删除 `--compute-profile-tool none` 即可。`--execution-profile-tool` 默认已经是 `none`。
+上面两个例子先完成主矩阵，之后可用 `profile.py` 补采计算指标。计算分析器现在默认关闭；若希望在矩阵开始前直接采集 Torch / NCU，请显式传入 `--compute-profile-tool both`。`--execution-profile-tool` 默认也是 `none`。
 
 启动 OOM 剪枝默认开启。程序先按内存从小到大完整采集最低 CPU；只有 Docker 明确报告 `OOMKilled` 且这些失败构成连续低内存前缀时，才在后续更高 CPU 中跳过同 GPU mode、同内存上限的 case。运行期 OOM、CUDA OOM、普通启动失败和请求超时不会触发剪枝。可运行 case 的 warmup、repeat、监控器和指标口径完全不变；跳过的 case 仍写入 `status=error` 占位行，并在 `startup_oom_pruning.json` 中记录推断依据，不能作为实测性能值使用。论文若要求每个资源格都独立启动验证，传入 `--no-prune-startup-oom`。
 
@@ -248,7 +268,7 @@ python run.py --model google-bert/bert-base-uncased
 | warmup / repeat | `2 / 5` |
 | 每行 workload | 自动持续到累计 application latency 约 10 秒 |
 | Idle 基线 / 前置冷却 | `20 / 5` 秒 |
-| compute profiler | `both`：Torch eager + GPU 行 NCU |
+| compute profiler | `none`（关闭；需要时显式启用或后续补采） |
 | execution profiler | `none` |
 | 企业微信通知 | 配置 Webhook 后自动启用；`--notify none` 可关闭 |
 
@@ -314,10 +334,10 @@ FLOP profiling 和主 latency / energy workload 相互独立：
 
 | 选项 | 采集内容 | 适合场景 |
 | --- | --- | --- |
-| `--compute-profile-tool none` | 不运行 compute probe | smoke test、先完成主矩阵 |
+| `--compute-profile-tool none` | 不运行 compute probe | 默认；smoke test、先完成主矩阵 |
 | `torch` | Torch eager 逻辑 FLOP | 只关心模型算子形状对应的理论工作量 |
 | `ncu` | GPU 实际执行的 Tensor / Scalar FLOP | 单独诊断 NVIDIA GPU |
-| `both` | Torch eager；GPU 行再运行 NCU | 默认完整采集 |
+| `both` | Torch eager；GPU 行再运行 NCU | 显式启用完整采集 |
 
 Execution profiling 默认关闭。显式启用后采用缩减采样，并把来源记录到 plan 与静态元数据：
 

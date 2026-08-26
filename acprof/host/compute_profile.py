@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from acprof.config import DEFAULT_COMPUTE_PROFILE_TOOL
 from acprof.host.detect import TaskInfo
 from acprof.host.env_utils import hf_offline_docker_env_args
 
@@ -1777,13 +1778,15 @@ def collect_compute_profile_plan(
     keep_profiles: bool,
     compute_profile_cpus: Optional[int] = None,
     compute_profile_mem: Optional[int] = None,
-    compute_profile_tool: str = "both",
+    compute_profile_tool: str = DEFAULT_COMPUTE_PROFILE_TOOL,
     torch_profiler_repeat: int = 1,
     resume_existing_ncu_profiles: bool = False,
 ) -> str:
     """Collect or synthesize compute profiles and write a plan file."""
     os.makedirs(output_dir, exist_ok=True)
-    tool_mode = (compute_profile_tool or "both").strip().lower()
+    tool_mode = (
+        compute_profile_tool or DEFAULT_COMPUTE_PROFILE_TOOL
+    ).strip().lower()
     if tool_mode not in COMPUTE_PROFILE_TOOL_MODES:
         raise ValueError(
             "compute_profile_tool must be one of "

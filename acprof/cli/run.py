@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 
 from acprof.config import (
+    DEFAULT_COMPUTE_PROFILE_TOOL,
     DEFAULT_IDLE_COOLDOWN_SECONDS,
     DEFAULT_IDLE_SECONDS,
     DEFAULT_REPEAT_IN_WINDOW,
@@ -932,10 +933,10 @@ Examples:
     parser.add_argument(
         "--compute-profile-tool",
         choices=("none", "both", "auto", "torch", "ncu", "vendor"),
-        default="both",
+        default=DEFAULT_COMPUTE_PROFILE_TOOL,
         help=(
-            "Compute FLOP profiler: none skips all compute probes; both "
-            "(default) independently collects torch_profiler_eager logical "
+            "Compute FLOP profiler (default: none): none skips all compute "
+            "probes; both independently collects torch_profiler_eager logical "
             "FLOP and ncu GPU executed FLOP; auto is a deprecated alias for both"
         ),
     )

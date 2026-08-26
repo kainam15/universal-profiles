@@ -525,7 +525,7 @@ class NativeDockerGuardTests(unittest.TestCase):
             sniff_iface="docker0",
         )
 
-    def test_main_defaults_to_auto_repeat_window_and_reports_energy_abort(self) -> None:
+    def test_main_defaults_to_auto_window_and_compute_profiler_disabled(self) -> None:
         task_info = TaskInfo(
             model_id="dummy-model",
             pipeline_tag="fill-mask",
@@ -545,8 +545,6 @@ class NativeDockerGuardTests(unittest.TestCase):
                 "--model",
                 "dummy-model",
                 "--skip-build",
-                "--compute-profile-tool",
-                "none",
                 "--cpus",
                 "1",
                 "--mems",
@@ -606,7 +604,7 @@ class NativeDockerGuardTests(unittest.TestCase):
             collect_static_meta.call_args.kwargs["compute_profile_enabled"]
         )
 
-    def test_main_defaults_to_dual_compute_profiles_and_keeps_artifacts(self) -> None:
+    def test_main_can_enable_dual_compute_profiles_and_keep_artifacts(self) -> None:
         task_info = TaskInfo(
             model_id="dummy-model",
             pipeline_tag="fill-mask",
@@ -625,6 +623,8 @@ class NativeDockerGuardTests(unittest.TestCase):
                 "--model",
                 "dummy-model",
                 "--skip-build",
+                "--compute-profile-tool",
+                "both",
                 "--cpus",
                 "1",
                 "--mems",

@@ -49,6 +49,7 @@ from acprof.cli.tui_core import (
     RunProgressTracker,
     TuiConfigError,
     build_plot_command,
+    build_probe_command,
     build_profile_command,
     build_run_command,
     format_command,
@@ -150,7 +151,7 @@ class ConfirmActionScreen(ModalScreen[bool]):
 
 
 class AcprofTui(App[None]):
-    """Full-screen controller that delegates all experiments to run.py."""
+    """Full-screen controller for AC-Prof collection and diagnostics."""
 
     TITLE = "AC-Prof"
     SUB_TITLE = "低干扰实验控制台"
@@ -255,6 +256,10 @@ class AcprofTui(App[None]):
         background: transparent;
     }
 
+    #allow-cgroup-v1 {
+        display: none;
+    }
+
     .button-row {
         height: auto;
         margin: 1 0;
@@ -341,10 +346,33 @@ class AcprofTui(App[None]):
         margin-top: 1;
     }
 
-    #slash-command {
+    #bottom-panel {
         dock: bottom;
+        height: 6;
+        background: $background;
+    }
+
+    #slash-command-bar {
+        layout: horizontal;
+        height: 5;
+        padding: 1 2;
+        background: $background;
+    }
+
+    #bottom-panel Footer {
+        dock: none;
+        height: 1;
+    }
+
+    #slash-command {
         height: 3;
-        border-top: solid $panel;
+        width: 1fr;
+        border: round $panel;
+        background: $surface;
+    }
+
+    #slash-command:focus {
+        border: round $accent;
     }
     """
 
@@ -611,6 +639,7 @@ class AcprofTui(App[None]):
 
                     with Horizontal(classes="button-row primary-actions"):
                         yield Button("快速环境检查", id="quick-check", variant="primary")
+                        yield Button("探测最大输入", id="probe-largest", variant="warning")
                         yield Button("开始采集", id="start-run", variant="success")
 
                     with Collapsible(
@@ -682,11 +711,13 @@ class AcprofTui(App[None]):
                         markup=False,
                     )
 
-        yield Input(
-            placeholder="快捷命令：/run /check /status /stop /plot /profile /help",
-            id="slash-command",
-        )
-        yield Footer(show_command_palette=False)
+        with Vertical(id="bottom-panel"):
+            with Horizontal(id="slash-command-bar"):
+                yield Input(
+                    placeholder="快捷命令：输入 /help 查看可用命令，按 Enter 执行",
+                    id="slash-command",
+                )
+            yield Footer(show_command_palette=False)
 
     def on_mount(self) -> None:
         self._form_ready = True
@@ -907,6 +938,7 @@ class AcprofTui(App[None]):
     def _set_busy(self, busy: bool) -> None:
         for selector in (
             "#start-run",
+            "#probe-largest",
             "#quick-check",
             "#plot-results",
             "#profile-dry-run",
@@ -939,6 +971,56 @@ class AcprofTui(App[None]):
     @on(Button.Pressed, "#start-run")
     def start_run_button(self) -> None:
         self.action_request_run()
+
+    @on(Button.Pressed, "#probe-largest")
+    def probe_largest_button(self) -> None:
+        self.action_request_probe()
+
+    def action_request_probe(self) -> None:
+        if self._is_busy():
+            self.notify("已有任务正在运行", severity="warning")
+            return
+        try:
+            config = self._collect_config()
+            command = build_probe_command(
+                config,
+                project_dir=PROJECT_DIR,
+                python_executable=PYTHON_EXECUTABLE,
+            )
+        except TuiConfigError as exc:
+            self._show_config_error(exc)
+            return
+
+        cpu = min(int(value) for value in config.cpus.split(","))
+        memory_candidates = sorted(
+            set(int(value) for value in config.mems.split(","))
+        )
+        gpu_modes = config.gpus.split(",")
+        gpu = "off" if "off" in gpu_modes else "on"
+        largest_scale = (
+            max(float(value) for value in config.input_scales.split(","))
+            if config.input_scales
+            else None
+        )
+        scale_text = f"{largest_scale:g}" if largest_scale is not None else "自动规划后的最大值"
+        preview = format_command(command, project_dir=PROJECT_DIR)
+        self._pending_launch = PendingLaunch(tuple(command), "probe", config)
+        self.push_screen(
+            ConfirmActionScreen(
+                "探测最低配置的最大输入？",
+                f"资源：CPU={cpu}、GPU={gpu}\n"
+                "内存候选："
+                + ",".join(f"{value}GB" for value in memory_candidates)
+                + "（从小到大）\n"
+                f"输入规模：{scale_text}\n\n"
+                "每档使用全新容器并最多执行一次最大输入请求；OOM 时自动尝试下一档，"
+                "第一个成功值就是最低可用内存。结果单独写入 "
+                "probes/，不会写入或修改正式实验 CSV。请求超时为 300 秒。\n\n"
+                + preview,
+                "开始探测",
+            ),
+            self._confirmed_launch,
+        )
 
     def action_request_run(self) -> None:
         if self._is_busy():
@@ -1002,7 +1084,7 @@ class AcprofTui(App[None]):
 
     @work(thread=True, group="process", exclusive=True, exit_on_error=False)
     def _execute_command(self, command: list[str], kind: str) -> None:
-        tracker = RunProgressTracker() if kind == "run" else None
+        tracker = RunProgressTracker() if kind in {"run", "probe"} else None
         suppressed_lines = 0
         deferred_important_lines: list[str] = []
         process: subprocess.Popen[str] | None = None
@@ -1226,6 +1308,36 @@ class AcprofTui(App[None]):
                     final_state,
                     stage="已终止",
                     detail="用户请求终止；可使用相同输出目录续跑",
+                    measurement_active=False,
+                )
+            self._latest_snapshot = final_state
+            self._render_snapshot(final_state)
+        elif kind == "probe":
+            final_state = snapshot or self._latest_snapshot
+            if launch_error or (returncode != 0 and not self._stop_requested):
+                detail = launch_error or (
+                    final_state.detail
+                    if final_state.stage == "探测失败"
+                    else f"探测进程退出码 {returncode}"
+                )
+                final_state = replace(
+                    final_state,
+                    stage="探测失败",
+                    detail=detail,
+                    measurement_active=False,
+                )
+            elif self._stop_requested:
+                final_state = replace(
+                    final_state,
+                    stage="已终止",
+                    detail="用户终止了最大尺度探测",
+                    measurement_active=False,
+                )
+            elif final_state.stage != "探测完成":
+                final_state = replace(
+                    final_state,
+                    stage="探测完成",
+                    detail="最大尺度单次请求已完成",
                     measurement_active=False,
                 )
             self._latest_snapshot = final_state
@@ -1519,6 +1631,8 @@ class AcprofTui(App[None]):
 
         if command == "run":
             self.action_request_run()
+        elif command == "probe":
+            self.action_request_probe()
         elif command == "check":
             self.action_quick_check()
         elif command in {"stop", "cancel"}:
@@ -1564,7 +1678,8 @@ class AcprofTui(App[None]):
             self.action_clear_log()
         elif command == "help":
             self.query_one("#run-log", RichLog).write(
-                "[TUI] /run 采集 · /check 环境检查 · /status 状态 · /stop 终止 · "
+                "[TUI] /run 采集 · /probe 最大输入探测 · /check 环境检查 · "
+                "/status 状态 · /stop 终止 · "
                 "/smoke 最小预设 · /main 主矩阵 · /defaults 默认 · /preview 命令预览 · "
                 "/plot [csv] 绘图 · /profile [dir] [tools] 补采计划 · "
                 "/profile-run [dir] [tools] 执行补采 · /results [csv] 摘要 · "

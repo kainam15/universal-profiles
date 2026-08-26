@@ -950,7 +950,7 @@ class ComputeProfileTests(unittest.TestCase):
             None,
         )
 
-    def test_none_compute_profile_mode_writes_disabled_plan_without_probes(self) -> None:
+    def test_default_compute_profile_mode_writes_disabled_plan_without_probes(self) -> None:
         task_info = TaskInfo(
             model_id="google-bert/bert-base-uncased",
             pipeline_tag="fill-mask",
@@ -983,7 +983,6 @@ class ComputeProfileTests(unittest.TestCase):
                 advisor_repeat=1,
                 ncu_repeat=1,
                 keep_profiles=True,
-                compute_profile_tool="none",
             )
             with open(plan_path, "r", encoding="utf-8") as f:
                 plan = json.load(f)
@@ -997,7 +996,7 @@ class ComputeProfileTests(unittest.TestCase):
             plan["static_metadata"]["compute_profile_provenance"], "disabled"
         )
 
-    def test_default_compute_profile_uses_torch_on_each_device_and_gpu_ncu(self) -> None:
+    def test_both_compute_profile_uses_torch_on_each_device_and_gpu_ncu(self) -> None:
         task_info = TaskInfo(
             model_id="google-bert/bert-base-uncased",
             pipeline_tag="fill-mask",
@@ -1013,7 +1012,7 @@ class ComputeProfileTests(unittest.TestCase):
             calls.append(("find", names))
             if "ncu" in names:
                 return "/opt/nvidia/nsight-compute/2024.1.1/ncu"
-            raise AssertionError("advisor should not be resolved by default")
+            raise AssertionError("advisor should not be resolved in both mode")
 
         def fake_torch_profile(**kwargs):
             calls.append(("torch", kwargs["profile_key"], kwargs["use_gpu"]))
@@ -1055,7 +1054,7 @@ class ComputeProfileTests(unittest.TestCase):
             side_effect=fake_torch_profile,
         ), patch(
             "acprof.host.compute_profile._profile_cpu_entries",
-            side_effect=AssertionError("vendor CPU profiler should not run by default"),
+            side_effect=AssertionError("vendor CPU profiler should not run in both mode"),
         ), patch(
             "acprof.host.compute_profile._profile_gpu_entries",
             side_effect=fake_gpu_profile,
@@ -1073,6 +1072,7 @@ class ComputeProfileTests(unittest.TestCase):
                 advisor_repeat=20,
                 ncu_repeat=1,
                 keep_profiles=False,
+                compute_profile_tool="both",
             )
 
             with open(plan_path, "r", encoding="utf-8") as f:
