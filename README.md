@@ -374,6 +374,10 @@ cat /proc/sys/kernel/perf_event_paranoid
 
 默认启用的启动 OOM 剪枝只把最低 CPU 上连续实测的启动 OOM 前缀外推到更高 CPU，并保留 `startup_oom_pruning.json`；论文中应将 `P-OOM` 表述为基于资源单调性假设的不可行配置推断，而不是独立实测样本。需要逐格验证完整矩阵时传入 `--no-prune-startup-oom`。
 
+### `container_runtime_oom`
+
+容器已通过 `/ready`，但在 workload 期间触达 memory cgroup 上限并被 Docker 标记为 `OOMKilled`。程序会保留 OOM 前已经完成的测量行，为未完成的计划行写入 `status=error` 和 Docker 退出诊断，然后继续下一个资源 case。运行期 OOM 不参与启动 OOM 剪枝；已有成功行仍是实测值，错误占位行不会进入性能图或延迟模型。
+
 ### 运行中还没有 `result_all.csv`
 
 这是正常的：矩阵执行期间先写 `result_case_*.csv`，全部 case 完成后才合并为 `result_all.csv`。如果在 tmux 中运行，可查看结果目录里的 `tmux_all.log`。

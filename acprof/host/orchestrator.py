@@ -481,6 +481,41 @@ def _container_startup_exit_error(
     return f"container_exited_before_ready ({detail})"
 
 
+def _container_runtime_oom_error(
+    container_name: str,
+    memory_limit_gb: int,
+    client_exit_code: int,
+) -> Optional[str]:
+    """Describe a workload-time cgroup OOM reported by Docker.
+
+    Client-side monitors can observe a dead container before the orchestrator
+    does and consequently return a monitor-specific exit code. Docker's
+    explicit ``OOMKilled`` state is stronger evidence, so callers must consult
+    it before classifying a non-zero client exit as a profiler failure.
+    """
+    state = _inspect_container_state(container_name)
+    if not state or not bool(state.get("OOMKilled")):
+        return None
+
+    status = str(state.get("Status") or "").strip().lower()
+    try:
+        container_exit_code = int(state.get("ExitCode"))
+    except (TypeError, ValueError):
+        container_exit_code = -1
+    docker_error = str(state.get("Error") or "").strip()
+    detail = (
+        "container_runtime_oom: docker_oom_killed=true; "
+        "measurement_row_completed=false; planned_request_attempted=unknown; "
+        f"container={container_name}; memory_limit_gb={memory_limit_gb}; "
+        f"container_status={status or 'unknown'}; "
+        f"container_exit_code={container_exit_code}; "
+        f"client_exit_code={client_exit_code}"
+    )
+    if docker_error:
+        detail += f"; docker_error={docker_error}"
+    return detail
+
+
 def _url_host(url: str) -> str:
     """Extract host from a URL for pip trusted-host."""
     parsed = urlparse(url)
@@ -3319,8 +3354,9 @@ def run_single_case(
     base_url = session.base_url
     cold_start_s = session.cold_start_s
     tcpdump_proc = None
-    request_timed_out = False
-    timeout_preserved_rows = 0
+    case_incomplete = False
+    completed_rows_before_failure = 0
+    incomplete_case_reason = ""
     sniff_runtime = _resolve_packet_latency_runtime(
         project_dir=project_dir,
         pcap_file=pcap_file,
@@ -3403,8 +3439,32 @@ def run_single_case(
         )
 
         if client_result.returncode != 0:
-            if client_result.returncode == CLIENT_REQUEST_TIMEOUT_EXIT_CODE:
-                request_timed_out = True
+            runtime_oom_error = _container_runtime_oom_error(
+                container_name,
+                mem,
+                client_result.returncode,
+            )
+            if runtime_oom_error is not None:
+                case_incomplete = True
+                incomplete_case_reason = "runtime OOM"
+                print(f"[case][WARN] {runtime_oom_error}", file=sys.stderr)
+                completed_rows_before_failure, _ = _write_case_error_csv(
+                    task_info=task_info,
+                    out_csv=out_csv,
+                    cpu=cpu,
+                    mem=mem,
+                    gpu=gpu,
+                    warmup=warmup,
+                    repeat=repeat,
+                    repeat_in_window=repeat_in_window,
+                    input_scales=input_scales,
+                    error=runtime_oom_error,
+                    preserve_existing=True,
+                    annotate_existing_error_rows=True,
+                )
+            elif client_result.returncode == CLIENT_REQUEST_TIMEOUT_EXIT_CODE:
+                case_incomplete = True
+                incomplete_case_reason = "request timeout"
                 timeout_context = _load_client_error_context(client_error_path)
                 timeout_s = _timeout_context_float(
                     timeout_context.get("request_timeout_s"),
@@ -3416,7 +3476,7 @@ def run_single_case(
                     "individually"
                 )
                 print(f"[case][WARN] {error}", file=sys.stderr)
-                timeout_preserved_rows, _ = _write_case_error_csv(
+                completed_rows_before_failure, _ = _write_case_error_csv(
                     task_info=task_info,
                     out_csv=out_csv,
                     cpu=cpu,
@@ -3451,10 +3511,10 @@ def run_single_case(
                 tcpdump_proc.kill()
             time.sleep(0.2)
 
-            if request_timed_out and timeout_preserved_rows == 0:
+            if case_incomplete and completed_rows_before_failure == 0:
                 print(
-                    "[sniff] No completed measurements before request timeout; "
-                    "skipping packet-latency merge"
+                    "[sniff] No completed measurements before "
+                    f"{incomplete_case_reason}; skipping packet-latency merge"
                 )
             elif not os.path.exists(pcap_file) or os.path.getsize(pcap_file) <= 0:
                 if require_packet_latency:
@@ -3524,18 +3584,18 @@ def run_single_case(
                 if require_packet_latency:
                     _assert_packet_latency_csv_complete(
                         out_csv,
-                        ignore_error_rows=request_timed_out,
+                        ignore_error_rows=case_incomplete,
                     )
 
-        if not request_timed_out or timeout_preserved_rows > 0:
+        if not case_incomplete or completed_rows_before_failure > 0:
             _check_case_cpu_idle_power_stable(
                 out_csv,
-                ignore_error_rows=request_timed_out,
+                ignore_error_rows=case_incomplete,
             )
             if _normalize_gpu_mode(gpu) == "on":
                 _check_case_gpu_idle_power_stable(
                     out_csv,
-                    ignore_error_rows=request_timed_out,
+                    ignore_error_rows=case_incomplete,
                 )
     finally:
         if tcpdump_proc is not None and tcpdump_proc.poll() is None:
@@ -3563,9 +3623,10 @@ def _write_case_error_csv(
     input_scales: Optional[str],
     error: str,
     preserve_existing: bool = False,
+    annotate_existing_error_rows: bool = False,
     timeout_context: Optional[Dict[str, Any]] = None,
 ) -> Tuple[int, int]:
-    """Write missing error rows, optionally retaining completed measurements."""
+    """Write missing error rows and return successful-preserved/added counts."""
     if not str(error or "").strip():
         raise ValueError("error rows require a non-empty diagnostic")
     os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
@@ -3637,7 +3698,22 @@ def _write_case_error_csv(
                         f"partial case CSV contains a duplicate measurement: {key!r}"
                     )
                 existing_keys.add(key)
-                existing_rows.append({field: row.get(field, "") for field in CSV_FIELDS})
+                normalized_row = {
+                    field: row.get(field, "")
+                    for field in CSV_FIELDS
+                }
+                if (
+                    annotate_existing_error_rows
+                    and _row_has_error_status(normalized_row)
+                ):
+                    existing_error = str(normalized_row.get("error") or "").strip()
+                    if error not in existing_error:
+                        normalized_row["error"] = (
+                            f"{existing_error}; {error}"
+                            if existing_error
+                            else error
+                        )
+                existing_rows.append(normalized_row)
 
     missing_rows = [
         row
@@ -3657,14 +3733,19 @@ def _write_case_error_csv(
         writer.writeheader()
         writer.writerows(rows)
 
+    preserved_success_rows = sum(
+        not _row_has_error_status(row)
+        for row in existing_rows
+    )
     if preserve_existing:
         print(
-            f"[case] Preserved completed rows: {len(existing_rows)}; "
-            f"wrote timeout error rows: {len(missing_rows)}; total: {len(rows)}"
+            f"[case] Preserved existing rows: {len(existing_rows)} "
+            f"(successful: {preserved_success_rows}); "
+            f"wrote error rows: {len(missing_rows)}; total: {len(rows)}"
         )
     else:
         print(f"[case] Wrote error rows: {out_csv} ({len(rows)} rows)")
-    return len(existing_rows), len(missing_rows)
+    return preserved_success_rows, len(missing_rows)
 
 
 def _timeout_context_float(value: Any, fallback: float) -> float:

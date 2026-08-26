@@ -923,6 +923,12 @@ case CSV 的 `error` 包含 `container_oom_killed during startup`：
 - 增大 memory cap，或改用更小/量化模型；不要用推测值回填失败 case 的指标。
 - 默认的启动 OOM 剪枝不会改变任何可运行 case 的 warmup、repeat 或指标，只在后续 CPU 上为已确认的连续启动 OOM 前缀写入未执行占位行。热力图中实测启动 OOM 为 `OOM-S`，剪枝推断为 `P-OOM`；论文中必须区分两者。需要每个资源格独立实测时使用 `--no-prune-startup-oom`。
 
+case CSV 的 `error` 包含 `container_runtime_oom`：
+
+- 容器已完成启动，但在 workload 期间被 memory cgroup OOM kill。Docker 的 `OOMKilled=true` 优先于客户端的 MIPS、HTTP 断连或其他次生退出码进行分类。
+- 已成功写入的测量行原样保留；已有失败行追加 Docker OOM 上下文；其余计划行写为 `status=error`，未采指标保持 `nan`。该 case 返回后矩阵继续执行。
+- 运行期 OOM 在资源可行性热力图中显示为 `OOM-R`，但不会用于启动 OOM 剪枝，也不能从一个 CPU 配置外推到其他 CPU 配置。
+
 GPU energy 字段全是 `nan`：
 
 - `gpu_mode=off` 时这是正常结果。

@@ -1579,6 +1579,9 @@ class DetectEnvironmentTests(unittest.TestCase):
             ),
         ), patch("acprof.host.orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
             "acprof.host.orchestrator._stop_container_session"
+        ), patch(
+            "acprof.host.orchestrator._container_runtime_oom_error",
+            return_value=None,
         ), patch("acprof.host.orchestrator._run", side_effect=fake_run):
             with self.assertRaises(orchestrator.EnergyProfilingError) as raised:
                 orchestrator.run_single_case(
@@ -1597,6 +1600,175 @@ class DetectEnvironmentTests(unittest.TestCase):
                 )
 
         self.assertIn("client.py exited with code 7", str(raised.exception))
+
+    def test_run_single_case_records_runtime_oom_before_mips_failure(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+
+        def fake_run(cmd, check=True, capture=True, **kwargs):
+            if cmd and cmd[-2:] == ["-m", "acprof.host.client"]:
+                out_csv = kwargs["env"]["OUT_CSV"]
+                successful_row = {field: "nan" for field in CSV_FIELDS}
+                successful_row.update({
+                    "cpu_cores": "2",
+                    "mem_cap_gb": "2",
+                    "gpu_mode": "on",
+                    "input_scale": "64",
+                    "repeat_idx": "0",
+                    "warmup": "0",
+                    "repeat_in_window": "1",
+                    "latency_app_s": "1.25",
+                    "cpu_idle_power_w": "5.0",
+                    "gpu_idle_power_w": "10.0",
+                    "status": "ok",
+                    "error": "",
+                })
+                failed_row = {field: "nan" for field in CSV_FIELDS}
+                failed_row.update({
+                    "cpu_cores": "2",
+                    "mem_cap_gb": "2",
+                    "gpu_mode": "on",
+                    "input_scale": "128",
+                    "repeat_idx": "0",
+                    "warmup": "0",
+                    "repeat_in_window": "1",
+                    "status": "error",
+                    "error": "RemoteDisconnected during inference",
+                })
+                with open(out_csv, "w", encoding="utf-8", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+                    writer.writeheader()
+                    writer.writerows([successful_row, failed_row])
+                return SimpleNamespace(
+                    returncode=orchestrator.MIPS_EXIT_CODE,
+                    stdout="",
+                    stderr="container is not running",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        container_state = {
+            "Status": "exited",
+            "Running": False,
+            "Restarting": False,
+            "OOMKilled": True,
+            "ExitCode": 137,
+            "Error": "",
+        }
+        with tempfile.TemporaryDirectory() as tmp_dir, patch(
+            "acprof.host.orchestrator._start_container_session",
+            return_value=orchestrator.RunningContainer(
+                name="case_google-bert--bert-base-uncased_2c_2g_on",
+                base_url="http://127.0.0.1:8204",
+                host_port=8204,
+                cold_start_s=1.0,
+            ),
+        ), patch(
+            "acprof.host.orchestrator._resolve_packet_latency_runtime",
+            return_value=None,
+        ), patch(
+            "acprof.host.orchestrator._inspect_container_state",
+            return_value=container_state,
+        ) as inspect_state, patch(
+            "acprof.host.orchestrator._stop_container_session"
+        ) as stop_container, patch(
+            "acprof.host.orchestrator._run",
+            side_effect=fake_run,
+        ):
+            csv_path = orchestrator.run_single_case(
+                task_info=task_info,
+                cpu=2,
+                mem=2,
+                gpu="on",
+                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                output_dir=tmp_dir,
+                project_dir=".",
+                warmup=0,
+                repeat=1,
+                repeat_in_window=1,
+                input_scales="64,128,256",
+                require_packet_latency=False,
+            )
+
+            with open(csv_path, "r", encoding="utf-8", newline="") as f:
+                rows = list(csv.DictReader(f))
+
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[0]["status"], "ok")
+        self.assertEqual(rows[0]["error"], "")
+        self.assertEqual(rows[1]["status"], "error")
+        self.assertIn("RemoteDisconnected", rows[1]["error"])
+        self.assertIn("container_runtime_oom", rows[1]["error"])
+        self.assertEqual(rows[2]["status"], "error")
+        self.assertIn("container_runtime_oom", rows[2]["error"])
+        self.assertIn("docker_oom_killed=true", rows[2]["error"])
+        self.assertIn("container_exit_code=137", rows[2]["error"])
+        inspect_state.assert_called_once_with(
+            "case_google-bert--bert-base-uncased_2c_2g_on"
+        )
+        stop_container.assert_called_once()
+
+    def test_run_single_case_still_aborts_non_oom_mips_failure(self) -> None:
+        task_info = TaskInfo(
+            model_id="google-bert/bert-base-uncased",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="hub_api",
+        )
+
+        def fake_run(cmd, check=True, capture=True, **kwargs):
+            if cmd and cmd[-2:] == ["-m", "acprof.host.client"]:
+                return SimpleNamespace(
+                    returncode=orchestrator.MIPS_EXIT_CODE,
+                    stdout="",
+                    stderr="perf permission denied",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch(
+            "acprof.host.orchestrator._start_container_session",
+            return_value=orchestrator.RunningContainer(
+                name="case_google-bert--bert-base-uncased_1c_4g_off",
+                base_url="http://127.0.0.1:8106",
+                host_port=8106,
+                cold_start_s=1.0,
+            ),
+        ), patch(
+            "acprof.host.orchestrator._resolve_packet_latency_runtime",
+            return_value=None,
+        ), patch(
+            "acprof.host.orchestrator._container_runtime_oom_error",
+            return_value=None,
+        ), patch(
+            "acprof.host.orchestrator._stop_container_session"
+        ), patch(
+            "acprof.host.orchestrator._run",
+            side_effect=fake_run,
+        ):
+            with self.assertRaises(orchestrator.MIPSProfilingError):
+                orchestrator.run_single_case(
+                    task_info=task_info,
+                    cpu=1,
+                    mem=4,
+                    gpu="off",
+                    image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                    output_dir="results/test-unit",
+                    project_dir=".",
+                    warmup=0,
+                    repeat=1,
+                    repeat_in_window=1,
+                    input_scales="64",
+                    require_packet_latency=False,
+                )
 
     def test_run_single_case_records_request_timeout_and_returns(self) -> None:
         task_info = TaskInfo(
@@ -1647,6 +1819,9 @@ class DetectEnvironmentTests(unittest.TestCase):
         ), patch(
             "acprof.host.orchestrator._stop_container_session"
         ) as stop_container, patch(
+            "acprof.host.orchestrator._container_runtime_oom_error",
+            return_value=None,
+        ), patch(
             "acprof.host.orchestrator._run",
             side_effect=fake_run,
         ):
@@ -1761,6 +1936,9 @@ class DetectEnvironmentTests(unittest.TestCase):
             return_value=None,
         ), patch(
             "acprof.host.orchestrator._stop_container_session"
+        ), patch(
+            "acprof.host.orchestrator._container_runtime_oom_error",
+            return_value=None,
         ), patch(
             "acprof.host.orchestrator._run",
             side_effect=fake_run,
