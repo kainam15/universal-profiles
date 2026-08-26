@@ -186,6 +186,9 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
         app = AcprofTui(RunConfig.smoke("google-bert/bert-base-uncased"))
         async with app.run_test(size=(150, 52)) as pilot:
             await pilot.pause()
+            self.assertFalse(app.ENABLE_COMMAND_PALETTE)
+            self.assertFalse(app.use_command_palette)
+            self.assertFalse(app.query_one("HeaderIcon").display)
             preview = str(app.query_one("#command-preview", Static).render())
             self.assertIn("/.venv/bin/python", preview)
             self.assertIn("--warmup 0", preview)

@@ -154,6 +154,7 @@ class AcprofTui(App[None]):
 
     TITLE = "AC-Prof"
     SUB_TITLE = "低干扰实验控制台"
+    ENABLE_COMMAND_PALETTE = False
 
     BINDINGS = [
         ("f5", "request_run", "开始采集"),
@@ -166,6 +167,14 @@ class AcprofTui(App[None]):
     CSS = """
     Screen {
         layout: vertical;
+    }
+
+    HeaderIcon {
+        display: none;
+    }
+
+    HeaderClockSpace {
+        display: none;
     }
 
     #main-tabs {
