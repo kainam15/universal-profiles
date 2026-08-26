@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+venv_python="${project_dir}/.venv/bin/python"
+
+if [[ ! -x "${venv_python}" ]]; then
+  echo "AC-Prof virtual environment not found: ${venv_python}" >&2
+  echo "Create it and install requirements before launching the TUI." >&2
+  exit 1
+fi
+
+exec "${venv_python}" -m acprof.cli.tui "$@"

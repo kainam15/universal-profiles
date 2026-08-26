@@ -91,6 +91,31 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
+### 可选：使用交互式终端界面
+
+不想反复输入长命令时，可以从项目根目录启动全屏 TUI：
+
+```bash
+./acprof-tui
+```
+
+也可以预填模型并直接加载最小 smoke 配置：
+
+```bash
+./acprof-tui --model google-bert/bert-base-uncased --preset smoke
+```
+
+TUI 提供精简实验表单、三种预设、只读环境检查、自动命令预览、case 级进度、
+日志、结果摘要、绘图和 profiler 补采入口。开始采集和执行补采前都会显示确认页；
+`F5` 开始采集，`F6` 执行环境检查，`Ctrl+X` 安全终止当前任务。底部输入框支持
+`/run`、`/check`、`/status`、`/stop`、`/plot`、`/profile` 和 `/help` 等快捷命令。
+
+界面不会重写采集逻辑，而是启动现有 `run.py`、`plot.py` 和 `profile.py`。为了降低
+对能耗与延迟实验的影响，正式 workload 窗口内停止常规日志重绘，不运行实时绘图，
+也不轮询正在写入的 CSV；状态仅从已有进程输出中事件驱动更新。TUI 内运行时还会
+禁用子进程的 tmux pane 捕获，避免把全屏 ANSI 重绘写进 `tmux_all.log`。论文复现仍可
+直接复制界面显示的完整命令，在普通 CLI 或自动化脚本中执行。
+
 私有或 gated 模型可在项目根目录创建 `.env.local`：
 
 ```env
@@ -403,13 +428,15 @@ dockerfiles/      # 各任务族及 profiler 镜像
 run.py            # 主实验入口
 plot.py           # 绘图入口
 profile.py        # 已有结果的 profiler 补采入口
+tui.py            # Textual 交互式终端界面入口
+acprof-tui         # 自动使用项目 .venv 的便捷启动器
 ```
 
 运行测试：
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
-.venv/bin/python -m compileall -q acprof run.py plot.py profile.py
+.venv/bin/python -m compileall -q acprof run.py plot.py profile.py tui.py
 ```
 
 更深入的 CLI 参数、input scale 规则、音频 workload、所有输出字段、时间估算和扩展方式，请阅读 [REFERENCE.md](REFERENCE.md)。
