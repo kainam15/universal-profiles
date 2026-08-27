@@ -2,16 +2,12 @@ __pycache__/
 *.py[cod]
 
 .venv/
-.claude/
+
 .env
 .env.local
 
 results/
-result-past/
-*.csv
-results_resume_1c
-results_resume_rest
 
-/docs
-AGENTS.md
-CLAUDE.md
+*.csv
+
+
