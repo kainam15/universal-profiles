@@ -94,6 +94,7 @@ class TuiCoreTests(unittest.TestCase):
         self.assertNotIn("--repeat", command)
         self.assertNotIn("--idle-seconds", command)
         self.assertNotIn("--compute-profile-tool", command)
+        self.assertNotIn("--timeout-seconds", command)
         self.assertIn("probe.py", format_command(command, project_dir=PROJECT_DIR))
 
     def test_invalid_matrix_is_rejected_before_launch(self):

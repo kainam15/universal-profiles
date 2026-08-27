@@ -23,7 +23,6 @@ from acprof.config import (
     DEFAULT_COMPUTE_PROFILE_TOOL,
     DEFAULT_IDLE_COOLDOWN_SECONDS,
     DEFAULT_IDLE_SECONDS,
-    DEFAULT_REQUEST_TIMEOUT_SECONDS,
     DEFAULT_REPEAT_IN_WINDOW,
     DEFAULT_REPEAT_WINDOW_SECONDS,
 )
@@ -372,8 +371,6 @@ def build_probe_command(
         config.gpus,
         "--batch-size",
         str(config.batch_size),
-        "--timeout-seconds",
-        _format_number(DEFAULT_REQUEST_TIMEOUT_SECONDS),
         "--output-dir",
         config.output_dir,
     ]

@@ -130,7 +130,8 @@ CUDA OOM 是 GPU 显存不足，改变 `--mems` 的主机内存 cap 无法解决
 更大的候选是“最低值”。整个流程不做 warmup/repeat、idle baseline、能耗、PMU、PCAP 或
 profiler 采集。
 
-默认请求超时为 300 秒，可用 `--timeout-seconds` 覆盖。每次探测写入独立目录：
+探测请求默认不设超时，会一直等待模型返回或发生明确错误；如需为自动化任务设置上限，
+可显式传入 `--timeout-seconds <正数>`。每次探测写入独立目录：
 
 ```text
 results/<model-dir>/probes/largest_scale_<timestamp>_<pid>/
@@ -138,13 +139,15 @@ results/<model-dir>/probes/largest_scale_<timestamp>_<pid>/
 └── largest_scale_probe.json
 ```
 
-摘要 schema v2 的 `memory_probe.candidate_order_gb` 保存候选顺序，
+摘要 schema v3 的 `memory_probe.candidate_order_gb` 保存候选顺序，
 `memory_probe.attempts` 保存每档的 `startup_oom`、`runtime_oom`、`cuda_oom`、`timeout`、
 `error` 或 `ok` 结果及其错误和分段耗时，`memory_probe.minimum_viable_mem_gb` 只在成功时
 写入。顶层 `timing.request_s` 是最低成功档 `/predict` 的 host 端到端耗时；
 `cold_start.total_s` 是该档新容器从 `docker run` 到 ready 的耗时；
 `timing.ready_plus_request_s` 是二者之和；`timing.command_s` 还包含 preflight、模型识别、
-可选镜像构建、尺度规划、失败候选尝试和清理。探测目录与正式模型结果共用输出根，但不会创建或修改
+可选镜像构建、尺度规划、失败候选尝试和清理。`timing.request_timeout_s` 在默认无限等待时
+为 `null`，仅在显式设置 `--timeout-seconds` 时记录对应的秒数；旧 schema v2 摘要中的该字段
+始终是有限秒数。探测目录与正式模型结果共用输出根，但不会创建或修改
 `result_case_*.csv`、`result_all.csv`、`static_meta.json` 或 `collection_history.json`。
 它适合估算可行性，不应当作包含 idle/energy/network 口径的正式测量行。
 

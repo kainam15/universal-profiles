@@ -123,7 +123,6 @@ class LargestScaleProbeTests(unittest.TestCase):
                 gpu_list=["on", "off"],
                 batch_size=1,
                 output_dir=output_dir,
-                timeout_seconds=30,
             )
             saved_text = (output_dir / PROBE_SUMMARY_NAME).read_text(
                 encoding="utf-8"
@@ -133,8 +132,9 @@ class LargestScaleProbeTests(unittest.TestCase):
         self.assertEqual(post.call_count, 1)
         self.assertEqual(post.call_args.args[0], "http://127.0.0.1:8002/predict")
         self.assertEqual(post.call_args.kwargs["json"], {"text": "largest"})
-        self.assertEqual(post.call_args.kwargs["timeout"], 30.0)
+        self.assertIsNone(post.call_args.kwargs["timeout"])
         self.assertEqual(summary["status"], "ok")
+        self.assertEqual(summary["schema_version"], 3)
         self.assertEqual(summary["resource"]["cpu_cores"], 1)
         self.assertEqual(summary["resource"]["mem_gb"], 2)
         self.assertEqual(summary["resource"]["gpu_mode"], "off")
@@ -144,7 +144,9 @@ class LargestScaleProbeTests(unittest.TestCase):
         self.assertEqual(summary["cold_start"]["total_s"], 12.5)
         self.assertGreater(summary["timing"]["request_s"], 0.0)
         self.assertGreater(summary["timing"]["ready_plus_request_s"], 12.5)
+        self.assertIsNone(summary["timing"]["request_timeout_s"])
         self.assertEqual(saved["status"], "ok")
+        self.assertIsNone(saved["timing"]["request_timeout_s"])
         self.assertNotIn("NaN", saved_text)
         stop_container.assert_called_once_with(
             "probe-container",
@@ -189,6 +191,7 @@ class LargestScaleProbeTests(unittest.TestCase):
 
             self.assertEqual(summary["status"], "timeout")
             self.assertIn("超过 0.01 秒", summary["error"])
+            self.assertEqual(summary["timing"]["request_timeout_s"], 0.01)
             self.assertTrue((output_dir / PROBE_SUMMARY_NAME).is_file())
             self.assertFalse((output_dir / "result_all.csv").exists())
         stop_container.assert_called_once()
@@ -459,6 +462,7 @@ class LargestScaleProbeTests(unittest.TestCase):
         self.assertEqual(plan_scales.call_args.kwargs["mem_list"], [2, 8])
         self.assertEqual(plan_scales.call_args.kwargs["gpu_list"], ["off", "on"])
         self.assertEqual(run_probe.call_args.kwargs["batch_size"], 3)
+        self.assertIsNone(run_probe.call_args.kwargs["timeout_seconds"])
         self.assertGreaterEqual(saved["timing"]["command_s"], 0.0)
 
 

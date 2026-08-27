@@ -132,8 +132,9 @@ case 级进度、日志、结果摘要、绘图和 profiler 补采入口。开�
 例如传入 `--cpus 1,2,4 --mems 2,4,8 --gpus off,on` 时，固定使用
 `CPU=1, GPU=off`，再依次尝试 `2GB → 4GB → 8GB`，找到第一档成功值后停止。
 CUDA OOM 属于显存不足，增加这里的主机内存上限无效，因此不会继续；请求超时或其他
-非 OOM 错误也会停止，避免把未验证的内存档误报为最低值。单次请求默认最多等待
-300 秒，可通过 `--timeout-seconds` 调整。每次运行写入新的
+非 OOM 错误也会停止，避免把未验证的内存档误报为最低值。探测请求默认不设超时，
+会一直等待模型返回或发生明确错误；自动化任务如需限制时长，可显式传入
+`--timeout-seconds <正数>`。每次运行写入新的
 `results/<model-dir>/probes/largest_scale_<timestamp>/largest_scale_probe.json`；其中
 `memory_probe.attempts` 记录每档的 OOM/成功证据，`memory_probe.minimum_viable_mem_gb`
 记录最低成功值；`timing.request_s` 是该成功档请求的端到端耗时，`cold_start.total_s`

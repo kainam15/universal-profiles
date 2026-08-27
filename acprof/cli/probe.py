@@ -15,7 +15,6 @@ from acprof.cli.run import (
     require_native_docker,
     require_native_linux_host,
 )
-from acprof.config import DEFAULT_REQUEST_TIMEOUT_SECONDS
 from acprof.host.env_utils import bootstrap_project_env
 from acprof.host.largest_scale_probe import (
     create_probe_output_dir,
@@ -83,8 +82,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--timeout-seconds",
         type=float,
-        default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
-        help="Timeout for the one /predict request",
+        default=None,
+        help=(
+            "Optional timeout for the one /predict request; omitted means "
+            "wait indefinitely"
+        ),
     )
     parser.add_argument("--output-dir", default="results", help="Output root")
     parser.add_argument("--skip-build", action="store_true")
@@ -97,7 +99,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.batch_size <= 0:
         parser.error("--batch-size must be > 0")
-    if args.timeout_seconds <= 0.0 or not math.isfinite(args.timeout_seconds):
+    if args.timeout_seconds is not None and (
+        args.timeout_seconds <= 0.0 or not math.isfinite(args.timeout_seconds)
+    ):
         parser.error("--timeout-seconds must be a finite value > 0")
     try:
         cpu_list = _int_list(args.cpus, "CPU 列表")

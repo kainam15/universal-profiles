@@ -12,7 +12,6 @@ from typing import Any, Dict, Sequence
 
 import requests
 
-from acprof.config import DEFAULT_REQUEST_TIMEOUT_SECONDS
 from acprof.host.detect import TaskInfo
 from acprof.host.orchestrator import (
     ImageInfo,
@@ -26,6 +25,7 @@ from acprof.host.orchestrator import (
 
 
 PROBE_SUMMARY_NAME = "largest_scale_probe.json"
+PROBE_SUMMARY_SCHEMA_VERSION = 3
 RETRYABLE_MEMORY_OOM_STATUSES = frozenset({"startup_oom", "runtime_oom"})
 
 
@@ -246,7 +246,7 @@ def _probe_memory_candidate(
     gpu: str,
     payload: Dict[str, Any],
     planned_scale: float,
-    timeout_seconds: float,
+    timeout_seconds: float | None,
     attempt_index: int,
     attempt_total: int,
 ) -> tuple[Dict[str, Any], Dict[str, Any] | None]:
@@ -285,7 +285,7 @@ def _probe_memory_candidate(
         response = requests.post(
             session.base_url + "/predict",
             json=payload,
-            timeout=float(timeout_seconds),
+            timeout=timeout_seconds,
             headers={"Connection": "close"},
         )
         request_s = time.perf_counter() - request_started
@@ -315,7 +315,10 @@ def _probe_memory_candidate(
         if request_started is not None:
             request_s = time.perf_counter() - request_started
         status = "timeout"
-        error = f"最大尺度请求超过 {float(timeout_seconds):g} 秒"
+        if timeout_seconds is None:
+            error = "最大尺度请求意外超时（未配置探测超时）"
+        else:
+            error = f"最大尺度请求超过 {timeout_seconds:g} 秒"
     except Exception as exc:
         if request_started is not None and request_s is None:
             request_s = time.perf_counter() - request_started
@@ -365,13 +368,15 @@ def run_largest_scale_probe(
     gpu_list: Sequence[str],
     batch_size: int,
     output_dir: str | os.PathLike[str],
-    timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    timeout_seconds: float | None = None,
 ) -> Dict[str, Any]:
     """Find the minimum viable memory cap and time its largest-scale request."""
     if int(batch_size) <= 0:
         raise ValueError("batch_size 必须大于 0")
-    if timeout_seconds <= 0.0 or not math.isfinite(float(timeout_seconds)):
-        raise ValueError("timeout_seconds 必须是大于 0 的有限值")
+    if timeout_seconds is not None:
+        timeout_seconds = float(timeout_seconds)
+        if timeout_seconds <= 0.0 or not math.isfinite(timeout_seconds):
+            raise ValueError("timeout_seconds 必须是大于 0 的有限值")
     if not planned_input_scales.plan_file:
         raise RuntimeError("最大尺度探测需要 materialized input scale plan")
 
@@ -402,7 +407,7 @@ def run_largest_scale_probe(
             gpu=gpu,
             payload=payload,
             planned_scale=planned_scale,
-            timeout_seconds=float(timeout_seconds),
+            timeout_seconds=timeout_seconds,
             attempt_index=index,
             attempt_total=len(memory_candidates),
         )
@@ -461,7 +466,7 @@ def run_largest_scale_probe(
         (response_payload or {}).get("effective_input_scale")
     )
     summary: Dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": PROBE_SUMMARY_SCHEMA_VERSION,
         "status": status,
         "error": error,
         "started_at": started_at,
@@ -506,7 +511,7 @@ def run_largest_scale_probe(
             "request_s": request_s,
             "ready_plus_request_s": ready_plus_request_s,
             "probe_wall_s": time.perf_counter() - probe_started,
-            "request_timeout_s": float(timeout_seconds),
+            "request_timeout_s": timeout_seconds,
         },
         "response": {
             "output_length": (response_payload or {}).get("output_length"),
