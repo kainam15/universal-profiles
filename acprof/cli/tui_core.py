@@ -23,6 +23,7 @@ from acprof.config import (
     DEFAULT_COMPUTE_PROFILE_TOOL,
     DEFAULT_IDLE_COOLDOWN_SECONDS,
     DEFAULT_IDLE_SECONDS,
+    DEFAULT_REQUEST_TIMEOUT_SECONDS,
     DEFAULT_REPEAT_IN_WINDOW,
     DEFAULT_REPEAT_WINDOW_SECONDS,
 )
@@ -106,6 +107,7 @@ class RunConfig:
     repeat: int = 5
     repeat_in_window: int = DEFAULT_REPEAT_IN_WINDOW
     repeat_window_seconds: float = DEFAULT_REPEAT_WINDOW_SECONDS
+    request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
     sample_hz: float = 20.0
     idle_seconds: float = DEFAULT_IDLE_SECONDS
     idle_cooldown_seconds: float = DEFAULT_IDLE_COOLDOWN_SECONDS
@@ -194,6 +196,11 @@ class RunConfig:
             "自动窗口秒数",
             integer=False,
         )
+        request_timeout_seconds = _number(
+            self.request_timeout_seconds,
+            "单请求超时秒数",
+            integer=False,
+        )
         sample_hz = _number(self.sample_hz, "采样频率", integer=False)
         idle_seconds = _number(self.idle_seconds, "Idle 秒数", integer=False)
         idle_cooldown_seconds = _number(
@@ -214,6 +221,11 @@ class RunConfig:
             errors.append("自动窗口秒数必须大于 0")
         if not math.isfinite(float(repeat_window_seconds)):
             errors.append("自动窗口秒数必须是有限数字")
+        if (
+            not math.isfinite(float(request_timeout_seconds))
+            or request_timeout_seconds <= 0.0
+        ):
+            errors.append("单请求超时秒数必须是大于 0 的有限数字")
         if not math.isfinite(float(sample_hz)) or sample_hz <= 0.0:
             errors.append("采样频率必须大于 0")
         if not math.isfinite(float(idle_seconds)) or idle_seconds < 0.0:
@@ -266,6 +278,7 @@ class RunConfig:
             repeat=int(repeat),
             repeat_in_window=int(repeat_in_window),
             repeat_window_seconds=float(repeat_window_seconds),
+            request_timeout_seconds=float(request_timeout_seconds),
             sample_hz=float(sample_hz),
             idle_seconds=float(idle_seconds),
             idle_cooldown_seconds=float(idle_cooldown_seconds),
@@ -312,6 +325,8 @@ def build_run_command(
         str(config.repeat_in_window),
         "--repeat-window-seconds",
         _format_number(config.repeat_window_seconds),
+        "--request-timeout-seconds",
+        _format_number(config.request_timeout_seconds),
         "--sample-hz",
         _format_number(config.sample_hz),
         "--idle-seconds",

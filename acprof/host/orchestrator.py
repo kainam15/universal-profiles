@@ -3287,6 +3287,7 @@ def run_single_case(
     repeat: int = 5,
     repeat_in_window: int = DEFAULT_REPEAT_IN_WINDOW,
     repeat_window_seconds: float = DEFAULT_REPEAT_WINDOW_SECONDS,
+    request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
     sample_hz: float = 20.0,
     idle_seconds: float = DEFAULT_IDLE_SECONDS,
     idle_cooldown_seconds: float = DEFAULT_IDLE_COOLDOWN_SECONDS,
@@ -3299,6 +3300,12 @@ def run_single_case(
     require_packet_latency: bool = True,
 ) -> str:
     """Run one profiling case and return result CSV path."""
+    request_timeout_seconds = float(request_timeout_seconds)
+    if (
+        request_timeout_seconds <= 0.0
+        or not math.isfinite(request_timeout_seconds)
+    ):
+        raise ValueError("request_timeout_seconds must be a finite value > 0")
     model_tag = _sanitize_model_id(task_info.model_id)
     case_name = f"case_{model_tag}_{cpu}c_{mem}g_{gpu}"
     container_name = case_name
@@ -3411,6 +3418,7 @@ def run_single_case(
             "REPEAT": str(repeat),
             "REPEAT_IN_WINDOW": str(repeat_in_window),
             "REPEAT_WINDOW_SECONDS": str(repeat_window_seconds),
+            "REQUEST_TIMEOUT_SECONDS": f"{request_timeout_seconds:g}",
             **_cold_start_client_env(session),
             "OUT_CSV": out_csv,
             "CASE_NAME": case_name,
@@ -3467,9 +3475,13 @@ def run_single_case(
                 case_incomplete = True
                 incomplete_case_reason = "request timeout"
                 timeout_context = _load_client_error_context(client_error_path)
+                timeout_context.setdefault(
+                    "request_timeout_s",
+                    request_timeout_seconds,
+                )
                 timeout_s = _timeout_context_float(
                     timeout_context.get("request_timeout_s"),
-                    DEFAULT_REQUEST_TIMEOUT_SECONDS,
+                    request_timeout_seconds,
                 )
                 error = (
                     "client_request_timeout: triggering request exceeded "
@@ -4048,6 +4060,7 @@ def run_matrix(
     repeat: int = 5,
     repeat_in_window: int = DEFAULT_REPEAT_IN_WINDOW,
     repeat_window_seconds: float = DEFAULT_REPEAT_WINDOW_SECONDS,
+    request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
     sample_hz: float = 20.0,
     idle_seconds: float = DEFAULT_IDLE_SECONDS,
     idle_cooldown_seconds: float = DEFAULT_IDLE_COOLDOWN_SECONDS,
@@ -4067,6 +4080,12 @@ def run_matrix(
     skipped cell still receives planned error rows, while feasible cells retain
     the exact same collection protocol as an unpruned run.
     """
+    request_timeout_seconds = float(request_timeout_seconds)
+    if (
+        request_timeout_seconds <= 0.0
+        or not math.isfinite(request_timeout_seconds)
+    ):
+        raise ValueError("request_timeout_seconds must be a finite value > 0")
     os.makedirs(output_dir, exist_ok=True)
     result_csvs = []
 
@@ -4180,6 +4199,7 @@ def run_matrix(
                         repeat=repeat,
                         repeat_in_window=repeat_in_window,
                         repeat_window_seconds=repeat_window_seconds,
+                        request_timeout_seconds=request_timeout_seconds,
                         sample_hz=sample_hz,
                         idle_seconds=idle_seconds,
                         idle_cooldown_seconds=idle_cooldown_seconds,

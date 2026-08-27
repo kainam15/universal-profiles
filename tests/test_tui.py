@@ -41,9 +41,14 @@ class TuiCoreTests(unittest.TestCase):
         )
 
         self.assertEqual(config.compute_profile_tool, "none")
+        self.assertEqual(config.request_timeout_seconds, 300.0)
         self.assertEqual(
             command[command.index("--compute-profile-tool") + 1],
             "none",
+        )
+        self.assertEqual(
+            float(command[command.index("--request-timeout-seconds") + 1]),
+            300.0,
         )
 
     def test_smoke_command_delegates_to_existing_run_entrypoint(self):
@@ -63,6 +68,10 @@ class TuiCoreTests(unittest.TestCase):
             command[command.index("--compute-profile-tool") + 1],
             "none",
         )
+        self.assertEqual(
+            command[command.index("--request-timeout-seconds") + 1],
+            "300.0",
+        )
         self.assertNotIn("--allow-cgroup-v1", command)
         self.assertIn("run.py", format_command(command, project_dir=PROJECT_DIR))
 
@@ -76,6 +85,7 @@ class TuiCoreTests(unittest.TestCase):
             warmup=9,
             repeat=11,
             idle_seconds=99,
+            request_timeout_seconds=999,
             skip_build=True,
         )
 
@@ -94,6 +104,7 @@ class TuiCoreTests(unittest.TestCase):
         self.assertNotIn("--repeat", command)
         self.assertNotIn("--idle-seconds", command)
         self.assertNotIn("--compute-profile-tool", command)
+        self.assertNotIn("--request-timeout-seconds", command)
         self.assertNotIn("--timeout-seconds", command)
         self.assertIn("probe.py", format_command(command, project_dir=PROJECT_DIR))
 
@@ -107,6 +118,14 @@ class TuiCoreTests(unittest.TestCase):
             ).validate(project_dir=PROJECT_DIR)
         self.assertIn("CPU 列表不能重复", str(context.exception))
 
+    def test_invalid_request_timeout_is_rejected_before_launch(self):
+        with self.assertRaises(TuiConfigError) as context:
+            RunConfig(
+                model="demo/model",
+                request_timeout_seconds=0,
+            ).validate(project_dir=PROJECT_DIR)
+        self.assertIn("单请求超时秒数必须是大于 0 的有限数字", str(context.exception))
+
     def test_optional_overrides_and_flags_are_preserved(self):
         config = RunConfig(
             model="demo/model",
@@ -117,6 +136,7 @@ class TuiCoreTests(unittest.TestCase):
             mems="8",
             gpus="off",
             input_scales="64,128",
+            request_timeout_seconds=123.5,
             skip_build=True,
             prune_startup_oom=False,
             idle_debug=True,
@@ -132,6 +152,10 @@ class TuiCoreTests(unittest.TestCase):
         self.assertIn("--skip-build", command)
         self.assertIn("--no-prune-startup-oom", command)
         self.assertIn("--idle-debug", command)
+        self.assertEqual(
+            command[command.index("--request-timeout-seconds") + 1],
+            "123.5",
+        )
 
     def test_progress_tracker_marks_measurement_and_completion(self):
         tracker = RunProgressTracker()
@@ -384,6 +408,11 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("--warmup 0", preview)
             self.assertIn("--idle-seconds 20", preview)
             self.assertIn("--idle-cooldown-seconds 5", preview)
+            self.assertIn("--request-timeout-seconds 300.0", preview)
+            self.assertEqual(
+                app.query_one("#request-timeout-seconds", Input).value,
+                "300.0",
+            )
             with self.assertRaises(NoMatches):
                 app.query_one("#preview-command")
             with self.assertRaises(NoMatches):

@@ -12,6 +12,7 @@ import argparse
 import csv
 from dataclasses import dataclass, replace
 import json
+import math
 import os
 import platform
 import shlex
@@ -24,6 +25,7 @@ from acprof.config import (
     DEFAULT_COMPUTE_PROFILE_TOOL,
     DEFAULT_IDLE_COOLDOWN_SECONDS,
     DEFAULT_IDLE_SECONDS,
+    DEFAULT_REQUEST_TIMEOUT_SECONDS,
     DEFAULT_REPEAT_IN_WINDOW,
     DEFAULT_REPEAT_WINDOW_SECONDS,
     SCALING_DIMENSIONS,
@@ -894,6 +896,12 @@ Examples:
         default=DEFAULT_REPEAT_WINDOW_SECONDS,
         help="Target workload window duration for auto repeat-in-window",
     )
+    parser.add_argument(
+        "--request-timeout-seconds",
+        type=float,
+        default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        help="Timeout for each formal /predict request",
+    )
     parser.add_argument("--sample-hz", type=float, default=20.0, help="GPU energy sampling rate")
     parser.add_argument(
         "--idle-seconds",
@@ -1091,6 +1099,11 @@ Examples:
         parser.error("--repeat-in-window must be >= 0")
     if args.repeat_window_seconds <= 0.0:
         parser.error("--repeat-window-seconds must be > 0")
+    if (
+        args.request_timeout_seconds <= 0.0
+        or not math.isfinite(args.request_timeout_seconds)
+    ):
+        parser.error("--request-timeout-seconds must be a finite value > 0")
     if args.torch_profiler_repeat <= 0:
         parser.error("--torch-profiler-repeat must be > 0")
     if args.ncu_repeat <= 0:
@@ -1404,6 +1417,7 @@ Examples:
     else:
         repeat_desc = f"auto target {args.repeat_window_seconds:.1f}s"
     print(f"  Requests per iteration: {repeat_desc}")
+    print(f"  Request timeout: {args.request_timeout_seconds:g}s per /predict")
     print(f"  Total iterations: {total_iters}")
     print(f"  Output: {output_dir}")
     print()
@@ -1422,6 +1436,7 @@ Examples:
             repeat=args.repeat,
             repeat_in_window=args.repeat_in_window,
             repeat_window_seconds=args.repeat_window_seconds,
+            request_timeout_seconds=args.request_timeout_seconds,
             sample_hz=args.sample_hz,
             idle_seconds=args.idle_seconds,
             idle_cooldown_seconds=args.idle_cooldown_seconds,

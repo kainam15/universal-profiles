@@ -257,6 +257,10 @@ python run.py --model google-bert/bert-base-uncased \
 
 如果已有对应模型镜像，可加 `--skip-build`。该选项只复用当前本机 Docker image store 中已存在的镜像。
 
+正式矩阵的每个 `/predict` 请求默认最多等待 300 秒。长耗时模型可显式调整，例如
+`--request-timeout-seconds 1800` 表示单个请求最多等待 30 分钟；它不限制整条命令或整个
+资源矩阵的总运行时间。TUI 的“单请求超时秒”会同步写入完整命令。
+
 ### 默认完整矩阵
 
 ```bash
@@ -273,6 +277,7 @@ python run.py --model google-bert/bert-base-uncased
 | input scale | 自动规划，通常 6 档 |
 | warmup / repeat | `2 / 5` |
 | 每行 workload | 自动持续到累计 application latency 约 10 秒 |
+| 单个 `/predict` 请求超时 | `300` 秒 |
 | Idle 基线 / 前置冷却 | `20 / 5` 秒 |
 | compute profiler | `none`（关闭；需要时显式启用或后续补采） |
 | execution profiler | `none` |
@@ -299,6 +304,10 @@ python run.py --model amazon/chronos-bolt-base \
 
 # 复用已有镜像
 python run.py --model google-bert/bert-base-uncased --skip-build
+
+# 单个推理请求最多等待 30 分钟
+python run.py --model stable-diffusion-v1-5/stable-diffusion-v1-5 \
+  --request-timeout-seconds 1800
 
 # 查看全部参数
 python run.py --help

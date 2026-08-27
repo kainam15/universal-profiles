@@ -596,6 +596,7 @@ class NativeDockerGuardTests(unittest.TestCase):
         _, kwargs = run_matrix.call_args
         self.assertEqual(kwargs["repeat_in_window"], 0)
         self.assertEqual(kwargs["repeat_window_seconds"], 10.0)
+        self.assertEqual(kwargs["request_timeout_seconds"], 300.0)
         self.assertEqual(kwargs["idle_seconds"], 20.0)
         self.assertEqual(kwargs["idle_cooldown_seconds"], 5.0)
         self.assertEqual(kwargs["compute_profile_plan_file"], "")
@@ -632,6 +633,8 @@ class NativeDockerGuardTests(unittest.TestCase):
                 "--gpus",
                 "off,on",
                 "--no-prune-startup-oom",
+                "--request-timeout-seconds",
+                "123.5",
                 "--output-dir",
                 tmp_dir,
             ],
@@ -681,6 +684,29 @@ class NativeDockerGuardTests(unittest.TestCase):
         self.assertEqual(kwargs["ncu_repeat"], 1)
         self.assertTrue(kwargs["keep_profiles"])
         self.assertFalse(run_matrix.call_args.kwargs["prune_startup_oom"])
+        self.assertEqual(
+            run_matrix.call_args.kwargs["request_timeout_seconds"],
+            123.5,
+        )
+
+    def test_main_rejects_invalid_request_timeout(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "acprof.cli.run.py",
+                "--model",
+                "dummy-model",
+                "--request-timeout-seconds",
+                "0",
+            ],
+        ), patch(
+            "acprof.cli.run.bootstrap_project_env",
+            return_value=None,
+        ), self.assertRaises(SystemExit) as raised:
+            run.main()
+
+        self.assertEqual(raised.exception.code, 2)
 
     def test_main_records_invocation_command_in_static_meta(self) -> None:
         task_info = TaskInfo(

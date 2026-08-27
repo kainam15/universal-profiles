@@ -1498,12 +1498,14 @@ class DetectEnvironmentTests(unittest.TestCase):
                 repeat=1,
                 repeat_in_window=0,
                 repeat_window_seconds=10.0,
+                request_timeout_seconds=123.5,
                 input_scales="64",
                 require_packet_latency=False,
             )
 
         self.assertEqual(captured_env["REPEAT_IN_WINDOW"], "0")
         self.assertEqual(captured_env["REPEAT_WINDOW_SECONDS"], "10.0")
+        self.assertEqual(captured_env["REQUEST_TIMEOUT_SECONDS"], "123.5")
 
     def test_run_single_case_preserves_manual_repeat_window_to_client(self) -> None:
         task_info = TaskInfo(
@@ -1792,7 +1794,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                         {
                             "error_type": "client_request_timeout",
                             "input_scale": 64.0,
-                            "request_timeout_s": 300.0,
+                            "request_timeout_s": 120.0,
                             "request_phase": "auto_repeat_window_warmup",
                             "request_id": "case_scale64_auto_warmup0",
                         },
@@ -1836,6 +1838,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 warmup=1,
                 repeat=2,
                 repeat_in_window=0,
+                request_timeout_seconds=120.0,
                 input_scales="64,128",
                 require_packet_latency=False,
             )
@@ -1854,7 +1857,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             all("reason=triggering_scale_probe_timed_out" in row["error"] for row in trigger_rows)
         )
         self.assertTrue(
-            all("triggering_request_latency_s>300" in row["error"] for row in trigger_rows)
+            all("triggering_request_latency_s>120" in row["error"] for row in trigger_rows)
         )
         self.assertTrue(
             all("reason=skipped_after_prior_scale_timeout" in row["error"] for row in skipped_rows)
@@ -2388,7 +2391,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             cpu = kwargs["cpu"]
             mem = kwargs["mem"]
             gpu = kwargs["gpu"]
-            calls.append((cpu, mem, gpu))
+            calls.append((cpu, mem, gpu, kwargs["request_timeout_seconds"]))
             model_tag = orchestrator._sanitize_model_id(task_info.model_id)
             path = os.path.join(
                 kwargs["output_dir"],
@@ -2435,6 +2438,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 warmup=0,
                 repeat=1,
                 repeat_in_window=1,
+                request_timeout_seconds=45.0,
                 input_scales="64",
                 prune_startup_oom=True,
             )
@@ -2456,7 +2460,11 @@ class DetectEnvironmentTests(unittest.TestCase):
 
         self.assertEqual(
             calls,
-            [(1, 2, "off"), (1, 4, "off"), (2, 4, "off")],
+            [
+                (1, 2, "off", 45.0),
+                (1, 4, "off", 45.0),
+                (2, 4, "off", 45.0),
+            ],
         )
         self.assertEqual(len(result_csvs), 4)
         self.assertEqual(plan["status"], "complete")

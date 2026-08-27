@@ -559,8 +559,12 @@ class AcprofTui(App[None]):
                                     id="idle-cooldown-seconds",
                                     classes="config-control",
                                 )
-                                yield Label("")
-                                yield Static("")
+                                yield Label("单请求超时秒")
+                                yield Input(
+                                    value=str(self.initial_config.request_timeout_seconds),
+                                    id="request-timeout-seconds",
+                                    classes="config-control",
+                                )
 
                                 yield Label("计算分析器")
                                 yield Select(
@@ -871,6 +875,7 @@ class AcprofTui(App[None]):
             repeat=repeat,
             repeat_in_window=self._input("repeat-in-window"),
             repeat_window_seconds=self._input("repeat-window-seconds"),
+            request_timeout_seconds=self._input("request-timeout-seconds"),
             sample_hz=self._input("sample-hz"),
             idle_seconds=self._input("idle-seconds"),
             idle_cooldown_seconds=self._input("idle-cooldown-seconds"),
@@ -900,6 +905,7 @@ class AcprofTui(App[None]):
             "warmup-repeat": f"{config.warmup},{config.repeat}",
             "repeat-in-window": str(config.repeat_in_window),
             "repeat-window-seconds": str(config.repeat_window_seconds),
+            "request-timeout-seconds": str(config.request_timeout_seconds),
             "sample-hz": str(config.sample_hz),
             "idle-seconds": str(config.idle_seconds),
             "idle-cooldown-seconds": str(config.idle_cooldown_seconds),
@@ -973,6 +979,7 @@ class AcprofTui(App[None]):
         )
         self.query_one("#config-summary", Static).update(
             f"{case_count} 个资源 case · 输入规模 {scale_summary} · "
+            f"单请求超时 {config.request_timeout_seconds:g}s · "
             f"{profiler_summary} · 输出 {config.output_dir}"
         )
         self.query_one("#command-preview", Static).update(
