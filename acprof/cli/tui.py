@@ -1054,15 +1054,16 @@ class AcprofTui(App[None]):
             else None
         )
         scale_text = f"{largest_scale:g}" if largest_scale is not None else "自动规划后的最大值"
+        memory_text = ",".join(
+            f"{value}GB" for value in memory_candidates
+        )
         preview = format_command(command, project_dir=PROJECT_DIR)
         self._pending_launch = PendingLaunch(tuple(command), "probe", config)
         self.push_screen(
             ConfirmActionScreen(
                 "探测最低配置的最大输入？",
                 f"资源：CPU={cpu}、GPU={gpu}\n"
-                "内存候选："
-                + ",".join(f"{value}GB" for value in memory_candidates)
-                + "（从小到大）\n"
+                f"内存候选：{memory_text}（从小到大）\n"
                 f"输入规模：{scale_text}\n\n"
                 "每档使用全新容器并最多执行一次最大输入请求；OOM 时自动尝试下一档，"
                 "第一个成功值就是最低可用内存。结果单独写入 "
@@ -1182,6 +1183,7 @@ class AcprofTui(App[None]):
         "等待": "stage-idle",
         "已完成": "stage-success",
         "探测完成": "stage-success",
+        "找到最低可用内存": "stage-success",
         "case 完成": "stage-success",
         "失败": "stage-error",
         "探测失败": "stage-error",

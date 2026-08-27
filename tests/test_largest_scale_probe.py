@@ -254,7 +254,7 @@ class LargestScaleProbeTests(unittest.TestCase):
     @patch("acprof.host.largest_scale_probe._stop_container_session")
     @patch("acprof.host.largest_scale_probe._start_container_session")
     @patch("acprof.host.largest_scale_probe.requests.post")
-    def test_cuda_oom_advances_and_successful_attempt_supplies_timing(
+    def test_runtime_memory_oom_advances_and_successful_attempt_supplies_timing(
         self,
         post: Mock,
         start_container: Mock,
@@ -276,7 +276,7 @@ class LargestScaleProbeTests(unittest.TestCase):
         ]
         oom_response = Mock(
             status_code=500,
-            text='{"error":"CUDA out of memory"}',
+            text='{"error":"MemoryError: cannot allocate memory"}',
         )
         success_response = Mock(status_code=200, text="")
         success_response.json.return_value = {"effective_input_scale": 512}
@@ -304,11 +304,57 @@ class LargestScaleProbeTests(unittest.TestCase):
         self.assertEqual(summary["resource"]["mem_gb"], 4)
         self.assertEqual(
             [item["status"] for item in summary["memory_probe"]["attempts"]],
-            ["cuda_oom", "ok"],
+            ["runtime_oom", "ok"],
         )
         self.assertEqual(summary["cold_start"]["total_s"], 5.0)
         self.assertEqual(post.call_count, 2)
         self.assertEqual(stop_container.call_count, 2)
+
+    @patch("acprof.host.largest_scale_probe._stop_container_session")
+    @patch("acprof.host.largest_scale_probe._start_container_session")
+    @patch("acprof.host.largest_scale_probe.requests.post")
+    def test_cuda_oom_stops_host_memory_scan(
+        self,
+        post: Mock,
+        start_container: Mock,
+        stop_container: Mock,
+    ) -> None:
+        start_container.return_value = RunningContainer(
+            name="probe-2gb",
+            base_url="http://127.0.0.1:8002",
+            host_port=8002,
+            cold_start_s=3.0,
+        )
+        post.return_value = Mock(
+            status_code=500,
+            text='{"error":"CUDA out of memory"}',
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            output_dir = Path(temporary_dir)
+            plan = _write_plan(output_dir)
+            summary = run_largest_scale_probe(
+                task_info=_task_info(),
+                image_info=ImageInfo(tag="image:latest"),
+                planned_input_scales=PlannedInputScales(
+                    scales=[64.0, 512.0],
+                    source="manual",
+                    plan_file=str(plan),
+                ),
+                cpu_list=[1],
+                mem_list=[2, 4, 8],
+                gpu_list=["on"],
+                batch_size=1,
+                output_dir=output_dir,
+                timeout_seconds=30,
+            )
+
+        self.assertEqual(summary["status"], "cuda_oom")
+        self.assertIsNone(summary["resource"]["mem_gb"])
+        self.assertEqual(len(summary["memory_probe"]["attempts"]), 1)
+        self.assertEqual(start_container.call_count, 1)
+        self.assertEqual(post.call_count, 1)
+        stop_container.assert_called_once()
 
     @patch("acprof.host.largest_scale_probe._stop_container_session")
     @patch("acprof.host.largest_scale_probe._start_container_session")

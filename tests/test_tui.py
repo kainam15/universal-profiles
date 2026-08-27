@@ -420,6 +420,11 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsInstance(app.screen, ConfirmActionScreen)
             self.assertIsNotNone(app._pending_launch)
             self.assertEqual(app._pending_launch.kind, "probe")
+            self.assertIn(
+                "内存候选：2GB,4GB,8GB,16GB（从小到大）",
+                app.screen.message,
+            )
+            self.assertIn("OOM 时自动尝试下一档", app.screen.message)
             await pilot.press("escape")
             await pilot.pause()
             self.assertNotIsInstance(app.screen, ConfirmActionScreen)
@@ -465,11 +470,18 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
     async def test_probe_subprocess_keeps_timing_result_in_monitor(self):
         script = "\n".join(
             (
-                "print('[largest-probe] Starting minimum configuration: "
-                "CPU=1, MEM=2GB, GPU=off, input_scale=512', flush=True)",
+                "print('[largest-probe] MEMORY_SCAN cpu=1 gpu=off "
+                "candidates=2,4 input_scale=512', flush=True)",
+                "print('[largest-probe] MEMORY_TRY current=1 total=2 "
+                "cpu=1 mem=2 gpu=off input_scale=512', flush=True)",
+                "print('[largest-probe] MEMORY_RESULT mem=2 "
+                "status=startup_oom', flush=True)",
+                "print('[largest-probe] MEMORY_TRY current=2 total=2 "
+                "cpu=1 mem=4 gpu=off input_scale=512', flush=True)",
                 "print('[largest-probe] Running one largest-scale request...', flush=True)",
+                "print('[largest-probe] MEMORY_RESULT mem=4 status=ok', flush=True)",
                 "print('[largest-probe] RESULT status=ok input_scale=512 "
-                "cpu=1 mem=2 gpu=off cold_start_s=12.5 request_s=4.321 "
+                "cpu=1 mem=4 gpu=off cold_start_s=12.5 request_s=4.321 "
                 "ready_plus_request_s=16.821', flush=True)",
                 "print('[largest-probe] Summary JSON: /tmp/probe.json', flush=True)",
             )
@@ -491,6 +503,7 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertFalse(app._is_busy())
             self.assertEqual(app._latest_snapshot.stage, "探测完成")
+            self.assertIn("最低可用内存 4GB", app._latest_snapshot.detail)
             self.assertIn("单次请求 4.321s", app._latest_snapshot.detail)
             self.assertEqual(app._latest_snapshot.probe_summary, "/tmp/probe.json")
 

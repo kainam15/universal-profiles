@@ -26,9 +26,7 @@ from acprof.host.orchestrator import (
 
 
 PROBE_SUMMARY_NAME = "largest_scale_probe.json"
-OOM_ATTEMPT_STATUSES = frozenset(
-    {"startup_oom", "runtime_oom", "cuda_oom"}
-)
+RETRYABLE_MEMORY_OOM_STATUSES = frozenset({"startup_oom", "runtime_oom"})
 
 
 def select_minimum_resources(
@@ -226,6 +224,7 @@ def _classify_oom_failure(
             "out of memory",
             "cannot allocate memory",
             "can't allocate memory",
+            "failed to allocate memory",
             "memoryerror",
             "std::bad_alloc",
         )
@@ -412,7 +411,7 @@ def run_largest_scale_probe(
             selected_mem = mem
             response_payload = candidate_response
             break
-        if attempt["status"] in OOM_ATTEMPT_STATUSES:
+        if attempt["status"] in RETRYABLE_MEMORY_OOM_STATUSES:
             if index < len(memory_candidates):
                 print(
                     f"[largest-probe] {mem}GB OOM; trying next memory candidate."
@@ -426,7 +425,10 @@ def run_largest_scale_probe(
         error = ""
     elif (
         len(attempts) == len(memory_candidates)
-        and all(item["status"] in OOM_ATTEMPT_STATUSES for item in attempts)
+        and all(
+            item["status"] in RETRYABLE_MEMORY_OOM_STATUSES
+            for item in attempts
+        )
     ):
         status = "oom"
         error = (
@@ -436,6 +438,16 @@ def run_largest_scale_probe(
     else:
         status = str(last_attempt["status"])
         error = str(last_attempt["error"])
+        if status == "cuda_oom":
+            error = (
+                "最大 input scale 发生 CUDA 显存 OOM；增加主机内存上限无法解决，"
+                f"已停止内存扫描。原始错误：{error}"
+            )
+        elif status == "timeout":
+            error = (
+                f"{last_attempt['mem_gb']}GB 候选请求超时，无法证明该档位是否内存可行；"
+                f"已停止扫描。{error}"
+            )
 
     chosen_attempt = (
         next(item for item in attempts if item["status"] == "ok")
@@ -449,7 +461,7 @@ def run_largest_scale_probe(
         (response_payload or {}).get("effective_input_scale")
     )
     summary: Dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": status,
         "error": error,
         "started_at": started_at,

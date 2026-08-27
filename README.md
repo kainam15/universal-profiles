@@ -110,10 +110,12 @@ case 级进度、日志、结果摘要、绘图和 profiler 补采入口。开�
 `F5` 开始采集，`F6` 执行环境检查，`Ctrl+X` 安全终止当前任务。底部输入框支持
 `/run`、`/probe`、`/check`、`/status`、`/stop`、`/plot`、`/profile` 和 `/help` 等快捷命令。
 
-“探测最大输入”会从表单中选择最小 CPU、最小内存，并在可选时优先使用 `GPU=off`；
-输入规模留空时取自动规划结果的最大档，手动填写时取最大值。它用全新容器只运行一次
-`/predict`，显示容器冷启动、单次请求以及两者合计耗时。探测结果位于独立的
-`probes/` 目录，不会写入或修改正式实验 CSV。
+“探测最大输入”会选择最小 CPU，并在可选时优先使用 `GPU=off`；内存列表按从小到大
+作为候选值逐档实测。输入规模留空时取自动规划结果的最大档，手动填写时取最大值。
+每档使用全新容器并最多运行一次 `/predict`；遇到明确的启动或运行期主机内存 OOM 时
+自动尝试下一档，第一个成功完成最大输入请求的值才是最低可用内存。界面随后显示该档
+容器冷启动、单次请求以及两者合计耗时。探测结果位于独立的 `probes/` 目录，不会写入
+或修改正式实验 CSV。
 
 界面不会重写采集逻辑，而是启动现有 `run.py`、`probe.py`、`plot.py` 和 `profile.py`。为了降低
 对能耗与延迟实验的影响，正式 workload 窗口内停止常规日志重绘，不运行实时绘图，
@@ -127,12 +129,15 @@ case 级进度、日志、结果摘要、绘图和 profiler 补采入口。开�
 .venv/bin/python probe.py --model google-bert/bert-base-uncased --skip-build
 ```
 
-例如传入 `--cpus 1,2,4 --mems 2,4,8 --gpus off,on` 时，实际测速资源为
-`CPU=1, MEM=2GB, GPU=off`。单次请求默认最多等待 300 秒，可通过
-`--timeout-seconds` 调整。每次运行写入新的
+例如传入 `--cpus 1,2,4 --mems 2,4,8 --gpus off,on` 时，固定使用
+`CPU=1, GPU=off`，再依次尝试 `2GB → 4GB → 8GB`，找到第一档成功值后停止。
+CUDA OOM 属于显存不足，增加这里的主机内存上限无效，因此不会继续；请求超时或其他
+非 OOM 错误也会停止，避免把未验证的内存档误报为最低值。单次请求默认最多等待
+300 秒，可通过 `--timeout-seconds` 调整。每次运行写入新的
 `results/<model-dir>/probes/largest_scale_<timestamp>/largest_scale_probe.json`；其中
-`timing.request_s` 是模型 ready 后第一且唯一一次请求的端到端耗时，
-`cold_start.total_s` 是全新容器到 ready 的耗时，`timing.ready_plus_request_s` 是两者之和。
+`memory_probe.attempts` 记录每档的 OOM/成功证据，`memory_probe.minimum_viable_mem_gb`
+记录最低成功值；`timing.request_s` 是该成功档请求的端到端耗时，`cold_start.total_s`
+是该档全新容器到 ready 的耗时，`timing.ready_plus_request_s` 是两者之和。
 镜像构建和输入规划等完整命令开销另记在 `timing.command_s`。该功能不启动 idle、
 能耗、抓包或 profiler 采集，因此是运行时间预估，不替代正式实验行。
 

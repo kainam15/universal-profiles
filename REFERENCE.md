@@ -109,7 +109,7 @@ python run.py --model google-bert/bert-base-uncased \
 
 ### 最低配置的最大 input scale 探测
 
-在启动完整矩阵前，可以只测一次最重输入：
+在启动完整矩阵前，可以先用最重输入逐档确认最低可用内存：
 
 ```bash
 .venv/bin/python probe.py --model google-bert/bert-base-uncased \
@@ -118,11 +118,17 @@ python run.py --model google-bert/bert-base-uncased \
 ```
 
 `probe.py` 复用正式流程的任务识别、镜像和 input-scale materialization，但不运行主矩阵。
-最大尺度取 materialized `input_scale_plan.json` 中的最大 `input_scale`；最低配置取最小
-CPU、最小内存，并在所选 GPU 模式包含 `off` 时使用 CPU-only，否则使用 `on`。尺度规划
-仍在正常的规划资源容器中完成，实际计时则始终启动一个全新的最低配置容器。服务 ready
-后仅发送一次最大的 materialized payload，不做 warmup/repeat、idle baseline、能耗、PMU、
-PCAP 或 profiler 采集。
+最大尺度取 materialized `input_scale_plan.json` 中的最大 `input_scale`。CPU 固定为所选列表
+中的最小值；所选 GPU 模式包含 `off` 时使用 CPU-only，否则使用 `on`；内存候选则去重、
+升序逐档实测。尺度规划仍在正常的规划资源容器中完成。实际探测为每个内存候选启动
+全新容器，服务 ready 后最多发送一次最大的 materialized payload。明确的 Docker/cgroup
+启动 OOM、运行期 OOM，或 CPU allocator/`MemoryError` 会进入下一档；第一档完整返回且
+`effective_input_scale` 与计划一致的候选，才记为最低可用内存，同时其请求就是最终计时值。
+
+CUDA OOM 是 GPU 显存不足，改变 `--mems` 的主机内存 cap 无法解决，因此立即停止；timeout、
+尺度不一致和其他非 OOM 错误也会停止并保持最低内存为空，不能越过不确定档位继续宣称
+更大的候选是“最低值”。整个流程不做 warmup/repeat、idle baseline、能耗、PMU、PCAP 或
+profiler 采集。
 
 默认请求超时为 300 秒，可用 `--timeout-seconds` 覆盖。每次探测写入独立目录：
 
@@ -132,10 +138,13 @@ results/<model-dir>/probes/largest_scale_<timestamp>_<pid>/
 └── largest_scale_probe.json
 ```
 
-摘要中的 `timing.request_s` 是 ready 后第一且唯一一次 `/predict` 的 host 端到端耗时；
-`cold_start.total_s` 是新容器从 `docker run` 到 ready 的耗时；
+摘要 schema v2 的 `memory_probe.candidate_order_gb` 保存候选顺序，
+`memory_probe.attempts` 保存每档的 `startup_oom`、`runtime_oom`、`cuda_oom`、`timeout`、
+`error` 或 `ok` 结果及其错误和分段耗时，`memory_probe.minimum_viable_mem_gb` 只在成功时
+写入。顶层 `timing.request_s` 是最低成功档 `/predict` 的 host 端到端耗时；
+`cold_start.total_s` 是该档新容器从 `docker run` 到 ready 的耗时；
 `timing.ready_plus_request_s` 是二者之和；`timing.command_s` 还包含 preflight、模型识别、
-可选镜像构建、尺度规划和清理。探测目录与正式模型结果共用输出根，但不会创建或修改
+可选镜像构建、尺度规划、失败候选尝试和清理。探测目录与正式模型结果共用输出根，但不会创建或修改
 `result_case_*.csv`、`result_all.csv`、`static_meta.json` 或 `collection_history.json`。
 它适合估算可行性，不应当作包含 idle/energy/network 口径的正式测量行。
 

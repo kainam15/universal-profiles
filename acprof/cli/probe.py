@@ -54,8 +54,8 @@ def _gpu_list(value: str) -> list[str]:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Measure one cold request at the largest planned input scale on "
-            "the minimum requested resource configuration."
+            "Scan requested memory caps from low to high, then measure the "
+            "first cap that completes one largest-scale cold request."
         )
     )
     parser.add_argument("--model", required=True, help="Hugging Face model ID")
@@ -63,7 +63,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--task-family", default=None, help="Override task family")
     parser.add_argument("--backend", default=None, help="Override runtime backend")
     parser.add_argument("--cpus", default="1,2,4,8", help="CPU list")
-    parser.add_argument("--mems", default="2,4,8,16", help="Memory GB list")
+    parser.add_argument(
+        "--mems",
+        default="2,4,8,16",
+        help="Memory GB candidates scanned from low to high",
+    )
     parser.add_argument("--gpus", default="off,on", help="GPU modes")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument(
@@ -124,7 +128,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     output_dir = create_probe_output_dir(output_root, task_info.model_id)
 
     print("=" * 60)
-    print("AC-Prof Largest Input Scale Probe")
+    print("AC-Prof Minimum Viable Memory + Largest Input Scale Probe")
     print("=" * 60)
     print(f"  Model:    {task_info.model_id}")
     print(

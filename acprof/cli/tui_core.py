@@ -596,7 +596,7 @@ class RunProgressTracker:
                 "ok": "可运行，已找到最低内存",
                 "startup_oom": "启动 OOM，继续下一档",
                 "runtime_oom": "推理 OOM，继续下一档",
-                "cuda_oom": "CUDA OOM，继续下一档",
+                "cuda_oom": "CUDA 显存 OOM，停止探测",
                 "timeout": "请求超时",
                 "error": "探测失败",
             }
@@ -618,15 +618,22 @@ class RunProgressTracker:
         if probe_result:
             status = probe_result.group("status")
             completed = max(1, state.current_case)
-            updates.update(
-                stage="探测完成" if status == "ok" else "探测失败",
-                detail=(
+            if status == "ok":
+                result_detail = (
                     f"最低可用内存 {probe_result.group('mem')}GB · "
                     f"最大尺度 {probe_result.group('scale')} · "
                     f"单次请求 {_format_probe_duration(probe_result.group('request'))} · "
                     f"冷启动 {_format_probe_duration(probe_result.group('cold'))} · "
                     f"就绪+请求 {_format_probe_duration(probe_result.group('total'))}"
-                ),
+                )
+            else:
+                result_detail = (
+                    f"未找到最低可用内存 · 最后尝试 "
+                    f"{probe_result.group('mem')}GB · 状态 {status}"
+                )
+            updates.update(
+                stage="探测完成" if status == "ok" else "探测失败",
+                detail=result_detail,
                 current_case=completed,
                 completed_cases=completed,
                 total_cases=completed,
