@@ -198,10 +198,17 @@ python run.py --model google-bert/bert-base-uncased --notify none
 ```
 
 程序会在环境预检和 Docker 构建前先发送实验开始通知，内容包含当前运行指令和
-启动后的累计耗时。每个 CPU × 内存 × GPU 资源 case 完成且对应容器、监控器和
+启动后的累计耗时。启用对应 profiler 时，CPU Torch、GPU Torch、NCU、Massif、
+Nsys 各自的全部采样结束后，会分别发送一次阶段通知（兼容 vendor 模式的 CPU
+Advisor 也适用）。通知包含工具名称、阶段采样耗时、累计耗时、采样项总数与失败数；
+明确区分成功、部分失败、失败和无结果，关闭或不适用的工具不发送阶段通知。
+采样项按工具实际采样的资源配置 × input scale 计数，不按 repeat 或矩阵复用次数
+重复计数。此行为也适用于 TUI 启动的 `run.py`，沿用同一 `--notify` 设置。
+每个 CPU × 内存 × GPU 资源 case 完成且对应容器、监控器和
 抓包进程停止后，再同步发送一次进度，包含累计耗时、已完成 case/总 case、百分比、
 刚完成的资源配置以及当前 case 的结果行/异常行；全部结果合并和 tmux 日志收尾后
-发送最终总结。为了不干扰实验测量，input scale、warmup 和 repeat 窗口内部不发送
+发送最终总结。阶段通知在对应 profiler 容器退出后、下一阶段开始前同步发送；
+为了不干扰实验测量，input scale、warmup 和 repeat 窗口内部不发送
 网络通知。最终总结区分成功、部分成功、无结果、失败和用户取消。发送请求超时为
 5 秒并最多尝试两次；通知失败只产生警告，不改变采集结果或原退出码。不要把
 Webhook 放进命令行、提交到 Git 或粘贴到日志中。

@@ -1477,5 +1477,181 @@ class ComputeProfileTests(unittest.TestCase):
             )
 
 
+class ComputeProfileProgressTests(unittest.TestCase):
+    def _collect(self, directory, **kwargs):
+        input_plan = _write_input_scale_plan(directory)
+        with open(input_plan, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        payload["entries"].append({
+            **payload["entries"][0],
+            "input_scale": 16.0,
+            "scale_label": "seq16",
+        })
+        with open(input_plan, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        with patch.object(
+            compute_profile, "_find_executable", return_value=None,
+        ), patch.object(
+            compute_profile, "_executable_version", return_value="unknown",
+        ):
+            plan_path = compute_profile.collect_compute_profile_plan(
+                task_info=TaskInfo(
+                    model_id="google-bert/bert-base-uncased",
+                    pipeline_tag="fill-mask",
+                    task_family="nlp",
+                    runtime_backend="transformers_pipeline",
+                    library_name="transformers",
+                    model_revision="main",
+                    detection_method="hub_api",
+                ),
+                image_tag="acprof-test:latest",
+                cpu_list=[1],
+                mem_list=[4],
+                gpu_list=kwargs.pop("gpu_list", ["off", "on"]),
+                output_dir=directory,
+                input_scale_plan_file=input_plan,
+                advisor_root=None,
+                ncu_root=None,
+                advisor_repeat=2,
+                ncu_repeat=2,
+                torch_profiler_repeat=2,
+                keep_profiles=False,
+                **kwargs,
+            )
+        with open(plan_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    @staticmethod
+    def _torch_profile(**kwargs):
+        return {
+            "tool": compute_profile.TORCH_PROFILER_TOOL,
+            "repeat": kwargs["repeat"],
+            "error": "",
+            "entries": [{
+                "input_scale": entry["input_scale"],
+                "tool": compute_profile.TORCH_PROFILER_TOOL,
+                "model_logical_mflop_per_request_torch_profiler_eager": 42.0,
+                "error": "",
+            } for entry in kwargs["entries"]],
+        }
+
+    def test_each_complete_tool_notifies_before_next_tool_and_excludes_callback_time(self):
+        order = []
+        completions = []
+        elapsed = [0.0]
+
+        def profile_stage(profiler, kwargs):
+            order.append(("start", profiler))
+            for entry in kwargs["entries"]:
+                order.append(("scale", profiler, entry["input_scale"]))
+                elapsed[0] += 2.5
+            order.append(("released", profiler))
+            return self._torch_profile(**kwargs)
+
+        def notify(completion):
+            order.append(("complete", completion.profiler))
+            completions.append(completion)
+            elapsed[0] += 100.0
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            compute_profile, "_profile_torch_entries",
+            side_effect=lambda **kwargs: profile_stage(
+                "GPU Torch" if kwargs["use_gpu"] else "CPU Torch", kwargs,
+            ),
+        ), patch.object(
+            compute_profile, "_profile_gpu_entries",
+            side_effect=lambda **kwargs: profile_stage("NCU", kwargs),
+        ), patch.object(
+            compute_profile.time, "perf_counter", side_effect=lambda: elapsed[0],
+        ):
+            self._collect(tmp, compute_profile_tool="both", progress_callback=notify)
+
+        expected = []
+        for profiler in ("CPU Torch", "GPU Torch", "NCU"):
+            expected.extend([
+                ("start", profiler),
+                ("scale", profiler, 8.0),
+                ("scale", profiler, 16.0),
+                ("released", profiler),
+                ("complete", profiler),
+            ])
+        self.assertEqual(order, expected)
+        self.assertEqual([event.elapsed_seconds for event in completions], [5.0] * 3)
+        self.assertEqual([event.total_samples for event in completions], [2] * 3)
+        self.assertEqual([event.status for event in completions], ["success"] * 3)
+
+    def test_missing_vendor_tools_still_notify_each_failed_stage(self):
+        completions = []
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = self._collect(
+                tmp, compute_profile_tool="vendor", progress_callback=completions.append,
+            )
+
+        self.assertEqual([event.profiler for event in completions], ["CPU Advisor", "NCU"])
+        self.assertEqual([event.status for event in completions], ["failed", "failed"])
+        self.assertEqual([event.total_samples for event in completions], [2, 2])
+        self.assertEqual([event.error_samples for event in completions], [2, 2])
+        self.assertEqual(plan["profiles"]["cpu"]["intel_advisor"]["error"], "advisor_not_found")
+        self.assertEqual(plan["profiles"]["gpu"]["ncu"]["error"], "ncu_not_found")
+
+    def test_raised_tool_failure_notifies_and_continues_to_next_device(self):
+        completions = []
+
+        def torch_profile(**kwargs):
+            if not kwargs["use_gpu"]:
+                raise RuntimeError("CPU probe failed")
+            return self._torch_profile(**kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            compute_profile, "_profile_torch_entries", side_effect=torch_profile,
+        ):
+            plan = self._collect(
+                tmp, compute_profile_tool="torch", progress_callback=completions.append,
+            )
+
+        self.assertEqual([event.profiler for event in completions], ["CPU Torch", "GPU Torch"])
+        self.assertEqual([event.status for event in completions], ["failed", "success"])
+        self.assertIn("CPU probe failed", completions[0].detail)
+        self.assertEqual(completions[0].error_samples, 2)
+        self.assertEqual(plan["profiles"]["gpu"][compute_profile.TORCH_PROFILER_TOOL]["error"], "")
+
+    def test_notification_failure_does_not_change_plan_or_stop_next_stage(self):
+        attempted = []
+
+        def broken_callback(event):
+            attempted.append(event.profiler)
+            raise RuntimeError("notification failed")
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            compute_profile, "_profile_torch_entries", side_effect=self._torch_profile,
+        ):
+            expected = self._collect(tmp, compute_profile_tool="torch")
+            actual = self._collect(
+                tmp, compute_profile_tool="torch", progress_callback=broken_callback,
+            )
+
+        self.assertEqual(attempted, ["CPU Torch", "GPU Torch"])
+        self.assertEqual(actual, expected)
+
+    def test_disabled_and_inapplicable_tools_do_not_notify(self):
+        for mode, gpu_list in (("none", ["off", "on"]), ("ncu", ["off"])):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp, patch.object(
+                compute_profile, "_profile_torch_entries",
+            ) as torch, patch.object(
+                compute_profile, "_profile_gpu_entries",
+            ) as ncu, patch.object(
+                compute_profile, "_profile_cpu_entries",
+            ) as advisor:
+                completions = []
+                self._collect(
+                    tmp, compute_profile_tool=mode, gpu_list=gpu_list,
+                    progress_callback=completions.append,
+                )
+                self.assertEqual(completions, [])
+                torch.assert_not_called()
+                ncu.assert_not_called()
+                advisor.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

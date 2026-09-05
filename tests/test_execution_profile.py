@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from acprof.host.detect import TaskInfo
 from acprof.host import execution_profile
@@ -488,6 +488,7 @@ heap_tree=peak
     def test_missing_tools_fill_every_resource_and_scale_without_aborting(
         self,
     ) -> None:
+        events = []
         with tempfile.TemporaryDirectory() as tmp, patch(
             "acprof.host.execution_profile._build_massif_image",
             side_effect=RuntimeError("massif_image_build_failed:no_apt"),
@@ -512,6 +513,7 @@ heap_tree=peak
                 project_dir=os.path.dirname(os.path.dirname(__file__)),
                 tool_mode="both",
                 keep_profiles=False,
+                progress_callback=events.append,
             )
             with open(plan_path, "r", encoding="utf-8") as plan_file:
                 plan = json.load(plan_file)
@@ -524,6 +526,11 @@ heap_tree=peak
         )
         self.assertEqual(profile_massif.call_count, 1)
         self.assertEqual(profile_nsys.call_count, 2)
+        self.assertEqual(
+            [(event.profiler, event.status, event.total_samples,
+              event.error_samples) for event in events],
+            [("Massif", "failed", 2, 2), ("Nsys", "failed", 4, 4)],
+        )
         self.assertEqual(
             plan["static_metadata"]["massif_sampling_strategy"],
             "representative_per_scale",
@@ -561,6 +568,12 @@ heap_tree=peak
                     self.assertTrue(entry["compute_profile_error_nsys"])
 
     def test_full_sampling_profiles_every_resource_case(self) -> None:
+        events = []
+
+        def failing_callback(event):
+            events.append(event)
+            raise RuntimeError("notification unavailable")
+
         with tempfile.TemporaryDirectory() as tmp, patch(
             "acprof.host.execution_profile._build_massif_image",
             side_effect=RuntimeError("massif_image_build_failed:no_apt"),
@@ -587,12 +600,15 @@ heap_tree=peak
                 massif_sampling="full",
                 nsys_sampling="full",
                 keep_profiles=False,
+                progress_callback=failing_callback,
             )
             with open(plan_path, "r", encoding="utf-8") as plan_file:
                 plan = json.load(plan_file)
 
         self.assertEqual(profile_massif.call_count, 4)
         self.assertEqual(profile_nsys.call_count, 4)
+        self.assertEqual([event.profiler for event in events], ["Massif", "Nsys"])
+        self.assertTrue(all(event.total_samples == 8 for event in events))
         self.assertEqual(
             plan["static_metadata"]["massif_sampling_strategy"],
             "full_resource_matrix",
@@ -610,6 +626,75 @@ heap_tree=peak
             self.assertEqual(
                 entry["profile_source_mem_cap_gb"], profile["mem_cap_gb"]
             )
+
+    def test_completion_follows_all_tool_samples_before_next_tool(self) -> None:
+        timeline = []
+        events = []
+        clock = [10.0]
+
+        def collect_sample(tool, **kwargs):
+            scale = kwargs["entry"]["input_scale"]
+            timeline.append((tool, kwargs["cpu"], kwargs["mem"], scale))
+            clock[0] += 1.0
+            if tool == "Massif" and scale == 16.0:
+                raise RuntimeError("sample failed")
+            return {"input_scale": scale, "error": ""}
+
+        def completed(event):
+            events.append(event)
+            timeline.append((event.profiler, "completed"))
+            clock[0] += 100.0
+
+        with tempfile.TemporaryDirectory() as tmp, patch.multiple(
+            execution_profile,
+            _build_massif_image=Mock(return_value="massif:test"),
+            _massif_version=Mock(return_value="test"),
+            _find_nsys_executable=Mock(return_value="/opt/nsys/bin/nsys"),
+            _nsys_mount_root=Mock(return_value="/opt/nsys"),
+            _nsys_version=Mock(return_value="test"),
+            _build_nsys_image=Mock(return_value="nsys:test"),
+            _validate_nsys_container_runtime=Mock(),
+            _collect_massif_entry=Mock(
+                side_effect=lambda **kwargs: collect_sample("Massif", **kwargs)
+            ),
+            _collect_nsys_entry=Mock(
+                side_effect=lambda **kwargs: collect_sample("Nsys", **kwargs)
+            ),
+            perf_counter=Mock(side_effect=lambda: clock[0]),
+        ):
+            plan_path = execution_profile.collect_execution_profile_plan(
+                task_info=_task_info(),
+                image_tag="acprof-test:latest",
+                cpu_list=[1, 2],
+                mem_list=[4, 8],
+                gpu_list=["off", "on"],
+                output_dir=tmp,
+                input_scale_plan_file=_write_input_scale_plan(tmp),
+                project_dir=os.path.dirname(os.path.dirname(__file__)),
+                tool_mode="both",
+                massif_sampling="full",
+                nsys_sampling="full",
+                progress_callback=completed,
+            )
+            with open(plan_path, "r", encoding="utf-8") as plan_file:
+                plan = json.load(plan_file)
+
+        expected = []
+        for tool in ("Massif", "Nsys"):
+            expected.extend(
+                (tool, cpu, mem, scale)
+                for cpu in (1, 2)
+                for mem in (4, 8)
+                for scale in (8.0, 16.0)
+            )
+            expected.append((tool, "completed"))
+        self.assertEqual(timeline, expected)
+        self.assertEqual(
+            [(event.status, event.total_samples, event.error_samples,
+              event.elapsed_seconds) for event in events],
+            [("partial", 8, 4, 8.0), ("success", 8, 0, 8.0)],
+        )
+        self.assertEqual(len(plan["profiles"]), 8)
 
     def test_explicit_sampling_references_select_requested_resources(self) -> None:
         massif = execution_profile._sampled_resource_cases(
@@ -656,6 +741,7 @@ heap_tree=peak
     def test_none_mode_writes_disabled_plan_without_profiler_side_effects(
         self,
     ) -> None:
+        events = []
         with tempfile.TemporaryDirectory() as tmp, patch(
             "acprof.host.execution_profile._build_massif_image",
         ) as build_massif, patch(
@@ -674,6 +760,7 @@ heap_tree=peak
                 project_dir=os.path.dirname(os.path.dirname(__file__)),
                 tool_mode="none",
                 keep_profiles=True,
+                progress_callback=events.append,
             )
             with open(plan_path, "r", encoding="utf-8") as plan_file:
                 plan = json.load(plan_file)
@@ -690,6 +777,7 @@ heap_tree=peak
         build_massif.assert_not_called()
         build_nsys.assert_not_called()
         find_nsys.assert_not_called()
+        self.assertEqual(events, [])
         self.assertEqual(plan["profiles"], [])
         self.assertEqual(
             plan["static_metadata"]["execution_profile_tools"],
@@ -702,6 +790,27 @@ heap_tree=peak
             plan["static_metadata"]["execution_profile_provenance"],
             "disabled",
         )
+
+    def test_inapplicable_tools_do_not_report_completion(self) -> None:
+        for tool_mode, gpu_mode in (("massif", "on"), ("nsys", "off")):
+            with self.subTest(tool_mode=tool_mode), tempfile.TemporaryDirectory() as tmp:
+                events = []
+                plan_path = execution_profile.collect_execution_profile_plan(
+                    task_info=_task_info(),
+                    image_tag="acprof-test:latest",
+                    cpu_list=[1],
+                    mem_list=[4],
+                    gpu_list=[gpu_mode],
+                    output_dir=tmp,
+                    input_scale_plan_file=_write_input_scale_plan(tmp),
+                    project_dir=os.path.dirname(os.path.dirname(__file__)),
+                    tool_mode=tool_mode,
+                    progress_callback=events.append,
+                )
+                with open(plan_path, "r", encoding="utf-8") as plan_file:
+                    plan = json.load(plan_file)
+                self.assertEqual(events, [])
+                self.assertEqual(plan["profiles"], [])
 
     def test_nsys_collection_enables_unregistered_nvtx_capture(self) -> None:
         reports = {

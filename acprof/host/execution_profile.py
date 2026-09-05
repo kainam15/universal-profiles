@@ -17,10 +17,15 @@ import math
 import os
 import re
 import shutil
+from time import perf_counter
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from acprof.host import compute_profile
 from acprof.host.detect import TaskInfo
+from acprof.host.profiler_progress import (
+    ProfilerProgressCallback,
+    report_profiler_completion,
+)
 
 
 EXECUTION_PROFILE_PLAN_NAME = "execution_profile_plan.json"
@@ -1521,6 +1526,7 @@ def collect_execution_profile_plan(
     nsys_reference_cpu: Optional[int] = None,
     nsys_reference_mem: Optional[int] = None,
     resume_existing_profiles: bool = False,
+    progress_callback: Optional[ProfilerProgressCallback] = None,
 ) -> str:
     """Collect sampled probes and expand them to a full resource-grid plan."""
     normalized_tool_mode = (tool_mode or "both").strip().lower()
@@ -1675,6 +1681,7 @@ def collect_execution_profile_plan(
             nsys_error = "nsys_not_found"
 
     source_profiles: Dict[Tuple[str, int, int], Dict[str, Any]] = {}
+    massif_started = perf_counter()
     for cpu, mem in massif_sources:
         source_profiles[(MASSIF_TOOL, cpu, mem)] = _profile_massif_tool(
             entries=entries,
@@ -1689,6 +1696,17 @@ def collect_execution_profile_plan(
             repeat=normalized_massif_repeat,
             resume_existing=resume_existing_profiles,
         )
+    if collect_massif:
+        report_profiler_completion(
+            progress_callback,
+            profiler="Massif",
+            profiles=(
+                source_profiles[(MASSIF_TOOL, cpu, mem)]
+                for cpu, mem in massif_sources
+            ),
+            elapsed_seconds=perf_counter() - massif_started,
+        )
+    nsys_started = perf_counter()
     for cpu, mem in nsys_sources:
         source_profiles[(NSYS_TOOL, cpu, mem)] = _profile_nsys_tool(
             entries=entries,
@@ -1703,6 +1721,16 @@ def collect_execution_profile_plan(
             profile_root=profile_root,
             output_dir=output_dir,
             repeat=normalized_nsys_repeat,
+        )
+    if collect_nsys:
+        report_profiler_completion(
+            progress_callback,
+            profiler="Nsys",
+            profiles=(
+                source_profiles[(NSYS_TOOL, cpu, mem)]
+                for cpu, mem in nsys_sources
+            ),
+            elapsed_seconds=perf_counter() - nsys_started,
         )
 
     profiles: List[Dict[str, Any]] = []

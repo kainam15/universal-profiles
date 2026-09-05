@@ -5,11 +5,14 @@ import sys
 import tempfile
 import time
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from acprof.cli import run
 from acprof.host import orchestrator
+from acprof.host.detect import TaskInfo
+from acprof.host.profiler_progress import ProfilerProgress
 from acprof.notifications import NotificationConfigError, NotificationEvent
 
 
@@ -202,6 +205,184 @@ class RunNotificationLifecycleTests(unittest.TestCase):
         self.assertEqual(event.result_rows, 1)
         self.assertEqual(event.error_rows, 0)
         self.assertIn("CPU=2, MEM=4GB, GPU=off", event.detail)
+
+    def test_profiler_completion_preserves_status_counts_and_final_event(self) -> None:
+        cases = (
+            ("success", 3, 0, ""),
+            ("partial", 3, 1, "one scale failed"),
+            ("failed", 3, 3, "probe failed"),
+            ("no_results", 0, 0, ""),
+        )
+        for status, total_samples, error_samples, detail in cases:
+            with self.subTest(status=status):
+                notifier = Mock()
+                context = self._context(notifier)
+                final_event = self._success_event()
+                context.event = final_event
+                run._ACTIVE_RUN_NOTIFICATION = context
+
+                run._notify_profiler_completion(
+                    ProfilerProgress(
+                        profiler="CPU Torch",
+                        status=status,
+                        elapsed_seconds=0.25,
+                        total_samples=total_samples,
+                        error_samples=error_samples,
+                        detail=detail,
+                    )
+                )
+
+                notifier.send.assert_called_once()
+                event = notifier.send.call_args.args[0]
+                self.assertEqual(event.status, f"profiler_{status}")
+                self.assertEqual(event.profiler, "CPU Torch")
+                self.assertEqual(event.profile_elapsed_seconds, 0.25)
+                self.assertEqual(event.profile_samples, total_samples)
+                self.assertEqual(event.profile_error_samples, error_samples)
+                self.assertEqual(event.detail, detail or None)
+                self.assertEqual(event.model_id, context.model_id)
+                self.assertEqual(event.output_dir, context.output_dir)
+                self.assertGreaterEqual(event.elapsed_seconds, 1.0)
+                self.assertIs(context.event, final_event)
+
+    def test_profiler_completion_is_silent_without_active_notifier(self) -> None:
+        run._ACTIVE_RUN_NOTIFICATION = None
+        with patch("acprof.cli.run._send_notification_event") as send:
+            run._notify_profiler_completion(
+                ProfilerProgress("NCU", "success", 2.0, 1, 0)
+            )
+
+        send.assert_not_called()
+
+    def test_profiler_notification_failure_preserves_final_event_and_hides_secret(self) -> None:
+        unsafe_key = "synthetic-profiler-notification-secret"
+        notifier = Mock()
+        notifier.send.side_effect = RuntimeError(
+            "https://qyapi.weixin.qq.com/cgi-bin/webhook/"
+            f"send?key={unsafe_key}"
+        )
+        context = self._context(notifier)
+        final_event = self._success_event()
+        context.event = final_event
+        run._ACTIVE_RUN_NOTIFICATION = context
+        stderr = io.StringIO()
+
+        with redirect_stderr(stderr):
+            run._notify_profiler_completion(
+                ProfilerProgress("Nsys", "success", 2.0, 1, 0)
+            )
+
+        notifier.send.assert_called_once()
+        self.assertIs(context.event, final_event)
+        self.assertIn("RuntimeError", stderr.getvalue())
+        self.assertNotIn(unsafe_key, stderr.getvalue())
+
+    def test_main_wires_profiler_notifications_before_matrix_with_resolved_model(self) -> None:
+        self._assert_main_profiler_notifications(provider="auto")
+
+    def test_main_disables_both_profiler_callbacks_when_notify_is_none(self) -> None:
+        self._assert_main_profiler_notifications(provider="none")
+
+    def _assert_main_profiler_notifications(self, *, provider: str) -> None:
+        task_info = TaskInfo(
+            model_id="org/resolved-model",
+            pipeline_tag="fill-mask",
+            task_family="nlp",
+            runtime_backend="transformers_pipeline",
+            library_name="transformers",
+            model_revision="main",
+            detection_method="unit",
+        )
+        order = []
+        events = []
+        notifier = Mock()
+
+        def send(event):
+            order.append(event.profiler or event.status)
+            events.append(event)
+
+        notifier.send.side_effect = send
+
+        def collect(profilers, **kwargs):
+            callback = kwargs.get("progress_callback")
+            if callback is not None:
+                for profiler in profilers:
+                    callback(ProfilerProgress(profiler, "success", 2.0, 1, 0))
+            return os.path.join(kwargs["output_dir"], "mock_profile_plan.json")
+
+        def run_matrix(**_kwargs):
+            order.append("matrix")
+            return []
+
+        with tempfile.TemporaryDirectory() as tmp_dir, patch.object(
+            sys,
+            "argv",
+            [
+                "run.py", "--model", "org/requested-model", "--skip-build",
+                "--compute-profile-tool", "both", "--execution-profile-tool", "both",
+                "--cpus", "1", "--mems", "4", "--gpus", "off,on",
+                "--notify", provider, "--output-dir", tmp_dir,
+            ],
+        ), patch.multiple(
+            run,
+            bootstrap_project_env=Mock(),
+            require_native_linux_host=Mock(),
+            require_native_docker=Mock(),
+            require_cgroup_prerequisites=Mock(return_value="v2"),
+            require_packet_latency_prerequisites=Mock(),
+            require_cpu_energy_prerequisites=Mock(),
+            require_mips_prerequisites=Mock(),
+            _start_tmux_terminal_log=Mock(return_value=None),
+        ), patch(
+            "acprof.cli.run.WeComWebhookNotifier.from_env", return_value=notifier,
+        ) as from_env, patch(
+            "acprof.host.detect.detect_task", return_value=task_info,
+        ), patch(
+            "acprof.host.orchestrator.collect_static_meta", return_value=SimpleNamespace(),
+        ), patch(
+            "acprof.host.orchestrator.write_static_meta_json",
+        ), patch(
+            "acprof.host.orchestrator.plan_input_scales",
+            return_value=orchestrator.PlannedInputScales(
+                scales=[1.0], source="unit", plan_file=None,
+            ),
+        ), patch(
+            "acprof.host.compute_profile.collect_compute_profile_plan",
+            side_effect=lambda **kwargs: collect(("CPU Torch", "GPU Torch", "NCU"), **kwargs),
+        ) as compute, patch(
+            "acprof.host.execution_profile.collect_execution_profile_plan",
+            side_effect=lambda **kwargs: collect(("Massif", "Nsys"), **kwargs),
+        ) as execution, patch(
+            "acprof.host.orchestrator.run_matrix", side_effect=run_matrix,
+        ), redirect_stdout(io.StringIO()):
+            run.main()
+
+        compute.assert_called_once()
+        execution.assert_called_once()
+        expected_callback = (
+            None if provider == "none" else run._notify_profiler_completion
+        )
+        for collector in (compute, execution):
+            self.assertIs(
+                collector.call_args.kwargs["progress_callback"], expected_callback,
+            )
+        if provider == "none":
+            from_env.assert_not_called()
+            notifier.send.assert_not_called()
+            self.assertEqual(order, ["matrix"])
+        else:
+            from_env.assert_called_once_with()
+            self.assertEqual(
+                order,
+                ["started", "CPU Torch", "GPU Torch", "NCU", "Massif", "Nsys", "matrix", "no_results"],
+            )
+            for event in events[1:]:
+                self.assertEqual(event.model_id, task_info.model_id)
+                self.assertEqual(
+                    event.output_dir, os.path.join(tmp_dir, "org--resolved-model"),
+                )
+            self.assertTrue(all(event.status == "profiler_success" for event in events[1:-1]))
+            self.assertEqual(events[-1].total_cases, 2)
 
     def test_matrix_progress_callback_runs_after_each_case(self) -> None:
         order = []

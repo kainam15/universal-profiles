@@ -43,6 +43,7 @@ from acprof.host.orchestrator import (
     PacketLatencyError,
     require_packet_latency_prerequisites,
 )
+from acprof.host.profiler_progress import ProfilerProgress
 from acprof.monitors.perf_mips import require_mips_prerequisites
 from acprof.notifications import (
     NotificationConfigError,
@@ -263,7 +264,8 @@ def _activate_run_notification(
         run_command=run_command,
     )
     print(
-        "[notify] 企业微信通知已启用；实验开始、每个 case 完成后和结束时发送通知"
+        "[notify] 企业微信通知已启用；实验开始、每个 profiler 阶段和 case "
+        "结束后、实验结束时发送通知"
     )
 
 
@@ -396,6 +398,33 @@ def _send_notification_event(
         )
     else:
         print(success_message)
+
+
+def _notify_profiler_completion(progress: ProfilerProgress) -> None:
+    """Report one finished profiler stage before any next probe or CSV sweep."""
+    context = _ACTIVE_RUN_NOTIFICATION
+    if context is None:
+        return
+
+    event = NotificationEvent(
+        status=f"profiler_{progress.status}",
+        model_id=context.model_id,
+        output_dir=context.output_dir,
+        elapsed_seconds=time.perf_counter() - context.started_at,
+        profiler=progress.profiler,
+        profile_elapsed_seconds=progress.elapsed_seconds,
+        profile_samples=progress.total_samples,
+        profile_error_samples=progress.error_samples,
+        detail=progress.detail or None,
+    )
+    _send_notification_event(
+        context,
+        event,
+        success_message=(
+            f"[notify] 企业微信 Profiler 通知已发送：{progress.profiler} "
+            f"({progress.status})"
+        ),
+    )
 
 
 def _notify_case_progress(progress: MatrixProgress) -> None:
@@ -1309,6 +1338,12 @@ Examples:
     )
     write_static_meta_json(static_meta, static_meta_json)
     compute_profile_plan_file = ""
+    total_cases = len(cpu_list) * len(mem_list) * len(gpu_list)
+    _update_run_notification_plan(
+        model_id=task_info.model_id,
+        output_dir=output_dir,
+        total_cases=total_cases,
+    )
     if compute_profile_disabled:
         reason = (
             "--no-compute-profile (compatibility alias)"
@@ -1337,6 +1372,11 @@ Examples:
                 compute_profile_cpus=args.compute_profile_cpus,
                 compute_profile_mem=args.compute_profile_mem,
                 compute_profile_tool=args.compute_profile_tool,
+                progress_callback=(
+                    _notify_profiler_completion
+                    if _ACTIVE_RUN_NOTIFICATION is not None
+                    else None
+                ),
             )
             static_meta = enrich_static_meta_from_compute_plan(
                 static_meta,
@@ -1378,6 +1418,11 @@ Examples:
                 nsys_repeat=args.nsys_repeat,
                 nsys_root=args.nsys_root,
                 keep_profiles=args.keep_execution_profiles,
+                progress_callback=(
+                    _notify_profiler_completion
+                    if _ACTIVE_RUN_NOTIFICATION is not None
+                    else None
+                ),
             )
             static_meta = enrich_static_meta_from_execution_plan(
                 static_meta,
@@ -1390,12 +1435,6 @@ Examples:
                 f"{exc}"
             )
 
-    total_cases = len(cpu_list) * len(mem_list) * len(gpu_list)
-    _update_run_notification_plan(
-        model_id=task_info.model_id,
-        output_dir=output_dir,
-        total_cases=total_cases,
-    )
     n_scales = len(planned_input_scales.scales)
     total_iters = total_cases * n_scales * (args.warmup + args.repeat)
 

@@ -1,9 +1,9 @@
 """Best-effort lifecycle notifications for host-side AC-Prof commands.
 
 Notification delivery is deliberately kept outside measurement windows.  This
-module sends only before collection begins, after a case has released its
-resources, or after the whole command ends.  It never starts a background
-worker or opens a connection while profiling is active.
+module sends only before collection begins, after a profiler stage or case has
+released its resources, or after the whole command ends. It never starts a
+background worker or opens a connection while profiling is active.
 """
 
 from __future__ import annotations
@@ -61,6 +61,10 @@ class NotificationEvent:
     terminal_log: Optional[str] = None
     detail: Optional[str] = None
     host: str = field(default_factory=socket.gethostname)
+    profiler: Optional[str] = None
+    profile_elapsed_seconds: Optional[float] = None
+    profile_samples: Optional[int] = None
+    profile_error_samples: Optional[int] = None
 
 
 def redact_notification_secrets(value: object) -> str:
@@ -101,6 +105,10 @@ def render_notification_text(event: NotificationEvent) -> str:
         "failed": ("AC-Prof 采集失败", "失败"),
         "cancelled": ("AC-Prof 采集已取消", "已取消"),
         "progress": ("AC-Prof 采集进度", "进行中"),
+        "profiler_success": ("AC-Prof Profiler 完成", "成功"),
+        "profiler_partial": ("AC-Prof Profiler 结束", "部分失败"),
+        "profiler_failed": ("AC-Prof Profiler 结束", "失败"),
+        "profiler_no_results": ("AC-Prof Profiler 结束", "无结果"),
     }
     title, status_label = status_labels.get(
         event.status,
@@ -113,6 +121,15 @@ def render_notification_text(event: NotificationEvent) -> str:
         f"主机：{_single_line(event.host, limit=200)}",
         f"耗时：{_format_elapsed(event.elapsed_seconds)}",
     ]
+
+    if event.profiler:
+        lines.insert(2, f"Profiler：{_single_line(event.profiler, limit=80)}")
+    if event.profile_elapsed_seconds is not None:
+        lines.append(f"阶段耗时：{_format_elapsed(event.profile_elapsed_seconds)}")
+    if event.profile_samples is not None:
+        lines.append(f"采样项：{event.profile_samples}")
+    if event.profile_error_samples is not None:
+        lines.append(f"失败采样项：{event.profile_error_samples}")
 
     if event.run_command:
         lines.append(f"指令：{_single_line(event.run_command, limit=1500)}")
@@ -176,7 +193,7 @@ def validate_wecom_webhook_url(webhook_url: str) -> str:
 
 
 class WeComWebhookNotifier:
-    """Synchronous, post-run Enterprise WeChat group-robot notifier."""
+    """Synchronous Enterprise WeChat notifier for measurement-free boundaries."""
 
     def __init__(
         self,

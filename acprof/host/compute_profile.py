@@ -10,11 +10,16 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from acprof.config import DEFAULT_COMPUTE_PROFILE_TOOL
 from acprof.host.detect import TaskInfo
 from acprof.host.env_utils import hf_offline_docker_env_args
+from acprof.host.profiler_progress import (
+    ProfilerProgressCallback,
+    report_profiler_completion,
+)
 
 
 COMPUTE_PROFILE_PLAN_NAME = "compute_profile_plan.json"
@@ -1781,6 +1786,7 @@ def collect_compute_profile_plan(
     compute_profile_tool: str = DEFAULT_COMPUTE_PROFILE_TOOL,
     torch_profiler_repeat: int = 1,
     resume_existing_ncu_profiles: bool = False,
+    progress_callback: Optional[ProfilerProgressCallback] = None,
 ) -> str:
     """Collect or synthesize compute profiles and write a plan file."""
     os.makedirs(output_dir, exist_ok=True)
@@ -1840,6 +1846,7 @@ def collect_compute_profile_plan(
     if "off" in normalized_gpus:
         cpu_tools: Dict[str, Dict[str, Any]] = {}
         if collect_advisor_cpu:
+            started_at = time.perf_counter()
             cpu_tools["intel_advisor"] = _safe_profile_tool(
                 tool="intel_advisor",
                 entries=entries,
@@ -1857,7 +1864,14 @@ def collect_compute_profile_plan(
                     repeat=advisor_repeat,
                 ),
             )
+            report_profiler_completion(
+                progress_callback,
+                profiler="CPU Advisor",
+                profiles=[cpu_tools["intel_advisor"]],
+                elapsed_seconds=time.perf_counter() - started_at,
+            )
         if collect_torch_cpu:
+            started_at = time.perf_counter()
             cpu_tools[TORCH_PROFILER_TOOL] = _safe_profile_tool(
                 tool=TORCH_PROFILER_TOOL,
                 entries=entries,
@@ -1875,12 +1889,19 @@ def collect_compute_profile_plan(
                     repeat=torch_profiler_repeat,
                 ),
             )
+            report_profiler_completion(
+                progress_callback,
+                profiler="CPU Torch",
+                profiles=[cpu_tools[TORCH_PROFILER_TOOL]],
+                elapsed_seconds=time.perf_counter() - started_at,
+            )
         if cpu_tools:
             profiles["cpu"] = cpu_tools
 
     if "on" in normalized_gpus:
         gpu_tools: Dict[str, Dict[str, Any]] = {}
         if collect_torch_gpu:
+            started_at = time.perf_counter()
             gpu_tools[TORCH_PROFILER_TOOL] = _safe_profile_tool(
                 tool=TORCH_PROFILER_TOOL,
                 entries=entries,
@@ -1898,7 +1919,14 @@ def collect_compute_profile_plan(
                     repeat=torch_profiler_repeat,
                 ),
             )
+            report_profiler_completion(
+                progress_callback,
+                profiler="GPU Torch",
+                profiles=[gpu_tools[TORCH_PROFILER_TOOL]],
+                elapsed_seconds=time.perf_counter() - started_at,
+            )
         if collect_ncu_gpu:
+            started_at = time.perf_counter()
             gpu_tools[NCU_TOOL] = _safe_profile_tool(
                 tool=NCU_TOOL,
                 entries=entries,
@@ -1916,6 +1944,12 @@ def collect_compute_profile_plan(
                     repeat=ncu_repeat,
                     resume_existing=resume_existing_ncu_profiles,
                 ),
+            )
+            report_profiler_completion(
+                progress_callback,
+                profiler="NCU",
+                profiles=[gpu_tools[NCU_TOOL]],
+                elapsed_seconds=time.perf_counter() - started_at,
             )
         if gpu_tools:
             profiles["gpu"] = gpu_tools

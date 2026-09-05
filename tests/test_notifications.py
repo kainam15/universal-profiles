@@ -125,6 +125,38 @@ class WeComNotificationTests(unittest.TestCase):
         self.assertNotIn(WEBHOOK_KEY, text)
         self.assertIn("key=<redacted>", text)
 
+    def test_render_profiler_outcomes_and_sample_counts(self) -> None:
+        for status, label in (
+            ("success", "成功"),
+            ("partial", "部分失败"),
+            ("failed", "失败"),
+            ("no_results", "无结果"),
+        ):
+            with self.subTest(status=status):
+                text = render_notification_text(
+                    NotificationEvent(
+                        status=f"profiler_{status}",
+                        model_id="org/model",
+                        output_dir="/tmp/results/org--model",
+                        elapsed_seconds=3661.0,
+                        profiler="GPU Torch",
+                        profile_elapsed_seconds=65.0,
+                        profile_samples=4,
+                        profile_error_samples=1,
+                        detail=f"failed request: {WEBHOOK_URL}",
+                    )
+                )
+                self.assertIn(f"状态：{label}", text)
+                self.assertIn("Profiler：GPU Torch", text)
+                self.assertIn("阶段耗时：1分5秒", text)
+                self.assertIn("耗时：1小时1分1秒", text)
+                self.assertIn("采样项：4", text)
+                self.assertIn("失败采样项：1", text)
+                self.assertNotIn("结果行", text)
+                self.assertNotIn("资源组合", text)
+                self.assertNotIn(WEBHOOK_KEY, text)
+                self.assertIn("key=<redacted>", text)
+
     def test_send_posts_text_payload_with_short_timeout(self) -> None:
         response = SimpleNamespace(status_code=200, json=lambda: {"errcode": 0})
         notifier = WeComWebhookNotifier(
