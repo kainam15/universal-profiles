@@ -9,7 +9,7 @@ from textual.widgets import (
     Button, Checkbox, Collapsible, ContentSwitcher, Input, RichLog, Select, TabbedContent,
 )
 
-from acprof.cli.tui import AcprofTui, main
+from acprof.cli.tui import AcprofTui, ConfirmActionScreen, main
 from acprof.cli.tui_core import ProgressSnapshot, RunConfig
 from acprof.cli.tui_settings import (
     TuiSettings, UiPreferences, default_settings_path, load_settings, save_settings,
@@ -85,6 +85,39 @@ class TuiLayoutSettingsTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.pause()
                     for button_id in ("restore-ui-defaults", "save-ui-settings"):
                         self.assert_button_reachable(app, button_id)
+
+    async def test_action_buttons_survive_resize_and_command_bar_visibility(self):
+        app = AcprofTui(RunConfig.smoke("demo/model"), settings_path=self.settings_path)
+        async with app.run_test(size=(150, 45)) as pilot:
+            await pilot.pause()
+            app.query_one("#ui-theme", Select).value = "acprof-mist"
+            for size in ((120, 40), (80, 24), (150, 45)):
+                await pilot.resize_terminal(*size)
+                for show_command_bar in (False, True):
+                    with self.subTest(size=size, show_command_bar=show_command_bar):
+                        app.action_show_settings()
+                        app.query_one("#ui-command-bar", Checkbox).value = show_command_bar
+                        await pilot.pause()
+                        app._activate_tab("run-tab")
+                        await pilot.pause()
+                        for button_id in ("open-run-settings", "quick-check", "probe-largest", "start-run"):
+                            self.assert_button_reachable(app, button_id)
+                        self.assertTrue(await pilot.click("#open-run-settings", offset=(3, 1)))
+                        await pilot.pause()
+                        self.assertEqual(app.query_one("#experiment-pages", ContentSwitcher).current, "advanced-form")
+                        self.assert_button_reachable(app, "open-run-settings")
+                        self.assert_button_reachable(app, "start-run")
+                        self.assertTrue(await pilot.click("#start-run", offset=(3, 1)))
+                        await pilot.pause()
+                        self.assertIsInstance(app.screen, ConfirmActionScreen)
+                        self.assertEqual(app._pending_launch.kind, "run")
+                        self.assertFalse(app._is_busy())
+                        await pilot.press("escape")
+                        await pilot.pause()
+                        self.assertIsNone(app._pending_launch)
+                        self.assertTrue(await pilot.click("#open-run-settings", offset=(3, 1)))
+                        await pilot.pause()
+                        self.assertEqual(app.query_one("#experiment-pages", ContentSwitcher).current, "run-form")
 
     async def test_f2_changes_page_from_focused_input(self):
         app = AcprofTui(RunConfig.smoke("demo/model"), settings_path=self.settings_path)

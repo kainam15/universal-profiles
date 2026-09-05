@@ -516,11 +516,12 @@ class AcprofTui(App[None]):
                             id="matrix-table",
                             show_cursor=False,
                         )
-                    with Horizontal(classes="button-row"):
+                    with Horizontal(id="monitor-actions", classes="button-row"):
                         yield Button("终止当前任务", id="stop-run", variant="error", disabled=True)
                         yield Button("清空显示日志", id="clear-log")
                     yield RichLog(
                         id="run-log",
+                        min_width=1,
                         max_lines=self.ui_preferences.log_max_lines,
                         wrap=self.ui_preferences.log_wrap,
                         highlight=False,
@@ -675,7 +676,10 @@ class AcprofTui(App[None]):
                 self._collect_config(allow_empty_model=True)
                 if remember_run else self._saved_settings.run_defaults
             )
-            settings = TuiSettings(ui=self.ui_preferences, run_defaults=config)
+            settings = TuiSettings(
+                ui=self._saved_settings.ui if remember_run else self.ui_preferences,
+                run_defaults=config,
+            )
             save_settings(self.settings_path, settings, PROJECT_DIR)
         except (OSError, ValueError, TuiConfigError) as exc:
             self.notify(str(exc), title="设置未保存", severity="error")
@@ -683,8 +687,9 @@ class AcprofTui(App[None]):
             return
         self._saved_settings = settings
         self._update_saved_settings_summary()
-        message = "已保存界面设置和当前实验配置" if remember_run else "界面设置已保存"
-        self.query_one("#settings-status", Static).update(message)
+        message = "已记住当前实验配置" if remember_run else "界面设置已保存"
+        if not remember_run:
+            self.query_one("#settings-status", Static).update(message)
         self.notify(message, timeout=3)
 
     @on(Button.Pressed, "#save-ui-settings")

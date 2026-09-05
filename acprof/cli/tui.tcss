@@ -6,6 +6,7 @@ Screen {
 Header { background: $surface; color: $text; }
 HeaderIcon, HeaderClockSpace { display: none; }
 TabbedContent { height: 1fr; }
+#experiment-pages { height: 1fr; }
 TabPane { padding: 0; }
 Tabs { background: $surface; }
 Tab { padding: 0 2; }
@@ -55,6 +56,7 @@ Select:focus > SelectCurrent { border: tall $accent; }
 #science-note { height: auto; color: $text-muted; margin-top: 1; }
 
 .action-bar {
+    dock: bottom;
     height: 4;
     padding: 0 2;
     align-horizontal: right;
@@ -66,7 +68,7 @@ Button:hover { background: $primary 15%; border: tall $primary 40%; }
 Button:focus { text-style: bold; border: tall $accent; }
 Button.-primary { background: $primary; border: tall $primary; color: $background; text-style: bold; }
 .action-bar Button { margin-left: 1; }
-#open-run-settings { margin-left: 0; }
+#open-run-settings { margin-left: 0; width: 16; }
 #action-spacer { width: 1fr; }
 .button-row { height: auto; margin: 1 0; }
 .button-row Button { margin-right: 1; }
@@ -94,7 +96,8 @@ Button.-primary { background: $primary; border: tall $primary; color: $backgroun
 #case-progress { margin-top: 1; }
 #run-log { height: 1fr; min-height: 3; border: round $panel; padding: 0 1; }
 #result-summary { height: auto; min-height: 5; background: $surface; padding: 1; margin-top: 1; }
-#matrix-board { margin-top: 1; }
+#matrix-board { margin-top: 1; border: none; padding: 0; }
+#matrix-board > Contents { padding: 0 1; }
 #matrix-table { height: auto; max-height: 12; }
 .stage-idle { color: $text-muted; }
 .stage-running { color: $accent; text-style: bold; }
@@ -121,4 +124,7 @@ AcprofTui.short #bottom-panel { height: 4; }
 AcprofTui.short #slash-command-bar { height: 3; padding: 0 2; }
 AcprofTui.short #bottom-panel.command-hidden { height: 1; }
 AcprofTui.short .section-title { margin: 0 0 1 0; }
-AcprofTui.short #matrix-table { max-height: 5; }
+AcprofTui.short #matrix-table { max-height: 3; }
+AcprofTui.short #status-grid { padding: 0 1; margin-top: 0; }
+AcprofTui.short #matrix-board { margin-top: 0; }
+AcprofTui.short #monitor-actions { margin: 0; }
