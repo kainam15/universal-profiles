@@ -1,0 +1,124 @@
+Screen {
+    layout: vertical;
+    background: $background;
+}
+
+Header { background: $surface; color: $text; }
+HeaderIcon, HeaderClockSpace { display: none; }
+TabbedContent { height: 1fr; }
+TabPane { padding: 0; }
+Tabs { background: $surface; }
+Tab { padding: 0 2; }
+Tab.-active { color: $accent; text-style: bold; }
+Underline { color: $accent; }
+
+.pane-scroll { padding: 0 2; }
+.section-title {
+    text-style: bold;
+    color: $text;
+    height: 1;
+    margin: 1 0;
+}
+.page-hint { color: $text-muted; height: auto; margin-bottom: 1; }
+.form-grid {
+    grid-size: 4;
+    grid-columns: 16 1fr 18 1fr;
+    grid-gutter: 0 1;
+    height: auto;
+}
+.form-grid Label {
+    height: 3;
+    content-align: left middle;
+    color: $text-muted;
+}
+Input, Select { width: 1fr; }
+Input {
+    background: $surface;
+    border: tall $panel;
+    padding: 0 1;
+}
+Input:focus { border: tall $accent; }
+SelectCurrent { background: $surface; border: tall $panel; }
+Select:focus > SelectCurrent { border: tall $accent; }
+
+#preset-hint { height: 3; content-align: left middle; color: $text-muted; }
+#config-summary {
+    height: auto;
+    min-height: 2;
+    border-left: thick $accent;
+    padding: 0 1;
+    margin: 1 0;
+    color: $text-muted;
+}
+#command-details { height: auto; margin-bottom: 1; border: none; background: $surface; padding: 0; }
+#command-preview { height: auto; max-height: 8; overflow-y: auto; padding: 0 1; }
+#science-note { height: auto; color: $text-muted; margin-top: 1; }
+
+.action-bar {
+    height: 4;
+    padding: 0 2;
+    align-horizontal: right;
+    border-top: solid $panel;
+    background: $surface;
+}
+Button { min-width: 12; background: $panel; border: tall $panel; }
+Button:hover { background: $primary 15%; border: tall $primary 40%; }
+Button:focus { text-style: bold; border: tall $accent; }
+Button.-primary { background: $primary; border: tall $primary; color: $background; text-style: bold; }
+.action-bar Button { margin-left: 1; }
+#open-run-settings { margin-left: 0; }
+#action-spacer { width: 1fr; }
+.button-row { height: auto; margin: 1 0; }
+.button-row Button { margin-right: 1; }
+
+.checkbox-row { height: auto; margin: 1 0; }
+.option-checkbox { margin-right: 1; background: transparent; border: tall transparent; }
+.option-checkbox > .toggle--button { color: $text-muted; background: $panel; }
+.option-checkbox.-on > .toggle--button { color: $background; background: $accent; }
+.option-checkbox:focus { border: tall $accent; }
+#allow-cgroup-v1 { display: none; }
+.settings-options { height: auto; margin: 1 0; }
+#settings-status { height: auto; min-height: 1; padding: 0 2; color: $accent; }
+#saved-run-summary { height: auto; border-left: thick $accent; padding: 0 1; margin-bottom: 1; }
+
+#status-grid {
+    grid-size: 4;
+    grid-columns: 12 1fr 12 1fr;
+    grid-gutter: 0 1;
+    height: auto;
+    padding: 1;
+    margin-top: 1;
+    background: $surface;
+}
+#status-grid .status-label { color: $text-muted; }
+#case-progress { margin-top: 1; }
+#run-log { height: 1fr; min-height: 3; border: round $panel; padding: 0 1; }
+#result-summary { height: auto; min-height: 5; background: $surface; padding: 1; margin-top: 1; }
+#matrix-board { margin-top: 1; }
+#matrix-table { height: auto; max-height: 12; }
+.stage-idle { color: $text-muted; }
+.stage-running { color: $accent; text-style: bold; }
+.stage-measuring { color: $warning; text-style: bold; }
+.stage-success { color: $success; text-style: bold; }
+.stage-error { color: $error; text-style: bold; }
+
+#bottom-panel { dock: bottom; height: 6; background: $background; }
+#slash-command-bar { height: 5; padding: 1 2; }
+#slash-command { height: 3; border: round $panel; }
+#slash-command:focus { border: round $accent; }
+#bottom-panel Footer { dock: none; height: 1; background: $surface; }
+#bottom-panel.command-hidden { height: 1; }
+#bottom-panel.command-hidden #slash-command-bar { display: none; }
+
+/* Terminal cells, not pixels: stack fields when labels would squeeze inputs. */
+AcprofTui.narrow .form-grid { grid-size: 2; grid-columns: 18 1fr; }
+AcprofTui.narrow #preset-hint, AcprofTui.narrow #preset-hint-label { display: none; }
+AcprofTui.narrow .checkbox-row { layout: vertical; }
+AcprofTui.narrow .button-row { layout: grid; grid-size: 2; grid-gutter: 0 1; }
+AcprofTui.narrow #status-grid { grid-columns: 9 1fr 9 1fr; }
+AcprofTui.narrow Tab { padding: 0 1; }
+AcprofTui.short #bottom-panel { height: 4; }
+AcprofTui.short #slash-command-bar { height: 3; padding: 0 2; }
+AcprofTui.short #bottom-panel.command-hidden { height: 1; }
+AcprofTui.short .section-title { margin: 0 0 1 0; }
+AcprofTui.short #matrix-table { max-height: 5; }

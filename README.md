@@ -105,10 +105,30 @@ python -m pip install -r requirements.txt
 ./acprof-tui --model google-bert/bert-base-uncased --preset smoke
 ```
 
-TUI 提供精简实验表单、三种预设、只读环境检查、最大输入探测、自动命令预览、
-case 级进度、日志、结果摘要、绘图和 profiler 补采入口。开始探测、采集和执行补采前都会显示确认页；
-`F5` 开始采集，`F6` 执行环境检查，`Ctrl+X` 安全终止当前任务。底部输入框支持
-`/run`、`/probe`、`/check`、`/status`、`/stop`、`/plot`、`/profile` 和 `/help` 等快捷命令。
+TUI 分为“实验配置”“运行监控”“结果工具”和“设置”四页。实验页集中填写模型、资源矩阵和
+输入规模，提供三种预设及自动命令预览；底部固定显示环境检查、最大输入探测和开始采集按钮。
+表单会随终端宽度切换排列。监控页显示 case 级进度和日志，结果页提供摘要、绘图和 profiler
+补采入口。开始探测、采集和执行补采前都会显示确认页。
+
+`F2` 或 `/settings` 打开设置，`F5` 开始采集，`F6` 执行环境检查，`Ctrl+X` 安全终止当前任务。
+底部输入框还支持 `/run`、`/probe`、`/check`、`/status`、`/stop`、`/plot`、`/profile` 和 `/help`
+等快捷命令。
+
+设置页只放界面偏好：八种主题（深海蓝、纸白、石墨灰、松林绿、暮紫、琥珀、暖砂、雾蓝）、
+日志保留行数（500 / 1000 / 3000 / 10000）、新日志自动换行，以及是否显示底部快捷命令框。
+修改当次生效，点击“保存设置”后，下次启动沿用。
+换行设置作用于新日志；日志行数上限在后续写入时执行裁剪。“恢复界面默认”先恢复当次显示，
+再点击保存即可保留。
+
+采集参数留在实验页。点击“高级参数”，切换到 batch size、warmup/repeat、请求窗口、采样
+频率、请求超时、分析器和任务覆盖参数等选项；点击“返回基本配置”回到模型和资源矩阵。
+高级参数内的“记住实验配置”会保存当前实验表单，下次打开此项目时自动填入。
+命令行显式提供的 `--model` 或 `--preset` 优先于保存的配置。运行任务期间，配置控件暂时锁定。
+
+设置文件按项目目录隔离，保存在 `$XDG_CONFIG_HOME/acprof/<项目路径哈希>/tui.json`；
+未设置有效的 `XDG_CONFIG_HOME` 时使用 `~/.config/acprof/<项目路径哈希>/tui.json`。
+设置页会显示完整保存位置。文件仅包含界面偏好和显式记住的实验默认参数；凭据仍由本地环境
+配置管理。设置文件损坏时，界面提示并使用默认值，原文件保留到下一次主动保存。
 
 “探测最大输入”会选择最小 CPU，并在可选时优先使用 `GPU=off`；内存列表按从小到大
 作为候选值逐档实测。输入规模留空时取自动规划结果的最大档，手动填写时取最大值。
@@ -453,7 +473,7 @@ cat /proc/sys/kernel/perf_event_paranoid
 
 ```text
 acprof/
-├── cli/          # run / plot CLI
+├── cli/          # run / probe / plot / posthoc CLI 与 TUI
 ├── host/         # 模型检测、容器编排、client、compute profile
 ├── container/    # 容器内 server、模型下载与 task handlers
 ├── workloads/    # 各任务族 workload generator
@@ -467,6 +487,9 @@ profile.py        # 已有结果的 profiler 补采入口
 tui.py            # Textual 交互式终端界面入口
 acprof-tui         # 自动使用项目 .venv 的便捷启动器
 ```
+
+终端界面的交互逻辑位于 `acprof/cli/tui.py`，布局与主题样式位于 `acprof/cli/tui.tcss`；
+`tui_core.py` 负责命令、验证和进度解析，`tui_settings.py` 负责本地设置的验证与原子保存。
 
 运行测试：
 

@@ -417,7 +417,9 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
                 app.query_one("#preview-command")
             with self.assertRaises(NoMatches):
                 app.query_one("#back-config")
-            self.assertTrue(app.query_one("#advanced-settings").collapsed)
+            with self.assertRaises(NoMatches):
+                app.query_one("#advanced-settings")
+            self.assertIsNotNone(app.query_one("#settings-tab"))
             self.assertTrue(app.query_one("#command-details").collapsed)
             self.assertEqual(
                 str(app.query_one("#probe-largest").label),

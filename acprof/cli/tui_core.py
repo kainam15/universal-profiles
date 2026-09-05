@@ -449,6 +449,11 @@ def format_command(command: Sequence[str], *, project_dir: Path | None = None) -
     if project_dir is not None:
         project_dir = project_dir.resolve()
         for index, item in enumerate(display):
+            # Only entry-point names can be shortened. Resolving every flag,
+            # numeric value and model ID needlessly touches the filesystem on
+            # each form edit (and may be slow for paths on remote storage).
+            if Path(item).name not in {"run.py", "probe.py", "plot.py", "profile.py"}:
+                continue
             try:
                 item_path = Path(item).resolve()
             except (OSError, RuntimeError, ValueError):

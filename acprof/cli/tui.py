@@ -19,10 +19,12 @@ try:
     from textual.app import App, ComposeResult
     from textual.containers import Grid, Horizontal, Vertical, VerticalScroll
     from textual.screen import ModalScreen
+    from textual.theme import Theme
     from textual.widgets import (
         Button,
         Checkbox,
         Collapsible,
+        ContentSwitcher,
         DataTable,
         Footer,
         Header,
@@ -34,6 +36,7 @@ try:
         Static,
         TabbedContent,
         TabPane,
+        Tabs,
     )
 except ModuleNotFoundError as exc:  # pragma: no cover - exercised before tests install deps
     if exc.name == "textual":
@@ -58,6 +61,11 @@ from acprof.cli.tui_core import (
     quick_preflight,
     summarize_result_csv,
 )
+
+from acprof.cli.tui_settings import (
+    TuiSettings, UiPreferences, default_settings_path, load_settings, save_settings,
+)
+from acprof.cli.tui_themes import THEME_CATALOG, THEME_OPTIONS
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -143,6 +151,10 @@ class ConfirmActionScreen(ModalScreen[bool]):
     def confirm(self) -> None:
         self.dismiss(True)
 
+    def on_mount(self) -> None:
+        for button in self.query(Button):
+            button.active_effect_duration = 0
+
     @on(Button.Pressed, "#confirm-no")
     def cancel(self) -> None:
         self.dismiss(False)
@@ -155,264 +167,34 @@ class AcprofTui(App[None]):
     """Full-screen controller for AC-Prof collection and diagnostics."""
 
     TITLE = "AC-Prof"
-    SUB_TITLE = "低干扰实验控制台"
+    SUB_TITLE = "推理实验控制台"
     ENABLE_COMMAND_PALETTE = False
 
     BINDINGS = [
         ("f5", "request_run", "开始采集"),
         ("f6", "quick_check", "环境检查"),
+        ("f2", "show_settings", "设置"),
         ("ctrl+x", "request_stop", "终止任务"),
         ("ctrl+l", "clear_log", "清空日志"),
         ("ctrl+q", "request_quit", "退出"),
     ]
 
-    CSS = """
-    Screen {
-        layout: vertical;
-    }
+    CSS_PATH = "tui.tcss"
 
-    HeaderIcon {
-        display: none;
-    }
-
-    HeaderClockSpace {
-        display: none;
-    }
-
-    #main-tabs {
-        height: 1fr;
-    }
-
-    .pane-scroll {
-        padding: 1 2;
-    }
-
-    .section-title {
-        text-style: bold;
-        color: $accent;
-        margin: 1 0;
-    }
-
-    .form-grid {
-        layout: grid;
-        grid-size: 4;
-        grid-columns: 16 1fr 18 1fr;
-        grid-gutter: 1 1;
-        height: auto;
-    }
-
-    .form-grid Label {
-        height: 3;
-        content-align: right middle;
-        padding-right: 1;
-    }
-
-    .form-grid Input, .form-grid Select {
-        width: 1fr;
-    }
-
-    .checkbox-row {
-        height: auto;
-        margin: 1 0;
-    }
-
-    .option-checkbox {
-        margin-right: 2;
-        color: $text-muted;
-        background: $surface;
-        border: tall $panel;
-    }
-
-    .option-checkbox > .toggle--button {
-        color: $panel;
-        background: $panel;
-    }
-
-    .option-checkbox.-on {
-        color: $text;
-        background: $success 45%;
-        border: tall $success;
-        text-style: bold;
-    }
-
-    .option-checkbox.-on > .toggle--button {
-        color: $text;
-        background: $success;
-        text-style: bold;
-    }
-
-    .option-checkbox.-on > .toggle--label {
-        color: $text;
-        background: transparent;
-        text-style: bold;
-    }
-
-    .option-checkbox:focus {
-        border: tall $accent;
-        background-tint: $accent 5%;
-    }
-
-    .option-checkbox:focus > .toggle--label {
-        color: $text;
-        background: transparent;
-    }
-
-    #allow-cgroup-v1 {
-        display: none;
-    }
-
-    .button-row {
-        height: auto;
-        margin: 1 0;
-    }
-
-    .button-row Button {
-        margin-right: 1;
-    }
-
-    .primary-actions {
-        align-horizontal: right;
-    }
-
-    #config-summary {
-        height: auto;
-        border-left: thick $accent;
-        padding: 0 1;
-        margin: 1 0;
-    }
-
-    #preset-hint {
-        height: 3;
-        color: $text-muted;
-        content-align: left middle;
-    }
-
-    #advanced-settings, #command-details {
-        height: auto;
-        margin-top: 1;
-    }
-
-    .advanced-body {
-        height: auto;
-        padding: 0 1;
-    }
-
-    #command-preview {
-        height: auto;
-        min-height: 3;
-        max-height: 8;
-        border: round $panel;
-        padding: 0 1;
-        overflow-y: auto;
-    }
-
-    #science-note {
-        color: $text-muted;
-        height: auto;
-        margin: 1 0;
-    }
-
-    #status-grid {
-        layout: grid;
-        grid-size: 4;
-        grid-columns: 14 1fr 14 1fr;
-        grid-gutter: 0 1;
-        height: auto;
-        border: round $panel;
-        padding: 1;
-        margin-bottom: 1;
-    }
-
-    #status-grid .status-label {
-        color: $text-muted;
-        content-align: right middle;
-        padding-right: 1;
-    }
-
-    #case-progress {
-        margin-bottom: 1;
-    }
-
-    #run-log {
-        height: 1fr;
-        border: round $panel;
-        padding: 0 1;
-    }
-
-    #result-summary {
-        height: auto;
-        min-height: 5;
-        border: round $panel;
-        padding: 1;
-        margin-top: 1;
-    }
-
-    #bottom-panel {
-        dock: bottom;
-        height: 6;
-        background: $background;
-    }
-
-    #slash-command-bar {
-        layout: horizontal;
-        height: 5;
-        padding: 1 2;
-        background: $background;
-    }
-
-    #bottom-panel Footer {
-        dock: none;
-        height: 1;
-    }
-
-    #slash-command {
-        height: 3;
-        width: 1fr;
-        border: round $panel;
-        background: $surface;
-    }
-
-    #slash-command:focus {
-        border: round $accent;
-    }
-
-    .stage-idle {
-        color: $text-muted;
-    }
-
-    .stage-running {
-        color: $accent;
-        text-style: bold;
-    }
-
-    .stage-measuring {
-        color: $warning;
-        text-style: bold;
-    }
-
-    .stage-success {
-        color: $success;
-        text-style: bold;
-    }
-
-    .stage-error {
-        color: $error;
-        text-style: bold;
-    }
-
-    #matrix-board {
-        margin-top: 1;
-    }
-
-    #matrix-table {
-        height: auto;
-        max-height: 16;
-    }
-    """
-
-    def __init__(self, initial_config: RunConfig | None = None):
+    def __init__(
+        self, initial_config: RunConfig | None = None, *, settings_path: Path | None = None,
+    ):
         super().__init__()
-        self.initial_config = initial_config or RunConfig()
+        self.animation_level = "none"
+        self.settings_path = settings_path or default_settings_path(PROJECT_DIR)
+        self._saved_settings, self._settings_warning = load_settings(
+            self.settings_path, PROJECT_DIR,
+        )
+        self.ui_preferences = self._saved_settings.ui
+        self.initial_config = initial_config or self._saved_settings.run_defaults or RunConfig()
+        for palette in THEME_CATALOG:
+            self.register_theme(Theme(**palette.theme_kwargs()))
+        self.theme = self.ui_preferences.theme
         self._process: subprocess.Popen[str] | None = None
         self._process_kind = ""
         self._process_lock = threading.Lock()
@@ -436,263 +218,271 @@ class AcprofTui(App[None]):
         yield Header(show_clock=False)
         with TabbedContent(initial="run-tab", id="main-tabs"):
             with TabPane("实验配置", id="run-tab"):
-                with VerticalScroll(classes="pane-scroll"):
-                    yield Static("快速配置", classes="section-title")
-                    with Grid(classes="form-grid"):
-                        yield Label("模型 ID")
-                        yield Input(
-                            value=self.initial_config.model,
-                            placeholder="google-bert/bert-base-uncased",
-                            id="model",
-                            classes="config-control",
-                        )
-                        yield Label("输出目录")
-                        yield Input(
-                            value=self.initial_config.output_dir,
-                            id="output-dir",
-                            classes="config-control",
-                        )
+                with ContentSwitcher(initial="run-form", id="experiment-pages"):
+                    with VerticalScroll(id="run-form", classes="pane-scroll"):
+                        yield Static("配置实验", classes="section-title")
+                        with Grid(classes="form-grid"):
+                            yield Label("模型 ID")
+                            yield Input(
+                                value=self.initial_config.model,
+                                placeholder="google-bert/bert-base-uncased",
+                                id="model",
+                                classes="config-control",
+                            )
+                            yield Label("输出目录")
+                            yield Input(
+                                value=self.initial_config.output_dir,
+                                id="output-dir",
+                                classes="config-control",
+                            )
 
-                        yield Label("运行预设")
-                        yield Select(
-                            (
-                                ("自定义", "custom"),
-                                ("最小 Smoke", "smoke"),
-                                ("主矩阵（分析器关闭）", "main"),
-                                ("完整默认", "default"),
-                            ),
-                            value=self._initial_preset,
-                            allow_blank=False,
-                            id="run-preset",
-                        )
-                        yield Label("")
-                        yield Static("预设会自动填充其余参数", id="preset-hint", markup=False)
+                            yield Label("运行预设")
+                            yield Select(
+                                (
+                                    ("自定义", "custom"),
+                                    ("最小 Smoke", "smoke"),
+                                    ("主矩阵（分析器关闭）", "main"),
+                                    ("完整默认", "default"),
+                                ),
+                                value=self._initial_preset,
+                                allow_blank=False,
+                                id="run-preset",
+                            )
+                            yield Label("", id="preset-hint-label")
+                            yield Static("预设自动填充 · 下方可打开高级参数", id="preset-hint", markup=False)
 
-                        yield Label("CPU 列表")
-                        yield Input(
-                            value=self.initial_config.cpus,
-                            placeholder="1,2,4,8",
-                            id="cpus",
-                            classes="config-control",
-                        )
-                        yield Label("内存 GB")
-                        yield Input(
-                            value=self.initial_config.mems,
-                            placeholder="2,4,8,16",
-                            id="mems",
-                            classes="config-control",
-                        )
+                            yield Label("CPU 列表")
+                            yield Input(
+                                value=self.initial_config.cpus,
+                                placeholder="1,2,4,8",
+                                id="cpus",
+                                classes="config-control",
+                            )
+                            yield Label("内存 GB")
+                            yield Input(
+                                value=self.initial_config.mems,
+                                placeholder="2,4,8,16",
+                                id="mems",
+                                classes="config-control",
+                            )
 
-                        yield Label("GPU 模式")
-                        yield Select(
-                            (("仅 CPU", "off"), ("仅 GPU", "on"), ("CPU + GPU", "off,on")),
-                            value=self.initial_config.gpus,
-                            allow_blank=False,
-                            id="gpus",
-                            classes="config-control",
-                        )
-                        yield Label("输入规模")
-                        yield Input(
-                            value=self.initial_config.input_scales,
-                            placeholder="留空自动规划；如 64,128,256",
-                            id="input-scales",
-                            classes="config-control",
-                        )
+                            yield Label("GPU 模式")
+                            yield Select(
+                                self._gpu_options(),
+                                value=self.initial_config.gpus,
+                                allow_blank=False,
+                                id="gpus",
+                                classes="config-control",
+                            )
+                            yield Label("输入规模")
+                            yield Input(
+                                value=self.initial_config.input_scales,
+                                placeholder="留空自动规划；如 64,128,256",
+                                id="input-scales",
+                                classes="config-control",
+                            )
 
-                    yield Static("", id="config-summary", markup=False)
+                        yield Static("", id="config-summary", markup=False)
 
-                    with Collapsible(
-                        title="高级设置",
-                        collapsed=True,
-                        id="advanced-settings",
-                    ):
-                        with Vertical(classes="advanced-body"):
-                            yield Static("采集参数", classes="section-title")
-                            with Grid(classes="form-grid"):
-                                yield Label("Batch size")
-                                yield Input(
-                                    value=str(self.initial_config.batch_size),
-                                    id="batch-size",
-                                    classes="config-control",
-                                )
-                                yield Label("Warmup / Repeat")
-                                yield Input(
-                                    value=(
-                                        f"{self.initial_config.warmup},"
-                                        f"{self.initial_config.repeat}"
-                                    ),
-                                    placeholder="2,5",
-                                    id="warmup-repeat",
-                                    classes="config-control",
-                                )
+                        with Collapsible(
+                            title="完整命令（自动更新）",
+                            collapsed=True,
+                            id="command-details",
+                        ):
+                            yield Static("", id="command-preview", markup=False)
+                            yield Static(
+                                "测量窗口内暂停常规界面刷新，不读取正在写入的 CSV。",
+                                id="science-note",
+                                markup=False,
+                            )
 
-                                yield Label("窗口请求数")
-                                yield Input(
-                                    value=str(self.initial_config.repeat_in_window),
-                                    placeholder="0 表示自动校准",
-                                    id="repeat-in-window",
-                                    classes="config-control",
-                                )
-                                yield Label("自动窗口秒数")
-                                yield Input(
-                                    value=str(self.initial_config.repeat_window_seconds),
-                                    id="repeat-window-seconds",
-                                    classes="config-control",
-                                )
+                    with VerticalScroll(id="advanced-form", classes="pane-scroll"):
+                        yield Static("采集参数", classes="section-title")
+                        with Grid(classes="form-grid"):
+                            yield Label("Batch size")
+                            yield Input(
+                                value=str(self.initial_config.batch_size),
+                                id="batch-size",
+                                classes="config-control",
+                            )
+                            yield Label("Warmup / Repeat")
+                            yield Input(
+                                value=(
+                                    f"{self.initial_config.warmup},"
+                                    f"{self.initial_config.repeat}"
+                                ),
+                                placeholder="2,5",
+                                id="warmup-repeat",
+                                classes="config-control",
+                            )
 
-                                yield Label("采样频率 Hz")
-                                yield Input(
-                                    value=str(self.initial_config.sample_hz),
-                                    id="sample-hz",
-                                    classes="config-control",
-                                )
-                                yield Label("Idle 基线测量秒")
-                                yield Input(
-                                    value=str(self.initial_config.idle_seconds),
-                                    id="idle-seconds",
-                                    classes="config-control",
-                                )
+                            yield Label("窗口请求数")
+                            yield Input(
+                                value=str(self.initial_config.repeat_in_window),
+                                placeholder="0 表示自动校准",
+                                id="repeat-in-window",
+                                classes="config-control",
+                            )
+                            yield Label("自动窗口秒数")
+                            yield Input(
+                                value=str(self.initial_config.repeat_window_seconds),
+                                id="repeat-window-seconds",
+                                classes="config-control",
+                            )
 
-                                yield Label("基线前冷却秒")
-                                yield Input(
-                                    value=str(self.initial_config.idle_cooldown_seconds),
-                                    id="idle-cooldown-seconds",
-                                    classes="config-control",
-                                )
-                                yield Label("单请求超时秒")
-                                yield Input(
-                                    value=str(self.initial_config.request_timeout_seconds),
-                                    id="request-timeout-seconds",
-                                    classes="config-control",
-                                )
+                            yield Label("采样频率 Hz")
+                            yield Input(
+                                value=str(self.initial_config.sample_hz),
+                                id="sample-hz",
+                                classes="config-control",
+                            )
+                            yield Label("Idle 基线测量秒")
+                            yield Input(
+                                value=str(self.initial_config.idle_seconds),
+                                id="idle-seconds",
+                                classes="config-control",
+                            )
 
-                                yield Label("计算分析器")
-                                yield Select(
-                                    (
-                                        ("关闭（先跑主矩阵）", "none"),
-                                        ("Torch + NCU", "both"),
-                                        ("仅 Torch", "torch"),
-                                        ("仅 NCU", "ncu"),
-                                    ),
-                                    value=self.initial_config.compute_profile_tool,
-                                    allow_blank=False,
-                                    id="compute-profile-tool",
-                                    classes="config-control",
-                                )
-                                yield Label("执行分析器")
-                                yield Select(
-                                    (
-                                        ("关闭", "none"),
-                                        ("Massif + Nsys", "both"),
-                                        ("仅 Massif", "massif"),
-                                        ("仅 Nsys", "nsys"),
-                                    ),
-                                    value=self.initial_config.execution_profile_tool,
-                                    allow_blank=False,
-                                    id="execution-profile-tool",
-                                    classes="config-control",
-                                )
+                            yield Label("基线前冷却秒")
+                            yield Input(
+                                value=str(self.initial_config.idle_cooldown_seconds),
+                                id="idle-cooldown-seconds",
+                                classes="config-control",
+                            )
+                            yield Label("单请求超时秒")
+                            yield Input(
+                                value=str(self.initial_config.request_timeout_seconds),
+                                id="request-timeout-seconds",
+                                classes="config-control",
+                            )
 
-                                yield Label("抓包网卡")
-                                yield Input(
-                                    value=self.initial_config.sniff_iface,
-                                    id="sniff-iface",
-                                    classes="config-control",
-                                )
-                                yield Label("通知")
-                                yield Select(
-                                    (
-                                        ("自动", "auto"),
-                                        ("关闭", "none"),
-                                        ("企业微信", "wecom"),
-                                    ),
-                                    value=self.initial_config.notify,
-                                    allow_blank=False,
-                                    id="notify",
-                                    classes="config-control",
-                                )
+                            yield Label("计算分析器")
+                            yield Select(
+                                (
+                                    ("关闭（先跑主矩阵）", "none"),
+                                    ("Torch + NCU", "both"),
+                                    ("仅 Torch", "torch"),
+                                    ("仅 NCU", "ncu"),
+                                ),
+                                value=self.initial_config.compute_profile_tool,
+                                allow_blank=False,
+                                id="compute-profile-tool",
+                                classes="config-control",
+                            )
+                            yield Label("执行分析器")
+                            yield Select(
+                                (
+                                    ("关闭", "none"),
+                                    ("Massif + Nsys", "both"),
+                                    ("仅 Massif", "massif"),
+                                    ("仅 Nsys", "nsys"),
+                                ),
+                                value=self.initial_config.execution_profile_tool,
+                                allow_blank=False,
+                                id="execution-profile-tool",
+                                classes="config-control",
+                            )
 
-                            yield Static("识别覆盖（通常留空）", classes="section-title")
-                            with Grid(classes="form-grid"):
-                                yield Label("Task")
-                                yield Input(
-                                    value=self.initial_config.task,
-                                    placeholder="如 text-generation",
-                                    id="task",
-                                    classes="config-control",
-                                )
-                                yield Label("Task family")
-                                yield Select(
-                                    (
-                                        ("自动识别", ""),
-                                        ("NLP", "nlp"),
-                                        ("CV", "cv"),
-                                        ("Audio", "audio"),
-                                        ("Time series", "timeseries"),
-                                        ("Diffusion", "diffusion"),
-                                    ),
-                                    value=self.initial_config.task_family,
-                                    allow_blank=False,
-                                    id="task-family",
-                                    classes="config-control",
-                                )
-                                yield Label("Backend")
-                                yield Input(
-                                    value=self.initial_config.backend,
-                                    placeholder="留空自动识别",
-                                    id="backend",
-                                    classes="config-control",
-                                )
-                                yield Label("Workload manifest")
-                                yield Input(
-                                    value=self.initial_config.workload_spec,
-                                    placeholder="音频 manifest，可留空",
-                                    id="workload-spec",
-                                    classes="config-control",
-                                )
+                            yield Label("抓包网卡")
+                            yield Input(
+                                value=self.initial_config.sniff_iface,
+                                id="sniff-iface",
+                                classes="config-control",
+                            )
+                            yield Label("通知")
+                            yield Select(
+                                (
+                                    ("自动", "auto"),
+                                    ("关闭", "none"),
+                                    ("企业微信", "wecom"),
+                                ),
+                                value=self.initial_config.notify,
+                                allow_blank=False,
+                                id="notify",
+                                classes="config-control",
+                            )
 
-                            with Horizontal(classes="checkbox-row"):
-                                yield StatusCheckbox(
-                                    "启动 OOM 剪枝",
-                                    value=self.initial_config.prune_startup_oom,
-                                    id="prune-startup-oom",
-                                    classes="config-control option-checkbox",
-                                )
-                                yield StatusCheckbox(
-                                    "复用现有镜像",
-                                    value=self.initial_config.skip_build,
-                                    id="skip-build",
-                                    classes="config-control option-checkbox",
-                                )
-                                yield StatusCheckbox(
-                                    "Idle 诊断",
-                                    value=self.initial_config.idle_debug,
-                                    id="idle-debug",
-                                    classes="config-control option-checkbox",
-                                )
-                                yield StatusCheckbox(
-                                    "允许 cgroup v1（仅诊断）",
-                                    value=self.initial_config.allow_cgroup_v1,
-                                    id="allow-cgroup-v1",
-                                    classes="config-control option-checkbox",
-                                )
+                        yield Static("识别覆盖（通常留空）", classes="section-title")
+                        with Grid(classes="form-grid"):
+                            yield Label("Task")
+                            yield Input(
+                                value=self.initial_config.task,
+                                placeholder="如 text-generation",
+                                id="task",
+                                classes="config-control",
+                            )
+                            yield Label("Task family")
+                            yield Select(
+                                (
+                                    ("自动识别", ""),
+                                    ("NLP", "nlp"),
+                                    ("CV", "cv"),
+                                    ("Audio", "audio"),
+                                    ("Time series", "timeseries"),
+                                    ("Diffusion", "diffusion"),
+                                ),
+                                value=self.initial_config.task_family,
+                                allow_blank=False,
+                                id="task-family",
+                                classes="config-control",
+                            )
+                            yield Label("Backend")
+                            yield Input(
+                                value=self.initial_config.backend,
+                                placeholder="留空自动识别",
+                                id="backend",
+                                classes="config-control",
+                            )
+                            yield Label("Workload manifest")
+                            yield Input(
+                                value=self.initial_config.workload_spec,
+                                placeholder="音频 manifest，可留空",
+                                id="workload-spec",
+                                classes="config-control",
+                            )
 
-                    with Horizontal(classes="button-row primary-actions"):
-                        yield Button("快速环境检查", id="quick-check", variant="primary")
-                        yield Button("探测最大输入", id="probe-largest", variant="warning")
-                        yield Button("开始采集", id="start-run", variant="success")
+                        with Horizontal(classes="checkbox-row"):
+                            yield StatusCheckbox(
+                                "启动 OOM 剪枝",
+                                value=self.initial_config.prune_startup_oom,
+                                id="prune-startup-oom",
+                                classes="config-control option-checkbox",
+                            )
+                            yield StatusCheckbox(
+                                "复用现有镜像",
+                                value=self.initial_config.skip_build,
+                                id="skip-build",
+                                classes="config-control option-checkbox",
+                            )
+                            yield StatusCheckbox(
+                                "Idle 诊断",
+                                value=self.initial_config.idle_debug,
+                                id="idle-debug",
+                                classes="config-control option-checkbox",
+                            )
+                            yield StatusCheckbox(
+                                "允许 cgroup v1（仅诊断）",
+                                value=self.initial_config.allow_cgroup_v1,
+                                id="allow-cgroup-v1",
+                                classes="config-control option-checkbox",
+                            )
 
-                    with Collapsible(
-                        title="完整命令（自动更新）",
-                        collapsed=True,
-                        id="command-details",
-                    ):
-                        yield Static("", id="command-preview", markup=False)
+
+                        yield Static("下次启动使用的实验配置", classes="section-title")
                         yield Static(
-                            "测量窗口内暂停常规界面刷新，不读取正在写入的 CSV。",
-                            id="science-note",
-                            markup=False,
+                            "点击后记住当前实验表单。下次打开此项目自动填入，命令行指定的模型和预设优先。",
+                            classes="page-hint", markup=False,
                         )
+                        yield Static("", id="saved-run-summary", markup=False)
+                        with Horizontal(classes="button-row"):
+                            yield Button("记住实验配置", id="save-run-default")
+
+                with Horizontal(id="run-actions", classes="action-bar"):
+                    yield Button("高级参数", id="open-run-settings")
+                    yield Static("", id="action-spacer")
+                    yield Button("环境检查", id="quick-check")
+                    yield Button("探测最大输入", id="probe-largest")
+                    yield Button("开始采集", id="start-run", variant="primary")
 
             with TabPane("运行监控", id="monitor-tab"):
                 with Vertical(classes="pane-scroll"):
@@ -731,8 +521,8 @@ class AcprofTui(App[None]):
                         yield Button("清空显示日志", id="clear-log")
                     yield RichLog(
                         id="run-log",
-                        max_lines=3000,
-                        wrap=True,
+                        max_lines=self.ui_preferences.log_max_lines,
+                        wrap=self.ui_preferences.log_wrap,
                         highlight=False,
                         markup=False,
                     )
@@ -760,6 +550,42 @@ class AcprofTui(App[None]):
                         markup=False,
                     )
 
+            with TabPane("设置", id="settings-tab"):
+                with VerticalScroll(classes="pane-scroll"):
+                    yield Static("显示与日志", classes="section-title")
+                    yield Static(
+                        "修改立即生效，点击保存后下次启动沿用。",
+                        classes="page-hint", markup=False,
+                    )
+                    with Grid(classes="form-grid"):
+                        yield Label("界面主题")
+                        yield Select(
+                            THEME_OPTIONS,
+                            value=self.ui_preferences.theme, allow_blank=False,
+                            id="ui-theme", classes="ui-preference",
+                        )
+                        yield Label("保留日志行数")
+                        yield Select(
+                            ((str(n), n) for n in (500, 1000, 3000, 10000)),
+                            value=self.ui_preferences.log_max_lines, allow_blank=False,
+                            id="ui-log-lines", classes="ui-preference",
+                        )
+                    with Vertical(classes="settings-options"):
+                        yield StatusCheckbox(
+                            "新日志自动换行", value=self.ui_preferences.log_wrap,
+                            id="ui-log-wrap", classes="ui-preference option-checkbox",
+                        )
+                        yield StatusCheckbox(
+                            "显示底部快捷命令框",
+                            value=self.ui_preferences.show_command_bar,
+                            id="ui-command-bar", classes="ui-preference option-checkbox",
+                        )
+                    yield Static("", id="settings-location", classes="page-hint", markup=False)
+                yield Static("", id="settings-status", markup=False)
+                with Horizontal(id="settings-actions", classes="action-bar"):
+                    yield Button("恢复界面默认", id="restore-ui-defaults")
+                    yield Button("保存设置", id="save-ui-settings", variant="primary")
+
         with Vertical(id="bottom-panel"):
             with Horizontal(id="slash-command-bar"):
                 yield Input(
@@ -769,6 +595,10 @@ class AcprofTui(App[None]):
             yield Footer(show_command_palette=False)
 
     def on_mount(self) -> None:
+        self._configure_interaction()
+        self._apply_ui_preferences()
+        self._update_saved_settings_summary()
+        self._update_responsive_layout()
         self._form_ready = True
         self._refresh_command_preview(notify=False)
         table = self.query_one("#matrix-table", DataTable)
@@ -778,6 +608,105 @@ class AcprofTui(App[None]):
         table.add_column("GPU", key="gpu")
         table.add_column("状态", key="status")
         self.query_one("#model", Input).focus()
+        if self._settings_warning:
+            self.notify(self._settings_warning, title="设置读取提示", severity="warning", timeout=8)
+
+    def on_resize(self) -> None:
+        self._update_responsive_layout()
+
+    def _update_responsive_layout(self) -> None:
+        self.set_class(self.size.width < 110, "narrow")
+        self.set_class(self.size.height < 35, "short")
+
+    def _apply_ui_preferences(self) -> None:
+        self.theme = self.ui_preferences.theme
+        log = self.query_one("#run-log", RichLog)
+        log.wrap = self.ui_preferences.log_wrap
+        log.max_lines = self.ui_preferences.log_max_lines
+        self.query_one("#bottom-panel").set_class(
+            not self.ui_preferences.show_command_bar, "command-hidden",
+        )
+
+    def _update_saved_settings_summary(self) -> None:
+        config = self._saved_settings.run_defaults
+        summary = (
+            f"已记住：{config.model or '模型待填写'} · CPU {config.cpus} · 内存 {config.mems} GB"
+            if config else "尚未保存实验配置，启动时使用项目默认值。"
+        )
+        self.query_one("#saved-run-summary", Static).update(summary)
+        self.query_one("#settings-location", Static).update(f"保存位置：{self.settings_path}")
+
+    @on(Select.Changed, ".ui-preference")
+    @on(Checkbox.Changed, ".ui-preference")
+    def _ui_preference_changed(self) -> None:
+        if not self._form_ready or self._is_busy():
+            return
+        preferences = UiPreferences(
+            theme=self._select("ui-theme"),
+            log_max_lines=int(self.query_one("#ui-log-lines", Select).value),
+            log_wrap=self._checked("ui-log-wrap"),
+            show_command_bar=self._checked("ui-command-bar"),
+        )
+        if preferences == self.ui_preferences:
+            return
+        self.ui_preferences = preferences
+        self._apply_ui_preferences()
+        self.query_one("#settings-status", Static).update("已应用 · 点击保存设置可在下次启动时沿用")
+
+    @on(Button.Pressed, "#restore-ui-defaults")
+    def restore_ui_defaults(self) -> None:
+        if self._is_busy():
+            return
+        defaults = UiPreferences()
+        self.query_one("#ui-theme", Select).value = defaults.theme
+        self.query_one("#ui-log-lines", Select).value = defaults.log_max_lines
+        self.query_one("#ui-log-wrap", Checkbox).value = defaults.log_wrap
+        self.query_one("#ui-command-bar", Checkbox).value = defaults.show_command_bar
+        self.ui_preferences = defaults
+        self._apply_ui_preferences()
+        self.query_one("#settings-status", Static).update("界面已恢复默认 · 点击保存设置可保留")
+
+    def _save_settings(self, *, remember_run: bool) -> None:
+        if self._is_busy():
+            self.notify("任务完成后可保存设置", severity="warning")
+            return
+        try:
+            config = (
+                self._collect_config(allow_empty_model=True)
+                if remember_run else self._saved_settings.run_defaults
+            )
+            settings = TuiSettings(ui=self.ui_preferences, run_defaults=config)
+            save_settings(self.settings_path, settings, PROJECT_DIR)
+        except (OSError, ValueError, TuiConfigError) as exc:
+            self.notify(str(exc), title="设置未保存", severity="error")
+            self.query_one("#settings-status", Static).update("保存失败 · 请检查配置或文件权限")
+            return
+        self._saved_settings = settings
+        self._update_saved_settings_summary()
+        message = "已保存界面设置和当前实验配置" if remember_run else "界面设置已保存"
+        self.query_one("#settings-status", Static).update(message)
+        self.notify(message, timeout=3)
+
+    @on(Button.Pressed, "#save-ui-settings")
+    def save_ui_settings(self) -> None:
+        self._save_settings(remember_run=False)
+
+    @on(Button.Pressed, "#save-run-default")
+    def save_run_default(self) -> None:
+        self._save_settings(remember_run=True)
+
+    def action_show_settings(self) -> None:
+        self._activate_tab("settings-tab")
+
+    @on(Button.Pressed, "#open-run-settings")
+    def open_run_settings(self) -> None:
+        self._activate_tab("run-tab")
+        pages = self.query_one("#experiment-pages", ContentSwitcher)
+        show_advanced = pages.current != "advanced-form"
+        pages.current = "advanced-form" if show_advanced else "run-form"
+        self.query_one("#open-run-settings", Button).label = (
+            "返回基本配置" if show_advanced else "高级参数"
+        )
 
     @staticmethod
     def _infer_preset(config: RunConfig) -> str:
@@ -789,6 +718,12 @@ class AcprofTui(App[None]):
         if config == RunConfig(model=model):
             return "default"
         return "custom"
+
+    def _gpu_options(self) -> list[tuple[str, str]]:
+        options = [("仅 CPU", "off"), ("仅 GPU", "on"), ("CPU + GPU", "off,on")]
+        if self.initial_config.gpus not in {value for _, value in options}:
+            options.append((f"自定义：{self.initial_config.gpus}", self.initial_config.gpus))
+        return options
 
     @staticmethod
     def _matches_preset(config: RunConfig, preset: str) -> bool:
@@ -810,34 +745,38 @@ class AcprofTui(App[None]):
     def _checked(self, widget_id: str) -> bool:
         return bool(self.query_one(f"#{widget_id}", Checkbox).value)
 
+    def _configure_interaction(self) -> None:
+        # Textual ignores another click while a button's active effect lasts
+        # (200 ms by default). Use focus/hover styling for immediate feedback.
+        for button in self.query(Button):
+            button.active_effect_duration = 0
+        for field in self.query(Input):
+            field.cursor_blink = False
+
+    def _cancel_preview_timer(self) -> None:
+        if self._preview_timer is not None:
+            self._preview_timer.stop()
+            self._preview_timer = None
+
     @on(Input.Changed, ".config-control")
     @on(Select.Changed, ".config-control")
     @on(Checkbox.Changed, ".config-control")
     def _configuration_changed(self) -> None:
         if not self._form_ready or self._applying_config or self._is_busy():
             return
-        if self._preview_timer is not None:
-            self._preview_timer.stop()
+        self._cancel_preview_timer()
         # Coalesce typing and preset field updates into one validation/render.
         self._preview_timer = self.set_timer(0.05, self._sync_form_state)
 
     def _sync_form_state(self) -> None:
         self._preview_timer = None
-        try:
-            config = self._collect_config()
-        except TuiConfigError:
-            config = None
-        selected_preset = self._select("run-preset")
-        if (
-            selected_preset != "custom"
-            and (config is None or not self._matches_preset(config, selected_preset))
-        ):
-            self.query_one("#run-preset", Select).value = "custom"
-        self._refresh_command_preview(notify=False)
+        if self._is_busy() or self._applying_config:
+            return
+        self._refresh_command_preview(notify=False, sync_preset=True)
 
     @on(Select.Changed, "#run-preset")
     def _run_preset_changed(self, event: Select.Changed) -> None:
-        if not self._form_ready or self._applying_config:
+        if not self._form_ready or self._applying_config or self._is_busy():
             return
         preset = str(event.value)
         if self._ignored_preset_event == preset:
@@ -857,7 +796,7 @@ class AcprofTui(App[None]):
             raise TuiConfigError([f"{label}必须填写两个逗号分隔的值"])
         return parts[0], parts[1]
 
-    def _collect_config(self) -> RunConfig:
+    def _collect_config(self, *, allow_empty_model: bool = False) -> RunConfig:
         warmup, repeat = self._pair(self._input("warmup-repeat"), "Warmup / Repeat")
         config = RunConfig(
             model=self._input("model"),
@@ -888,9 +827,15 @@ class AcprofTui(App[None]):
             idle_debug=self._checked("idle-debug"),
             allow_cgroup_v1=self._checked("allow-cgroup-v1"),
         )
+        if allow_empty_model and not config.model:
+            validated = replace(config, model="settings/default-model").validate(
+                project_dir=PROJECT_DIR,
+            )
+            return replace(validated, model="")
         return config.validate(project_dir=PROJECT_DIR)
 
     def _apply_config(self, config: RunConfig, *, preset: str = "custom") -> None:
+        self._cancel_preview_timer()
         self._applying_config = True
         values = {
             "model": config.model,
@@ -911,28 +856,32 @@ class AcprofTui(App[None]):
             "idle-cooldown-seconds": str(config.idle_cooldown_seconds),
             "sniff-iface": config.sniff_iface,
         }
-        for widget_id, value in values.items():
-            self.query_one(f"#{widget_id}", Input).value = value
-        for widget_id, value in {
-            "task-family": config.task_family,
-            "gpus": config.gpus,
-            "compute-profile-tool": config.compute_profile_tool,
-            "execution-profile-tool": config.execution_profile_tool,
-            "notify": config.notify,
-        }.items():
-            self.query_one(f"#{widget_id}", Select).value = value
-        for widget_id, value in {
-            "prune-startup-oom": config.prune_startup_oom,
-            "skip-build": config.skip_build,
-            "idle-debug": config.idle_debug,
-            "allow-cgroup-v1": config.allow_cgroup_v1,
-        }.items():
-            self.query_one(f"#{widget_id}", Checkbox).value = value
-        preset_widget = self.query_one("#run-preset", Select)
-        if str(preset_widget.value) != preset:
-            self._ignored_preset_event = preset
-            preset_widget.value = preset
-        self._applying_config = False
+        # Value watchers post Changed messages asynchronously. Suppressing
+        # them here avoids dozens of queued debounce timers after a preset.
+        try:
+            with self.prevent(Input.Changed, Select.Changed, Checkbox.Changed):
+                with self.batch_update():
+                    for widget_id, value in values.items():
+                        self.query_one(f"#{widget_id}", Input).value = value
+                    for widget_id, value in {
+                        "task-family": config.task_family,
+                        "gpus": config.gpus,
+                        "compute-profile-tool": config.compute_profile_tool,
+                        "execution-profile-tool": config.execution_profile_tool,
+                        "notify": config.notify,
+                    }.items():
+                        self.query_one(f"#{widget_id}", Select).value = value
+                    for widget_id, value in {
+                        "prune-startup-oom": config.prune_startup_oom,
+                        "skip-build": config.skip_build,
+                        "idle-debug": config.idle_debug,
+                        "allow-cgroup-v1": config.allow_cgroup_v1,
+                    }.items():
+                        self.query_one(f"#{widget_id}", Checkbox).value = value
+                    self.query_one("#run-preset", Select).value = preset
+                    self._ignored_preset_event = None
+        finally:
+            self._applying_config = False
         if self._form_ready:
             self._refresh_command_preview(notify=False)
 
@@ -940,7 +889,10 @@ class AcprofTui(App[None]):
         message = "\n".join(f"• {error}" for error in exc.errors)
         self.notify(message, title="配置有误", severity="error", timeout=8)
 
-    def _refresh_command_preview(self, *, notify: bool = True) -> bool:
+    def _refresh_command_preview(
+        self, *, notify: bool = True, sync_preset: bool = False
+    ) -> bool:
+        config = None
         try:
             config = self._collect_config()
             command = build_run_command(
@@ -958,6 +910,13 @@ class AcprofTui(App[None]):
             if notify:
                 self._show_config_error(exc)
             return False
+        finally:
+            if sync_preset:
+                selected_preset = self._select("run-preset")
+                if selected_preset != "custom" and (
+                    config is None or not self._matches_preset(config, selected_preset)
+                ):
+                    self.query_one("#run-preset", Select).value = "custom"
         case_count = (
             len(config.cpus.split(","))
             * len(config.mems.split(","))
@@ -994,6 +953,15 @@ class AcprofTui(App[None]):
             return self._process is not None or bool(self._process_kind)
 
     def _set_busy(self, busy: bool) -> None:
+        # Configuration changes during a run can queue preview redraws and
+        # make the visible settings differ from the running subprocess.
+        if busy:
+            self._cancel_preview_timer()
+        for widget in self.query(
+            ".config-control, #run-preset, .ui-preference, "
+            "#save-run-default, #restore-ui-defaults, #save-ui-settings"
+        ):
+            widget.disabled = busy
         for selector in (
             "#start-run",
             "#probe-largest",
@@ -1006,7 +974,11 @@ class AcprofTui(App[None]):
         self.query_one("#stop-run", Button).disabled = not busy
 
     def _activate_tab(self, tab_id: str) -> None:
-        self.query_one("#main-tabs", TabbedContent).active = tab_id
+        tabs = self.query_one("#main-tabs", TabbedContent)
+        # Clear the outgoing field's focus before hiding its pane. Otherwise
+        # Textual may restore that focus and activate the old pane again.
+        tabs.query_one(Tabs).focus()
+        tabs.active = tab_id
 
     def preset_smoke(self) -> None:
         self._apply_config(RunConfig.smoke(self._input("model")), preset="smoke")
@@ -1357,7 +1329,13 @@ class AcprofTui(App[None]):
         if line:
             self.query_one("#run-log", RichLog).write(line)
         if snapshot is not None:
+            was_measuring = self._latest_snapshot.measurement_active
             self._latest_snapshot = snapshot
+            if self._elapsed_timer is not None:
+                if snapshot.measurement_active:
+                    self._elapsed_timer.pause()
+                elif was_measuring:
+                    self._elapsed_timer.resume()
             if state_changed:
                 self._render_snapshot(snapshot)
 
@@ -1880,6 +1858,8 @@ class AcprofTui(App[None]):
             self._activate_tab("results-tab")
         elif command == "clear":
             self.action_clear_log()
+        elif command == "settings":
+            self.action_show_settings()
         elif command == "help":
             self.query_one("#run-log", RichLog).write(
                 "[TUI] /run 采集 · /probe 最大输入探测 · /check 环境检查 · "
@@ -1887,7 +1867,7 @@ class AcprofTui(App[None]):
                 "/smoke 最小预设 · /main 主矩阵 · /defaults 默认 · /preview 命令预览 · "
                 "/matrix 切换矩阵看板 · /plot [csv] 绘图 · /profile [dir] [tools] 补采计划 · "
                 "/profile-run [dir] [tools] 执行补采 · /results [csv] 摘要 · "
-                "/clear 清日志 · /quit 退出"
+                "/settings 设置 · /clear 清日志 · /quit 退出"
             )
             self._activate_tab("monitor-tab")
         elif command in {"quit", "exit"}:
@@ -1922,27 +1902,34 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--model",
-        default="",
+        default=None,
         help="Pre-fill the Hugging Face model ID",
     )
     parser.add_argument(
         "--preset",
         choices=("default", "smoke", "main"),
-        default="default",
-        help="Initial form preset",
+        default=None,
+        help="Initial form preset (overrides saved experiment defaults)",
     )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = _build_parser().parse_args(argv)
+    app = AcprofTui()
+    config = app.initial_config
+    model = config.model if args.model is None else args.model
     if args.preset == "smoke":
-        config = RunConfig.smoke(args.model)
+        config = RunConfig.smoke(model)
     elif args.preset == "main":
-        config = RunConfig.main_matrix(args.model)
+        config = RunConfig.main_matrix(model)
+    elif args.preset == "default":
+        config = RunConfig(model=model)
     else:
-        config = RunConfig(model=args.model)
-    AcprofTui(config).run()
+        config = replace(config, model=model)
+    app.initial_config = config
+    app._initial_preset = app._infer_preset(config)
+    app.run()
 
 
 if __name__ == "__main__":
