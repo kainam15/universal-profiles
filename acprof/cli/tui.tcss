@@ -3,6 +3,18 @@ Screen {
     background: $background;
 }
 
+* {
+    scrollbar-background: $surface;
+    scrollbar-background-hover: $surface;
+    scrollbar-background-active: $surface;
+    scrollbar-color: $accent 65%;
+    scrollbar-color-hover: $accent;
+    scrollbar-color-active: $accent;
+    scrollbar-corner-color: $surface;
+}
+
+VerticalScroll, TextArea, DataTable, #command-preview { scrollbar-size: 1 1; }
+
 Header { background: $surface; color: $text; }
 HeaderIcon, HeaderClockSpace { display: none; }
 TabbedContent { height: 1fr; }
@@ -11,6 +23,7 @@ TabPane { padding: 0; }
 Tabs { background: $surface; }
 Tab { padding: 0 2; }
 Tab.-active { color: $accent; text-style: bold; }
+Tabs:focus Tab.-active { color: $background; background: $accent; }
 Underline { color: $accent; }
 
 .pane-scroll { padding: 0 2; }
@@ -88,13 +101,39 @@ Button.-primary { background: $primary; border: tall $primary; color: $backgroun
     grid-columns: 12 1fr 12 1fr;
     grid-gutter: 0 1;
     height: auto;
-    padding: 1;
+    padding: 0 1;
     margin-top: 1;
     background: $surface;
 }
 #status-grid .status-label { color: $text-muted; }
+#status-detail { height: 1; text-overflow: ellipsis; }
 #case-progress { margin-top: 1; }
-#run-log { height: 1fr; min-height: 3; border: round $panel; padding: 0 1; }
+#log-panel { height: 1fr; min-height: 5; padding: 0; }
+#log-toolbar { height: 1; margin: 1 0 0 0; }
+#log-title { width: 1fr; text-style: bold; color: $accent; }
+#log-toolbar Button {
+    height: 1;
+    min-height: 1;
+    min-width: 10;
+    padding: 0 1;
+    border: none;
+    margin-left: 1;
+}
+#log-toolbar Button:focus { background: $accent; color: $background; }
+#log-hint { height: 1; color: $text-muted; text-overflow: ellipsis; }
+#restore-log { display: none; }
+#log-panel.-maximized { padding: 0 1; }
+#log-panel.-maximized #expand-log { display: none; }
+#log-panel.-maximized #restore-log { display: block; }
+#run-log {
+    height: 1fr;
+    min-height: 3;
+    border: round $panel;
+    padding: 0 1;
+    background: $surface;
+}
+#run-log:focus { border: round $accent; }
+#run-log .text-area--selection { background: $accent; color: $background; }
 #result-summary { height: auto; min-height: 5; background: $surface; padding: 1; margin-top: 1; }
 #matrix-board { margin-top: 1; border: none; padding: 0; }
 #matrix-board > Contents { padding: 0 1; }
@@ -127,4 +166,3 @@ AcprofTui.short .section-title { margin: 0 0 1 0; }
 AcprofTui.short #matrix-table { max-height: 3; }
 AcprofTui.short #status-grid { padding: 0 1; margin-top: 0; }
 AcprofTui.short #matrix-board { margin-top: 0; }
-AcprofTui.short #monitor-actions { margin: 0; }

@@ -17,6 +17,8 @@ from typing import Sequence
 try:
     from textual import on, work
     from textual.app import App, ComposeResult
+    from textual.binding import Binding
+    from textual.widget import Widget
     from textual.containers import Grid, Horizontal, Vertical, VerticalScroll
     from textual.screen import ModalScreen
     from textual.theme import Theme
@@ -31,7 +33,6 @@ try:
         Input,
         Label,
         ProgressBar,
-        RichLog,
         Select,
         Static,
         TabbedContent,
@@ -66,6 +67,8 @@ from acprof.cli.tui_settings import (
     TuiSettings, UiPreferences, default_settings_path, load_settings, save_settings,
 )
 from acprof.cli.tui_themes import THEME_CATALOG, THEME_OPTIONS
+from acprof.cli.tui_log import SelectableLog
+from acprof.cli.tui_scrollbar import SolidScrollBarRender
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -163,6 +166,12 @@ class ConfirmActionScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class LogPanel(Vertical):
+    """Keep the log controls available when the log fills the terminal."""
+
+    ALLOW_MAXIMIZE = True
+
+
 class AcprofTui(App[None]):
     """Full-screen controller for AC-Prof collection and diagnostics."""
 
@@ -172,9 +181,10 @@ class AcprofTui(App[None]):
 
     BINDINGS = [
         ("f5", "request_run", "开始采集"),
-        ("f6", "quick_check", "环境检查"),
+        Binding("f6", "quick_check", "环境检查", priority=True),
+        ("f8", "toggle_log_view", "放大日志"),
         ("f2", "show_settings", "设置"),
-        ("ctrl+x", "request_stop", "终止任务"),
+        Binding("ctrl+x", "request_stop", "终止任务", priority=True),
         ("ctrl+l", "clear_log", "清空日志"),
         ("ctrl+q", "request_quit", "退出"),
     ]
@@ -516,17 +526,24 @@ class AcprofTui(App[None]):
                             id="matrix-table",
                             show_cursor=False,
                         )
-                    with Horizontal(id="monitor-actions", classes="button-row"):
-                        yield Button("终止当前任务", id="stop-run", variant="error", disabled=True)
-                        yield Button("清空显示日志", id="clear-log")
-                    yield RichLog(
-                        id="run-log",
-                        min_width=1,
-                        max_lines=self.ui_preferences.log_max_lines,
-                        wrap=self.ui_preferences.log_wrap,
-                        highlight=False,
-                        markup=False,
-                    )
+                    with LogPanel(id="log-panel"):
+                        with Horizontal(id="log-toolbar"):
+                            yield Static("日志", id="log-title", markup=False)
+                            yield Button("复制选区", id="copy-log", classes="log-tool")
+                            yield Button("回到最新", id="follow-log", classes="log-tool")
+                            yield Button("放大日志", id="expand-log", classes="log-tool")
+                            yield Button("返回监控", id="restore-log", classes="log-tool")
+                            yield Button("清空日志", id="clear-log", classes="log-tool")
+                            yield Button("终止任务", id="stop-run", classes="log-tool", variant="error", disabled=True)
+                        yield Static(
+                            "拖动选择 · Ctrl+C 复制 · F8 放大 · 正在跟随最新",
+                            id="log-hint", markup=False,
+                        )
+                        yield SelectableLog(
+                            id="run-log",
+                            max_lines=self.ui_preferences.log_max_lines,
+                            wrap=self.ui_preferences.log_wrap,
+                        )
 
             with TabPane("结果工具", id="results-tab"):
                 with VerticalScroll(classes="pane-scroll"):
@@ -573,7 +590,7 @@ class AcprofTui(App[None]):
                         )
                     with Vertical(classes="settings-options"):
                         yield StatusCheckbox(
-                            "新日志自动换行", value=self.ui_preferences.log_wrap,
+                            "日志自动换行", value=self.ui_preferences.log_wrap,
                             id="ui-log-wrap", classes="ui-preference option-checkbox",
                         )
                         yield StatusCheckbox(
@@ -597,6 +614,7 @@ class AcprofTui(App[None]):
 
     def on_mount(self) -> None:
         self._configure_interaction()
+        self._configure_scrollbars()
         self._apply_ui_preferences()
         self._update_saved_settings_summary()
         self._update_responsive_layout()
@@ -621,7 +639,7 @@ class AcprofTui(App[None]):
 
     def _apply_ui_preferences(self) -> None:
         self.theme = self.ui_preferences.theme
-        log = self.query_one("#run-log", RichLog)
+        log = self.query_one("#run-log", SelectableLog)
         log.wrap = self.ui_preferences.log_wrap
         log.max_lines = self.ui_preferences.log_max_lines
         self.query_one("#bottom-panel").set_class(
@@ -757,6 +775,48 @@ class AcprofTui(App[None]):
             button.active_effect_duration = 0
         for field in self.query(Input):
             field.cursor_blink = False
+
+    def _configure_scrollbars(self) -> None:
+        # Instance-level renderers keep this behavior local to this TUI.
+        for widget in self.query(Widget):
+            if widget.is_scrollable:
+                widget.vertical_scrollbar.renderer = SolidScrollBarRender
+                widget.horizontal_scrollbar.renderer = SolidScrollBarRender
+
+    @on(Button.Pressed, "#copy-log")
+    def copy_log_selection(self) -> None:
+        log = self.query_one("#run-log", SelectableLog)
+        if log.copy_selection():
+            self.notify("已复制日志选区", timeout=2)
+        else:
+            self.notify("先在日志中拖动选择文字，Ctrl+A 可全选", timeout=3)
+
+    @on(Button.Pressed, "#follow-log")
+    def follow_latest_log(self) -> None:
+        self.query_one("#run-log", SelectableLog).follow_tail()
+
+    @on(SelectableLog.FollowChanged)
+    def log_follow_changed(self, event: SelectableLog.FollowChanged) -> None:
+        status = "正在跟随最新" if event.following else "正在查看历史 · 点击“回到最新”继续跟随"
+        self.query_one("#log-hint", Static).update(
+            "拖动选择 · Ctrl+C 复制 · F8 放大 · " + status
+        )
+
+    @on(Button.Pressed, "#expand-log")
+    @on(Button.Pressed, "#restore-log")
+    def toggle_log_view_button(self) -> None:
+        self.action_toggle_log_view()
+
+    def action_toggle_log_view(self) -> None:
+        if isinstance(self.screen, ModalScreen):
+            return
+        panel = self.query_one("#log-panel", LogPanel)
+        if self.screen.maximized is panel:
+            self.screen.minimize()
+        else:
+            self._activate_tab("monitor-tab")
+            self.screen.maximize(panel, container=False)
+        self.query_one("#run-log", SelectableLog).focus()
 
     def _cancel_preview_timer(self) -> None:
         if self._preview_timer is not None:
@@ -979,6 +1039,8 @@ class AcprofTui(App[None]):
         self.query_one("#stop-run", Button).disabled = not busy
 
     def _activate_tab(self, tab_id: str) -> None:
+        if self.screen.maximized is not None:
+            self.screen.minimize()
         tabs = self.query_one("#main-tabs", TabbedContent)
         # Clear the outgoing field's focus before hiding its pane. Otherwise
         # Textual may restore that focus and activate the old pane again.
@@ -1123,7 +1185,7 @@ class AcprofTui(App[None]):
             self._init_matrix_for_run(pending.config)
         else:
             self._clear_matrix()
-        log = self.query_one("#run-log", RichLog)
+        log = self.query_one("#run-log", SelectableLog)
         log.write(f"$ {format_command(pending.command, project_dir=PROJECT_DIR)}")
         log.write("[TUI] 子进程输出通过管道读取；tmux pane 捕获已对该子进程禁用。")
         self._render_snapshot(self._latest_snapshot)
@@ -1157,7 +1219,8 @@ class AcprofTui(App[None]):
                         gpu.strip(), "⋯ 等待",
                     )
                     self._matrix_rows[case_num] = key
-        self.query_one("#matrix-board", Collapsible).collapsed = False
+        # Keep the matrix collapsed until the user asks to inspect it, so
+        # the running log retains most of the monitor page.
 
     def _clear_matrix(self) -> None:
         """Clear the matrix board for non-run tasks."""
@@ -1307,23 +1370,23 @@ class AcprofTui(App[None]):
             )
 
     def _process_started(self, pid: int, kind: str) -> None:
-        self.query_one("#run-log", RichLog).write(
+        self.query_one("#run-log", SelectableLog).write(
             f"[TUI] {kind} 进程已启动，PID={pid}"
         )
 
     def _show_suppressed_count(self, count: int) -> None:
-        self.query_one("#run-log", RichLog).write(
+        self.query_one("#run-log", SelectableLog).write(
             f"[TUI] 为降低测量干扰，本窗口隐藏了 {count} 行常规输出。"
         )
 
     def _show_deferred_lines(self, lines: tuple[str, ...]) -> None:
-        log = self.query_one("#run-log", RichLog)
+        log = self.query_one("#run-log", SelectableLog)
         log.write("[TUI] 测量窗口结束，显示期间延迟刷新的重要消息：")
         for line in lines:
             log.write(line)
 
     def _write_log(self, line: str) -> None:
-        self.query_one("#run-log", RichLog).write(line)
+        self.query_one("#run-log", SelectableLog).write(line)
 
     def _consume_process_line(
         self,
@@ -1332,7 +1395,7 @@ class AcprofTui(App[None]):
         state_changed: bool,
     ) -> None:
         if line:
-            self.query_one("#run-log", RichLog).write(line)
+            self.query_one("#run-log", SelectableLog).write(line)
         if snapshot is not None:
             was_measuring = self._latest_snapshot.measurement_active
             self._latest_snapshot = snapshot
@@ -1420,7 +1483,7 @@ class AcprofTui(App[None]):
             )
             self.query_one("#status-elapsed", Static).update(final_elapsed)
         self._set_busy(False)
-        log = self.query_one("#run-log", RichLog)
+        log = self.query_one("#run-log", SelectableLog)
         if launch_error:
             log.write(f"[TUI][ERROR] 无法运行命令：{launch_error}")
             self.notify(launch_error, title="任务启动失败", severity="error", timeout=8)
@@ -1590,7 +1653,7 @@ class AcprofTui(App[None]):
         self._check_running = True
         self.query_one("#quick-check", Button).disabled = True
         self._activate_tab("monitor-tab")
-        self.query_one("#run-log", RichLog).write("[TUI] 开始只读快速环境检查……")
+        self.query_one("#run-log", SelectableLog).write("[TUI] 开始只读快速环境检查……")
         self._execute_quick_check(config)
 
     @work(thread=True, group="preflight", exclusive=True, exit_on_error=False)
@@ -1611,7 +1674,7 @@ class AcprofTui(App[None]):
         self._check_running = False
         if not self._is_busy():
             self.query_one("#quick-check", Button).disabled = False
-        log = self.query_one("#run-log", RichLog)
+        log = self.query_one("#run-log", SelectableLog)
         if error:
             log.write(f"[TUI][ERROR] 环境检查失败：{error}")
             self.notify(error, severity="error")
@@ -1657,7 +1720,7 @@ class AcprofTui(App[None]):
         self.action_clear_log()
 
     def action_clear_log(self) -> None:
-        self.query_one("#run-log", RichLog).clear()
+        self.query_one("#run-log", SelectableLog).clear()
 
     @on(Button.Pressed, "#summarize-results")
     def summarize_results_button(self) -> None:
@@ -1822,7 +1885,7 @@ class AcprofTui(App[None]):
             self.action_request_stop()
         elif command == "status":
             snapshot = self._latest_snapshot
-            self.query_one("#run-log", RichLog).write(
+            self.query_one("#run-log", SelectableLog).write(
                 f"[TUI] status={snapshot.stage}; "
                 f"case={snapshot.completed_cases}/{snapshot.total_cases}; "
                 f"resource=CPU {snapshot.cpu}, MEM {snapshot.mem}GB, GPU {snapshot.gpu}; "
@@ -1861,18 +1924,20 @@ class AcprofTui(App[None]):
                 self.query_one("#result-csv", Input).value = path
             self._update_result_summary(path)
             self._activate_tab("results-tab")
+        elif command in {"log", "logs"}:
+            self.action_toggle_log_view()
         elif command == "clear":
             self.action_clear_log()
         elif command == "settings":
             self.action_show_settings()
         elif command == "help":
-            self.query_one("#run-log", RichLog).write(
+            self.query_one("#run-log", SelectableLog).write(
                 "[TUI] /run 采集 · /probe 最大输入探测 · /check 环境检查 · "
                 "/status 状态 · /stop 终止 · "
                 "/smoke 最小预设 · /main 主矩阵 · /defaults 默认 · /preview 命令预览 · "
                 "/matrix 切换矩阵看板 · /plot [csv] 绘图 · /profile [dir] [tools] 补采计划 · "
                 "/profile-run [dir] [tools] 执行补采 · /results [csv] 摘要 · "
-                "/settings 设置 · /clear 清日志 · /quit 退出"
+                "/settings 设置 · /log 放大日志 · /clear 清日志 · /quit 退出"
             )
             self._activate_tab("monitor-tab")
         elif command in {"quit", "exit"}:

@@ -6,10 +6,11 @@ import unittest
 from unittest.mock import patch
 
 from textual.widgets import (
-    Button, Checkbox, Collapsible, ContentSwitcher, Input, RichLog, Select, TabbedContent,
+    Button, Checkbox, Collapsible, ContentSwitcher, Input, Select, TabbedContent,
 )
 
 from acprof.cli.tui import AcprofTui, ConfirmActionScreen, main
+from acprof.cli.tui_log import SelectableLog
 from acprof.cli.tui_core import ProgressSnapshot, RunConfig
 from acprof.cli.tui_settings import (
     TuiSettings, UiPreferences, default_settings_path, load_settings, save_settings,
@@ -148,7 +149,7 @@ class TuiLayoutSettingsTests(unittest.IsolatedAsyncioTestCase):
                         total_cases=32, cpu="1", mem="2", gpu="off", measurement_active=True,
                     ))
                     app.query_one("#stop-run", Button).disabled = False
-                    log = app.query_one("#run-log", RichLog)
+                    log = app.query_one("#run-log", SelectableLog)
                     log.write("[case] Running workload...")
                     for collapsed in (False, True):
                         with self.subTest(collapsed=collapsed):
@@ -164,7 +165,7 @@ class TuiLayoutSettingsTests(unittest.IsolatedAsyncioTestCase):
                             )
                             self.assertIs(app.get_widget_at(*center)[0], log)
                             with patch.object(app, "action_request_stop") as stop:
-                                self.assertTrue(await pilot.click("#stop-run", offset=(3, 1)))
+                                self.assertTrue(await pilot.click("#stop-run", offset=(3, 0)))
                                 await pilot.pause()
                                 stop.assert_called_once_with()
 
@@ -174,11 +175,11 @@ class TuiLayoutSettingsTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             app._activate_tab("monitor-tab")
             await pilot.pause()
-            log = app.query_one("#run-log", RichLog)
+            log = app.query_one("#run-log", SelectableLog)
             log.write("[case] 正在执行确定性输入请求 processing deterministic workload " * 8)
             await pilot.pause()
             self.assertTrue(log.wrap)
-            self.assertGreater(len(log.lines), 1)
+            self.assertGreater(log.virtual_size.height, 1)
             self.assertLessEqual(log.virtual_size.width, log.scrollable_content_region.width)
             self.assertEqual(log.max_scroll_x, 0)
 
@@ -222,8 +223,8 @@ class TuiLayoutSettingsTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await pilot.click("#ui-command-bar", offset=(2, 1)))
             await pilot.pause()
             self.assertEqual(app.theme, "acprof-light")
-            self.assertFalse(app.query_one("#run-log", RichLog).wrap)
-            self.assertEqual(app.query_one("#run-log", RichLog).max_lines, 1000)
+            self.assertFalse(app.query_one("#run-log", SelectableLog).wrap)
+            self.assertEqual(app.query_one("#run-log", SelectableLog).max_lines, 1000)
             self.assertFalse(app.query_one("#slash-command-bar").display)
             self.assertEqual(app.query_one("#bottom-panel").region.height, 1)
             self.assertFalse(self.settings_path.exists())
@@ -235,8 +236,8 @@ class TuiLayoutSettingsTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(restarted.theme, "acprof-light")
             self.assertFalse(restarted.query_one("#slash-command-bar").display)
-            self.assertFalse(restarted.query_one("#run-log", RichLog).wrap)
-            self.assertEqual(restarted.query_one("#run-log", RichLog).max_lines, 1000)
+            self.assertFalse(restarted.query_one("#run-log", SelectableLog).wrap)
+            self.assertEqual(restarted.query_one("#run-log", SelectableLog).max_lines, 1000)
             self.assertEqual(restarted.initial_config, RunConfig())
 
     async def test_saving_ui_preserves_remembered_experiment_and_saving_experiment_preserves_ui(self):
