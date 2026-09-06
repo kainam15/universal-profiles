@@ -1,6 +1,22 @@
 ARG PYTHON_BASE_IMAGE=docker.m.daocloud.io/library/python:3.10-slim
 FROM ${PYTHON_BASE_IMAGE}
 
+# Install the execution profilers' runtime once, below all model/code layers.
+# Nsys itself is mounted from the host. These packages start no services and
+# are only invoked by the isolated execution-profile probes.
+RUN apt-get update \
+    && if apt-cache show libdw1t64 >/dev/null 2>&1; then \
+         elfutils_runtime=libdw1t64; \
+       else \
+         elfutils_runtime=libdw1; \
+       fi \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+         valgrind "${elfutils_runtime}" \
+    && rm -rf /var/lib/apt/lists/*
+
+LABEL org.acprof.execution-profile.massif="1" \
+      org.acprof.execution-profile.nsys="1"
+
 WORKDIR /app
 
 ARG HF_ENDPOINT=https://hf-mirror.com

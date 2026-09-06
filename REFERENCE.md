@@ -486,6 +486,14 @@ python run.py --model openai/whisper-large-v3 \
 
 中间文件 `result_case_*.csv`、`result_case_*.csv.sniff_groups.jsonl`、`lat_case_*.json`、`sniff_case_*.pcap` 会在 `result_all.csv` 成功 merge 后自动清理。若运行被中断，这些中间文件可能保留。
 
+### 分析镜像与公共运行依赖
+
+`dockerfiles/base.Dockerfile` 在模型权重和项目代码层之前安装 Valgrind 与 elfutils/libdw，并用 `org.acprof.execution-profile.massif=1`、`org.acprof.execution-profile.nsys=1` 标记可用运行依赖。所有新构建的任务族镜像继承这层；Massif / Nsys 分析直接使用模型镜像，不再创建每模型的分析镜像，也不调用分析镜像的 `docker build`。安装包本身不启动采集，正式 workload 仍不运行这些工具；Nsys 主程序继续从宿主机只读挂载。
+
+已有旧模型镜像缺少对应标记时，保留 `massif.Dockerfile` / `nsys.Dockerfile` 兼容构建。兼容镜像记录实际基础镜像 ID 和 Dockerfile 内容的 SHA256，三项标记全部匹配时直接复用；同名模型镜像更新、构建文件改变或旧分析镜像没有校验标记时才重新构建。兼容构建以已解析的不可变镜像 ID 为基础，不重新下载模型权重，不自动删除旧镜像或实验文件。清理 BuildKit 缓存不会影响仍然存在且校验匹配的兼容镜像复用。
+
+分析执行固定使用不可变镜像 ID，Massif 新 checkpoint 的 `derived_image` 也保存实际执行的镜像 ID；这个字段可指向原模型镜像或兼容镜像。历史 tag 形式的 checkpoint 与新 ID 不匹配时会重采相应尺度，以免同名镜像更新后复用旧运行环境的报告。
+
 <a id="posthoc-profiling"></a>
 
 ### 已有结果后补采 Torch / NCU / Nsight Systems / Massif
@@ -807,7 +815,7 @@ python -m acprof.cli.backfill_compute \
 | `execution_profile_tools` | 本次显式启用且适用于所选 GPU modes 的 execution profiler 列表，例如 `["massif","nsys"]`；工具缺失时仍列出，并通过对应 error 字段诊断；默认关闭时为空列表。 |
 | `massif_peak_semantics` | Massif peak 的 process-lifetime 口径，明确包含模型加载与预热。 |
 | `massif_repeat` | 每个 Massif probe 内的 inference repeat；peak bytes 不按 repeat 归一化。 |
-| `massif_version` | Massif 派生 container image 中的 Valgrind/Massif 版本；未启用或无法确认时为 `unknown`。 |
+| `massif_version` | 实际执行分析的 container image 中的 Valgrind/Massif 版本；镜像可以是共享运行依赖的模型镜像或旧模型兼容镜像，未启用或无法确认时为 `unknown`。 |
 | `massif_sampling_strategy` | `representative_per_scale` 或 `full_resource_matrix`。 |
 | `massif_reference_cpu_cores` / `massif_reference_mem_cap_gb` | 缩减采样实际使用的代表资源；完整矩阵时为 `null`。 |
 | `massif_reused_across_resource_cases` | Massif entry 是否从代表资源复用到其他结果行。 |
@@ -1029,7 +1037,7 @@ Massif / Nsight Systems execution profiling 字段全是 `nan`：
 
 - 默认 `--execution-profile-tool none` 不采 execution profile，这是预期结果；需要显式选择 `massif`、`nsys` 或 `both`。
 - Massif 字段只填充 `gpu_mode=off` 行，Nsight Systems 字段只填充 `gpu_mode=on` 行；不适用的另一组字段保持 `nan`。
-- 分别查看 `compute_profile_error_massif` 和 `compute_profile_error_nsys`。Massif 检查派生镜像的 Docker build/apt 网络与 `dockerfiles/massif.Dockerfile` 日志，不要求 host 安装 `valgrind`；Nsight Systems 检查 `nsys`、`--nsys-root`、`dockerfiles/nsys.Dockerfile` 的 importer runtime preflight、NVIDIA driver / Container Toolkit 兼容性，以及 raw `.nsys-rep` 是否可导出。出现 `nsys_importer_unavailable` 时，优先检查派生镜像中 `libdw.so.1` 等动态库；probe 阶段只出现 `.qdstrm` 而没有 `.nsys-rep` 属于 importer 失败。
+- 分别查看 `compute_profile_error_massif` 和 `compute_profile_error_nsys`。Massif 检查模型镜像中预装的 Valgrind；旧模型兼容构建失败时检查 Docker build/apt 网络与 `dockerfiles/massif.Dockerfile` 日志，不要求 host 安装 `valgrind`。Nsight Systems 检查 `nsys`、`--nsys-root`、实际分析镜像的 importer runtime preflight、NVIDIA driver / Container Toolkit 兼容性，以及 raw `.nsys-rep` 是否可导出；旧模型的依赖由 `dockerfiles/nsys.Dockerfile` 补齐。出现 `nsys_importer_unavailable` 时，优先检查分析镜像中 `libdw.so.1` 等动态库；probe 阶段只出现 `.qdstrm` 而没有 `.nsys-rep` 属于 importer 失败。
 - 两者是显式 opt-in 的独立 probe；一个失败不会影响另一个 execution probe、FLOP compute profiling 或主实验。完整状态与静态口径见 `execution_profile_plan.json` 和 `static_meta.json`。
 
 `--skip-build` 后 `/scale_meta` 或 `/probe` 报错：

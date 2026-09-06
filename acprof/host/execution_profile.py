@@ -19,6 +19,7 @@ import re
 import shutil
 from time import perf_counter
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from uuid import uuid4
 
 from acprof.host import compute_profile
 from acprof.host.detect import TaskInfo
@@ -35,6 +36,10 @@ MASSIF_CHECKPOINT_SCHEMA_VERSION = 1
 EXECUTION_PROFILE_TOOL_MODES = {"none", "both", "massif", "nsys"}
 MASSIF_TOOL = "massif"
 NSYS_TOOL = "nsys"
+EXECUTION_RUNTIME_LABEL_PREFIX = "org.acprof.execution-profile."
+EXECUTION_RUNTIME_VERSION = "1"
+EXECUTION_BASE_IMAGE_LABEL = EXECUTION_RUNTIME_LABEL_PREFIX + "base-image-id"
+EXECUTION_DOCKERFILE_LABEL = EXECUTION_RUNTIME_LABEL_PREFIX + "dockerfile-sha256"
 MASSIF_SAMPLING_MODES = {"per-scale", "full"}
 NSYS_SAMPLING_MODES = {"per-cpu-scale", "per-scale", "full"}
 SAMPLING_STRATEGY_METADATA = {
@@ -624,76 +629,161 @@ def parse_nsys_stats_reports(
     }
 
 
-def _build_massif_image(image_tag: str, project_dir: str) -> str:
-    dockerfile = os.path.join(
-        os.path.abspath(os.fspath(project_dir)),
-        "dockerfiles",
-        "massif.Dockerfile",
-    )
-    if not os.path.isfile(dockerfile):
-        raise FileNotFoundError(
-            f"massif_image_build_failed:dockerfile_not_found:{dockerfile}"
-        )
-    digest = hashlib.sha256(str(image_tag).encode("utf-8")).hexdigest()[:12]
-    derived_tag = f"acprof-massif-{digest}:latest"
+def _inspect_execution_image(image_ref: str) -> Optional[Dict[str, Any]]:
     result = _run(
-        [
-            "docker",
-            "build",
-            "--file",
-            dockerfile,
-            "--build-arg",
-            f"BASE_IMAGE={image_tag}",
-            "--tag",
-            derived_tag,
-            os.path.abspath(os.fspath(project_dir)),
-        ],
+        ["docker", "image", "inspect", image_ref, "--format", "{{json .}}"],
         check=False,
     )
     if result.returncode != 0:
+        detail = _command_detail(result)
+        if "no such image" in detail.lower() or "no such object" in detail.lower():
+            return None
+        raise RuntimeError(f"execution_image_inspect_failed:{detail}")
+    try:
+        image = json.loads(result.stdout)
+        if not isinstance(image, dict) or not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", str(image.get("Id", ""))
+        ):
+            raise ValueError("missing immutable image ID")
+        config = image.get("Config") or {}
+        labels = config.get("Labels") or {}
+        if not isinstance(labels, dict):
+            raise ValueError("invalid image labels")
+    except (AttributeError, TypeError, ValueError) as exc:
         raise RuntimeError(
-            f"massif_image_build_failed:{_command_detail(result)}"
+            f"execution_image_inspect_failed:invalid_metadata:{image_ref}"
+        ) from exc
+    return {
+        "id": image["Id"],
+        "labels": labels,
+        "references": [*(image.get("RepoTags") or []), *(image.get("RepoDigests") or [])],
+    }
+
+
+def _ensure_execution_image(image_tag: str, project_dir: str, tool: str) -> str:
+    """Reuse the model's shared runtime, or cache an old-image compatibility build.
+
+    Always return an immutable image ID: a moved :latest tag must neither
+    change the image between probes nor match a checkpoint from an older build.
+    """
+    runtime_label = EXECUTION_RUNTIME_LABEL_PREFIX + tool
+    base = _inspect_execution_image(image_tag)
+    if base is None:
+        raise RuntimeError(f"{tool}_image_build_failed:base_image_not_found:{image_tag}")
+    if base["labels"].get(runtime_label) == EXECUTION_RUNTIME_VERSION:
+        print(
+            f"[execution-profile][{tool}] Using runtime from model image "
+            f"{image_tag}; no profiler image build needed"
         )
-    return derived_tag
+        return base["id"]
+
+    dockerfile = os.path.join(
+        os.path.abspath(os.fspath(project_dir)), "dockerfiles", f"{tool}.Dockerfile"
+    )
+    if not os.path.isfile(dockerfile):
+        raise FileNotFoundError(
+            f"{tool}_image_build_failed:dockerfile_not_found:{dockerfile}"
+        )
+    with open(dockerfile, "rb") as dockerfile_handle:
+        recipe_hash = hashlib.sha256(dockerfile_handle.read()).hexdigest()
+    expected_labels = {
+        EXECUTION_BASE_IMAGE_LABEL: base["id"],
+        EXECUTION_DOCKERFILE_LABEL: recipe_hash,
+        runtime_label: EXECUTION_RUNTIME_VERSION,
+    }
+    digest = hashlib.sha256(str(image_tag).encode("utf-8")).hexdigest()[:12]
+    derived_tag = f"acprof-{tool}-{digest}:latest"
+    cached = _inspect_execution_image(derived_tag)
+    if cached is not None and all(
+        cached["labels"].get(key) == value for key, value in expected_labels.items()
+    ):
+        print(
+            f"[execution-profile][{tool}] Reusing compatible image {derived_tag}; "
+            "no build needed"
+        )
+        return cached["id"]
+
+    print(f"[execution-profile][{tool}] Preparing legacy image runtime {derived_tag}")
+    # BuildKit treats a bare sha256 image ID in FROM as a registry name. Give
+    # the resolved local image a private temporary tag so a concurrent change
+    # to the model's :latest cannot change this build's base.
+    pinned_tag = f"acprof-execution-base:{uuid4().hex}"
+    tagged = _run(
+        ["docker", "image", "tag", base["id"], pinned_tag],
+        check=False,
+    )
+    if tagged.returncode != 0:
+        raise RuntimeError(f"{tool}_image_build_failed:{_command_detail(tagged)}")
+    try:
+        result = _run(
+            [
+                "docker",
+                "build",
+                "--file",
+                dockerfile,
+                "--build-arg",
+                f"BASE_IMAGE={pinned_tag}",
+                "--label",
+                f"{EXECUTION_BASE_IMAGE_LABEL}={base['id']}",
+                "--label",
+                f"{EXECUTION_DOCKERFILE_LABEL}={recipe_hash}",
+                "--tag",
+                derived_tag,
+                os.path.abspath(os.fspath(project_dir)),
+            ],
+            check=False,
+        )
+    finally:
+        try:
+            pinned_base = _inspect_execution_image(base["id"])
+            if pinned_base is not None and any(
+                reference != pinned_tag for reference in pinned_base["references"]
+            ):
+                removed = _run(
+                    ["docker", "image", "rm", "--no-prune", pinned_tag], check=False
+                )
+                if removed.returncode != 0:
+                    print(
+                        f"[execution-profile][{tool}][WARN] Temporary base tag "
+                        f"cleanup failed: {pinned_tag}: {_command_detail(removed)}"
+                    )
+            elif pinned_base is not None:
+                # Removing the last reference would delete the original image
+                # record too. Keep it if the caller used an untagged ID or the
+                # original tag moved during the build.
+                print(
+                    f"[execution-profile][{tool}] Keeping {pinned_tag} to preserve "
+                    f"the now-untagged source image {base['id']}"
+                )
+        except (OSError, RuntimeError) as exc:
+            print(
+                f"[execution-profile][{tool}][WARN] Temporary base tag cleanup "
+                f"failed: {pinned_tag}: {exc}"
+            )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"{tool}_image_build_failed:{_command_detail(result)}"
+        )
+    built = _inspect_execution_image(derived_tag)
+    if built is None or any(
+        built["labels"].get(key) != value for key, value in expected_labels.items()
+    ):
+        raise RuntimeError(f"{tool}_image_build_failed:built_image_metadata_mismatch")
+    return built["id"]
+
+
+def _build_massif_image(image_tag: str, project_dir: str) -> str:
+    return _ensure_execution_image(image_tag, project_dir, MASSIF_TOOL)
 
 
 def _build_nsys_image(image_tag: str, project_dir: str) -> str:
-    """Build a model image with the runtime libraries required by Nsys.
+    """Select a model image with the runtime libraries required by Nsys.
 
     The host Nsys installation is mounted into the profiler container.  Its
     QdstrmImporter still links against the container's elfutils runtime
     (notably libdw.so.1), which is absent from python:*slim images.
     """
-    dockerfile = os.path.join(
-        os.path.abspath(os.fspath(project_dir)),
-        "dockerfiles",
-        "nsys.Dockerfile",
-    )
-    if not os.path.isfile(dockerfile):
-        raise FileNotFoundError(
-            f"nsys_image_build_failed:dockerfile_not_found:{dockerfile}"
-        )
-    digest = hashlib.sha256(str(image_tag).encode("utf-8")).hexdigest()[:12]
-    derived_tag = f"acprof-nsys-{digest}:latest"
-    result = _run(
-        [
-            "docker",
-            "build",
-            "--file",
-            dockerfile,
-            "--build-arg",
-            f"BASE_IMAGE={image_tag}",
-            "--tag",
-            derived_tag,
-            os.path.abspath(os.fspath(project_dir)),
-        ],
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"nsys_image_build_failed:{_command_detail(result)}"
-        )
-    return derived_tag
+    return _ensure_execution_image(image_tag, project_dir, NSYS_TOOL)
 
 
 def _massif_version(derived_image: Optional[str]) -> str:

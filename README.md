@@ -398,6 +398,8 @@ Execution profiling 默认关闭。显式启用后采用缩减采样，并把来
 - Massif 默认 `--massif-sampling per-scale`：最大 CPU/内存 × 每个 input scale。
 - Nsys 默认 `--nsys-sampling per-cpu-scale`：全部 CPU × 最大内存 × 每个 input scale。
 
+新构建的模型共享 `acprof-base` 中预装的 Valgrind 和 Nsys 运行库；启用分析时直接使用模型镜像，无需为每个新模型再构建 Massif / Nsys 镜像。Nsys 主程序仍从宿主机挂载，两个工具只在独立分析探针中运行。已有旧模型镜像无需重新下载权重：首次使用时按需构建兼容镜像，以后实际模型镜像 ID 和分析 Dockerfile 均未改变时直接复用，跳过 `docker build`。
+
 需要严格采完整资源矩阵时显式传入：
 
 ```bash
