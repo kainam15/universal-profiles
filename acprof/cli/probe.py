@@ -22,8 +22,7 @@ from acprof.host.largest_scale_probe import (
     write_probe_summary,
 )
 from acprof.host.orchestrator import (
-    ImageInfo,
-    build_image,
+    prepare_image,
     plan_input_scales,
 )
 
@@ -89,7 +88,11 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--output-dir", default="results", help="Output root")
-    parser.add_argument("--skip-build", action="store_true")
+    parser.add_argument(
+        "--skip-build",
+        action="store_true",
+        help="Reuse the local model image if present; automatically build it if missing",
+    )
     parser.add_argument("--allow-cgroup-v1", action="store_true")
     return parser
 
@@ -143,16 +146,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"  Cgroup:   {cgroup_version}")
     print(f"  Output:   {output_dir}")
 
-    if args.skip_build:
-        model_tag = task_info.model_id.replace("/", "--").replace(".", "_").lower()
-        image_info = ImageInfo(
-            tag=f"acprof-{task_info.task_family}-{model_tag}:latest"
-        )
-        print(f"[build] Skipping build, using: {image_info.tag}")
-    else:
-        image_info = build_image(task_info, str(PROJECT_DIR))
-
     try:
+        image_info = prepare_image(
+            task_info, str(PROJECT_DIR), reuse_existing=args.skip_build,
+        )
         planned = plan_input_scales(
             task_info=task_info,
             image_info=image_info,

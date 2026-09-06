@@ -15,6 +15,7 @@ from acprof.host.largest_scale_probe import (
     select_minimum_resources,
 )
 from acprof.host.orchestrator import ImageInfo, PlannedInputScales, RunningContainer
+from acprof.host import orchestrator
 
 
 def _task_info() -> TaskInfo:
@@ -427,7 +428,12 @@ class LargestScaleProbeTests(unittest.TestCase):
 
         run_probe.side_effect = fake_run
 
-        with tempfile.TemporaryDirectory() as temporary_dir:
+        built_image = ImageInfo(tag="acprof-nlp-demo--model:latest")
+        with tempfile.TemporaryDirectory() as temporary_dir, patch.object(
+            orchestrator, "_run", return_value=Mock(returncode=0, stdout="", stderr=""),
+        ), patch.object(
+            orchestrator, "build_image", return_value=built_image,
+        ) as build_image:
             plan_path = Path(temporary_dir) / "planned.json"
             plan_scales.return_value = PlannedInputScales(
                 scales=[64.0, 512.0],
@@ -458,6 +464,10 @@ class LargestScaleProbeTests(unittest.TestCase):
             saved = json.loads(summary_path.read_text(encoding="utf-8"))
 
         self.assertEqual(returncode, 0)
+        build_image.assert_called_once()
+        self.assertEqual(build_image.call_args.args[0], _task_info())
+        self.assertIs(plan_scales.call_args.kwargs["image_info"], built_image)
+        self.assertIs(run_probe.call_args.kwargs["image_info"], built_image)
         self.assertEqual(plan_scales.call_args.kwargs["cpu_list"], [1, 4])
         self.assertEqual(plan_scales.call_args.kwargs["mem_list"], [2, 8])
         self.assertEqual(plan_scales.call_args.kwargs["gpu_list"], ["off", "on"])

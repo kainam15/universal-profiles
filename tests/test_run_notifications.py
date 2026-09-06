@@ -338,6 +338,9 @@ class RunNotificationLifecycleTests(unittest.TestCase):
         ) as from_env, patch(
             "acprof.host.detect.detect_task", return_value=task_info,
         ), patch(
+            "acprof.host.orchestrator.prepare_image",
+            return_value=orchestrator.ImageInfo(tag="acprof-nlp-org--resolved-model:latest"),
+        ), patch(
             "acprof.host.orchestrator.collect_static_meta", return_value=SimpleNamespace(),
         ), patch(
             "acprof.host.orchestrator.write_static_meta_json",

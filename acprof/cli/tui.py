@@ -74,6 +74,9 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 # Keep the virtual-environment path. Resolving this symlink would turn
 # ``.venv/bin/python`` into the system interpreter and lose the venv.
 PYTHON_EXECUTABLE = Path(sys.executable).absolute()
+# Keep the original triangles with one extra cell before the title text.
+COLLAPSED_SYMBOL = "▶ "
+EXPANDED_SYMBOL = "▼ "
 
 
 @dataclass(frozen=True)
@@ -298,6 +301,8 @@ class AcprofTui(App[None]):
                         with Collapsible(
                             title="完整命令（自动更新）",
                             collapsed=True,
+                            collapsed_symbol=COLLAPSED_SYMBOL,
+                            expanded_symbol=EXPANDED_SYMBOL,
                             id="command-details",
                         ):
                             yield Static("", id="command-preview", markup=False)
@@ -464,6 +469,7 @@ class AcprofTui(App[None]):
                                 value=self.initial_config.skip_build,
                                 id="skip-build",
                                 classes="config-control option-checkbox",
+                                tooltip="优先复用本地模型镜像；未找到时提示并自动构建。",
                             )
                             yield StatusCheckbox(
                                 "Idle 诊断",
@@ -521,6 +527,8 @@ class AcprofTui(App[None]):
                     with Collapsible(
                         title="资源矩阵",
                         collapsed=True,
+                        collapsed_symbol=COLLAPSED_SYMBOL,
+                        expanded_symbol=EXPANDED_SYMBOL,
                         id="matrix-board",
                     ):
                         yield DataTable(

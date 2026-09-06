@@ -2062,6 +2062,43 @@ def write_static_meta_json(static_meta: StaticMeta, output_path: str) -> None:
 # Docker Image Building
 # ─────────────────────────────────────────────
 
+def _model_image_tag(task_info: TaskInfo) -> str:
+    model_tag = _sanitize_model_id(task_info.model_id)
+    return f"{DOCKER_IMAGE_PREFIX}-{task_info.task_family}-{model_tag}:latest"
+
+
+def prepare_image(
+    task_info: TaskInfo,
+    project_dir: str,
+    *,
+    reuse_existing: bool = False,
+) -> ImageInfo:
+    """Check requested local-image reuse before falling back to a normal build."""
+    if reuse_existing:
+        tag = _model_image_tag(task_info)
+        print(f"\n[build] 检查本地模型镜像：{tag}", flush=True)
+        # A successful empty listing means the image is missing; a failed
+        # Docker query must not be mistaken for a missing image.
+        result = _run(
+            ["docker", "image", "ls", "--quiet", "--filter", f"reference={tag}"],
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(
+                f"无法检查本地模型镜像 {tag}（Docker 退出码 {result.returncode}）：{detail}"
+            )
+        if result.stdout.strip():
+            print(f"[build] 已找到本地模型镜像，跳过构建并复用：{tag}", flush=True)
+            return ImageInfo(tag=tag)
+        print(
+            f"[build][WARN] 未找到本地模型镜像：{tag}；将自动构建镜像，完成后继续任务。",
+            flush=True,
+        )
+
+    return build_image(task_info, project_dir)
+
+
 def build_image(task_info: TaskInfo, project_dir: str) -> ImageInfo:
     """Build the Docker image for this model's task family.
 
@@ -2070,9 +2107,8 @@ def build_image(task_info: TaskInfo, project_dir: str) -> ImageInfo:
     2. Build task-family image with model weights baked in
     """
     dockerfiles_dir = os.path.join(project_dir, "dockerfiles")
-    model_tag = _sanitize_model_id(task_info.model_id)
     base_tag = f"{DOCKER_IMAGE_PREFIX}-base:latest"
-    family_tag = f"{DOCKER_IMAGE_PREFIX}-{task_info.task_family}-{model_tag}:latest"
+    family_tag = _model_image_tag(task_info)
 
     # Stage 1: Build base image
     print(f"\n[build] Stage 1: Building base image {base_tag} ...")

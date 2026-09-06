@@ -291,7 +291,7 @@ python run.py --model google-bert/bert-base-uncased \
 
 启动 OOM 剪枝默认开启。程序先按内存从小到大完整采集最低 CPU；只有 Docker 明确报告 `OOMKilled` 且这些失败构成连续低内存前缀时，才在后续更高 CPU 中跳过同 GPU mode、同内存上限的 case。运行期 OOM、CUDA OOM、普通启动失败和请求超时不会触发剪枝。可运行 case 的 warmup、repeat、监控器和指标口径完全不变；跳过的 case 仍写入 `status=error` 占位行，并在 `startup_oom_pruning.json` 中记录推断依据，不能作为实测性能值使用。论文若要求每个资源格都独立启动验证，传入 `--no-prune-startup-oom`。
 
-如果已有对应模型镜像，可加 `--skip-build`。该选项只复用当前本机 Docker image store 中已存在的镜像。
+传入 `--skip-build`，或在 TUI 勾选“复用现有镜像”后，采集与探测都会提前检查本机 Docker image store 中的目标模型镜像：存在就跳过构建并复用；不存在则在日志中提示，并自动构建后继续任务。Docker 查询失败（如连接或权限错误）会明确报错，不会被当作镜像缺失。未勾选时仍执行正常构建。
 
 正式矩阵的每个 `/predict` 请求默认最多等待 300 秒。长耗时模型可显式调整，例如
 `--request-timeout-seconds 1800` 表示单个请求最多等待 30 分钟；它不限制整条命令或整个

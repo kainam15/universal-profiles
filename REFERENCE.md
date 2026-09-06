@@ -230,7 +230,7 @@ python run.py --model google-bert/bert-base-uncased \
 - Docker context 指向 `unix:///var/run/docker.sock`，且当前普通用户可以直接执行 `docker info`。
 - `/sys/fs/cgroup/cgroup.controllers` 存在，`/proc/self/cgroup` 使用 `0::...` 的统一 v2 hierarchy。
 - 默认 bridge 名为 `docker0`。如果 daemon 明确改过 bridge 名，使用 `docker network inspect bridge` 核对后传 `--sniff-iface <实际网卡>`。
-- `--skip-build` 只有在本机 `/var/lib/docker` 对应的 image store 已存在目标 image 时才可用。
+- `--skip-build` 会先查询本机 `/var/lib/docker` 对应的 image store；目标模型镜像存在时复用，不存在时提示并自动构建后继续。Docker 查询失败时保留错误并停止，不会误判为镜像缺失。`run.py`、`probe.py` 与 TUI 的“复用现有镜像”使用同一逻辑。
 - 实验需要完整跑到 merge 阶段，并且所有结果行都成功回填 `latency_s`；否则本次 run 会失败退出并保留错误提示。
 
 如果 Docker image 已经存在，可以跳过 build：
@@ -419,7 +419,7 @@ CPU 模型除共同的二次 log input-scale 项外，还使用二次 log CPU �
 | `--discard-execution-profiles` | false | 汇总成功后删除 raw execution-profiler artifacts，保留 plan、CSV 数值与错误诊断。 |
 | `--sniff-iface` | `docker0` | 本机 Docker 默认 bridge 对应的 `tcpdump` 抓包网卡。只有 daemon 改过 bridge 名时才覆盖。 |
 | `--output-dir` | `results` | 输出根目录。最终还会追加 model name 子目录。 |
-| `--skip-build` | false | 跳过 Docker build，直接使用已存在的 image tag。 |
+| `--skip-build` | false | 提前检查并优先复用本地模型镜像；不存在时提示并自动构建。 |
 | `--allow-cgroup-v1` | false | 仅用于旧主机诊断的兼容开关。默认正式模式要求 cgroup v2；启用后允许 v1，但会记录 `legacy_compatible`，且 memory peak/stat、I/O 操作数、PID、memory events 与 per-cgroup PSI 不具备同等口径。 |
 
 结果目录存在异常中断留下的 `result_case_*.csv` 时，`run.py` 会先读取同目录 `static_meta.json/cgroup_version`。只有版本与当前 host 一致才允许续写；版本不同、缺失或元数据不可读时会退出，避免把 v1/v2 窗口合并到同一结果文件。

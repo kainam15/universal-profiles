@@ -1100,7 +1100,11 @@ Examples:
     # Infrastructure
     parser.add_argument("--sniff-iface", default="docker0", help="Network interface for tcpdump")
     parser.add_argument("--output-dir", default="results", help="Output directory")
-    parser.add_argument("--skip-build", action="store_true", help="Skip Docker image build (use existing)")
+    parser.add_argument(
+        "--skip-build",
+        action="store_true",
+        help="Reuse the local model image if present; automatically build it if missing",
+    )
     parser.add_argument(
         "--notify",
         choices=("auto", "none", "wecom"),
@@ -1223,7 +1227,7 @@ Examples:
 
     # ── Step 2: Build Docker image ──
     from acprof.host.orchestrator import (
-        build_image,
+        prepare_image,
         collect_static_meta,
         enrich_static_meta_from_input_plan,
         enrich_static_meta_from_compute_plan,
@@ -1235,14 +1239,13 @@ Examples:
         write_static_meta_json,
     )
 
-    if args.skip_build:
-        from acprof.host.orchestrator import ImageInfo
-        model_tag = task_info.model_id.replace("/", "--").replace(".", "_").lower()
-        tag = f"acprof-{task_info.task_family}-{model_tag}:latest"
-        image_info = ImageInfo(tag=tag)
-        print(f"\n[build] Skipping build, using: {tag}")
-    else:
-        image_info = build_image(task_info, PROJECT_DIR)
+    try:
+        image_info = prepare_image(
+            task_info, PROJECT_DIR, reuse_existing=args.skip_build,
+        )
+    except (RuntimeError, OSError) as exc:
+        print(f"\n[build][ERROR] {exc}", file=sys.stderr)
+        sys.exit(1)
 
     # ── Step 3: Collect static metadata ──
     cpu_list = _parse_int_list(args.cpus)

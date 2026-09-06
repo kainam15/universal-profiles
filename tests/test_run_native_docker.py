@@ -536,6 +536,12 @@ class NativeDockerGuardTests(unittest.TestCase):
             detection_method="unit",
         )
         stderr = io.StringIO()
+        built_image = orchestrator.ImageInfo(tag="acprof-nlp-dummy-model:latest")
+
+        def collect_metadata(**kwargs):
+            build_image.assert_called_once_with(task_info, run.PROJECT_DIR)
+            self.assertIs(kwargs["image_info"], built_image)
+            return SimpleNamespace()
 
         with tempfile.TemporaryDirectory() as tmp_dir, patch.object(
             sys,
@@ -574,8 +580,14 @@ class NativeDockerGuardTests(unittest.TestCase):
             "acprof.host.detect.detect_task",
             return_value=task_info,
         ), patch(
+            "acprof.host.orchestrator._run",
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ), patch(
+            "acprof.host.orchestrator.build_image",
+            return_value=built_image,
+        ) as build_image, patch(
             "acprof.host.orchestrator.collect_static_meta",
-            return_value=SimpleNamespace(),
+            side_effect=collect_metadata,
         ) as collect_static_meta, patch(
             "acprof.host.orchestrator.write_static_meta_json"
         ), patch(
@@ -594,6 +606,7 @@ class NativeDockerGuardTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 1)
         self.assertIn("[energy][ERROR] gpu_idle_power_w unstable", stderr.getvalue())
         _, kwargs = run_matrix.call_args
+        self.assertIs(kwargs["image_info"], built_image)
         self.assertEqual(kwargs["repeat_in_window"], 0)
         self.assertEqual(kwargs["repeat_window_seconds"], 10.0)
         self.assertEqual(kwargs["request_timeout_seconds"], 300.0)
@@ -657,6 +670,9 @@ class NativeDockerGuardTests(unittest.TestCase):
         ), patch(
             "acprof.host.detect.detect_task",
             return_value=task_info,
+        ), patch(
+            "acprof.host.orchestrator.prepare_image",
+            return_value=orchestrator.ImageInfo(tag="acprof-nlp-dummy-model:latest"),
         ), patch(
             "acprof.host.orchestrator.collect_static_meta",
             return_value=SimpleNamespace(),
@@ -756,6 +772,9 @@ class NativeDockerGuardTests(unittest.TestCase):
         ), patch(
             "acprof.host.detect.detect_task",
             return_value=task_info,
+        ), patch(
+            "acprof.host.orchestrator.prepare_image",
+            return_value=orchestrator.ImageInfo(tag="acprof-nlp-dummy-model:latest"),
         ), patch(
             "acprof.host.orchestrator.collect_static_meta",
             return_value=SimpleNamespace(),
