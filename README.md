@@ -4,13 +4,13 @@ AC-Prof 是一个面向 Hugging Face 推理服务的零侵入运行时分析工�
 
 `Hugging Face 模型 → Docker 镜像 → 资源矩阵实验 → 延迟 / 能耗 / 资源 / FLOP 指标 → CSV 与图表`
 
-[快速开始](#快速开始) · [正式实验](#运行正式实验) · [查看结果](#查看结果) · [高级分析](#选择性能分析器) · [排查问题](#常见问题) · [完整参考](REFERENCE.md)
+[快速开始](#快速开始) · [正式实验](#运行正式实验) · [查看结果](#查看结果) · [终端界面](#交互式终端界面) · [性能分析](#选择性能分析器) · [排查问题](#常见问题) · [实验与指标参考](REFERENCE.md)
 
 ## 先看这两点
 
 > **运行环境：** AC-Prof 只支持原生 Linux 主机和本机 Docker Engine，正式采集默认强制使用统一 cgroup v2。WSL、Docker Desktop、远程 Docker daemon、Windows 和 macOS 不能作为实验采集环境。当前推荐并验证的是 Ubuntu 24.04。
 
-> **时间成本：** 默认 6 档 input scale 时，完整命令会运行 1,344 行主实验。按默认每行约 10 秒 workload、20 秒 Idle 基线和 5 秒前置冷却估算，仅主测量窗口就约 13 小时，且还不包含模型下载、镜像构建、case 切换，以及显式启用计算分析器时的额外耗时。第一次使用请先跑下面的最小 smoke test。
+> **时间成本：** 默认 6 档 input scale 时，完整矩阵计划生成 1,344 行主实验（含 warmup）。按默认每行约 10 秒 workload、20 秒 Idle 基线和 5 秒前置冷却估算，仅主测量窗口就约 13 小时，且还不包含模型下载、镜像构建、case 切换，以及显式启用各类分析器时的额外耗时。第一次使用请先跑下面的最小 smoke test；具体公式见[时间成本估算](REFERENCE.md#结果行数和时间成本估算)。
 
 ## AC-Prof 会采集什么
 
@@ -91,7 +91,165 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-### 可选：使用交互式终端界面
+私有或 gated 模型可在项目根目录创建 `.env.local`：
+
+```env
+HF_TOKEN=hf_xxx
+# 可选：仅在 host 侧 perf/tcpdump 需要 sudo 且 sudo -n 不可用时设置
+ACPROF_SUDO_PASSWORD=your_sudo_password
+```
+
+`.env.local` 已被 Git 忽略，可用 `chmod 600 .env.local` 限制读取权限。程序自动读取
+`.env` 和 `.env.local`；令牌只用于主机检测和构建时的 BuildKit secret，正式推理容器
+从镜像内的 `/models/model-snapshot` 离线加载模型，不接收令牌或在运行中下载权重。
+
+### 3. 跑一个最小 smoke test
+
+下面只运行一个 CPU、一个内存限制、一个输入尺度和一个请求，并暂时关闭高开销 profiler：
+
+```bash
+python run.py --model google-bert/bert-base-uncased \
+  --cpus 1 --mems 4 --gpus off \
+  --input-scales 64 \
+  --warmup 0 --repeat 1 --repeat-in-window 1 \
+  --compute-profile-tool none \
+  --execution-profile-tool none \
+  --output-dir results/smoke
+```
+
+Stable Diffusion 建议先做单 GPU、单分辨率 smoke test：
+
+```bash
+python run.py --model stable-diffusion-v1-5/stable-diffusion-v1-5 \
+  --cpus 4 --mems 16 --gpus on --input-scales 256 \
+  --warmup 0 --repeat 1 --repeat-in-window 1 \
+  --compute-profile-tool none --execution-profile-tool none \
+  --output-dir results/sd-smoke
+```
+
+首次运行仍需下载模型并构建镜像。成功后，主要结果位于：
+
+```text
+results/smoke/google-bert--bert-base-uncased/
+├── result_all.csv
+├── static_meta.json
+├── collection_history.json
+└── input_scale_plan.json
+```
+
+### 4. 生成图表
+
+```bash
+python plot.py \
+  results/smoke/google-bert--bert-base-uncased/result_all.csv
+```
+
+图表会写回模型结果目录下的 `cpu/`、`gpu/`、`gpu+cpu/` 和 `latency_model/`；没有适用数据的分组会自动跳过。除原有指标总览外，还会按可用字段生成资源失败边界、P50/P90/P95 尾延迟、延迟–能耗 Pareto 前沿和冷启动阶段分解图。历史 CSV 缺少新字段时只跳过对应图，不影响其余图表。
+
+## 运行正式实验
+
+建议先逐步扩大规模：最小 smoke test → 单个资源配置的全部 input scale → 不带 profiler 的目标资源矩阵 → 最后补采高开销 profiler。
+
+### 先探测最大输入
+
+完整矩阵开始前，可先扫描候选内存上限，确认最大输入能否完成一次请求：
+
+```bash
+python probe.py --model google-bert/bert-base-uncased \
+  --cpus 1,2,4 --mems 2,4,8 --gpus off,on --skip-build
+```
+
+这个例子固定使用最小 CPU `1`，优先选择 `GPU=off`，按 `2GB → 4GB → 8GB` 实测。
+输入尺度留空时取自动规划结果的最大档；手动传入 `--input-scales` 时取其中最大值。
+每档使用全新容器，最多发送一次 `/predict`，第一个成功值是这些候选中的最低可用内存。
+明确的启动或运行期主机内存 OOM 会推进到下一档；CUDA OOM、超时、尺度不一致和其他
+错误会停止，尚未验证的更大内存不会被报告为可行。
+
+探测请求默认不设超时，需要限制时传入 `--timeout-seconds <正数>`。
+这与正式矩阵默认 `--request-timeout-seconds 300` 相互独立。结果同时报告成功档的
+容器冷启动、单次请求及两者合计耗时，写入独立的 `probes/` 目录；该流程不采集能耗、
+PMU 或网络指标，也不写正式 CSV。字段见[探测输出](REFERENCE.md#最大输入探测结果)。
+TUI 的“探测最大输入”调用同一入口。
+
+### CPU-only 矩阵
+
+```bash
+python run.py --model google-bert/bert-base-uncased \
+  --cpus 1,2,4 --mems 4,8 --gpus off \
+  --compute-profile-tool none \
+  --output-dir results/bert-cpu
+```
+
+### CPU / GPU 对比矩阵
+
+```bash
+python run.py --model google-bert/bert-base-uncased \
+  --cpus 1,2,4 --mems 4,8 --gpus off,on \
+  --compute-profile-tool none \
+  --output-dir results/bert-cpu-gpu
+```
+
+上面两个例子先完成主矩阵，之后可用 `profile.py` 补采计算指标。计算分析器现在默认关闭；若希望在矩阵开始前直接采集 Torch / NCU，请显式传入 `--compute-profile-tool both`。`--execution-profile-tool` 默认也是 `none`。
+
+### 默认完整矩阵
+
+```bash
+python run.py --model google-bert/bert-base-uncased
+```
+
+默认配置如下：
+
+| 维度 | 默认值 |
+| --- | --- |
+| CPU | `1,2,4,8` |
+| 内存 | `2,4,8,16` GB |
+| GPU mode | `off,on` |
+| input scale | 自动规划，通常 6 档 |
+| warmup / repeat | `2 / 5` |
+| 每行 workload | 自动持续到累计 application latency 约 10 秒 |
+| 单个 `/predict` 请求超时 | `300` 秒 |
+| Idle 基线 / 前置冷却 | `20 / 5` 秒 |
+| compute profiler | `none`（关闭；需要时显式启用或后续补采） |
+| execution profiler | `none` |
+| 企业微信通知 | 配置 Webhook 后自动启用；`--notify none` 可关闭 |
+
+若实际规划出 6 档输入，完整矩阵包含 384 行 warmup 和 960 行正式测量。
+行数、请求数与端到端耗时的区别见[时间成本估算](REFERENCE.md#结果行数和时间成本估算)。
+大矩阵开始前也应检查 profiler artifacts 的磁盘占用。
+
+### 常用变体
+
+```bash
+# 手动指定输入规模
+python run.py --model google-bert/bert-base-uncased \
+  --input-scales 64,128,256,512
+
+# 时间序列模型
+python run.py --model amazon/chronos-bolt-base \
+  --task-family timeseries --backend chronos
+
+# 复用已有镜像
+python run.py --model google-bert/bert-base-uncased --skip-build
+
+# 单个推理请求最多等待 30 分钟
+python run.py --model stable-diffusion-v1-5/stable-diffusion-v1-5 \
+  --request-timeout-seconds 1800
+
+# 查看全部参数
+python run.py --help
+```
+
+### 镜像复用、超时与失败处理
+
+启动 OOM 剪枝默认开启。程序先按内存从小到大完整采集最低 CPU；只有 Docker 明确报告 `OOMKilled` 且这些失败构成连续低内存前缀时，才在后续更高 CPU 中跳过同 GPU mode、同内存上限的 case。运行期 OOM、CUDA OOM、普通启动失败和请求超时不会触发剪枝。可运行 case 的 warmup、repeat、监控器和指标口径完全不变；跳过的 case 仍写入 `status=error` 占位行，并在 `startup_oom_pruning.json` 中记录推断依据，不能作为实测性能值使用。论文若要求每个资源格都独立启动验证，传入 `--no-prune-startup-oom`。
+
+传入 `--skip-build`，或在 TUI 勾选“复用现有镜像”后，采集与探测都会提前检查本机 Docker image store 中的目标模型镜像：存在就跳过构建并复用；不存在则在日志中提示，并自动构建后继续任务。Docker 查询失败（如连接或权限错误）会明确报错，不会被当作镜像缺失。未勾选时仍执行正常构建。
+
+正式矩阵的每个 `/predict` 请求默认最多等待 300 秒。长耗时模型可显式调整，例如
+`--request-timeout-seconds 1800` 表示单个请求最多等待 30 分钟；它不限制整条命令或整个
+资源矩阵的总运行时间。TUI 的“单请求超时秒”会同步写入完整命令。
+
+## 交互式终端界面
 
 不想反复输入长命令时，可以从项目根目录启动全屏 TUI：
 
@@ -143,47 +301,13 @@ TUI 分为“实验配置”“运行监控”“结果工具”和“设置”�
 放大时仍可复制、清空和终止任务。滚动查看历史或选择文字后暂停跟随，新增日志继续保留，
 点击“回到最新”恢复自动跟随。滚动条使用与主题一致的整格滑块，避免半格字形形成黑色断带。
 
-“探测最大输入”会选择最小 CPU，并在可选时优先使用 `GPU=off`；内存列表按从小到大
-作为候选值逐档实测。输入规模留空时取自动规划结果的最大档，手动填写时取最大值。
-每档使用全新容器并最多运行一次 `/predict`；遇到明确的启动或运行期主机内存 OOM 时
-自动尝试下一档，第一个成功完成最大输入请求的值才是最低可用内存。界面随后显示该档
-容器冷启动、单次请求以及两者合计耗时。探测结果位于独立的 `probes/` 目录，不会写入
-或修改正式实验 CSV。
-
 界面不会重写采集逻辑，而是启动现有 `run.py`、`probe.py`、`plot.py` 和 `profile.py`。为了降低
 对能耗与延迟实验的影响，正式 workload 窗口内停止常规日志重绘，不运行实时绘图，
 也不轮询正在写入的 CSV；状态仅从已有进程输出中事件驱动更新。TUI 内运行时还会
 禁用子进程的 tmux pane 捕获，避免把全屏 ANSI 重绘写进 `tmux_all.log`。论文复现仍可
 直接复制界面显示的完整命令，在普通 CLI 或自动化脚本中执行。
 
-同一功能也可以直接从 CLI 运行：
-
-```bash
-.venv/bin/python probe.py --model google-bert/bert-base-uncased --skip-build
-```
-
-例如传入 `--cpus 1,2,4 --mems 2,4,8 --gpus off,on` 时，固定使用
-`CPU=1, GPU=off`，再依次尝试 `2GB → 4GB → 8GB`，找到第一档成功值后停止。
-CUDA OOM 属于显存不足，增加这里的主机内存上限无效，因此不会继续；请求超时或其他
-非 OOM 错误也会停止，避免把未验证的内存档误报为最低值。探测请求默认不设超时，
-会一直等待模型返回或发生明确错误；自动化任务如需限制时长，可显式传入
-`--timeout-seconds <正数>`。每次运行写入新的
-`results/<model-dir>/probes/largest_scale_<timestamp>/largest_scale_probe.json`；其中
-`memory_probe.attempts` 记录每档的 OOM/成功证据，`memory_probe.minimum_viable_mem_gb`
-记录最低成功值；`timing.request_s` 是该成功档请求的端到端耗时，`cold_start.total_s`
-是该档全新容器到 ready 的耗时，`timing.ready_plus_request_s` 是两者之和。
-镜像构建和输入规划等完整命令开销另记在 `timing.command_s`。该功能不启动 idle、
-能耗、抓包或 profiler 采集，因此是运行时间预估，不替代正式实验行。
-
-私有或 gated 模型可在项目根目录创建 `.env.local`：
-
-```env
-HF_TOKEN=hf_xxx
-```
-
-令牌只用于 host 检测和镜像构建；构建时通过 BuildKit secret 临时挂载，不会写入镜像历史，也不会传给正式推理容器。
-
-### 可选：企业微信采集通知
+## 企业微信通知
 
 先在企业微信群中添加群机器人，把完整 Webhook 只保存在项目根目录的
 `.env.local`（该文件已被 Git 忽略）：
@@ -210,178 +334,34 @@ python run.py --model google-bert/bert-base-uncased
 python run.py --model google-bert/bert-base-uncased --notify none
 ```
 
-程序会在环境预检和 Docker 构建前先发送实验开始通知，内容包含当前运行指令和
-启动后的累计耗时。启用对应 profiler 时，CPU Torch、GPU Torch、NCU、Massif、
-Nsys 各自的全部采样结束后，会分别发送一次阶段通知（兼容 vendor 模式的 CPU
-Advisor 也适用）。通知包含工具名称、阶段采样耗时、累计耗时、采样项总数与失败数；
-明确区分成功、部分失败、失败和无结果，关闭或不适用的工具不发送阶段通知。
-采样项按工具实际采样的资源配置 × input scale 计数，不按 repeat 或矩阵复用次数
-重复计数。此行为也适用于 TUI 启动的 `run.py`，沿用同一 `--notify` 设置。
-每个 CPU × 内存 × GPU 资源 case 完成且对应容器、监控器和
-抓包进程停止后，再同步发送一次进度，包含累计耗时、已完成 case/总 case、百分比、
-刚完成的资源配置以及当前 case 的结果行/异常行；全部结果合并和 tmux 日志收尾后
-发送最终总结。阶段通知在对应 profiler 容器退出后、下一阶段开始前同步发送；
-为了不干扰实验测量，input scale、warmup 和 repeat 窗口内部不发送
-网络通知。最终总结区分成功、部分成功、无结果、失败和用户取消。发送请求超时为
-5 秒并最多尝试两次；通知失败只产生警告，不改变采集结果或原退出码。不要把
-Webhook 放进命令行、提交到 Git 或粘贴到日志中。
+通知覆盖实验开始、已启用 profiler 的各工具阶段完成、每个资源 case 完成和最终总结。
+CPU Torch、GPU Torch、NCU、Massif、Nsys 各自汇总实际采样项、失败数、阶段耗时和累计耗时；
+兼容 vendor 模式的 CPU Advisor 同样适用。阶段状态区分成功、部分失败、失败和无结果。
+关闭或不适用的工具不发阶段通知，代表资源复用不重复计数。最终总结区分成功、部分成功、
+无结果、失败和用户取消。TUI 启动的 `run.py` 使用同一设置，独立 `profile.py` 不发送这些通知。
 
-### 3. 跑一个最小 smoke test
-
-下面只运行一个 CPU、一个内存限制、一个输入尺度和一个请求，并暂时关闭高开销 profiler：
-
-```bash
-python run.py --model google-bert/bert-base-uncased \
-  --cpus 1 --mems 4 --gpus off \
-  --input-scales 64 \
-  --warmup 0 --repeat 1 --repeat-in-window 1 \
-  --compute-profile-tool none \
-  --execution-profile-tool none \
-  --output-dir results/smoke
-```
-
-Stable Diffusion 建议先做单 GPU、单分辨率 smoke test：
-
-```bash
-python run.py --model stable-diffusion-v1-5/stable-diffusion-v1-5 \
-  --cpus 4 --mems 16 --gpus on --input-scales 256 \
-  --warmup 0 --repeat 1 --repeat-in-window 1 \
-  --compute-profile-tool none --execution-profile-tool none \
-  --output-dir results/sd-smoke
-```
-
-首次运行仍需下载模型并构建镜像。成功后，主要结果位于：
-
-```text
-results/smoke/google-bert--bert-base-uncased/
-├── result_all.csv
-├── static_meta.json
-├── collection_history.json
-└── input_scale_plan.json
-```
-
-### 4. 生成图表
-
-```bash
-python plot.py \
-  results/smoke/google-bert--bert-base-uncased/result_all.csv
-```
-
-图表会写回模型结果目录下的 `cpu/`、`gpu/`、`gpu+cpu/` 和 `latency_model/`；没有适用数据的分组会自动跳过。除原有指标总览外，还会按可用字段生成资源失败边界、P50/P90/P95 尾延迟、延迟–能耗 Pareto 前沿和冷启动阶段分解图。历史 CSV 缺少新字段时只跳过对应图，不影响其余图表。
-
-## 运行正式实验
-
-建议先逐步扩大规模：最小 smoke test → 单个资源配置的全部 input scale → 不带 profiler 的目标资源矩阵 → 最后补采高开销 profiler。
-
-### CPU-only 矩阵
-
-```bash
-python run.py --model google-bert/bert-base-uncased \
-  --cpus 1,2,4 --mems 4,8 --gpus off \
-  --compute-profile-tool none \
-  --output-dir results/bert-cpu
-```
-
-### CPU / GPU 对比矩阵
-
-```bash
-python run.py --model google-bert/bert-base-uncased \
-  --cpus 1,2,4 --mems 4,8 --gpus off,on \
-  --compute-profile-tool none \
-  --output-dir results/bert-cpu-gpu
-```
-
-上面两个例子先完成主矩阵，之后可用 `profile.py` 补采计算指标。计算分析器现在默认关闭；若希望在矩阵开始前直接采集 Torch / NCU，请显式传入 `--compute-profile-tool both`。`--execution-profile-tool` 默认也是 `none`。
-
-启动 OOM 剪枝默认开启。程序先按内存从小到大完整采集最低 CPU；只有 Docker 明确报告 `OOMKilled` 且这些失败构成连续低内存前缀时，才在后续更高 CPU 中跳过同 GPU mode、同内存上限的 case。运行期 OOM、CUDA OOM、普通启动失败和请求超时不会触发剪枝。可运行 case 的 warmup、repeat、监控器和指标口径完全不变；跳过的 case 仍写入 `status=error` 占位行，并在 `startup_oom_pruning.json` 中记录推断依据，不能作为实测性能值使用。论文若要求每个资源格都独立启动验证，传入 `--no-prune-startup-oom`。
-
-传入 `--skip-build`，或在 TUI 勾选“复用现有镜像”后，采集与探测都会提前检查本机 Docker image store 中的目标模型镜像：存在就跳过构建并复用；不存在则在日志中提示，并自动构建后继续任务。Docker 查询失败（如连接或权限错误）会明确报错，不会被当作镜像缺失。未勾选时仍执行正常构建。
-
-正式矩阵的每个 `/predict` 请求默认最多等待 300 秒。长耗时模型可显式调整，例如
-`--request-timeout-seconds 1800` 表示单个请求最多等待 30 分钟；它不限制整条命令或整个
-资源矩阵的总运行时间。TUI 的“单请求超时秒”会同步写入完整命令。
-
-### 默认完整矩阵
-
-```bash
-python run.py --model google-bert/bert-base-uncased
-```
-
-默认配置如下：
-
-| 维度 | 默认值 |
-| --- | --- |
-| CPU | `1,2,4,8` |
-| 内存 | `2,4,8,16` GB |
-| GPU mode | `off,on` |
-| input scale | 自动规划，通常 6 档 |
-| warmup / repeat | `2 / 5` |
-| 每行 workload | 自动持续到累计 application latency 约 10 秒 |
-| 单个 `/predict` 请求超时 | `300` 秒 |
-| Idle 基线 / 前置冷却 | `20 / 5` 秒 |
-| compute profiler | `none`（关闭；需要时显式启用或后续补采） |
-| execution profiler | `none` |
-| 企业微信通知 | 配置 Webhook 后自动启用；`--notify none` 可关闭 |
-
-主实验行数约为：
-
-```text
-CPU 数 × 内存数 × GPU mode 数 × input scale 数 × (warmup + repeat)
-```
-
-默认即 `4 × 4 × 2 × 6 × 7 = 1,344` 行。大矩阵开始前应同时评估运行时间和 profiler artifact 的磁盘占用。
-
-### 常用变体
-
-```bash
-# 手动指定输入规模
-python run.py --model google-bert/bert-base-uncased \
-  --input-scales 64,128,256,512
-
-# 时间序列模型
-python run.py --model amazon/chronos-bolt-base \
-  --task-family timeseries --backend chronos
-
-# 复用已有镜像
-python run.py --model google-bert/bert-base-uncased --skip-build
-
-# 单个推理请求最多等待 30 分钟
-python run.py --model stable-diffusion-v1-5/stable-diffusion-v1-5 \
-  --request-timeout-seconds 1800
-
-# 查看全部参数
-python run.py --help
-```
+通知在测量窗口外发送：profiler 阶段返回后、下一个阶段前，或 case 的容器、监控器与抓包
+全部停止后。input scale、warmup 和 repeat 窗口内部不发送网络通知。每次发送超时 5 秒，
+最多尝试两次；失败只产生警告，不改变测量结果或原退出码。Webhook 只保存在本地环境配置中。
 
 ## 查看结果
 
-结果目录名会把模型 ID 中的 `/` 替换为 `--`。例如 `google-bert/bert-base-uncased` 会写入 `google-bert--bert-base-uncased/`。
+结果目录为 `<output-dir>/<model-dir>/`，模型 ID 中的 `/` 替换为 `--`。
+例如 `google-bert/bert-base-uncased` 对应 `google-bert--bert-base-uncased/`。
 
-| 文件或目录 | 用途 |
+| 阅读目的 | 入口 |
 | --- | --- |
-| `result_all.csv` | 动态测量结果；每行对应一个资源配置、input scale 和一次 warmup/repeat window，包括延迟波动、归一化吞吐/能效、PCAP 网络字节、冷启动分解、cgroup memory/stat/PID/throttling/events/PSI、swap 与块 I/O 增量。 |
-| `static_meta.json` | 模型 revision、参数量与参数 payload、模型 cache、精度、量化、许可证、输入输出格式、GPU/主机 RAM、主机 swap、Docker 存储、cgroup 版本/采集模式与实验命令。 |
-| `collection_history.json` | 补采、超时重试和质量重采等数据修复过程的 provenance；不与静态元数据混放。 |
-| `input_scale_plan.json` | 本次实际执行的 scale 和 payload 计划。 |
-| `startup_oom_pruning.json` | 使用 `--prune-startup-oom` 时的参考 CPU、实测启动 OOM 前缀、推断跳过 case 和适用假设。 |
-| `compute_profile_plan.json` | Torch / NCU 的 per-scale 结果与错误。 |
-| `execution_profile_plan.json` | Massif / Nsys 的采样来源、复用 provenance、per-resource/per-scale 结果与错误。 |
-| `compute_profiles/`、`execution_profiles/` | 启用对应 profiler 时默认保留的原始 artifacts。 |
-| `tmux_all.log` | 从 tmux pane 启动时自动保存的完整终端输出。 |
-| `cpu/`、`gpu/`、`gpu+cpu/` | `plot.py` 生成的指标图。 |
-| `latency_model/` | `plot.py` 生成的延迟拟合报告、残差和诊断图。 |
+| 查看测量值 | `result_all.csv`；正式性能分析筛选 `status=ok` 且 `warmup=0`。 |
+| 复现实验对象和输入 | `static_meta.json` 与 `input_scale_plan.json`。 |
+| 追踪补采或修复 | `collection_history.json` 与对应 profiler plan。 |
+| 查看图表和拟合 | `cpu/`、`gpu/`、`gpu+cpu/` 与 `latency_model/`。 |
 
-阅读延迟列时注意：
+`latency_app_s` 是客户端应用层计时，`latency_s` 是抓包解析得到的 packet-level 计时。
+关闭 GPU 或未启用某个 profiler 时，对应字段为 `nan` 属于预期结果。
+运行中先写 `result_case_*.csv`，矩阵完成后才合并为 `result_all.csv`。
 
-- `latency_app_s` 是 client 在 `requests.post()` 外层测得的 application latency。
-- `latency_s` 来自 `tcpdump + tshark` 的 packet-level latency。
-- `input_units_per_request = effective_input_scale × batch_size`；这里的 input unit 沿用任务族的 `input_scale` 单位，CV 中是缩放倍率而不是像素数。
-- `memory.peak`、`pids.peak` 是新建容器 cgroup 自创建以来的峰值；page fault、refault、I/O 操作和 PID max event 则是当前 workload window 的首尾增量。
-- PCAP 的 protocol overhead 是 captured frame bytes 减去 TCP payload，只表示捕获到的 L2/L3/L4 开销，不含 TCP payload 内的 HTTP header/body 拆分。
-- `warmup=1` 的行不会进入默认图表；`status=error` 的占位行会被性能图和延迟模型排除，但会保留在 `resource_feasibility_heatmap.png` 中展示 OOM、timeout 和其他失败边界。剪枝推断的启动 OOM 会单独显示为 `P-OOM`，不会冒充实测 `OOM-S`。
-- `gpu_mode=off` 时 GPU 指标为 `nan`、未启用 execution profiler 时 Massif/Nsys 指标为 `nan`，都属于预期行为。
-
-完整字段字典、功率口径、FLOP 口径和延迟模型说明见[完整参考](REFERENCE.md)。
+完整说明集中在[输出文件](REFERENCE.md#输出文件)、[CSV 字段字典](REFERENCE.md#result_allcsv-字段解释)
+和[常见判断](REFERENCE.md#常见判断)。
 
 ## 选择性能分析器
 
@@ -394,6 +374,9 @@ FLOP profiling 和主 latency / energy workload 相互独立：
 | `ncu` | GPU 实际执行的 Tensor / Scalar FLOP | 单独诊断 NVIDIA GPU |
 | `both` | Torch eager；GPU 行再运行 NCU | 显式启用完整采集 |
 
+Torch probe 会强制并验证 eager attention，正式请求仍使用正常运行时的 attention 实现。
+NCU 需要主机上的 `ncu` 和可用的 GPU 性能计数器，可用 `--ncu-root` 指定工具位置。
+
 Execution profiling 默认关闭。显式启用后采用缩减采样，并把来源记录到 plan 与静态元数据：
 
 - `--execution-profile-tool massif`：CPU-only 的 process-lifetime 内存峰值。
@@ -402,7 +385,7 @@ Execution profiling 默认关闭。显式启用后采用缩减采样，并把来
 - Massif 默认 `--massif-sampling per-scale`：最大 CPU/内存 × 每个 input scale。
 - Nsys 默认 `--nsys-sampling per-cpu-scale`：全部 CPU × 最大内存 × 每个 input scale。
 
-新构建的模型共享 `acprof-base` 中预装的 Valgrind 和 Nsys 运行库；启用分析时直接使用模型镜像，无需为每个新模型再构建 Massif / Nsys 镜像。Nsys 主程序仍从宿主机挂载，两个工具只在独立分析探针中运行。已有旧模型镜像无需重新下载权重：首次使用时按需构建兼容镜像，以后实际模型镜像 ID 和分析 Dockerfile 均未改变时直接复用，跳过 `docker build`。
+新构建的模型共享 `acprof-base` 中预装的 Valgrind 和 Nsys 运行库；启用分析时直接使用模型镜像，无需为每个新模型再构建 Massif / Nsys 镜像。Nsys 主程序仍从宿主机挂载，可用 `--nsys-root` 指定；host 无需安装 Valgrind。两个工具只在独立分析探针中运行。已有旧模型镜像无需重新下载权重：首次使用时按需构建兼容镜像，以后实际模型镜像 ID 和分析 Dockerfile 均未改变时直接复用，跳过 `docker build`。
 
 需要严格采完整资源矩阵时显式传入：
 
@@ -416,17 +399,47 @@ python run.py --model google-bert/bert-base-uncased \
 `--massif-reference-cpu`、`--massif-reference-mem`、
 `--nsys-reference-cpu`、`--nsys-reference-mem` 显式选择。
 
-也可以先完成主矩阵，再安全地补采缺失指标：
+### 补采已有结果
+
+完成主矩阵后，结果目录需同时具有 `result_all.csv`、`static_meta.json` 和
+`input_scale_plan.json`。先检查计划，再执行补采：
 
 ```bash
-# 只检查计划，不启动 profiler、不修改文件
 python profile.py results/google-bert--bert-base-uncased --dry-run
-
-# 只补采指定工具
 python profile.py results/google-bert--bert-base-uncased --tools torch,ncu
 ```
 
-`profile.py` 不会重跑 latency、energy、MIPS、resource usage 或 packet latency；写入前会备份旧结果并进行原子替换。NCU 和 Massif 会按 input scale 保存 checkpoint：NCU 可复用完整 CSV 或从遗留 `.ncu-rep` 恢复，Massif 可复用已完成的 `.out`，因此重启后只重新采集缺失尺度；`--force-reprofile` 会强制全部重采。详细行为见[完整参考中的补采说明](REFERENCE.md#posthoc-profiling)。
+不传 `--tools` 时，默认补齐适用且尚未成功的 `torch,ncu,nsys,massif`。
+Torch 匹配已有 CPU/GPU 数据，NCU/Nsys 只用于 GPU 行，Massif 只用于 CPU-only 行。
+补采沿用前述 Massif/Nsys 采样策略，也支持 `--massif-sampling full`、
+`--nsys-sampling per-scale` 或 `--nsys-sampling full`。
+
+NCU 和 Massif 会按 input scale 保存 checkpoint。NCU 可复用匹配的 CSV 或从已有
+`.ncu-rep` 恢复，Massif 可复用匹配的 `.out`；模型 revision、镜像、资源、repeat 和
+NCU metrics（适用时）必须匹配，才能恢复旧报告。分析固定使用不可变镜像 ID，
+旧 tag 形式的 Massif checkpoint 与新 ID 不匹配时会重采。完整成功的已有 plan 也可复用。
+默认保留已有成功 CSV 值；`--force-reprofile` 强制重新采集并替换所选 profiler 字段。
+
+写入前把旧文件备份到 `posthoc_backups/<timestamp>/`，验证临时文件后原子替换
+`result_all.csv`、`static_meta.json` 和 `collection_history.json`，失败时从备份恢复。
+操作记录追加到 `posthoc_profile_history`，原始实验命令和非 profiler 字段保持原样。
+旧结果首次成功补采时会创建历史文件并迁移已有记录；报告与补采 plan 位于 `posthoc_profiles/`。
+同一结果目录若仍被采集或分析进程使用，补采会拒绝启动。
+
+### 从已有计划生成派生 CSV
+
+如果 latency 已采集完成、之后才生成 `compute_profile_plan.json`，可以写出一份带 FLOP/MFLOPS 的新 CSV：
+
+```bash
+python -m acprof.cli.backfill_compute \
+  results/google-bert--bert-base-uncased/result_all.csv \
+  results/google-bert--bert-base-uncased/compute_profile_plan.json \
+  --output results/google-bert--bert-base-uncased/result_all.with_compute.csv
+```
+
+工具按 GPU mode 和 input scale 匹配已有计划，生成带 Torch/NCU 字段的派生 CSV。
+输出采用原子写入，默认拒绝覆盖已有文件；确需替换显式输出路径时追加 `--overwrite`。
+FLOP/MFLOPS 的单位、延迟分母和缺失值规则见[计算指标字典](REFERENCE.md#torch-与-ncu-计算指标)。
 
 ## 常见问题
 
@@ -483,13 +496,13 @@ cat /proc/sys/kernel/perf_event_paranoid
 
 ### 运行中还没有 `result_all.csv`
 
-这是正常的：矩阵执行期间先写 `result_case_*.csv`，全部 case 完成后才合并为 `result_all.csv`。如果在 tmux 中运行，可查看结果目录里的 `tmux_all.log`。
+这是正常的：矩阵执行期间先写 `result_case_*.csv`，全部 case 完成后才合并为 `result_all.csv`。如果在 tmux 中运行，采集期间查看对应终端；`tmux_all.log` 在命令结束或报错退出时落盘。
 
 ### `--skip-build` 后接口报错
 
 本机可能仍是旧镜像。去掉 `--skip-build` 重新构建一次。
 
-更多诊断，包括 idle baseline 波动、Profiler `nan`、GPU energy 和 PMU event 问题，见[完整故障排查](REFERENCE.md#troubleshooting)。
+更多诊断，包括 idle baseline 波动、Profiler `nan`、GPU energy 和 PMU event 问题，见[常见判断](REFERENCE.md#常见判断)。
 
 ## 项目结构与开发
 
@@ -504,6 +517,7 @@ acprof/
 
 dockerfiles/      # 各任务族及 profiler 镜像
 run.py            # 主实验入口
+probe.py          # 最大输入与最低候选内存探测
 plot.py           # 绘图入口
 profile.py        # 已有结果的 profiler 补采入口
 tui.py            # Textual 交互式终端界面入口
@@ -517,7 +531,12 @@ acprof-tui         # 自动使用项目 .venv 的便捷启动器
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
-.venv/bin/python -m compileall -q acprof run.py plot.py profile.py tui.py
+.venv/bin/python -m compileall -q acprof run.py probe.py plot.py profile.py tui.py
 ```
 
-更深入的 CLI 参数、input scale 规则、音频 workload、所有输出字段、时间估算和扩展方式，请阅读 [REFERENCE.md](REFERENCE.md)。
+同一任务族中的新模型通常由 `acprof/host/detect.py` 自动识别；确需新增任务族时，要同步
+补齐 `acprof/config.py` 的检测映射与尺度定义、`acprof/container/handlers/` 的模型处理、
+`acprof/workloads/` 的确定性输入、`dockerfiles/` 的离线镜像构建，并覆盖检测、尺度、
+离线加载和编排测试。
+
+修改输出或指标时，同步维护 [REFERENCE.md](REFERENCE.md) 的字段来源、单位、适用条件与历史兼容说明。
