@@ -4,7 +4,7 @@
 安装、运行、TUI、通知与补采操作见 [README](README.md)。
 
 - [输出文件](#输出文件)
-- [`result_all.csv` 字段解释](#result_allcsv-字段解释)
+- [result_all.csv 字段解释](#result_allcsv-字段解释)
 - [结果行数和时间成本估算](#结果行数和时间成本估算)
 - [常见判断](#常见判断)
 - [CLI 参数](#cli-参数)
@@ -249,7 +249,7 @@ CPU 模型除共同的二次 log input-scale 项外，还使用二次 log CPU �
 
 报告逐 CPU/GPU 模型给出 R²、MAE、RMSE、relative MAE、MAPE、SMAPE、非正预测数、系数、数值秩和训练范围。resource configuration holdout 要求 `R² >= 0.80`；两种验证都要求总体 `relative MAE <= 0.20`、总体 `MAPE <= 0.20`、任一留出资源配置的 `relative MAE` 与 `MAPE <= 0.30`、任一验证 case 的相对误差 `<= 0.30`，且预测有限为正。input scale holdout 的测试行全部处于同一个尺度，其 R² 只衡量该固定尺度内很小的资源配置差异，不能衡量尺度水位外推是否准确，因此仍在报告中保留但不作为质量门槛。全部适用门槛通过时顶层才写入 `status=ok` 和 `prediction_ready=true`；否则使用 `poor_fit`、`unvalidated` 或 `skipped`，不会把“求解成功”误报为“可用于预测”。
 
-## `result_all.csv` 字段解释
+## result_all.csv 字段解释
 
 每行对应一个资源配置、一个 input scale 和一次 warmup/repeat 请求窗口。
 常规性能分析只取 `status=ok` 且 `warmup=0`；错误行中的部分数值不作为正式测量。
