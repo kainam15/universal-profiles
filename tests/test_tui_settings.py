@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from acprof.cli.tui_core import RunConfig
 from acprof.cli.tui_settings import (
+    SETTINGS_VERSION,
     TuiSettings,
     UiPreferences,
     default_settings_path,
@@ -60,13 +61,35 @@ class TuiSettingsTests(unittest.TestCase):
                 log_max_lines=1000, show_command_bar=False,
             ),
             run_defaults=RunConfig.smoke("  demo/model  "),
+            last_model="  demo/latest  ",
         )
         save_settings(self.path, settings, self.project)
         restored, warning = load_settings(self.path, self.project)
         self.assertEqual(warning, "")
         self.assertEqual(restored.ui, settings.ui)
         self.assertEqual(restored.run_defaults, replace(settings.run_defaults, model="demo/model"))
+        self.assertEqual(restored.last_model, "demo/latest")
+        self.assertEqual(json.loads(self.path.read_text())["version"], SETTINGS_VERSION)
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+
+    def test_legacy_settings_load_without_rewriting_and_upgrade_when_saved(self):
+        for version_fields in ({}, {"version": 1}):
+            with self.subTest(version_fields=version_fields):
+                self.write_payload({
+                    **version_fields,
+                    "ui": {"theme": "acprof-light"},
+                    "run_defaults": {"model": "demo/saved", "cpus": "1,3"},
+                })
+                previous = self.path.read_bytes()
+                restored, warning = load_settings(self.path, self.project)
+                self.assertEqual(warning, "")
+                self.assertEqual(restored.last_model, "")
+                self.assertEqual(restored.run_defaults.model, "demo/saved")
+                self.assertEqual(self.path.read_bytes(), previous)
+                updated = replace(restored, last_model="demo/latest")
+                save_settings(self.path, updated, self.project)
+                self.assertEqual(load_settings(self.path, self.project), (updated, ""))
+                self.assertEqual(json.loads(self.path.read_text())["version"], 2)
 
     def test_empty_model_is_valid_for_defaults_but_other_validation_remains(self):
         settings = TuiSettings(run_defaults=RunConfig(model="  ", cpus="1, 2", gpus="OFF"))
@@ -95,7 +118,11 @@ class TuiSettingsTests(unittest.TestCase):
         bad_payloads = (
             [],
             {"version": True},
-            {"version": 2},
+            {"version": SETTINGS_VERSION + 1},
+            {"last_model": None},
+            {"last_model": True},
+            {"last_model": 5},
+            {"last_model": []},
             {"ui": []},
             {"ui": {"theme": "unknown"}},
             {"ui": {"log_wrap": "false"}},
@@ -135,6 +162,7 @@ class TuiSettingsTests(unittest.TestCase):
         invalid = (
             TuiSettings(ui=UiPreferences(log_wrap=1)),
             TuiSettings(ui=UiPreferences(log_max_lines=3)),
+            TuiSettings(last_model=False),
             TuiSettings(run_defaults=RunConfig(skip_build="false")),
             TuiSettings(run_defaults=RunConfig(repeat=True)),
             TuiSettings(run_defaults=RunConfig(sample_hz=10 ** 400)),

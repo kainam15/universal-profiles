@@ -1,8 +1,9 @@
 """Local, project-scoped preferences for the terminal controller.
 
-Saving is explicit: reading preferences never creates or repairs a file, and
-experiment defaults are only persisted when supplied by the caller.  The
-whitelisted dataclasses contain no environment variables or credentials.
+Reading preferences never creates or repairs a file. UI preferences and
+experiment defaults are saved explicitly; the latest confirmed run/probe model
+is remembered automatically. The whitelisted dataclasses contain no environment
+variables or credentials.
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from acprof.cli.tui_themes import UI_THEMES
 
 
 LOG_MAX_LINES = (500, 1000, 3000, 10000)
-SETTINGS_VERSION = 1
+SETTINGS_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -42,11 +43,14 @@ class UiPreferences:
 class TuiSettings:
     ui: UiPreferences = field(default_factory=UiPreferences)
     run_defaults: RunConfig | None = None
+    last_model: str = ""
 
     def validate(self, *, project_dir: Path) -> "TuiSettings":
         if not isinstance(self.ui, UiPreferences):
             raise ValueError("界面设置必须是 UiPreferences")
         ui = self.ui.validate()
+        if type(self.last_model) is not str:
+            raise ValueError("上次运行的模型 ID 必须是字符串")
         config = self.run_defaults
         if config is not None:
             if not isinstance(config, RunConfig):
@@ -61,7 +65,7 @@ class TuiSettings:
             except OverflowError as exc:
                 raise ValueError("实验默认配置中的数字超出支持范围") from exc
             config = replace(config, model=model)
-        return replace(self, ui=ui, run_defaults=config)
+        return replace(self, ui=ui, run_defaults=config, last_model=self.last_model.strip())
 
 
 def default_settings_path(project_dir: Path) -> Path:
@@ -97,8 +101,8 @@ def _validate_field_types(
 def _decode_settings(payload: Any, project_dir: Path) -> TuiSettings:
     if not isinstance(payload, dict):
         raise ValueError("设置文件的最外层必须是 JSON 对象")
-    version = payload.get("version", SETTINGS_VERSION)
-    if type(version) is not int or version != SETTINGS_VERSION:
+    version = payload.get("version", 1)
+    if type(version) is not int or version not in (1, SETTINGS_VERSION):
         raise ValueError("不支持此设置文件版本")
     ui_values = payload.get("ui", {})
     if not isinstance(ui_values, dict):
@@ -113,7 +117,9 @@ def _decode_settings(payload: Any, project_dir: Path) -> TuiSettings:
         _validate_field_types(defaults_values, RunConfig, "实验默认配置")
         defaults = RunConfig(**defaults_values)
     # Ignore unknown top-level keys; only recognized fields can be saved again.
-    return TuiSettings(ui=ui, run_defaults=defaults).validate(project_dir=project_dir)
+    return TuiSettings(
+        ui=ui, run_defaults=defaults, last_model=payload.get("last_model", ""),
+    ).validate(project_dir=project_dir)
 
 
 def load_settings(path: Path, project_dir: Path) -> tuple[TuiSettings, str]:
@@ -144,6 +150,7 @@ def save_settings(path: Path, settings: TuiSettings, project_dir: Path) -> None:
     payload = {
         "version": SETTINGS_VERSION,
         "ui": asdict(normalized.ui),
+        "last_model": normalized.last_model,
         "run_defaults": (
             asdict(normalized.run_defaults)
             if normalized.run_defaults is not None

@@ -63,7 +63,7 @@ from acprof.cli.tui_core import (
 )
 
 from acprof.cli.tui_settings import (
-    TuiSettings, UiPreferences, default_settings_path, load_settings, save_settings,
+    UiPreferences, default_settings_path, load_settings, save_settings,
 )
 from acprof.cli.tui_themes import THEME_CATALOG, THEME_OPTIONS
 from acprof.cli.tui_log import SelectableLog
@@ -204,7 +204,10 @@ class AcprofTui(App[None]):
             self.settings_path, PROJECT_DIR,
         )
         self.ui_preferences = self._saved_settings.ui
-        self.initial_config = initial_config or self._saved_settings.run_defaults or RunConfig()
+        config = self._saved_settings.run_defaults or RunConfig()
+        if self._saved_settings.last_model:
+            config = replace(config, model=self._saved_settings.last_model)
+        self.initial_config = initial_config if initial_config is not None else config
         for palette in THEME_CATALOG:
             self.register_theme(Theme(**palette.theme_kwargs()))
         self.theme = self.ui_preferences.theme
@@ -242,6 +245,7 @@ class AcprofTui(App[None]):
                                 placeholder="google-bert/bert-base-uncased",
                                 id="model",
                                 classes="config-control",
+                                tooltip="确认启动采集或探测后自动记住，下次打开时填入。",
                             )
                             yield Label("输出目录")
                             yield Input(
@@ -658,8 +662,10 @@ class AcprofTui(App[None]):
         config = self._saved_settings.run_defaults
         summary = (
             f"已记住：{config.model or '模型待填写'} · CPU {config.cpus} · 内存 {config.mems} GB"
-            if config else "尚未保存实验配置，启动时使用项目默认值。"
+            if config else "尚未保存实验默认参数。"
         )
+        if self._saved_settings.last_model:
+            summary += f"\n下次启动自动填入模型：{self._saved_settings.last_model}"
         self.query_one("#saved-run-summary", Static).update(summary)
         self.query_one("#settings-location", Static).update(f"保存位置：{self.settings_path}")
 
@@ -702,7 +708,8 @@ class AcprofTui(App[None]):
                 self._collect_config(allow_empty_model=True)
                 if remember_run else self._saved_settings.run_defaults
             )
-            settings = TuiSettings(
+            settings = replace(
+                self._saved_settings,
                 ui=self._saved_settings.ui if remember_run else self.ui_preferences,
                 run_defaults=config,
             )
@@ -712,6 +719,7 @@ class AcprofTui(App[None]):
             self.query_one("#settings-status", Static).update("保存失败 · 请检查配置或文件权限")
             return
         self._saved_settings = settings
+        self._settings_warning = ""
         self._update_saved_settings_summary()
         message = "已记住当前实验配置" if remember_run else "界面设置已保存"
         if not remember_run:
@@ -1163,10 +1171,33 @@ class AcprofTui(App[None]):
             return
         self._launch(pending)
 
+    def _remember_model(self, model: str) -> None:
+        model = model.strip()
+        if not model or model == self._saved_settings.last_model:
+            return
+        if self._settings_warning:
+            self.notify(
+                "本地设置无法读取，已保留原文件。可在设置页主动保存后恢复自动记忆。",
+                title="模型 ID 未保存", severity="warning",
+            )
+            return
+        settings = replace(self._saved_settings, last_model=model)
+        try:
+            save_settings(self.settings_path, settings, PROJECT_DIR)
+        except (OSError, ValueError, TuiConfigError) as exc:
+            self.notify(str(exc), title="模型 ID 未保存", severity="warning")
+            return
+        self._saved_settings = settings
+        self._update_saved_settings_summary()
+
     def _launch(self, pending: PendingLaunch) -> None:
         if self._is_busy():
             self.notify("已有任务正在运行", severity="warning")
             return
+        if pending.kind in {"run", "probe"} and pending.config is not None:
+            # Persist before creating the subprocess, outside any measurement
+            # window. Failed or interrupted attempts still retain their model.
+            self._remember_model(pending.config.model)
         self._active_run_config = pending.config if pending.kind == "run" else None
         self._active_command = pending.command
         self._process_kind = pending.kind
@@ -1982,7 +2013,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model",
         default=None,
-        help="Pre-fill the Hugging Face model ID",
+        help="Pre-fill the Hugging Face model ID (overrides the last run model)",
     )
     parser.add_argument(
         "--preset",

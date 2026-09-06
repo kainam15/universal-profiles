@@ -107,6 +107,23 @@ python run.py --model google-bert/bert-base-uncased \
   --output-dir results/smoke
 ```
 
+### TUI 本地设置与模型记忆
+
+`tui.json` 的设置 schema 为 v2，由 `acprof/cli/tui_settings.py` 独立管理；它不属于实验结果
+schema。文件按项目路径隔离，位置见 [README 的 TUI 说明](README.md#可选使用交互式终端界面)。
+`ui` 保存显式保存的界面偏好，`run_defaults` 保存显式记住的实验配置或 `null`。
+`last_model` 是字符串，记录最近一次通过表单校验并确认启动采集或最大输入探测的模型 ID，
+仅去除首尾空白；空字符串表示尚无记录。它不表示任务成功，也不来自结果目录名或历史 CSV。
+
+自动记录在创建采集/探测子进程前原子写入，不在测量窗口内写设置。取消启动、环境检查、
+绘图和补采不更新它；保存界面偏好或实验默认配置会保留它。下次启动的模型优先级为
+`--model`、非空 `last_model`、`run_defaults.model`，均未提供时留空。
+`--preset` 只覆盖其他实验参数。
+
+v1 或缺少版本号/`last_model` 的旧文件仍可读取，模型记录默认为空；读取不改写文件，
+下次保存时写成 v2。损坏或不支持的设置文件保留到用户主动保存，自动记录跳过该文件并提示；
+写入失败同样只提示，不阻止任务启动。
+
 ### 最低配置的最大 input scale 探测
 
 在启动完整矩阵前，可以先用最重输入逐档确认最低可用内存：

@@ -9,7 +9,7 @@ from textual.widgets import (
     Button, Checkbox, Collapsible, ContentSwitcher, Input, Select, TabbedContent,
 )
 
-from acprof.cli.tui import AcprofTui, ConfirmActionScreen, main
+from acprof.cli.tui import AcprofTui, ConfirmActionScreen, PendingLaunch, main
 from acprof.cli.tui_log import SelectableLog
 from acprof.cli.tui_core import ProgressSnapshot, RunConfig
 from acprof.cli.tui_settings import (
@@ -281,6 +281,132 @@ class TuiLayoutSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restarted.ui_preferences.theme, "acprof-dark")
 
 
+class TuiModelMemoryTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.settings_path = Path(self.temporary.name) / "tui.json"
+        self.saved = TuiSettings(
+            ui=UiPreferences(theme="acprof-light"),
+            run_defaults=replace(RunConfig.smoke("demo/saved"), cpus="1,3"),
+            last_model="demo/previous",
+        )
+
+    async def test_confirmed_run_and_probe_restore_model_without_saving_other_edits(self):
+        for kind in ("run", "probe"):
+            with self.subTest(kind=kind):
+                save_settings(self.settings_path, self.saved, PROJECT_DIR)
+                original = self.settings_path.read_bytes()
+                app = AcprofTui(settings_path=self.settings_path)
+                model = f"demo/latest-{kind}"
+                async with app.run_test(size=(120, 30)) as pilot:
+                    app.query_one("#model", Input).value = f"  {model}  "
+                    app.query_one("#cpus", Input).value = "2"
+                    app.query_one("#ui-theme", Select).value = "acprof-dark"
+                    await pilot.pause(0.12)
+                    getattr(app, f"action_request_{kind}")()
+                    await pilot.pause()
+                    self.assertEqual(self.settings_path.read_bytes(), original)
+
+                    def check_persisted_before_launch(command, launched_kind):
+                        self.assertEqual(launched_kind, kind)
+                        self.assertEqual(
+                            load_settings(self.settings_path, PROJECT_DIR),
+                            (replace(self.saved, last_model=model), ""),
+                        )
+
+                    with patch.object(
+                        app, "_execute_command", side_effect=check_persisted_before_launch,
+                    ) as execute:
+                        self.assertTrue(await pilot.click("#confirm-yes"))
+                        await pilot.pause()
+                        execute.assert_called_once()
+                restarted = AcprofTui(settings_path=self.settings_path)
+                async with restarted.run_test(size=(120, 30)) as pilot:
+                    await pilot.pause(0.12)
+                    self.assertEqual(restarted.query_one("#model", Input).value, model)
+                    self.assertEqual(restarted.query_one("#cpus", Input).value, "1,3")
+                    self.assertEqual(restarted.theme, "acprof-light")
+
+    async def test_draft_preview_and_cancel_do_not_replace_last_model(self):
+        save_settings(self.settings_path, self.saved, PROJECT_DIR)
+        original = self.settings_path.read_bytes()
+        app = AcprofTui(settings_path=self.settings_path)
+        async with app.run_test(size=(120, 30)) as pilot:
+            app.query_one("#model", Input).value = "demo/draft"
+            await pilot.pause(0.12)
+            self.assertEqual(self.settings_path.read_bytes(), original)
+            with patch.object(app, "_execute_command") as execute:
+                for kind in ("run", "probe"):
+                    getattr(app, f"action_request_{kind}")()
+                    await pilot.pause()
+                    self.assertTrue(await pilot.click("#confirm-no"))
+                    await pilot.pause()
+                    self.assertIsNone(app._pending_launch)
+                    self.assertEqual(self.settings_path.read_bytes(), original)
+                app.query_one("#model", Input).value = ""
+                app.action_request_run()
+                await pilot.pause(0.12)
+                self.assertIsNone(app._pending_launch)
+                self.assertEqual(self.settings_path.read_bytes(), original)
+                execute.assert_not_called()
+
+    async def test_first_launch_remembers_only_model_even_if_process_fails(self):
+        config = RunConfig.smoke("demo/first")
+        app = AcprofTui(config, settings_path=self.settings_path)
+        async with app.run_test(size=(120, 30)) as pilot:
+            with patch("acprof.cli.tui.subprocess.Popen", side_effect=OSError("test failure")):
+                app._launch(PendingLaunch(("unused",), "run", config))
+                await app.workers.wait_for_complete()
+            await pilot.pause()
+            self.assertFalse(app._is_busy())
+        saved, warning = load_settings(self.settings_path, PROJECT_DIR)
+        self.assertEqual(warning, "")
+        self.assertEqual(saved, TuiSettings(last_model="demo/first"))
+        self.assertEqual(
+            AcprofTui(settings_path=self.settings_path).initial_config,
+            RunConfig(model="demo/first"),
+        )
+
+    async def test_write_failure_or_corrupt_file_does_not_block_launch(self):
+        for corrupt in (False, True):
+            with self.subTest(corrupt=corrupt):
+                save_settings(self.settings_path, self.saved, PROJECT_DIR)
+                if corrupt:
+                    self.settings_path.write_text("{broken", encoding="utf-8")
+                original = self.settings_path.read_bytes()
+                config = RunConfig.smoke("demo/latest")
+                app = AcprofTui(config, settings_path=self.settings_path)
+                async with app.run_test(size=(120, 30)):
+                    with (
+                        patch.object(app, "_execute_command") as execute,
+                        patch.object(app, "notify") as notify,
+                        patch("acprof.cli.tui.save_settings", side_effect=OSError("disk error")) as save,
+                    ):
+                        app._launch(PendingLaunch(("unused",), "run", config))
+                        execute.assert_called_once()
+                        notify.assert_called_once()
+                        self.assertEqual(notify.call_args.kwargs["title"], "模型 ID 未保存")
+                        self.assertEqual(save.call_count, 0 if corrupt else 1)
+                    self.assertEqual(self.settings_path.read_bytes(), original)
+
+    async def test_explicit_settings_saves_preserve_last_model(self):
+        for remember_run in (False, True):
+            with self.subTest(remember_run=remember_run):
+                save_settings(self.settings_path, self.saved, PROJECT_DIR)
+                config = RunConfig.smoke("demo/edited")
+                app = AcprofTui(config, settings_path=self.settings_path)
+                async with app.run_test(size=(120, 30)) as pilot:
+                    app.query_one("#ui-theme", Select).value = "acprof-dark"
+                    await pilot.pause(0.12)
+                    app._save_settings(remember_run=remember_run)
+                saved, warning = load_settings(self.settings_path, PROJECT_DIR)
+                self.assertEqual(warning, "")
+                self.assertEqual(saved.last_model, "demo/previous")
+                self.assertEqual(saved.run_defaults, config if remember_run else self.saved.run_defaults)
+                self.assertEqual(saved.ui.theme, "acprof-light" if remember_run else "acprof-dark")
+
+
 class TuiMainSettingsTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -297,12 +423,21 @@ class TuiMainSettingsTests(unittest.TestCase):
         )
 
     def test_cli_explicit_arguments_override_saved_defaults_without_rewriting_them(self):
+        for model in ("", "demo/latest"):
+            with self.subTest(last_model=model):
+                settings, warning = load_settings(self.settings_path, PROJECT_DIR)
+                self.assertEqual(warning, "")
+                save_settings(self.settings_path, replace(settings, last_model=model), PROJECT_DIR)
+                self.check_cli_overrides(model or self.saved_config.model)
+
+    def check_cli_overrides(self, model):
         cases = (
-            ([], self.saved_config),
+            ([], replace(self.saved_config, model=model)),
             (["--model", "demo/explicit"], replace(self.saved_config, model="demo/explicit")),
-            (["--preset", "smoke"], RunConfig.smoke("demo/saved")),
-            (["--preset", "main"], RunConfig.main_matrix("demo/saved")),
-            (["--preset", "default"], RunConfig(model="demo/saved")),
+            (["--model", ""], replace(self.saved_config, model="")),
+            (["--preset", "smoke"], RunConfig.smoke(model)),
+            (["--preset", "main"], RunConfig.main_matrix(model)),
+            (["--preset", "default"], RunConfig(model=model)),
             (["--model", "demo/explicit", "--preset", "smoke"], RunConfig.smoke("demo/explicit")),
         )
         original = self.settings_path.read_bytes()

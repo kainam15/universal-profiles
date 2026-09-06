@@ -1,9 +1,11 @@
 import asyncio
 import csv
+import os
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from textual.widgets import DataTable, Input, Select, Static
 from textual.css.query import NoMatches
@@ -380,6 +382,13 @@ class TuiCoreTests(unittest.TestCase):
 
 
 class TuiAppTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        xdg_patch = patch.dict(os.environ, {"XDG_CONFIG_HOME": temporary.name})
+        xdg_patch.start()
+        self.addCleanup(xdg_patch.stop)
+
     async def test_app_mounts_and_requires_confirmation_before_run(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
