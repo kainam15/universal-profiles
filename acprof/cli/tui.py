@@ -1721,29 +1721,15 @@ class AcprofTui(BarCursorApp):
             log.write(f"[TUI][ERROR] 环境检查失败：{error}")
             self.notify(error, severity="error")
             return
-        # Render a structured Rich table instead of plain text lines.
-        from rich.table import Table as RichTable
-        from rich.text import Text as RichText
-        table = RichTable(
-            title="环境检查结果",
-            show_header=True,
-            title_style="bold",
-            border_style="dim",
-        )
-        table.add_column("检查项", style="bold", min_width=16)
-        table.add_column("状态", justify="center", min_width=4)
-        table.add_column("详情")
-        status_style = {"ok": "green", "warn": "yellow", "fail": "red bold"}
-        status_symbol = {"ok": "✓", "warn": "!", "fail": "✗"}
+        # SelectableLog retains plain text for wrapping, selection, and copying;
+        # Rich renderables cannot be written to its TextArea document.
+        log.write("[TUI] 环境检查结果：")
+        status_label = {"ok": "通过", "warn": "警告", "fail": "失败"}
         for check in checks:
-            style = status_style.get(check.status, "")
-            symbol = status_symbol.get(check.status, "?")
-            table.add_row(
-                check.label,
-                RichText(symbol, style=style),
-                check.detail,
+            log.write(
+                f"[{status_label.get(check.status, check.status)}] "
+                f"{check.label}：{check.detail}"
             )
-        log.write(table)
         failures = sum(check.status == "fail" for check in checks)
         warnings = sum(check.status == "warn" for check in checks)
         log.write(
