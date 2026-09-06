@@ -94,12 +94,53 @@ Select:focus > SelectCurrent { border: tall $accent; }
     border-top: solid $panel;
     background: $surface;
 }
-Button { min-width: 12; background: $panel; border: tall $panel; }
-Button:hover { background: $primary 15%; border: tall $primary 40%; }
-Button:focus { text-style: bold; border: tall $accent; }
-Button.-primary { background: $primary; border: tall $primary; color: $background; text-style: bold; }
+/* Transparent fill keeps the terminal cells outside rounded corners clear. */
+Button {
+    min-width: 14;
+    height: 3;
+    padding: 0 1;
+    background: transparent;
+    background-tint: transparent;
+    tint: transparent;
+    border: round $secondary;
+    color: $text;
+    text-style: none;
+}
+Button.-primary { text-style: bold; }
+Button:hover, Button:focus {
+    border: round $accent;
+    color: $accent;
+    text-style: bold underline;
+}
+Button.-primary, Button.-primary:focus {
+    border: round $primary;
+    color: $primary;
+}
+Button.-success, Button.-success:focus {
+    border: round $success;
+    color: $success;
+}
+Button.-warning, Button.-warning:focus {
+    border: round $warning;
+    color: $warning;
+}
+Button.-error, Button.-error:focus {
+    border: round $error;
+    color: $error;
+}
+Button.-primary:hover, Button.-success:hover, Button.-warning:hover, Button.-error:hover {
+    border: round $foreground;
+    color: $foreground;
+}
+Button.-active { text-style: bold underline; }
+Button:disabled, Button:disabled:hover, Button:disabled:focus, Button:disabled.-active {
+    border: round $secondary;
+    color: $text;
+    text-style: none;
+    opacity: 45%;
+}
 .action-bar Button { margin-left: 1; }
-#open-run-settings { margin-left: 0; width: 16; }
+#open-run-settings { margin-left: 0; width: 18; }
 #action-spacer { width: 1fr; }
 .button-row { height: auto; margin: 1 0; }
 .button-row Button { margin-right: 1; }
@@ -127,17 +168,13 @@ Button.-primary { background: $primary; border: tall $primary; color: $backgroun
 #status-detail { height: 1; text-overflow: ellipsis; }
 #case-progress { margin-top: 1; }
 #log-panel { height: 1fr; min-height: 5; padding: 0; }
-#log-toolbar { height: 1; margin: 1 0 0 0; }
-#log-title { width: 1fr; text-style: bold; color: $accent; }
+#log-toolbar { height: 3; }
+#log-title { width: 1fr; height: 3; content-align: left middle; text-style: bold; color: $accent; }
 #log-toolbar Button {
-    height: 1;
-    min-height: 1;
-    min-width: 10;
-    padding: 0 1;
-    border: none;
+    min-width: 12;
+    padding: 0;
     margin-left: 1;
 }
-#log-toolbar Button:focus { background: $accent; color: $background; }
 #log-hint { height: 1; color: $text-muted; text-overflow: ellipsis; }
 #restore-log { display: none; }
 #log-panel.-maximized { padding: 0 1; }
@@ -182,4 +219,6 @@ AcprofTui.short #bottom-panel.command-hidden { height: 0; }
 AcprofTui.short .section-title { margin: 0 0 1 0; }
 AcprofTui.short #matrix-table { max-height: 3; }
 AcprofTui.short #status-grid { padding: 0 1; margin-top: 0; }
+AcprofTui.short #case-progress { margin-top: 0; }
 AcprofTui.short #matrix-board { margin-top: 0; }
+AcprofTui.short #confirm-dialog { padding: 0 2; }

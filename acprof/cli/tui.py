@@ -16,7 +16,7 @@ from typing import Sequence
 
 try:
     from textual import on, work
-    from textual.app import App, ComposeResult
+    from textual.app import ComposeResult
     from textual.binding import Binding
     from textual.widget import Widget
     from textual.containers import Grid, Horizontal, Vertical, VerticalScroll
@@ -29,7 +29,6 @@ try:
         ContentSwitcher,
         DataTable,
         Header,
-        Input,
         Label,
         ProgressBar,
         Select,
@@ -68,6 +67,7 @@ from acprof.cli.tui_settings import (
 from acprof.cli.tui_themes import THEME_CATALOG, THEME_OPTIONS
 from acprof.cli.tui_log import SelectableLog
 from acprof.cli.tui_scrollbar import SolidScrollBarRender
+from acprof.cli.tui_input import BarCursorApp, BarCursorInput as Input
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -174,7 +174,7 @@ class LogPanel(Vertical):
     ALLOW_MAXIMIZE = True
 
 
-class AcprofTui(App[None]):
+class AcprofTui(BarCursorApp):
     """Full-screen controller for AC-Prof collection and diagnostics."""
 
     TITLE = "AC-Prof"
@@ -790,6 +790,7 @@ class AcprofTui(App[None]):
         for button in self.query(Button):
             button.active_effect_duration = 0
         for field in self.query(Input):
+            # The app toggles the native caret without Input's repaint timer.
             field.cursor_blink = False
 
     def _configure_scrollbars(self) -> None:
@@ -1053,6 +1054,8 @@ class AcprofTui(App[None]):
         ):
             self.query_one(selector, Button).disabled = busy
         self.query_one("#stop-run", Button).disabled = not busy
+        if not busy:
+            self.set_input_cursor_blink_enabled(True)
 
     def _activate_tab(self, tab_id: str) -> None:
         if self.screen.maximized is not None:
@@ -1211,8 +1214,7 @@ class AcprofTui(App[None]):
             self.query_one("#result-csv", Input).value = str(result_csv)
         self._set_busy(True)
         self._activate_tab("monitor-tab")
-        # Move focus away from Input widgets so their caret-blink timers do
-        # not cause redraws while a scientific measurement is active.
+        # Moving focus away from inputs stops the native cursor's blink timer.
         self.query_one("#stop-run", Button).focus()
         # Start the elapsed-time ticker; it self-gates on measurement_active
         # to avoid any redraws during formal energy/latency windows.
@@ -1438,6 +1440,7 @@ class AcprofTui(App[None]):
         if snapshot is not None:
             was_measuring = self._latest_snapshot.measurement_active
             self._latest_snapshot = snapshot
+            self.set_input_cursor_blink_enabled(not snapshot.measurement_active)
             if self._elapsed_timer is not None:
                 if snapshot.measurement_active:
                     self._elapsed_timer.pause()
