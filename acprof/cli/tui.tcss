@@ -17,6 +17,23 @@ VerticalScroll, TextArea, DataTable, #command-preview { scrollbar-size: 1 1; }
 
 Header { background: $surface; color: $text; }
 HeaderIcon, HeaderClockSpace { display: none; }
+#quit-app {
+    dock: right;
+    width: 5;
+    min-width: 5;
+    height: 1;
+    min-height: 1;
+    padding: 0;
+    border: none;
+    background: $surface;
+    color: $text-muted;
+    content-align: center middle;
+}
+#quit-app:hover, #quit-app:focus {
+    background: $error;
+    color: $background;
+    text-style: bold;
+}
 TabbedContent { height: 1fr; }
 #experiment-pages { height: 1fr; }
 TabPane { padding: 0; }
@@ -144,12 +161,11 @@ Button.-primary { background: $primary; border: tall $primary; color: $backgroun
 .stage-success { color: $success; text-style: bold; }
 .stage-error { color: $error; text-style: bold; }
 
-#bottom-panel { dock: bottom; height: 6; background: $background; }
+#bottom-panel { dock: bottom; height: 5; background: $background; }
 #slash-command-bar { height: 5; padding: 1 2; }
 #slash-command { height: 3; border: round $panel; }
 #slash-command:focus { border: round $accent; }
-#bottom-panel Footer { dock: none; height: 1; background: $surface; }
-#bottom-panel.command-hidden { height: 1; }
+#bottom-panel.command-hidden { height: 0; }
 #bottom-panel.command-hidden #slash-command-bar { display: none; }
 
 /* Terminal cells, not pixels: stack fields when labels would squeeze inputs. */
@@ -159,9 +175,9 @@ AcprofTui.narrow .checkbox-row { layout: vertical; }
 AcprofTui.narrow .button-row { layout: grid; grid-size: 2; grid-gutter: 0 1; }
 AcprofTui.narrow #status-grid { grid-columns: 9 1fr 9 1fr; }
 AcprofTui.narrow Tab { padding: 0 1; }
-AcprofTui.short #bottom-panel { height: 4; }
+AcprofTui.short #bottom-panel { height: 3; }
 AcprofTui.short #slash-command-bar { height: 3; padding: 0 2; }
-AcprofTui.short #bottom-panel.command-hidden { height: 1; }
+AcprofTui.short #bottom-panel.command-hidden { height: 0; }
 AcprofTui.short .section-title { margin: 0 0 1 0; }
 AcprofTui.short #matrix-table { max-height: 3; }
 AcprofTui.short #status-grid { padding: 0 1; margin-top: 0; }

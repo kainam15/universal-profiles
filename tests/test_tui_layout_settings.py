@@ -226,7 +226,7 @@ class TuiLayoutSettingsTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(app.query_one("#run-log", SelectableLog).wrap)
             self.assertEqual(app.query_one("#run-log", SelectableLog).max_lines, 1000)
             self.assertFalse(app.query_one("#slash-command-bar").display)
-            self.assertEqual(app.query_one("#bottom-panel").region.height, 1)
+            self.assertEqual(app.query_one("#bottom-panel").region.height, 0)
             self.assertFalse(self.settings_path.exists())
             self.assertTrue(await pilot.click("#save-ui-settings", offset=(3, 1)))
             await pilot.pause()

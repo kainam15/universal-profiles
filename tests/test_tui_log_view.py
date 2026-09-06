@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from rich.console import Console
 from textual.widget import Widget
-from textual.widgets import Button, Collapsible, Footer, Tabs
+from textual.widgets import Button, Collapsible, Tabs
 from textual.widgets.text_area import Selection
 
 from acprof.cli.tui import AcprofTui, LogPanel
@@ -54,9 +54,6 @@ class TuiLogViewTests(unittest.IsolatedAsyncioTestCase):
                         self.assertGreaterEqual(log.content_region.height, 10)
                     self.assertLessEqual(log.region.bottom, app.query_one("#bottom-panel").region.y)
                     self.assert_button_reachable(app, "expand-log")
-                    # A horizontal scrollbar must never cover the one-row
-                    # keyboard shortcuts when their contents exceed the width.
-                    self.assertEqual(app.query_one(Footer).styles.scrollbar_size_horizontal, 0)
 
     async def test_expand_and_restore_keep_one_live_log_and_reachable_controls(self):
         app = self.make_app()

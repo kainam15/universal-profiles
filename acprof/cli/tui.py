@@ -28,7 +28,6 @@ try:
         Collapsible,
         ContentSwitcher,
         DataTable,
-        Footer,
         Header,
         Input,
         Label,
@@ -178,6 +177,7 @@ class AcprofTui(App[None]):
     TITLE = "AC-Prof"
     SUB_TITLE = "推理实验控制台"
     ENABLE_COMMAND_PALETTE = False
+    ALLOW_IN_MAXIMIZED_VIEW = "Header"
 
     BINDINGS = [
         ("f5", "request_run", "开始采集"),
@@ -225,7 +225,8 @@ class AcprofTui(App[None]):
 
     def compose(self) -> ComposeResult:
         # A ticking clock would force periodic redraws during RAPL windows.
-        yield Header(show_clock=False)
+        with Header(show_clock=False):
+            yield Button("×", id="quit-app", name="退出", tooltip="退出（Ctrl+Q）", compact=True)
         with TabbedContent(initial="run-tab", id="main-tabs"):
             with TabPane("实验配置", id="run-tab"):
                 with ContentSwitcher(initial="run-form", id="experiment-pages"):
@@ -610,7 +611,6 @@ class AcprofTui(App[None]):
                     placeholder="快捷命令：输入 /help 查看可用命令，按 Enter 执行",
                     id="slash-command",
                 )
-            yield Footer(show_command_palette=False)
 
     def on_mount(self) -> None:
         self._configure_interaction()
@@ -1945,6 +1945,7 @@ class AcprofTui(App[None]):
         else:
             self.notify(f"未知快捷命令：/{command}", severity="error")
 
+    @on(Button.Pressed, "#quit-app")
     def action_request_quit(self) -> None:
         if self._is_busy():
             self.notify("任务仍在运行，请先使用 /stop 安全终止", severity="warning", timeout=6)

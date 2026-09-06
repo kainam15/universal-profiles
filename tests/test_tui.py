@@ -381,7 +381,12 @@ class TuiCoreTests(unittest.TestCase):
 
 class TuiAppTests(unittest.IsolatedAsyncioTestCase):
     async def test_app_mounts_and_requires_confirmation_before_run(self):
-        app = AcprofTui(RunConfig.smoke("google-bert/bert-base-uncased"))
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        app = AcprofTui(
+            RunConfig.smoke("google-bert/bert-base-uncased"),
+            settings_path=Path(temporary.name) / "tui.json",
+        )
         async with app.run_test(size=(150, 52)) as pilot:
             await pilot.pause()
             self.assertFalse(app.ENABLE_COMMAND_PALETTE)
@@ -399,10 +404,9 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(slash_command.parent.id, "slash-command-bar")
             self.assertTrue(slash_command.placeholder.startswith("快捷命令："))
             self.assertIn("/help", slash_command.placeholder)
-            footer = app.query_one("Footer")
-            self.assertEqual(command_bar.region.bottom, footer.region.y)
+            self.assertEqual(command_bar.region.bottom, app.size.height)
             self.assertEqual(slash_command.region.y - command_bar.region.y, 1)
-            self.assertEqual(footer.region.y - slash_command.region.bottom, 1)
+            self.assertEqual(command_bar.region.bottom - slash_command.region.bottom, 1)
             preview = str(app.query_one("#command-preview", Static).render())
             self.assertIn("/.venv/bin/python", preview)
             self.assertIn("--warmup 0", preview)
