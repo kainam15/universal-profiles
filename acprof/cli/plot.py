@@ -2551,8 +2551,11 @@ def plot_cold_start_breakdown(
     labels = aggregated["config"].tolist()
     x_values = np.arange(len(labels), dtype=float)
     bottoms = np.zeros(len(labels), dtype=float)
-    fig, axis = plt.subplots(
-        figsize=(max(10.0, 1.1 * len(labels)), 7.0),
+    fig, (axis, first_predict_axis) = plt.subplots(
+        2,
+        1,
+        sharex=True,
+        figsize=(max(10.0, 1.1 * len(labels)), 9.0),
     )
     for column, label, color in COLD_START_PHASE_SPECS:
         values = aggregated[column].to_numpy(dtype=float)
@@ -2578,28 +2581,47 @@ def plot_cold_start_breakdown(
             label="Measured total to /ready",
             zorder=4,
         )
-    if "cold_start_first_predict_app_s" in aggregated.columns:
-        valid_first = aggregated["cold_start_first_predict_app_s"].notna()
-        axis.scatter(
+    first_predict = aggregated.get(
+        "cold_start_first_predict_app_s",
+        pd.Series(np.nan, index=aggregated.index),
+    )
+    valid_first = first_predict.notna()
+    if valid_first.any():
+        first_predict_axis.scatter(
             x_values[valid_first],
-            aggregated.loc[valid_first, "cold_start_first_predict_app_s"],
+            first_predict.loc[valid_first],
             marker="D",
             facecolor="white",
             edgecolor="black",
             s=38,
             linewidth=1.0,
-            label="First predict latency (not stacked)",
+            label="First predict latency",
             zorder=4,
         )
+    else:
+        first_predict_axis.text(
+            0.5,
+            0.5,
+            "No data",
+            transform=first_predict_axis.transAxes,
+            ha="center",
+            va="center",
+            color="gray",
+        )
 
-    axis.set_xticks(x_values)
-    axis.set_xticklabels(labels, rotation=40, ha="right")
-    axis.set_xlabel("Representative max-memory configuration per CPU count")
+    first_predict_axis.set_xticks(x_values)
+    first_predict_axis.set_xticklabels(labels, rotation=40, ha="right")
+    first_predict_axis.set_xlabel(
+        "Representative max-memory configuration per CPU count"
+    )
+    first_predict_axis.set_ylabel("Latency (s)")
+    first_predict_axis.set_title("First Predict Latency")
+    first_predict_axis.grid(True, axis="y", linestyle="-", alpha=0.35)
     axis.set_ylabel("Time (s)")
     axis.set_title("Cold-Start Phase Breakdown")
     axis.grid(True, axis="y", linestyle="-", alpha=0.35)
-    axis.legend(loc="upper center", bbox_to_anchor=(0.5, 1.16), ncol=4, fontsize=8)
-    fig.tight_layout()
+    axis.legend(loc="lower center", bbox_to_anchor=(0.5, 1.13), ncol=3, fontsize=8)
+    fig.tight_layout(h_pad=2.0)
     if out_png:
         fig.savefig(out_png, dpi=200)
         print(f"[saved] {out_png}")
