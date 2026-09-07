@@ -88,6 +88,8 @@ class PendingLaunch:
     command: tuple[str, ...]
     kind: str
     config: RunConfig | None = None
+    result_dir: str = ""
+    result_csv: str = ""
 
 
 class StatusCheckbox(Checkbox):
@@ -577,9 +579,9 @@ class AcprofTui(BarCursorApp):
                     yield self._localized_widget(Static("已有结果", classes="section-title"))
                     with Grid(classes="form-grid"):
                         yield self._localized_widget(Label("结果目录"))
-                        yield self._localized_widget(Input("", id="result-dir"))
+                        yield self._localized_widget(Input(self._saved_settings.last_result_dir, id="result-dir"))
                         yield self._localized_widget(Label("结果 CSV"))
-                        yield self._localized_widget(Input("", id="result-csv"))
+                        yield self._localized_widget(Input(self._saved_settings.last_result_csv, id="result-csv"))
                         yield self._localized_widget(Label("补采工具"))
                         yield self._localized_widget(Input("torch,ncu", id="profile-tools"))
                         yield self._localized_widget(Label(""))
@@ -1162,6 +1164,7 @@ class AcprofTui(BarCursorApp):
             "#start-run",
             "#probe-largest",
             "#quick-check",
+            "#summarize-results",
             "#plot-results",
             "#profile-dry-run",
             "#profile-run",
@@ -1293,21 +1296,30 @@ class AcprofTui(BarCursorApp):
             return
         self._launch(pending)
 
-    def _remember_model(self, model: str) -> None:
-        model = model.strip()
-        if not model or model == self._saved_settings.last_model:
+    def _remember_last_used(
+        self, *, model: str = "", result_dir: str = "", result_csv: str = "",
+    ) -> None:
+        """Remember confirmed inputs, preserving explicitly saved preferences."""
+        updates = {}
+        if model.strip():
+            updates["last_model"] = model.strip()
+        for widget_id, value in (("result-dir", result_dir), ("result-csv", result_csv)):
+            if value:
+                self.query_one(f"#{widget_id}", Input).value = value
+                updates[f"last_{widget_id.replace('-', '_')}"] = value
+        settings = replace(self._saved_settings, **updates)
+        if settings == self._saved_settings:
             return
         if self._settings_warning:
             self.notify(
                 "本地设置无法读取，已保留原文件。可在设置页主动保存后恢复自动记忆。",
-                title="模型 ID 未保存", severity="warning",
+                title="自动记忆未保存", severity="warning",
             )
             return
-        settings = replace(self._saved_settings, last_model=model)
         try:
             save_settings(self.settings_path, settings, PROJECT_DIR)
         except (OSError, ValueError, TuiConfigError) as exc:
-            self.notify(error_message(exc), title="模型 ID 未保存", severity="warning")
+            self.notify(error_message(exc), title="自动记忆未保存", severity="warning")
             return
         self._saved_settings = settings
         self._update_saved_settings_summary()
@@ -1316,21 +1328,22 @@ class AcprofTui(BarCursorApp):
         if self._is_busy():
             self.notify("已有任务正在运行", severity="warning")
             return
+        model = ""
+        result_dir, result_csv = pending.result_dir, pending.result_csv
         if pending.kind in {"run", "probe"} and pending.config is not None:
-            # Persist before creating the subprocess, outside any measurement
-            # window. Failed or interrupted attempts still retain their model.
-            self._remember_model(pending.config.model)
+            model = pending.config.model
+            if pending.kind == "run":
+                result_dir = str(pending.config.result_dir(PROJECT_DIR))
+                result_csv = str(pending.config.result_csv(PROJECT_DIR))
+        # One atomic save before the subprocess exists, outside measurement
+        # windows. Failed or interrupted attempts retain their intended paths.
+        self._remember_last_used(model=model, result_dir=result_dir, result_csv=result_csv)
         self._active_run_config = pending.config if pending.kind == "run" else None
         self._active_command = pending.command
         self._process_kind = pending.kind
         self._started_monotonic = time.monotonic()
         self._stop_requested = False
         self._latest_snapshot = ProgressSnapshot(stage="启动中", detail="正在创建子进程")
-        if pending.kind == "run" and pending.config is not None:
-            result_dir = pending.config.result_dir(PROJECT_DIR)
-            result_csv = pending.config.result_csv(PROJECT_DIR)
-            self.query_one("#result-dir", Input).value = str(result_dir)
-            self.query_one("#result-csv", Input).value = str(result_csv)
         self._set_busy(True)
         self._activate_tab("monitor-tab")
         # Moving focus away from inputs stops the native cursor's blink timer.
@@ -1668,11 +1681,12 @@ class AcprofTui(BarCursorApp):
             if not final_csv and self._active_run_config is not None:
                 final_csv = str(self._active_run_config.result_csv(PROJECT_DIR))
             if final_csv:
-                final_path = Path(final_csv)
+                final_path = Path(final_csv).expanduser()
                 if not final_path.is_absolute():
                     final_path = PROJECT_DIR / final_path
-                self.query_one("#result-csv", Input).value = str(final_path)
-                self.query_one("#result-dir", Input).value = str(final_path.parent)
+                self._remember_last_used(
+                    result_csv=str(final_path), result_dir=str(final_path.parent),
+                )
                 if final_path.is_file():
                     self._update_result_summary(str(final_path), notify=False)
             final_state = self._latest_snapshot
@@ -1877,6 +1891,9 @@ class AcprofTui(BarCursorApp):
 
     @on(Button.Pressed, "#summarize-results")
     def summarize_results_button(self) -> None:
+        if self._is_busy():
+            self.notify("请等待当前任务完成", severity="warning")
+            return
         self._update_result_summary(self._input("result-csv"))
 
     def _update_result_summary(self, result_csv: str, *, notify: bool = True) -> None:
@@ -1884,13 +1901,17 @@ class AcprofTui(BarCursorApp):
             if notify:
                 self.notify("请填写结果 CSV 路径", severity="warning")
             return
+        csv_path = Path(result_csv).expanduser()
+        if not csv_path.is_absolute():
+            csv_path = PROJECT_DIR / csv_path
         try:
-            summary = summarize_result_csv(result_csv)
+            summary = summarize_result_csv(csv_path)
         except (OSError, csv.Error, UnicodeError) as exc:
             self._set_text(self.query_one('#result-summary', Static), message('无法读取结果：{0}', exc))
             if notify:
                 self.notify(str(exc), severity="error")
             return
+        self._remember_last_used(result_csv=str(csv_path))
         latency_info = ""
         if summary.avg_latency_s is not None:
             min_ms = summary.min_latency_s * 1000 if summary.min_latency_s is not None else 0
@@ -1931,7 +1952,7 @@ class AcprofTui(BarCursorApp):
             project_dir=PROJECT_DIR,
             python_executable=PYTHON_EXECUTABLE,
         )
-        self._launch(PendingLaunch(tuple(command), "plot"))
+        self._launch(PendingLaunch(tuple(command), "plot", result_csv=str(csv_path)))
 
     @on(Button.Pressed, "#profile-dry-run")
     def profile_dry_run_button(self) -> None:
@@ -1987,7 +2008,9 @@ class AcprofTui(BarCursorApp):
             tools=tools,
         )
         if command is not None:
-            self._launch(PendingLaunch(tuple(command), "profile-dry-run" if dry_run else "profile"))
+            self._launch(PendingLaunch(
+                tuple(command), "profile-dry-run" if dry_run else "profile", result_dir=command[3],
+            ))
 
     def _request_profile_run(
         self,
@@ -2004,7 +2027,7 @@ class AcprofTui(BarCursorApp):
         )
         if command is None:
             return
-        self._pending_launch = PendingLaunch(tuple(command), "profile")
+        self._pending_launch = PendingLaunch(tuple(command), "profile", result_dir=command[3])
         self.push_screen(
             ConfirmActionScreen(
                 "执行 profiler 补采？",
@@ -2074,6 +2097,9 @@ class AcprofTui(BarCursorApp):
                 tools=args[1] if len(args) > 1 else None,
             )
         elif command in {"results", "summary"}:
+            if self._is_busy():
+                self.notify("请等待当前任务完成", severity="warning")
+                return
             path = args[0] if args else self._input("result-csv")
             if args:
                 self.query_one("#result-csv", Input).value = path

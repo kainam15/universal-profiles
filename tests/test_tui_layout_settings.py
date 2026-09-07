@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from textual.widgets import (
-    Button, Checkbox, Collapsible, ContentSwitcher, Input, Select, TabbedContent,
+    Button, Checkbox, Collapsible, ContentSwitcher, Input, Select, Static, TabbedContent,
 )
 
 from acprof.cli.tui import AcprofTui, ConfirmActionScreen, PendingLaunch, main
@@ -283,13 +283,17 @@ class TuiLayoutSettingsTests(unittest.IsolatedAsyncioTestCase):
 
 class TuiModelMemoryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
+        scratch = PROJECT_DIR / "internal-testing"
+        scratch.mkdir(exist_ok=True)
+        self.temporary = tempfile.TemporaryDirectory(prefix="tui-recent-", dir=scratch)
         self.addCleanup(self.temporary.cleanup)
         self.settings_path = Path(self.temporary.name) / "tui.json"
         self.saved = TuiSettings(
             ui=UiPreferences(theme="acprof-light"),
             run_defaults=replace(RunConfig.smoke("demo/saved"), cpus="1,3"),
             last_model="demo/previous",
+            last_result_dir=str(Path(self.temporary.name) / "previous"),
+            last_result_csv=str(Path(self.temporary.name) / "previous" / "custom.csv"),
         )
 
     async def test_confirmed_run_and_probe_restore_model_without_saving_other_edits(self):
@@ -299,6 +303,13 @@ class TuiModelMemoryTests(unittest.IsolatedAsyncioTestCase):
                 original = self.settings_path.read_bytes()
                 app = AcprofTui(settings_path=self.settings_path)
                 model = f"demo/latest-{kind}"
+                expected = replace(self.saved, last_model=model)
+                if kind == "run":
+                    config = replace(self.saved.run_defaults, model=model)
+                    expected = replace(
+                        expected, last_result_dir=str(config.result_dir(PROJECT_DIR)),
+                        last_result_csv=str(config.result_csv(PROJECT_DIR)),
+                    )
                 async with app.run_test(size=(120, 30)) as pilot:
                     app.query_one("#model", Input).value = f"  {model}  "
                     app.query_one("#cpus", Input).value = "2"
@@ -312,7 +323,7 @@ class TuiModelMemoryTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(launched_kind, kind)
                         self.assertEqual(
                             load_settings(self.settings_path, PROJECT_DIR),
-                            (replace(self.saved, last_model=model), ""),
+                            (expected, ""),
                         )
 
                     with patch.object(
@@ -327,6 +338,8 @@ class TuiModelMemoryTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(restarted.query_one("#model", Input).value, model)
                     self.assertEqual(restarted.query_one("#cpus", Input).value, "1,3")
                     self.assertEqual(restarted.theme, "acprof-light")
+                    self.assertEqual(restarted.query_one("#result-dir", Input).value, expected.last_result_dir)
+                    self.assertEqual(restarted.query_one("#result-csv", Input).value, expected.last_result_csv)
 
     async def test_draft_preview_and_cancel_do_not_replace_last_model(self):
         save_settings(self.settings_path, self.saved, PROJECT_DIR)
@@ -334,6 +347,8 @@ class TuiModelMemoryTests(unittest.IsolatedAsyncioTestCase):
         app = AcprofTui(settings_path=self.settings_path)
         async with app.run_test(size=(120, 30)) as pilot:
             app.query_one("#model", Input).value = "demo/draft"
+            app.query_one("#result-dir", Input).value = "results/draft"
+            app.query_one("#result-csv", Input).value = "results/draft/custom.csv"
             await pilot.pause(0.12)
             self.assertEqual(self.settings_path.read_bytes(), original)
             with patch.object(app, "_execute_command") as execute:
@@ -351,7 +366,7 @@ class TuiModelMemoryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(self.settings_path.read_bytes(), original)
                 execute.assert_not_called()
 
-    async def test_first_launch_remembers_only_model_even_if_process_fails(self):
+    async def test_first_launch_remembers_model_and_paths_even_if_process_fails(self):
         config = RunConfig.smoke("demo/first")
         app = AcprofTui(config, settings_path=self.settings_path)
         async with app.run_test(size=(120, 30)) as pilot:
@@ -362,7 +377,10 @@ class TuiModelMemoryTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(app._is_busy())
         saved, warning = load_settings(self.settings_path, PROJECT_DIR)
         self.assertEqual(warning, "")
-        self.assertEqual(saved, TuiSettings(last_model="demo/first"))
+        self.assertEqual(saved, TuiSettings(
+            last_model="demo/first", last_result_dir=str(config.result_dir(PROJECT_DIR)),
+            last_result_csv=str(config.result_csv(PROJECT_DIR)),
+        ))
         self.assertEqual(
             AcprofTui(settings_path=self.settings_path).initial_config,
             RunConfig(model="demo/first"),
@@ -386,7 +404,7 @@ class TuiModelMemoryTests(unittest.IsolatedAsyncioTestCase):
                         app._launch(PendingLaunch(("unused",), "run", config))
                         execute.assert_called_once()
                         notify.assert_called_once()
-                        self.assertEqual(notify.call_args.kwargs["title"], "模型 ID 未保存")
+                        self.assertEqual(notify.call_args.kwargs["title"], "自动记忆未保存")
                         self.assertEqual(save.call_count, 0 if corrupt else 1)
                     self.assertEqual(self.settings_path.read_bytes(), original)
 
@@ -403,8 +421,166 @@ class TuiModelMemoryTests(unittest.IsolatedAsyncioTestCase):
                 saved, warning = load_settings(self.settings_path, PROJECT_DIR)
                 self.assertEqual(warning, "")
                 self.assertEqual(saved.last_model, "demo/previous")
+                self.assertEqual(saved.last_result_dir, self.saved.last_result_dir)
+                self.assertEqual(saved.last_result_csv, self.saved.last_result_csv)
                 self.assertEqual(saved.run_defaults, config if remember_run else self.saved.run_defaults)
                 self.assertEqual(saved.ui.theme, "acprof-light" if remember_run else "acprof-dark")
+
+    def write_result(self):
+        path = Path(self.temporary.name) / "模型 结果" / "custom.csv"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text("status,warmup,latency_app_s\nok,0,0.02\n", encoding="utf-8")
+        return path
+
+    async def test_restore_keeps_missing_paths_without_reading_results_or_saving(self):
+        save_settings(self.settings_path, self.saved, PROJECT_DIR)
+        original = self.settings_path.read_bytes()
+        app = AcprofTui(RunConfig.smoke("demo/other"), settings_path=self.settings_path)
+        with patch("acprof.cli.tui.summarize_result_csv") as read_results:
+            async with app.run_test(size=(80, 24)) as pilot:
+                app._activate_tab("results-tab")
+                await pilot.pause()
+                self.assertEqual(app.query_one("#result-dir", Input).value, self.saved.last_result_dir)
+                self.assertEqual(app.query_one("#result-csv", Input).value, self.saved.last_result_csv)
+                read_results.assert_not_called()
+        self.assertEqual(self.settings_path.read_bytes(), original)
+
+    async def test_run_updates_same_model_output_then_remembers_actual_final_csv(self):
+        csv_path = self.write_result()
+        save_settings(self.settings_path, self.saved, PROJECT_DIR)
+        config = replace(
+            self.saved.run_defaults, model=self.saved.last_model,
+            output_dir=str(Path(self.temporary.name) / "new output"),
+        )
+        app = AcprofTui(config, settings_path=self.settings_path)
+        async with app.run_test(size=(120, 30)):
+            with patch.object(app, "_execute_command"):
+                app._launch(PendingLaunch(("unused",), "run", config))
+            started, warning = load_settings(self.settings_path, PROJECT_DIR)
+            self.assertEqual(warning, "")
+            self.assertEqual(started.last_result_csv, str(config.result_csv(PROJECT_DIR)))
+            self.assertEqual(started.last_result_dir, str(config.result_dir(PROJECT_DIR)))
+            # The launched configuration and final log determine the result,
+            # even if the form is subsequently edited.
+            app.query_one("#output-dir", Input).value = "results/draft"
+            with patch("acprof.cli.tui.save_settings", wraps=save_settings) as save:
+                app._process_finished(
+                    "run", 0,
+                    ProgressSnapshot(stage="已完成", final_csv=str(csv_path.relative_to(PROJECT_DIR))),
+                    "",
+                )
+                # The automatic summary reuses the remembered CSV, without a
+                # duplicate write or any write during the worker's lifetime.
+                save.assert_called_once()
+            self.assertEqual(app.query_one("#result-csv", Input).value, str(csv_path))
+            self.assertEqual(app.query_one("#result-dir", Input).value, str(csv_path.parent))
+        expected = replace(
+            self.saved, last_result_csv=str(csv_path), last_result_dir=str(csv_path.parent),
+        )
+        self.assertEqual(load_settings(self.settings_path, PROJECT_DIR), (expected, ""))
+        restarted = AcprofTui(settings_path=self.settings_path)
+        async with restarted.run_test(size=(120, 30)):
+            self.assertEqual(restarted.query_one("#result-csv", Input).value, str(csv_path))
+            self.assertEqual(restarted.query_one("#result-dir", Input).value, str(csv_path.parent))
+
+    async def test_summary_remembers_only_successfully_read_csv(self):
+        csv_path = self.write_result()
+        save_settings(self.settings_path, self.saved, PROJECT_DIR)
+        app = AcprofTui(settings_path=self.settings_path)
+        async with app.run_test(size=(120, 30)):
+            app.query_one("#result-dir", Input).value = "results/unsubmitted-draft"
+            app.query_one("#result-csv", Input).value = str(csv_path.relative_to(PROJECT_DIR))
+            app.summarize_results_button()
+            expected = replace(self.saved, last_result_csv=str(csv_path))
+            self.assertEqual(load_settings(self.settings_path, PROJECT_DIR), (expected, ""))
+            self.assertEqual(app.query_one("#result-csv", Input).value, str(csv_path))
+            self.assertIn("成功 1", app.query_one("#result-summary", Static).content)
+            original = self.settings_path.read_bytes()
+            with patch("acprof.cli.tui.save_settings") as save:
+                app.summarize_results_button()
+                app.query_one("#result-csv", Input).value = str(csv_path.with_name("missing.csv"))
+                app.summarize_results_button()
+                save.assert_not_called()
+            self.assertEqual(self.settings_path.read_bytes(), original)
+
+    async def test_result_tools_remember_confirmed_paths_before_starting(self):
+        csv_path = self.write_result()
+        for kind in ("plot", "profile-dry-run", "profile"):
+            with self.subTest(kind=kind):
+                save_settings(self.settings_path, self.saved, PROJECT_DIR)
+                original = self.settings_path.read_bytes()
+                expected = replace(
+                    self.saved,
+                    **({"last_result_csv": str(csv_path)} if kind == "plot"
+                       else {"last_result_dir": str(csv_path.parent)}),
+                )
+                app = AcprofTui(settings_path=self.settings_path)
+                async with app.run_test(size=(120, 30)) as pilot:
+                    def check_persisted_before_launch(command, launched_kind):
+                        self.assertEqual(launched_kind, kind)
+                        self.assertEqual(load_settings(self.settings_path, PROJECT_DIR), (expected, ""))
+                        self.assertEqual(command[3], str(csv_path if kind == "plot" else csv_path.parent))
+
+                    with patch.object(app, "_execute_command", side_effect=check_persisted_before_launch) as execute:
+                        if kind == "plot":
+                            app._launch_plot(str(csv_path.with_name("missing.csv")))
+                            self.assertEqual(self.settings_path.read_bytes(), original)
+                            app._launch_plot(str(csv_path.relative_to(PROJECT_DIR)))
+                        elif kind == "profile-dry-run":
+                            app._launch_profile(dry_run=True, result_dir=str(csv_path.parent / "missing"))
+                            self.assertEqual(self.settings_path.read_bytes(), original)
+                            app._launch_profile(dry_run=True, result_dir=str(csv_path.parent.relative_to(PROJECT_DIR)))
+                        else:
+                            app._request_profile_run(result_dir=str(csv_path.parent))
+                            await pilot.pause()
+                            self.assertTrue(await pilot.click("#confirm-no"))
+                            await pilot.pause()
+                            self.assertEqual(self.settings_path.read_bytes(), original)
+                            execute.assert_not_called()
+                            app._request_profile_run(result_dir=str(csv_path.parent))
+                            await pilot.pause()
+                            # Confirmation must remember the frozen command's
+                            # directory, not a newer draft in the form.
+                            app.query_one("#result-dir", Input).value = "results/draft"
+                            self.assertTrue(await pilot.click("#confirm-yes"))
+                            await pilot.pause()
+                        execute.assert_called_once()
+
+    async def test_result_memory_failure_does_not_prevent_summary(self):
+        csv_path = self.write_result()
+        for corrupt in (False, True):
+            with self.subTest(corrupt=corrupt):
+                save_settings(self.settings_path, self.saved, PROJECT_DIR)
+                if corrupt:
+                    self.settings_path.write_text("{broken", encoding="utf-8")
+                original = self.settings_path.read_bytes()
+                app = AcprofTui(settings_path=self.settings_path)
+                async with app.run_test(size=(120, 30)):
+                    with patch("acprof.cli.tui.save_settings", side_effect=OSError("disk error")) as save:
+                        app._update_result_summary(str(csv_path))
+                        self.assertEqual(save.call_count, 0 if corrupt else 1)
+                    self.assertIn("成功 1", app.query_one("#result-summary", Static).content)
+                    self.assertEqual(app.query_one("#result-csv", Input).value, str(csv_path))
+                self.assertEqual(self.settings_path.read_bytes(), original)
+
+    async def test_manual_summary_is_blocked_while_a_task_is_running(self):
+        save_settings(self.settings_path, self.saved, PROJECT_DIR)
+        original = self.settings_path.read_bytes()
+        app = AcprofTui(settings_path=self.settings_path)
+        async with app.run_test(size=(120, 30)):
+            app._process_kind = "run"
+            app._latest_snapshot = ProgressSnapshot(measurement_active=True)
+            app._set_busy(True)
+            self.assertTrue(app.query_one("#summarize-results", Button).disabled)
+            with patch("acprof.cli.tui.summarize_result_csv") as read_results:
+                app.summarize_results_button()
+                app.slash_command_submitted(Input.Submitted(
+                    app.query_one("#slash-command", Input), "/results unused.csv",
+                ))
+                read_results.assert_not_called()
+            self.assertEqual(self.settings_path.read_bytes(), original)
+            app._process_kind = ""
+            app._set_busy(False)
 
 
 class TuiMainSettingsTests(unittest.TestCase):

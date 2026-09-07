@@ -19,7 +19,9 @@ from acprof.cli.tui_settings import (
 
 class TuiSettingsTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
+        scratch = Path(__file__).resolve().parents[1] / "internal-testing"
+        scratch.mkdir(exist_ok=True)
+        self.temporary = tempfile.TemporaryDirectory(prefix="tui-settings-", dir=scratch)
         self.addCleanup(self.temporary.cleanup)
         self.project = Path(self.temporary.name)
         self.path = self.project / "preferences" / "tui.json"
@@ -62,6 +64,8 @@ class TuiSettingsTests(unittest.TestCase):
             ),
             run_defaults=RunConfig.smoke("  demo/model  "),
             last_model="  demo/latest  ",
+            last_result_dir="  results/模型 结果  ",
+            last_result_csv="  results/另一个目录/custom.csv  ",
         )
         save_settings(self.path, settings, self.project)
         restored, warning = load_settings(self.path, self.project)
@@ -69,11 +73,13 @@ class TuiSettingsTests(unittest.TestCase):
         self.assertEqual(restored.ui, settings.ui)
         self.assertEqual(restored.run_defaults, replace(settings.run_defaults, model="demo/model"))
         self.assertEqual(restored.last_model, "demo/latest")
+        self.assertEqual(restored.last_result_dir, "results/模型 结果")
+        self.assertEqual(restored.last_result_csv, "results/另一个目录/custom.csv")
         self.assertEqual(json.loads(self.path.read_text())["version"], SETTINGS_VERSION)
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
 
     def test_legacy_settings_load_without_rewriting_and_upgrade_when_saved(self):
-        for version_fields in ({}, {"version": 1}, {"version": 2}):
+        for version_fields in ({}, {"version": 1}, {"version": 2}, {"version": 3}):
             with self.subTest(version_fields=version_fields):
                 last_model = "demo/recent" if version_fields.get("version") == 2 else ""
                 self.write_payload({
@@ -86,10 +92,16 @@ class TuiSettingsTests(unittest.TestCase):
                 restored, warning = load_settings(self.path, self.project)
                 self.assertEqual(warning, "")
                 self.assertEqual(restored.last_model, last_model)
+                self.assertEqual(restored.last_result_dir, "")
+                self.assertEqual(restored.last_result_csv, "")
                 self.assertEqual(restored.run_defaults.model, "demo/saved")
                 self.assertEqual(restored.ui.language, "zh")
                 self.assertEqual(self.path.read_bytes(), previous)
-                updated = replace(restored, last_model="demo/latest")
+                updated = replace(
+                    restored, last_model="demo/latest",
+                    last_result_dir="results/demo--latest",
+                    last_result_csv="results/demo--latest/result_all.csv",
+                )
                 save_settings(self.path, updated, self.project)
                 self.assertEqual(load_settings(self.path, self.project), (updated, ""))
                 self.assertEqual(json.loads(self.path.read_text())["version"], SETTINGS_VERSION)
@@ -126,6 +138,11 @@ class TuiSettingsTests(unittest.TestCase):
             {"last_model": True},
             {"last_model": 5},
             {"last_model": []},
+            *(
+                {name: value}
+                for name in ("last_result_dir", "last_result_csv")
+                for value in (None, True, 5, [], {})
+            ),
             {"ui": []},
             {"ui": {"theme": "unknown"}},
             {"ui": {"language": "fr"}},
@@ -171,6 +188,8 @@ class TuiSettingsTests(unittest.TestCase):
             TuiSettings(ui=UiPreferences(language="fr")),
             TuiSettings(ui=UiPreferences(log_max_lines=3)),
             TuiSettings(last_model=False),
+            TuiSettings(last_result_dir=False),
+            TuiSettings(last_result_csv=Path("result_all.csv")),
             TuiSettings(run_defaults=RunConfig(skip_build="false")),
             TuiSettings(run_defaults=RunConfig(repeat=True)),
             TuiSettings(run_defaults=RunConfig(sample_hz=10 ** 400)),

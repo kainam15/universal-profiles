@@ -141,6 +141,11 @@ class TuiLanguageTests(unittest.IsolatedAsyncioTestCase):
             summary = ResultSummary(3, 2, 1, 1, 2, 0.01, 0.03, 0.02)
             with patch("acprof.cli.tui.summarize_result_csv", return_value=summary) as read_results:
                 app._update_result_summary("read-once.csv", notify=False)
+                remembered = self.settings_path.read_bytes()
+                self.assertEqual(
+                    load_settings(self.settings_path, PROJECT_DIR),
+                    (TuiSettings(last_result_csv=str(PROJECT_DIR / "read-once.csv")), ""),
+                )
                 await self.switch(app, pilot, "en")
                 self.assertEqual(read_results.call_count, 1)
                 self.assertIn("Application latency (mean): 20.0ms", app.query_one("#result-summary", Static).content)
@@ -163,11 +168,13 @@ class TuiLanguageTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((log.text, log.selection, log.scroll_y), (old_text, old_selection, old_scroll))
             self.assertFalse(log.following)
             self.assertIn("Reading history", app.query_one("#log-hint", Static).content)
-            self.assertFalse(self.settings_path.exists())
+            self.assertEqual(self.settings_path.read_bytes(), remembered)
+            self.assertEqual(app.query_one("#result-csv", Input).value, str(PROJECT_DIR / "read-once.csv"))
             await self.switch(app, pilot, "zh")
             self.assertEqual(str(app.query_one("#open-run-settings", Button).label), "返回基本配置")
             self.assertEqual(table.get_cell(app._matrix_rows[1], "status"), "✓ 完成")
             self.assertEqual((log.text, log.selection, log.scroll_y), (old_text, old_selection, old_scroll))
+            self.assertEqual(self.settings_path.read_bytes(), remembered)
 
     async def test_explicit_save_restart_reset_and_model_memory_keep_their_boundaries(self):
         defaults = RunConfig.smoke("demo/saved")
@@ -176,7 +183,7 @@ class TuiLanguageTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause()
             await self.switch(app, pilot, "en")
-            app._remember_model("demo/latest")
+            app._remember_last_used(model="demo/latest")
             saved, warning = load_settings(self.settings_path, PROJECT_DIR)
             self.assertFalse(warning)
             self.assertEqual(saved.ui.language, "zh")
