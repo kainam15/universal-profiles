@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, MutableMapping
 from urllib.parse import urlparse
 
 from acprof.config import (
@@ -20,8 +20,13 @@ def _iter_env_files(project_dir: str | os.PathLike[str]) -> Iterable[Path]:
     yield root / ".env.local"
 
 
-def load_project_env(project_dir: str | os.PathLike[str]) -> None:
-    """Load simple KEY=VALUE pairs from local env files if present."""
+def load_project_env(
+    project_dir: str | os.PathLike[str],
+    *,
+    environ: MutableMapping[str, str] | None = None,
+) -> None:
+    """Load local KEY=VALUE pairs into the process or an isolated environment."""
+    target_environ = os.environ if environ is None else environ
     for env_file in _iter_env_files(project_dir):
         if not env_file.exists():
             continue
@@ -40,7 +45,7 @@ def load_project_env(project_dir: str | os.PathLike[str]) -> None:
             if value[:1] == value[-1:] and value[:1] in {"'", '"'}:
                 value = value[1:-1]
 
-            os.environ.setdefault(key, value)
+            target_environ.setdefault(key, value)
 
 
 def _endpoint_host(endpoint: str) -> str:

@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Mapping, Optional
 
 
 MIPS_EXIT_CODE = 8
@@ -195,7 +195,12 @@ def _perf_attach_probe_command(prefix: List[str], pid: int) -> List[str]:
     ]
 
 
-def _run_perf_probe(prefix: List[str], password: str = "") -> subprocess.CompletedProcess:
+def _run_perf_probe(
+    prefix: List[str],
+    password: str = "",
+    *,
+    env: Optional[Mapping[str, str]] = None,
+) -> subprocess.CompletedProcess:
     kwargs = {
         "capture_output": True,
         "text": True,
@@ -204,8 +209,11 @@ def _run_perf_probe(prefix: List[str], password: str = "") -> subprocess.Complet
         "errors": "replace",
         "timeout": PERF_PROBE_TIMEOUT_S,
     }
-    if password:
-        kwargs["input"] = f"{password}\n"
+    # Close stdin after the configured password, or immediately without one.
+    # A preflight must never wait for input from the user's terminal.
+    kwargs["input"] = f"{password}\n" if password else ""
+    if env is not None:
+        kwargs["env"] = env
     return subprocess.run(_perf_probe_command(prefix), **kwargs)
 
 
@@ -244,36 +252,43 @@ def _attach_probe_succeeded(result: subprocess.CompletedProcess) -> bool:
     return result.returncode == 0
 
 
-def resolve_perf_command_prefix() -> List[str]:
-    perf_path = shutil.which("perf")
+def resolve_perf_command_prefix(
+    *, env: Optional[Mapping[str, str]] = None,
+) -> List[str]:
+    """Probe real instruction counts using the collection privilege fallbacks."""
+    probe_environ = os.environ if env is None else env
+    perf_path = shutil.which("perf", path=probe_environ.get("PATH", os.defpath))
     if not perf_path:
         raise MIPSProfilingError("Linux perf command was not found.")
 
-    direct = _run_perf_probe(["perf"])
-    if _probe_succeeded(direct):
-        return ["perf"]
-
-    sudo_noninteractive = _run_perf_probe(["sudo", "-n", "perf"])
-    if _probe_succeeded(sudo_noninteractive):
-        return ["sudo", "-n", "perf"]
-
-    sudo_password = os.environ.get("ACPROF_SUDO_PASSWORD", "").strip()
+    attempts = [
+        ("perf", ["perf"], ""),
+        ("sudo -n perf", ["sudo", "-n", "perf"], ""),
+    ]
+    sudo_password = probe_environ.get("ACPROF_SUDO_PASSWORD", "").strip()
     if sudo_password:
-        sudo_with_password = _run_perf_probe(
-            ["sudo", "-S", "-p", "", "perf"],
-            password=sudo_password,
+        attempts.append(
+            ("sudo -S perf", ["sudo", "-S", "-p", "", "perf"], sudo_password)
         )
-        if _probe_succeeded(sudo_with_password):
-            return ["sudo", "-S", "-p", "", "perf"]
 
-    last_error = (
-        sudo_noninteractive.stderr
-        or sudo_noninteractive.stdout
-        or direct.stderr
-        or direct.stdout
-        or "perf probe failed"
-    ).strip()
-    raise MIPSProfilingError(last_error)
+    errors = []
+    for label, prefix, password in attempts:
+        try:
+            result = _run_perf_probe(prefix, password=password, env=env)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            detail = f"{type(exc).__name__}: {exc}"
+        else:
+            if _probe_succeeded(result):
+                return prefix
+            detail = "\n".join(
+                part.strip() for part in (result.stderr, result.stdout) if part and part.strip()
+            ) or f"perf did not report valid instructions (exit={result.returncode})"
+        errors.append(f"{label}: {detail}")
+
+    detail = "\n".join(errors)
+    if sudo_password:
+        detail = detail.replace(sudo_password, "[redacted]")
+    raise MIPSProfilingError(detail)
 
 
 def get_perf_command_prefix() -> List[str]:

@@ -844,7 +844,7 @@ class AcprofTui(BarCursorApp):
     @on(Select.Changed, ".config-control")
     @on(Checkbox.Changed, ".config-control")
     def _configuration_changed(self) -> None:
-        if not self._form_ready or self._applying_config or self._is_busy():
+        if not self.is_running or not self._form_ready or self._applying_config or self._is_busy():
             return
         self._cancel_preview_timer()
         # Coalesce typing and preset field updates into one validation/render.
@@ -852,7 +852,9 @@ class AcprofTui(BarCursorApp):
 
     def _sync_form_state(self) -> None:
         self._preview_timer = None
-        if self._is_busy() or self._applying_config:
+        # Timer callbacks already queued before shutdown can run after the
+        # form has been removed; do not query widgets during that phase.
+        if not self.is_running or not self._form_ready or self._is_busy() or self._applying_config:
             return
         self._refresh_command_preview(notify=False, sync_preset=True)
 
@@ -1061,9 +1063,9 @@ class AcprofTui(BarCursorApp):
         if self.screen.maximized is not None:
             self.screen.minimize()
         tabs = self.query_one("#main-tabs", TabbedContent)
-        # Clear the outgoing field's focus before hiding its pane. Otherwise
-        # Textual may restore that focus and activate the old pane again.
-        tabs.query_one(Tabs).focus()
+        # Move focus before hiding the outgoing pane. Widget.focus() defers
+        # this change, allowing an old pane's focus event to undo the switch.
+        self.screen.set_focus(tabs.query_one(Tabs), scroll_visible=False)
         tabs.active = tab_id
 
     def preset_smoke(self) -> None:
@@ -1693,15 +1695,17 @@ class AcprofTui(BarCursorApp):
             allow_cgroup_v1=self._checked("allow-cgroup-v1"),
         )
         self._check_running = True
-        self.query_one("#quick-check", Button).disabled = True
+        # Disabling a focused button first moves focus to another control in
+        # the old pane, which queues a request to reactivate that pane.
         self._activate_tab("monitor-tab")
+        self.query_one("#quick-check", Button).disabled = True
         self.query_one("#run-log", SelectableLog).write("[TUI] 开始只读快速环境检查……")
         self._execute_quick_check(config)
 
     @work(thread=True, group="preflight", exclusive=True, exit_on_error=False)
     def _execute_quick_check(self, config: RunConfig) -> None:
         try:
-            checks = quick_preflight(config)
+            checks = quick_preflight(config, project_dir=PROJECT_DIR)
             error = ""
         except Exception as exc:
             checks = []
@@ -1982,6 +1986,8 @@ class AcprofTui(BarCursorApp):
 
     def on_unmount(self) -> None:
         """Best-effort guard against leaving collectors behind on normal exit."""
+        self._form_ready = False
+        self._cancel_preview_timer()
         with self._process_lock:
             process = self._process
         if process is None or process.poll() is not None:

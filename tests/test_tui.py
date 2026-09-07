@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -443,6 +444,52 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("快速检查完成：1 通过，0 警告，0 失败", log.text)
                 self.assertFalse(app._check_running)
                 self.assertFalse(app.query_one("#quick-check", Button).disabled)
+
+    async def test_quick_check_mouse_click_opens_and_stays_on_monitor(self):
+        for size in ((80, 24), (120, 30), (150, 45)):
+            with self.subTest(size=size), patch(
+                "acprof.cli.tui.quick_preflight",
+                return_value=[PreflightCheck("本机 Docker", "ok", "available")],
+            ) as check:
+                app = AcprofTui(RunConfig(model=""))
+                async with app.run_test(size=size) as pilot:
+                    await pilot.pause()
+                    self.assertTrue(await pilot.click("#quick-check", offset=(3, 1)))
+                    await asyncio.wait_for(app.workers.wait_for_complete(), timeout=10)
+                    await pilot.pause()
+                    check.assert_called_once()
+                    self.assertEqual(app.query_one("#main-tabs", TabbedContent).active, "monitor-tab")
+                    log = app.query_one("#run-log", SelectableLog)
+                    self.assertGreater(log.region.height, 0)
+                    self.assertIn("快速检查完成：1 通过，0 警告，0 失败", log.text)
+
+    async def test_quick_check_keyboard_switches_before_slow_check_finishes(self):
+        for key in ("enter", "f6"):
+            with self.subTest(key=key):
+                release = threading.Event()
+
+                def slow_check(*args, **kwargs):
+                    if not release.wait(timeout=10):
+                        raise TimeoutError("test did not release the check")
+                    return [PreflightCheck("本机 Docker", "ok", "available")]
+
+                app = AcprofTui(RunConfig(model=""))
+                with patch("acprof.cli.tui.quick_preflight", side_effect=slow_check):
+                    async with app.run_test(size=(120, 30)) as pilot:
+                        try:
+                            app.query_one("#quick-check", Button).focus()
+                            await pilot.pause()
+                            await pilot.press(key)
+                            await pilot.pause()
+                            self.assertTrue(app._check_running)
+                            self.assertEqual(app.query_one("#main-tabs", TabbedContent).active, "monitor-tab")
+                            self.assertNotIn("快速检查完成", app.query_one("#run-log", SelectableLog).text)
+                        finally:
+                            release.set()
+                        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=10)
+                        await pilot.pause()
+                        self.assertEqual(app.query_one("#main-tabs", TabbedContent).active, "monitor-tab")
+                        self.assertFalse(app._check_running)
 
     async def test_app_mounts_and_requires_confirmation_before_run(self):
         temporary = tempfile.TemporaryDirectory()

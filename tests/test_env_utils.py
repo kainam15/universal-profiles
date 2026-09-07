@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +13,23 @@ from acprof.config import (
 
 
 class BootstrapProjectEnvTests(unittest.TestCase):
+    def test_local_env_can_be_loaded_without_changing_process_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir, patch.dict(
+            os.environ, {"EXPLICIT_SETTING": "process value"}, clear=True,
+        ):
+            root = Path(tmp_dir)
+            (root / ".env").write_text("EXPLICIT_SETTING=file value\n", encoding="utf-8")
+            (root / ".env.local").write_text(
+                "ACPROF_SUDO_PASSWORD='test-only-password'\n", encoding="utf-8",
+            )
+            probe_environ = os.environ.copy()
+
+            env_utils.load_project_env(root, environ=probe_environ)
+
+            self.assertEqual(probe_environ["EXPLICIT_SETTING"], "process value")
+            self.assertEqual(probe_environ["ACPROF_SUDO_PASSWORD"], "test-only-password")
+            self.assertNotIn("ACPROF_SUDO_PASSWORD", os.environ)
+
     def test_bootstrap_sets_default_hf_endpoint_and_bypasses_proxy_for_it(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir, patch.dict(
             "acprof.host.env_utils.os.environ",

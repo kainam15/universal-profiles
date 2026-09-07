@@ -27,6 +27,8 @@ from acprof.config import (
     DEFAULT_REPEAT_IN_WINDOW,
     DEFAULT_REPEAT_WINDOW_SECONDS,
 )
+from acprof.host.env_utils import load_project_env
+from acprof.monitors.perf_mips import MIPSProfilingError, resolve_perf_command_prefix
 
 
 TASK_FAMILIES = ("nlp", "cv", "audio", "timeseries", "diffusion")
@@ -796,6 +798,7 @@ def _readable_rapl_paths(
 def quick_preflight(
     config: RunConfig,
     *,
+    project_dir: str | os.PathLike[str] | None = None,
     command_runner: Callable[..., subprocess.CompletedProcess[str]] = _completed_command,
 ) -> list[PreflightCheck]:
     """Run read-only host checks; run.py remains the authoritative preflight."""
@@ -911,25 +914,25 @@ def quick_preflight(
         )
     )
 
-    perf_cli = shutil.which("perf")
-    if perf_cli:
-        try:
-            perf = command_runner(
-                (perf_cli, "stat", "-e", "instructions", "--", "true"),
-                timeout=10.0,
-            )
-            perf_detail = (perf.stderr or perf.stdout).strip().splitlines()
-            checks.append(
-                PreflightCheck(
-                    "perf instructions",
-                    "ok" if perf.returncode == 0 else "fail",
-                    perf_detail[-1] if perf_detail else f"exit {perf.returncode}",
-                )
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            checks.append(PreflightCheck("perf instructions", "fail", str(exc)))
+    try:
+        # Match run.py's local environment precedence without keeping stale
+        # file credentials in the long-lived TUI process after this check.
+        probe_environ = os.environ.copy()
+        load_project_env(
+            project_dir if project_dir is not None else Path(__file__).resolve().parents[2],
+            environ=probe_environ,
+        )
+        prefix = resolve_perf_command_prefix(env=probe_environ)
+    except (MIPSProfilingError, OSError, UnicodeError, subprocess.TimeoutExpired) as exc:
+        checks.append(PreflightCheck("perf instructions", "fail", str(exc)))
     else:
-        checks.append(PreflightCheck("perf instructions", "fail", "未找到 perf"))
+        if prefix[0] != "sudo":
+            detail = "普通用户 perf 可用，已读到 instructions 计数"
+        elif "-S" in prefix:
+            detail = "sudo perf 可用（已配置凭据），已读到 instructions 计数"
+        else:
+            detail = "sudo perf 可用（无需交互输入），已读到 instructions 计数"
+        checks.append(PreflightCheck("perf instructions", "ok", detail))
 
     if "on" in _csv_values(config.gpus.lower()):
         nvidia_smi = shutil.which("nvidia-smi")

@@ -13,6 +13,22 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 
 class TuiInteractionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pending_form_preview_is_safe_after_widgets_are_unmounted(self):
+        class ClosingPreviewApp(AcprofTui):
+            CSS_PATH = PROJECT_DIR / "acprof/cli/tui.tcss"
+
+            async def _close_all(self):
+                await super()._close_all()
+                # A timer callback may already be queued when shutdown removes
+                # the form. Deliver it here without depending on clock timing.
+                self._sync_form_state()
+
+        app = ClosingPreviewApp(RunConfig.smoke("demo/model"))
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            app._configuration_changed()
+            self.assertIsNotNone(app._preview_timer)
+
     async def test_rapid_clicks_are_not_discarded_by_button_active_effect(self):
         app = AcprofTui(RunConfig.smoke("demo/model"))
         async with app.run_test(size=(140, 45)) as pilot:
