@@ -1504,6 +1504,19 @@ def plot_metric_overview(
 
     combined_df = pd.concat(available_frames, ignore_index=True)
     configs, config_colors = _configurations_with_colors(combined_df)
+    if "container_mem_util_avg_pct" in aggregated_metrics:
+        # The memory/process overview uses GPU memory caps for green shades
+        # across all panels and the legend, including GPU-only figures.
+        gpu_mems = sorted({mem for _, mem, gpu_on in configs if gpu_on})
+        gpu_mem_colors = {
+            mem: shade_for_mem(GPU_GREEN, rank, len(gpu_mems))
+            for rank, mem in enumerate(gpu_mems)
+        }
+        config_colors.update({
+            config: gpu_mem_colors[config[1]]
+            for config in configs
+            if config[2]
+        })
     figure_width = 18 if columns > 1 else 11
     figure_height = {1: 8, 2: 11, 3: 14}.get(rows, 4 * rows + 2)
     fig, axes = plt.subplots(

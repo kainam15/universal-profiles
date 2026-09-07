@@ -204,6 +204,8 @@
 
 `container_io_overview_vs_scale.png` 的 block read/write operation 数可能相差多个数量级，因此两个子图分别按各自数据自动缩放纵轴，并各自标注 `Operations/request`。比较读写数量时应读取刻度值，不能直接比较曲线高度；零值和原始聚合数值保持不变。
 
+`container_memory_process_overview_vs_scale.png` 中 GPU 曲线统一使用绿色，按本图 GPU 配置的 `mem_cap_gb` 从小到大由浅变深；相同 memory cap 的不同 CPU 配置同色。六个子图和配置图例使用同一映射，适用于 `gpu/` 和 `gpu+cpu/`。CPU-only 曲线沿用 CPU 色相与 memory cap 深浅，每个资源配置仍独立聚合和绘制。
+
 Massif 图使用 `cpu_heap_peak_total_bytes_massif / 1024^3` 得到绘图期派生列 `cpu_heap_peak_total_gib_massif`；不会改写原始 CSV。它衡量进程生命周期内的 heap peak，与 container cgroup 测量窗口指标口径不同，因此保留为独立 PNG。`nsys_timing_overview_vs_scale.png` 使用 `2×2` 布局展示 host wall、CUDA API sum、GPU kernel sum 和 GPU memcpy sum。未启用对应 probe、字段不存在或整组字段均为 `nan` 时，这些可选图表会自动跳过。
 
 四张论文分析图使用独立口径：
