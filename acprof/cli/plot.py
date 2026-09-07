@@ -453,10 +453,12 @@ METRIC_OVERVIEW_PLOTS = [
             (
                 "container_io_write_ops_per_request",
                 "Block Write Operations",
-                "",
+                "Operations/request",
             ),
         ),
-        ((0, 1),),
+        # Read and write operation counts can differ by orders of magnitude.
+        # Scale each panel independently so small read/write values stay visible.
+        (),
     ),
     (
         "GPU Resource Overview vs. Input Scale",
