@@ -29,6 +29,7 @@ from acprof.config import (
 )
 from acprof.host.env_utils import load_project_env
 from acprof.monitors.perf_mips import MIPSProfilingError, resolve_perf_command_prefix
+from acprof.cli.tui_i18n import message
 
 
 TASK_FAMILIES = ("nlp", "cv", "audio", "timeseries", "diffusion")
@@ -42,7 +43,10 @@ class TuiConfigError(ValueError):
     """Raised when a TUI form cannot produce a safe run command."""
 
     def __init__(self, errors: Iterable[str]):
-        self.errors = tuple(str(error) for error in errors if str(error))
+        self.errors = tuple(
+            error if isinstance(error, str) else str(error)
+            for error in errors if str(error)
+        )
         super().__init__("；".join(self.errors))
 
 
@@ -53,13 +57,13 @@ def _csv_values(value: str) -> list[str]:
 def _positive_int_csv(value: str, label: str) -> list[int]:
     raw_values = _csv_values(value)
     if not raw_values:
-        raise TuiConfigError([f"{label}不能为空"])
+        raise TuiConfigError([message('{0}不能为空', label)])
     try:
         values = [int(item) for item in raw_values]
     except ValueError as exc:
-        raise TuiConfigError([f"{label}必须是逗号分隔的整数"]) from exc
+        raise TuiConfigError([message('{0}必须是逗号分隔的整数', label)]) from exc
     if any(item <= 0 for item in values):
-        raise TuiConfigError([f"{label}必须全部大于 0"])
+        raise TuiConfigError([message('{0}必须全部大于 0', label)])
     return values
 
 
@@ -70,9 +74,9 @@ def _positive_float_csv(value: str, label: str) -> list[float]:
     try:
         values = [float(item) for item in raw_values]
     except ValueError as exc:
-        raise TuiConfigError([f"{label}必须是逗号分隔的数字"]) from exc
+        raise TuiConfigError([message('{0}必须是逗号分隔的数字', label)]) from exc
     if any(not math.isfinite(item) or item <= 0.0 for item in values):
-        raise TuiConfigError([f"{label}必须全部大于 0"])
+        raise TuiConfigError([message('{0}必须全部大于 0', label)])
     return values
 
 
@@ -80,8 +84,8 @@ def _number(value: str | int | float, label: str, *, integer: bool) -> int | flo
     try:
         return int(value) if integer else float(value)
     except (TypeError, ValueError) as exc:
-        kind = "整数" if integer else "数字"
-        raise TuiConfigError([f"{label}必须是{kind}"]) from exc
+        kind = message('整数') if integer else message('数字')
+        raise TuiConfigError([message('{0}必须是{1}', label, kind)]) from exc
 
 
 def _format_number(value: int | float) -> str:
@@ -153,35 +157,35 @@ class RunConfig:
         errors: list[str] = []
         model = self.model.strip()
         if not model:
-            errors.append("模型 ID 不能为空")
+            errors.append(message('模型 ID 不能为空'))
 
         try:
-            cpus = _positive_int_csv(self.cpus, "CPU 列表")
+            cpus = _positive_int_csv(self.cpus, message('CPU 列表'))
         except TuiConfigError as exc:
             errors.extend(exc.errors)
             cpus = []
         try:
-            mems = _positive_int_csv(self.mems, "内存列表")
+            mems = _positive_int_csv(self.mems, message('内存列表'))
         except TuiConfigError as exc:
             errors.extend(exc.errors)
             mems = []
 
         gpus = _csv_values(self.gpus.lower())
         if not gpus:
-            errors.append("GPU 模式不能为空")
+            errors.append(message('GPU 模式不能为空'))
         elif any(item not in GPU_MODES for item in gpus):
-            errors.append("GPU 模式只能包含 off 或 on")
+            errors.append(message('GPU 模式只能包含 off 或 on'))
 
         if self.prune_startup_oom:
             if len(cpus) != len(set(cpus)):
-                errors.append("启用启动 OOM 剪枝时 CPU 列表不能重复")
+                errors.append(message('启用启动 OOM 剪枝时 CPU 列表不能重复'))
             if len(mems) != len(set(mems)):
-                errors.append("启用启动 OOM 剪枝时内存列表不能重复")
+                errors.append(message('启用启动 OOM 剪枝时内存列表不能重复'))
             if len(gpus) != len(set(gpus)):
-                errors.append("启用启动 OOM 剪枝时 GPU 模式不能重复")
+                errors.append(message('启用启动 OOM 剪枝时 GPU 模式不能重复'))
 
         try:
-            _positive_float_csv(self.input_scales, "输入规模")
+            _positive_float_csv(self.input_scales, message('输入规模'))
         except TuiConfigError as exc:
             errors.extend(exc.errors)
 
@@ -190,67 +194,67 @@ class RunConfig:
         repeat = _number(self.repeat, "Repeat", integer=True)
         repeat_in_window = _number(
             self.repeat_in_window,
-            "每窗口请求数",
+            message('每窗口请求数'),
             integer=True,
         )
         repeat_window_seconds = _number(
             self.repeat_window_seconds,
-            "自动窗口秒数",
+            message('自动窗口秒数'),
             integer=False,
         )
         request_timeout_seconds = _number(
             self.request_timeout_seconds,
-            "单请求超时秒数",
+            message('单请求超时秒数'),
             integer=False,
         )
-        sample_hz = _number(self.sample_hz, "采样频率", integer=False)
-        idle_seconds = _number(self.idle_seconds, "Idle 秒数", integer=False)
+        sample_hz = _number(self.sample_hz, message('采样频率'), integer=False)
+        idle_seconds = _number(self.idle_seconds, message('Idle 秒数'), integer=False)
         idle_cooldown_seconds = _number(
             self.idle_cooldown_seconds,
-            "Idle cooldown 秒数",
+            message('Idle cooldown 秒数'),
             integer=False,
         )
 
         if batch_size <= 0:
-            errors.append("Batch size 必须大于 0")
+            errors.append(message('Batch size 必须大于 0'))
         if warmup < 0:
-            errors.append("Warmup 不能小于 0")
+            errors.append(message('Warmup 不能小于 0'))
         if repeat <= 0:
-            errors.append("Repeat 必须大于 0")
+            errors.append(message('Repeat 必须大于 0'))
         if repeat_in_window < 0:
-            errors.append("每窗口请求数不能小于 0")
+            errors.append(message('每窗口请求数不能小于 0'))
         if repeat_window_seconds <= 0.0:
-            errors.append("自动窗口秒数必须大于 0")
+            errors.append(message('自动窗口秒数必须大于 0'))
         if not math.isfinite(float(repeat_window_seconds)):
-            errors.append("自动窗口秒数必须是有限数字")
+            errors.append(message('自动窗口秒数必须是有限数字'))
         if (
             not math.isfinite(float(request_timeout_seconds))
             or request_timeout_seconds <= 0.0
         ):
-            errors.append("单请求超时秒数必须是大于 0 的有限数字")
+            errors.append(message('单请求超时秒数必须是大于 0 的有限数字'))
         if not math.isfinite(float(sample_hz)) or sample_hz <= 0.0:
-            errors.append("采样频率必须大于 0")
+            errors.append(message('采样频率必须大于 0'))
         if not math.isfinite(float(idle_seconds)) or idle_seconds < 0.0:
-            errors.append("Idle 秒数不能小于 0")
+            errors.append(message('Idle 秒数不能小于 0'))
         if (
             not math.isfinite(float(idle_cooldown_seconds))
             or idle_cooldown_seconds < 0.0
         ):
-            errors.append("Idle cooldown 秒数不能小于 0")
+            errors.append(message('Idle cooldown 秒数不能小于 0'))
 
         task_family = self.task_family.strip().lower()
         if task_family and task_family not in TASK_FAMILIES:
-            errors.append("任务族必须是 nlp/cv/audio/timeseries/diffusion")
+            errors.append(message('任务族必须是 nlp/cv/audio/timeseries/diffusion'))
         if self.compute_profile_tool not in COMPUTE_PROFILE_TOOLS:
-            errors.append("无效的计算分析器")
+            errors.append(message('无效的计算分析器'))
         if self.execution_profile_tool not in EXECUTION_PROFILE_TOOLS:
-            errors.append("无效的执行分析器")
+            errors.append(message('无效的执行分析器'))
         if self.notify not in NOTIFY_MODES:
-            errors.append("无效的通知模式")
+            errors.append(message('无效的通知模式'))
         if not self.output_dir.strip():
-            errors.append("输出目录不能为空")
+            errors.append(message('输出目录不能为空'))
         if not self.sniff_iface.strip():
-            errors.append("抓包网卡不能为空")
+            errors.append(message('抓包网卡不能为空'))
 
         workload_spec = self.workload_spec.strip()
         if workload_spec and project_dir is not None:
@@ -258,7 +262,7 @@ class RunConfig:
             if not workload_path.is_absolute():
                 workload_path = project_dir / workload_path
             if not workload_path.is_file():
-                errors.append(f"Workload manifest 不存在：{workload_spec}")
+                errors.append(message('Workload manifest 不存在：{0}', workload_spec))
 
         if errors:
             raise TuiConfigError(errors)
@@ -431,7 +435,7 @@ def build_profile_command(
 ) -> list[str]:
     normalized_tools = ",".join(_csv_values(tools))
     if not normalized_tools:
-        raise TuiConfigError(["补采工具不能为空"])
+        raise TuiConfigError([message('补采工具不能为空')])
     command = [
         str(python_executable),
         "-u",
@@ -519,14 +523,14 @@ def _format_probe_duration(raw: str) -> str:
     try:
         value = float(raw)
     except ValueError:
-        return "不可用"
-    return f"{value:.3f}s" if math.isfinite(value) else "不可用"
+        return message('不可用')
+    return f"{value:.3f}s" if math.isfinite(value) else message('不可用')
 
 
 @dataclass(frozen=True)
 class ProgressSnapshot:
-    stage: str = "等待"
-    detail: str = "尚未启动"
+    stage: str = message('等待')
+    detail: str = message('尚未启动')
     current_case: int = 0
     completed_cases: int = 0
     total_cases: int = 0
@@ -559,9 +563,9 @@ class RunProgressTracker:
         probe_start = LARGEST_PROBE_START_RE.search(line)
         if probe_start:
             updates.update(
-                stage="启动探测容器",
+                stage=message('启动探测容器'),
                 detail=(
-                    f"最低配置 · 最大尺度 {probe_start.group('scale')}"
+                    message('最低配置 · 最大尺度 {0}', probe_start.group('scale'))
                 ),
                 current_case=1,
                 completed_cases=0,
@@ -576,10 +580,9 @@ class RunProgressTracker:
         if probe_scan:
             candidates = probe_scan.group("candidates").split(",")
             updates.update(
-                stage="准备内存探测",
+                stage=message('准备内存探测'),
                 detail=(
-                    f"候选内存 {probe_scan.group('candidates')}GB · "
-                    f"最大尺度 {probe_scan.group('scale')}"
+                    message('候选内存 {0}GB · 最大尺度 {1}', probe_scan.group('candidates'), probe_scan.group('scale'))
                 ),
                 current_case=0,
                 completed_cases=0,
@@ -594,10 +597,9 @@ class RunProgressTracker:
         if memory_try:
             current = int(memory_try.group("current"))
             updates.update(
-                stage="探测最低可用内存",
+                stage=message('探测最低可用内存'),
                 detail=(
-                    f"正在尝试 {memory_try.group('mem')}GB · "
-                    f"最大尺度 {memory_try.group('scale')}"
+                    message('正在尝试 {0}GB · 最大尺度 {1}', memory_try.group('mem'), memory_try.group('scale'))
                 ),
                 current_case=current,
                 completed_cases=max(state.completed_cases, current - 1),
@@ -612,22 +614,22 @@ class RunProgressTracker:
         if memory_result:
             memory_status = memory_result.group("status")
             status_labels = {
-                "ok": "可运行，已找到最低内存",
-                "startup_oom": "启动 OOM，继续下一档",
-                "runtime_oom": "推理 OOM，继续下一档",
-                "cuda_oom": "CUDA 显存 OOM，停止探测",
-                "timeout": "请求超时",
-                "error": "探测失败",
+                "ok": message('可运行，已找到最低内存'),
+                "startup_oom": message('启动 OOM，继续下一档'),
+                "runtime_oom": message('推理 OOM，继续下一档'),
+                "cuda_oom": message('CUDA 显存 OOM，停止探测'),
+                "timeout": message('请求超时'),
+                "error": message('探测失败'),
             }
             updates.update(
                 stage=(
-                    "找到最低可用内存"
+                    message('找到最低可用内存')
                     if memory_status == "ok"
-                    else "内存可行性探测"
+                    else message('内存可行性探测')
                 ),
                 detail=(
-                    f"{memory_result.group('mem')}GB · "
-                    f"{status_labels.get(memory_status, memory_status)}"
+                    message("{0}GB · {1}", memory_result.group("mem"),
+                            status_labels.get(memory_status, memory_status))
                 ),
                 completed_cases=max(state.completed_cases, state.current_case),
                 measurement_active=False,
@@ -638,20 +640,19 @@ class RunProgressTracker:
             status = probe_result.group("status")
             completed = max(1, state.current_case)
             if status == "ok":
-                result_detail = (
-                    f"最低可用内存 {probe_result.group('mem')}GB · "
-                    f"最大尺度 {probe_result.group('scale')} · "
-                    f"单次请求 {_format_probe_duration(probe_result.group('request'))} · "
-                    f"冷启动 {_format_probe_duration(probe_result.group('cold'))} · "
-                    f"就绪+请求 {_format_probe_duration(probe_result.group('total'))}"
+                result_detail = message(
+                    "最低可用内存 {0}GB · 最大尺度 {1} · 单次请求 {2} · 冷启动 {3} · 就绪+请求 {4}",
+                    probe_result.group("mem"), probe_result.group("scale"),
+                    _format_probe_duration(probe_result.group("request")),
+                    _format_probe_duration(probe_result.group("cold")),
+                    _format_probe_duration(probe_result.group("total")),
                 )
             else:
                 result_detail = (
-                    f"未找到最低可用内存 · 最后尝试 "
-                    f"{probe_result.group('mem')}GB · 状态 {status}"
+                    message('未找到最低可用内存 · 最后尝试 {0}GB · 状态 {1}', probe_result.group('mem'), status)
                 )
             updates.update(
-                stage="探测完成" if status == "ok" else "探测失败",
+                stage=message('探测完成') if status == "ok" else message('探测失败'),
                 detail=result_detail,
                 current_case=completed,
                 completed_cases=completed,
@@ -669,8 +670,8 @@ class RunProgressTracker:
         match = MATRIX_RE.search(line)
         if match:
             updates.update(
-                stage="准备矩阵",
-                detail="资源矩阵与输入规模已确定",
+                stage=message('准备矩阵'),
+                detail=message('资源矩阵与输入规模已确定'),
                 total_cases=int(match.group("total")),
             )
 
@@ -678,8 +679,8 @@ class RunProgressTracker:
         if match:
             current = int(match.group("current"))
             updates.update(
-                stage="启动容器",
-                detail=f"正在准备 case {current}/{match.group('total')}",
+                stage=message('启动容器'),
+                detail=message('正在准备 case {0}/{1}', current, match.group('total')),
                 current_case=current,
                 completed_cases=max(state.completed_cases, current - 1),
                 total_cases=int(match.group("total")),
@@ -690,58 +691,58 @@ class RunProgressTracker:
             )
         elif line.startswith("[largest-probe] Running one largest-scale request"):
             updates.update(
-                stage="最大尺度探测",
-                detail=f"正在用 {state.mem}GB 执行一次 /predict 请求",
+                stage=message('最大尺度探测'),
+                detail=message('正在用 {0}GB 执行一次 /predict 请求', state.mem),
                 measurement_active=True,
             )
         elif line.startswith("[largest-probe][ERROR]"):
             updates.update(
-                stage="探测失败",
+                stage=message('探测失败'),
                 detail=line.partition("] ")[2] or line,
                 measurement_active=False,
             )
         elif line.startswith("[build]"):
-            updates.update(stage="构建镜像", detail=line)
+            updates.update(stage=message('构建镜像'), detail=line)
         elif line.startswith("[scale]") or line.startswith("[probe]"):
-            updates.update(stage="规划输入", detail=line)
+            updates.update(stage=message('规划输入'), detail=line)
         elif line.startswith("[compute-profile]"):
-            updates.update(stage="计算分析", detail=line)
+            updates.update(stage=message('计算分析'), detail=line)
         elif line.startswith("[execution-profile]"):
-            updates.update(stage="执行分析", detail=line)
+            updates.update(stage=message('执行分析'), detail=line)
         elif "[case] Server ready" in line:
-            updates.update(stage="服务就绪", detail=line)
+            updates.update(stage=message('服务就绪'), detail=line)
         elif "[case] Running workload" in line:
             updates.update(
-                stage="正式测量",
-                detail="采集窗口进行中；TUI 已停止常规重绘",
+                stage=message('正式测量'),
+                detail=message('采集窗口进行中；TUI 已停止常规重绘'),
                 measurement_active=True,
             )
         elif "[case] Stopping container" in line:
             updates.update(
-                stage="清理 case",
+                stage=message('清理 case'),
                 detail=line,
                 measurement_active=False,
             )
         elif "[case] Done." in line:
             updates.update(
-                stage="case 完成",
+                stage=message('case 完成'),
                 detail=line,
                 completed_cases=max(state.completed_cases, state.current_case),
                 measurement_active=False,
             )
         elif "[oom-prune] Skipping" in line:
             updates.update(
-                stage="OOM 剪枝",
+                stage=message('OOM 剪枝'),
                 detail=line,
                 completed_cases=max(state.completed_cases, state.current_case),
                 measurement_active=False,
             )
         elif line.startswith("[merge]"):
-            updates.update(stage="合并结果", detail=line, measurement_active=False)
+            updates.update(stage=message('合并结果'), detail=line, measurement_active=False)
         elif "Profiling complete!" in line:
             updates.update(
-                stage="已完成",
-                detail="采集与合并已完成",
+                stage=message('已完成'),
+                detail=message('采集与合并已完成'),
                 completed_cases=state.total_cases or state.completed_cases,
                 measurement_active=False,
             )
@@ -814,9 +815,9 @@ def quick_preflight(
     is_wsl = "microsoft" in proc_version.lower()
     checks.append(
         PreflightCheck(
-            "原生 Linux",
+            message('原生 Linux'),
             "ok" if is_linux and not is_wsl else "fail",
-            platform.platform() if not is_wsl else "检测到 WSL",
+            platform.platform() if not is_wsl else message('检测到 WSL'),
         )
     )
 
@@ -825,13 +826,13 @@ def quick_preflight(
         PreflightCheck(
             "cgroup v2",
             "ok" if cgroup_v2 else ("warn" if config.allow_cgroup_v1 else "fail"),
-            "统一层级可用" if cgroup_v2 else "未找到 cgroup.controllers",
+            message('统一层级可用') if cgroup_v2 else message('未找到 cgroup.controllers'),
         )
     )
 
     docker_cli = shutil.which("docker")
     if not docker_cli:
-        checks.append(PreflightCheck("Docker", "fail", "未找到 docker CLI"))
+        checks.append(PreflightCheck("Docker", "fail", message('未找到 docker CLI')))
     else:
         endpoint = "unknown"
         try:
@@ -870,17 +871,17 @@ def quick_preflight(
             detail = (
                 f"{endpoint} · {info.stdout.strip()}"
                 if info.returncode == 0
-                else (info.stderr or info.stdout or "docker info 失败").strip()
+                else ((info.stderr or info.stdout).strip() or message('docker info 失败'))
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             status = "fail"
-            detail = f"Docker 检查失败：{exc}"
-        checks.append(PreflightCheck("本机 Docker", status, detail))
+            detail = message('Docker 检查失败：{0}', exc)
+        checks.append(PreflightCheck(message('本机 Docker'), status, detail))
 
     for tool in ("tcpdump", "tshark"):
         path = shutil.which(tool)
         checks.append(
-            PreflightCheck(tool, "ok" if path else "fail", path or "未安装")
+            PreflightCheck(tool, "ok" if path else "fail", path or message('未安装'))
         )
 
     ip_cli = shutil.which("ip")
@@ -892,15 +893,15 @@ def quick_preflight(
             )
             checks.append(
                 PreflightCheck(
-                    "抓包网卡",
+                    message('抓包网卡'),
                     "ok" if iface.returncode == 0 else "fail",
                     config.sniff_iface,
                 )
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            checks.append(PreflightCheck("抓包网卡", "fail", str(exc)))
+            checks.append(PreflightCheck(message('抓包网卡'), "fail", str(exc)))
     else:
-        checks.append(PreflightCheck("抓包网卡", "fail", "未找到 ip 命令"))
+        checks.append(PreflightCheck(message('抓包网卡'), "fail", message('未找到 ip 命令')))
 
     # sysfs powercap entries contain cyclic ``device``/``subsystem`` symlinks;
     # never recurse through them.  The production monitor likewise inspects
@@ -910,7 +911,7 @@ def quick_preflight(
         PreflightCheck(
             "CPU RAPL",
             "ok" if rapl_paths else "fail",
-            rapl_paths[0] if rapl_paths else "没有可读 energy_uj",
+            rapl_paths[0] if rapl_paths else message('没有可读 energy_uj'),
         )
     )
 
@@ -927,11 +928,11 @@ def quick_preflight(
         checks.append(PreflightCheck("perf instructions", "fail", str(exc)))
     else:
         if prefix[0] != "sudo":
-            detail = "普通用户 perf 可用，已读到 instructions 计数"
+            detail = message('普通用户 perf 可用，已读到 instructions 计数')
         elif "-S" in prefix:
-            detail = "sudo perf 可用（已配置凭据），已读到 instructions 计数"
+            detail = message('sudo perf 可用（已配置凭据），已读到 instructions 计数')
         else:
-            detail = "sudo perf 可用（无需交互输入），已读到 instructions 计数"
+            detail = message('sudo perf 可用（无需交互输入），已读到 instructions 计数')
         checks.append(PreflightCheck("perf instructions", "ok", detail))
 
     if "on" in _csv_values(config.gpus.lower()):
@@ -942,12 +943,12 @@ def quick_preflight(
                     (nvidia_smi, "--query-gpu=name", "--format=csv,noheader"),
                     timeout=10.0,
                 )
-                detail = gpu.stdout.strip() or gpu.stderr.strip() or "GPU 查询失败"
+                detail = gpu.stdout.strip() or gpu.stderr.strip() or message('GPU 查询失败')
                 status = "ok" if gpu.returncode == 0 else "fail"
             except (OSError, subprocess.TimeoutExpired) as exc:
                 status, detail = "fail", str(exc)
         else:
-            status, detail = "fail", "未找到 nvidia-smi"
+            status, detail = "fail", message('未找到 nvidia-smi')
         checks.append(PreflightCheck("NVIDIA GPU", status, detail))
 
     return checks
@@ -1021,7 +1022,7 @@ def parse_slash_command(value: str) -> tuple[str, list[str]]:
     try:
         parts = shlex.split(value.strip())
     except ValueError as exc:
-        raise TuiConfigError([f"命令格式错误：{exc}"]) from exc
+        raise TuiConfigError([message('命令格式错误：{0}', exc)]) from exc
     if not parts or not parts[0].startswith("/"):
-        raise TuiConfigError(["快捷命令必须以 / 开头"])
+        raise TuiConfigError([message('快捷命令必须以 / 开头')])
     return parts[0][1:].lower(), parts[1:]

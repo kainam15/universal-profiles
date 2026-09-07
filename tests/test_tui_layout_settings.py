@@ -132,7 +132,7 @@ class TuiLayoutSettingsTests(unittest.IsolatedAsyncioTestCase):
             settings_tab = app.query_one("#settings-tab")
             self.assertEqual(len(settings_tab.query(".config-control")), 0)
             self.assertEqual(len(settings_tab.query("#save-run-default")), 0)
-            self.assertEqual(len(settings_tab.query(".ui-preference")), 4)
+            self.assertEqual(len(settings_tab.query(".ui-preference")), 5)
             self.assertEqual(app.query_one("#experiment-pages", ContentSwitcher).current, "run-form")
 
     async def test_monitor_matrix_toggle_keeps_log_and_stop_button_reachable(self):

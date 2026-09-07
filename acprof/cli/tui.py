@@ -15,11 +15,12 @@ import time
 from typing import Sequence
 
 try:
-    from textual import on, work
+    from textual import events, on, work
     from textual.app import ComposeResult
     from textual.binding import Binding
     from textual.widget import Widget
     from textual.containers import Grid, Horizontal, Vertical, VerticalScroll
+    from textual.geometry import Size
     from textual.screen import ModalScreen
     from textual.theme import Theme
     from textual.widgets import (
@@ -65,6 +66,9 @@ from acprof.cli.tui_settings import (
     UiPreferences, default_settings_path, load_settings, save_settings,
 )
 from acprof.cli.tui_themes import THEME_CATALOG, THEME_OPTIONS
+from acprof.cli.tui_i18n import (
+    LANGUAGE_OPTIONS, error_message, join_messages, message, translate,
+)
 from acprof.cli.tui_log import SelectableLog
 from acprof.cli.tui_scrollbar import SolidScrollBarRender
 from acprof.cli.tui_input import BarCursorApp, BarCursorInput as Input
@@ -141,13 +145,14 @@ class ConfirmActionScreen(ModalScreen[bool]):
         self.confirm_label = confirm_label
 
     def compose(self) -> ComposeResult:
+        tr = self.app.tr
         with Vertical(id="confirm-dialog"):
-            yield Static(self.dialog_title, id="confirm-title", markup=False)
-            yield Static(self.message, id="confirm-message", markup=False)
+            yield Static(tr(self.dialog_title), id="confirm-title", markup=False)
+            yield Static(tr(self.message), id="confirm-message", markup=False)
             with Horizontal(id="confirm-buttons"):
-                yield Button("取消", id="confirm-no")
+                yield Button(tr("取消"), id="confirm-no")
                 yield Button(
-                    self.confirm_label,
+                    tr(self.confirm_label),
                     id="confirm-yes",
                     variant="warning",
                 )
@@ -204,6 +209,10 @@ class AcprofTui(BarCursorApp):
             self.settings_path, PROJECT_DIR,
         )
         self.ui_preferences = self._saved_settings.ui
+        self._localized_text: dict[tuple[Widget, str], str] = {}
+        self._localized_selects: dict[Select, tuple] = {}
+        self._applied_language: str | None = None
+        self._matrix_status_text: dict[object, str] = {}
         config = self._saved_settings.run_defaults or RunConfig()
         if self._saved_settings.last_model:
             config = replace(config, model=self._saved_settings.last_model)
@@ -232,30 +241,32 @@ class AcprofTui(BarCursorApp):
     def compose(self) -> ComposeResult:
         # A ticking clock would force periodic redraws during RAPL windows.
         with Header(show_clock=False):
-            yield Button("×", id="quit-app", name="退出", tooltip="退出（Ctrl+Q）", compact=True)
+            yield self._localized_widget(Button(
+                "×", id="quit-app", name="退出", tooltip="退出（Ctrl+Q）", compact=True,
+            ))
         with TabbedContent(initial="run-tab", id="main-tabs"):
             with TabPane("实验配置", id="run-tab"):
                 with ContentSwitcher(initial="run-form", id="experiment-pages"):
                     with VerticalScroll(id="run-form", classes="pane-scroll"):
-                        yield Static("配置实验", classes="section-title")
+                        yield self._localized_widget(Static("配置实验", classes="section-title"))
                         with Grid(classes="form-grid"):
-                            yield Label("模型 ID")
-                            yield Input(
+                            yield self._localized_widget(Label("模型 ID"))
+                            yield self._localized_widget(Input(
                                 value=self.initial_config.model,
                                 placeholder="google-bert/bert-base-uncased",
                                 id="model",
                                 classes="config-control",
                                 tooltip="确认启动采集或探测后自动记住，下次打开时填入。",
-                            )
-                            yield Label("输出目录")
-                            yield Input(
+                            ))
+                            yield self._localized_widget(Label("输出目录"))
+                            yield self._localized_widget(Input(
                                 value=self.initial_config.output_dir,
                                 id="output-dir",
                                 classes="config-control",
-                            )
+                            ))
 
-                            yield Label("运行预设")
-                            yield Select(
+                            yield self._localized_widget(Label("运行预设"))
+                            yield self._localized_select(
                                 (
                                     ("自定义", "custom"),
                                     ("最小 Smoke", "smoke"),
@@ -266,67 +277,67 @@ class AcprofTui(BarCursorApp):
                                 allow_blank=False,
                                 id="run-preset",
                             )
-                            yield Label("", id="preset-hint-label")
-                            yield Static("预设自动填充 · 下方可打开高级参数", id="preset-hint", markup=False)
+                            yield self._localized_widget(Label("", id="preset-hint-label"))
+                            yield self._localized_widget(Static("预设自动填充 · 下方可打开高级参数", id="preset-hint", markup=False))
 
-                            yield Label("CPU 列表")
-                            yield Input(
+                            yield self._localized_widget(Label("CPU 列表"))
+                            yield self._localized_widget(Input(
                                 value=self.initial_config.cpus,
                                 placeholder="1,2,4,8",
                                 id="cpus",
                                 classes="config-control",
-                            )
-                            yield Label("内存 GB")
-                            yield Input(
+                            ))
+                            yield self._localized_widget(Label("内存 GB"))
+                            yield self._localized_widget(Input(
                                 value=self.initial_config.mems,
                                 placeholder="2,4,8,16",
                                 id="mems",
                                 classes="config-control",
-                            )
+                            ))
 
-                            yield Label("GPU 模式")
-                            yield Select(
+                            yield self._localized_widget(Label("GPU 模式"))
+                            yield self._localized_select(
                                 self._gpu_options(),
                                 value=self.initial_config.gpus,
                                 allow_blank=False,
                                 id="gpus",
                                 classes="config-control",
                             )
-                            yield Label("输入规模")
-                            yield Input(
+                            yield self._localized_widget(Label("输入规模"))
+                            yield self._localized_widget(Input(
                                 value=self.initial_config.input_scales,
                                 placeholder="留空自动规划；如 64,128,256",
                                 id="input-scales",
                                 classes="config-control",
-                            )
+                            ))
 
-                        yield Static("", id="config-summary", markup=False)
+                        yield self._localized_widget(Static("", id="config-summary", markup=False))
 
-                        with Collapsible(
+                        with self._localized_widget(Collapsible(
                             title="完整命令（自动更新）",
                             collapsed=True,
                             collapsed_symbol=COLLAPSED_SYMBOL,
                             expanded_symbol=EXPANDED_SYMBOL,
                             id="command-details",
-                        ):
-                            yield Static("", id="command-preview", markup=False)
-                            yield Static(
+                        )):
+                            yield self._localized_widget(Static("", id="command-preview", markup=False))
+                            yield self._localized_widget(Static(
                                 "测量窗口内暂停常规界面刷新，不读取正在写入的 CSV。",
                                 id="science-note",
                                 markup=False,
-                            )
+                            ))
 
                     with VerticalScroll(id="advanced-form", classes="pane-scroll"):
-                        yield Static("采集参数", classes="section-title")
+                        yield self._localized_widget(Static("采集参数", classes="section-title"))
                         with Grid(classes="form-grid"):
-                            yield Label("Batch size")
-                            yield Input(
+                            yield self._localized_widget(Label("Batch size"))
+                            yield self._localized_widget(Input(
                                 value=str(self.initial_config.batch_size),
                                 id="batch-size",
                                 classes="config-control",
-                            )
-                            yield Label("Warmup / Repeat")
-                            yield Input(
+                            ))
+                            yield self._localized_widget(Label("Warmup / Repeat"))
+                            yield self._localized_widget(Input(
                                 value=(
                                     f"{self.initial_config.warmup},"
                                     f"{self.initial_config.repeat}"
@@ -334,50 +345,50 @@ class AcprofTui(BarCursorApp):
                                 placeholder="2,5",
                                 id="warmup-repeat",
                                 classes="config-control",
-                            )
+                            ))
 
-                            yield Label("窗口请求数")
-                            yield Input(
+                            yield self._localized_widget(Label("窗口请求数"))
+                            yield self._localized_widget(Input(
                                 value=str(self.initial_config.repeat_in_window),
                                 placeholder="0 表示自动校准",
                                 id="repeat-in-window",
                                 classes="config-control",
-                            )
-                            yield Label("自动窗口秒数")
-                            yield Input(
+                            ))
+                            yield self._localized_widget(Label("自动窗口秒数"))
+                            yield self._localized_widget(Input(
                                 value=str(self.initial_config.repeat_window_seconds),
                                 id="repeat-window-seconds",
                                 classes="config-control",
-                            )
+                            ))
 
-                            yield Label("采样频率 Hz")
-                            yield Input(
+                            yield self._localized_widget(Label("采样频率 Hz"))
+                            yield self._localized_widget(Input(
                                 value=str(self.initial_config.sample_hz),
                                 id="sample-hz",
                                 classes="config-control",
-                            )
-                            yield Label("Idle 基线测量秒")
-                            yield Input(
+                            ))
+                            yield self._localized_widget(Label("Idle 基线测量秒"))
+                            yield self._localized_widget(Input(
                                 value=str(self.initial_config.idle_seconds),
                                 id="idle-seconds",
                                 classes="config-control",
-                            )
+                            ))
 
-                            yield Label("基线前冷却秒")
-                            yield Input(
+                            yield self._localized_widget(Label("基线前冷却秒"))
+                            yield self._localized_widget(Input(
                                 value=str(self.initial_config.idle_cooldown_seconds),
                                 id="idle-cooldown-seconds",
                                 classes="config-control",
-                            )
-                            yield Label("单请求超时秒")
-                            yield Input(
+                            ))
+                            yield self._localized_widget(Label("单请求超时秒"))
+                            yield self._localized_widget(Input(
                                 value=str(self.initial_config.request_timeout_seconds),
                                 id="request-timeout-seconds",
                                 classes="config-control",
-                            )
+                            ))
 
-                            yield Label("计算分析器")
-                            yield Select(
+                            yield self._localized_widget(Label("计算分析器"))
+                            yield self._localized_select(
                                 (
                                     ("关闭（先跑主矩阵）", "none"),
                                     ("Torch + NCU", "both"),
@@ -389,8 +400,8 @@ class AcprofTui(BarCursorApp):
                                 id="compute-profile-tool",
                                 classes="config-control",
                             )
-                            yield Label("执行分析器")
-                            yield Select(
+                            yield self._localized_widget(Label("执行分析器"))
+                            yield self._localized_select(
                                 (
                                     ("关闭", "none"),
                                     ("Massif + Nsys", "both"),
@@ -403,14 +414,14 @@ class AcprofTui(BarCursorApp):
                                 classes="config-control",
                             )
 
-                            yield Label("抓包网卡")
-                            yield Input(
+                            yield self._localized_widget(Label("抓包网卡"))
+                            yield self._localized_widget(Input(
                                 value=self.initial_config.sniff_iface,
                                 id="sniff-iface",
                                 classes="config-control",
-                            )
-                            yield Label("通知")
-                            yield Select(
+                            ))
+                            yield self._localized_widget(Label("通知"))
+                            yield self._localized_select(
                                 (
                                     ("自动", "auto"),
                                     ("关闭", "none"),
@@ -422,17 +433,17 @@ class AcprofTui(BarCursorApp):
                                 classes="config-control",
                             )
 
-                        yield Static("识别覆盖（通常留空）", classes="section-title")
+                        yield self._localized_widget(Static("识别覆盖（通常留空）", classes="section-title"))
                         with Grid(classes="form-grid"):
-                            yield Label("Task")
-                            yield Input(
+                            yield self._localized_widget(Label("Task"))
+                            yield self._localized_widget(Input(
                                 value=self.initial_config.task,
                                 placeholder="如 text-generation",
                                 id="task",
                                 classes="config-control",
-                            )
-                            yield Label("Task family")
-                            yield Select(
+                            ))
+                            yield self._localized_widget(Label("Task family"))
+                            yield self._localized_select(
                                 (
                                     ("自动识别", ""),
                                     ("NLP", "nlp"),
@@ -446,112 +457,115 @@ class AcprofTui(BarCursorApp):
                                 id="task-family",
                                 classes="config-control",
                             )
-                            yield Label("Backend")
-                            yield Input(
+                            yield self._localized_widget(Label("Backend"))
+                            yield self._localized_widget(Input(
                                 value=self.initial_config.backend,
                                 placeholder="留空自动识别",
                                 id="backend",
                                 classes="config-control",
-                            )
-                            yield Label("Workload manifest")
-                            yield Input(
+                            ))
+                            yield self._localized_widget(Label("Workload manifest"))
+                            yield self._localized_widget(Input(
                                 value=self.initial_config.workload_spec,
                                 placeholder="音频 manifest，可留空",
                                 id="workload-spec",
                                 classes="config-control",
-                            )
+                            ))
 
                         with Horizontal(classes="checkbox-row"):
-                            yield StatusCheckbox(
+                            yield self._localized_widget(StatusCheckbox(
                                 "启动 OOM 剪枝",
                                 value=self.initial_config.prune_startup_oom,
                                 id="prune-startup-oom",
                                 classes="config-control option-checkbox",
-                            )
-                            yield StatusCheckbox(
+                            ))
+                            yield self._localized_widget(StatusCheckbox(
                                 "复用现有镜像",
                                 value=self.initial_config.skip_build,
                                 id="skip-build",
                                 classes="config-control option-checkbox",
                                 tooltip="优先复用本地模型镜像；未找到时提示并自动构建。",
-                            )
-                            yield StatusCheckbox(
+                            ))
+                            yield self._localized_widget(StatusCheckbox(
                                 "Idle 诊断",
                                 value=self.initial_config.idle_debug,
                                 id="idle-debug",
                                 classes="config-control option-checkbox",
-                            )
-                            yield StatusCheckbox(
+                            ))
+                            yield self._localized_widget(StatusCheckbox(
                                 "允许 cgroup v1（仅诊断）",
                                 value=self.initial_config.allow_cgroup_v1,
                                 id="allow-cgroup-v1",
                                 classes="config-control option-checkbox",
-                            )
+                            ))
 
 
-                        yield Static("下次启动使用的实验配置", classes="section-title")
-                        yield Static(
+                        yield self._localized_widget(Static("下次启动使用的实验配置", classes="section-title"))
+                        yield self._localized_widget(Static(
                             "点击后记住当前实验表单。下次打开此项目自动填入，命令行指定的模型和预设优先。",
                             classes="page-hint", markup=False,
-                        )
-                        yield Static("", id="saved-run-summary", markup=False)
+                        ))
+                        yield self._localized_widget(Static("", id="saved-run-summary", markup=False))
                         with Horizontal(classes="button-row"):
-                            yield Button("记住实验配置", id="save-run-default")
+                            yield self._localized_widget(Button("记住实验配置", id="save-run-default"))
 
                 with Horizontal(id="run-actions", classes="action-bar"):
-                    yield Button("高级参数", id="open-run-settings")
-                    yield Static("", id="action-spacer")
-                    yield Button("环境检查", id="quick-check")
-                    yield Button("探测最大输入", id="probe-largest")
-                    yield Button("开始采集", id="start-run", variant="primary")
+                    yield self._localized_widget(Button("高级参数", id="open-run-settings"))
+                    yield self._localized_widget(Static("", id="action-spacer"))
+                    yield self._localized_widget(Button("环境检查", id="quick-check"))
+                    yield self._localized_widget(Button("探测最大输入", id="probe-largest"))
+                    yield self._localized_widget(Button("开始采集", id="start-run", variant="primary"))
 
             with TabPane("运行监控", id="monitor-tab"):
                 with Vertical(classes="pane-scroll"):
                     with Grid(id="status-grid"):
-                        yield Static("阶段", classes="status-label")
-                        yield Static("等待", id="status-stage", markup=False)
-                        yield Static("运行时间", classes="status-label")
-                        yield Static("-", id="status-elapsed", markup=False)
+                        yield self._localized_widget(Static("阶段", classes="status-label"))
+                        yield self._localized_widget(Static("等待", id="status-stage", markup=False))
+                        yield self._localized_widget(Static("运行时间", classes="status-label"))
+                        yield self._localized_widget(Static("-", id="status-elapsed", markup=False))
 
-                        yield Static("Case", classes="status-label")
-                        yield Static("0/0", id="status-case", markup=False)
-                        yield Static("资源", classes="status-label")
-                        yield Static("CPU=-  MEM=-  GPU=-", id="status-resource", markup=False)
+                        yield self._localized_widget(Static("Case", classes="status-label"))
+                        yield self._localized_widget(Static("0/0", id="status-case", markup=False))
+                        yield self._localized_widget(Static("资源", classes="status-label"))
+                        yield self._localized_widget(Static("CPU=-  MEM=-  GPU=-", id="status-resource", markup=False))
 
-                        yield Static("警告 / 错误", classes="status-label")
-                        yield Static("0 / 0", id="status-errors", markup=False)
-                        yield Static("详情", classes="status-label")
-                        yield Static("尚未启动", id="status-detail", markup=False)
+                        yield self._localized_widget(Static("警告 / 错误", classes="status-label"))
+                        yield self._localized_widget(Static("0 / 0", id="status-errors", markup=False))
+                        yield self._localized_widget(Static("详情", classes="status-label"))
+                        yield self._localized_widget(Static("尚未启动", id="status-detail", markup=False))
 
                     yield ProgressBar(
                         total=1,
                         show_eta=False,
                         id="case-progress",
                     )
-                    with Collapsible(
+                    with self._localized_widget(Collapsible(
                         title="资源矩阵",
                         collapsed=True,
                         collapsed_symbol=COLLAPSED_SYMBOL,
                         expanded_symbol=EXPANDED_SYMBOL,
                         id="matrix-board",
-                    ):
+                    )):
                         yield DataTable(
                             id="matrix-table",
                             show_cursor=False,
                         )
                     with LogPanel(id="log-panel"):
                         with Horizontal(id="log-toolbar"):
-                            yield Static("日志", id="log-title", markup=False)
-                            yield Button("复制选区", id="copy-log", classes="log-tool")
-                            yield Button("回到最新", id="follow-log", classes="log-tool")
-                            yield Button("放大日志", id="expand-log", classes="log-tool")
-                            yield Button("返回监控", id="restore-log", classes="log-tool")
-                            yield Button("清空日志", id="clear-log", classes="log-tool")
-                            yield Button("终止任务", id="stop-run", classes="log-tool", variant="error", disabled=True)
-                        yield Static(
+                            yield self._localized_widget(Static("日志", id="log-title", markup=False))
+                            yield self._localized_widget(Button("复制选区", id="copy-log", classes="log-tool"))
+                            yield self._localized_widget(Button("回到最新", id="follow-log", classes="log-tool"))
+                            yield self._localized_widget(Button("放大日志", id="expand-log", classes="log-tool"))
+                            yield self._localized_widget(Button("返回监控", id="restore-log", classes="log-tool"))
+                            yield self._localized_widget(Button("清空日志", id="clear-log", classes="log-tool"))
+                            yield self._localized_widget(Button(
+                                "终止任务", id="stop-run", classes="log-tool",
+                                variant="error", disabled=True,
+                            ))
+                        yield self._localized_widget(Static(
                             "拖动选择 · Ctrl+C 复制 · F8 放大 · 正在跟随最新",
                             id="log-hint", markup=False,
-                        )
+                        ))
                         yield SelectableLog(
                             id="run-log",
                             max_lines=self.ui_preferences.log_max_lines,
@@ -560,73 +574,80 @@ class AcprofTui(BarCursorApp):
 
             with TabPane("结果工具", id="results-tab"):
                 with VerticalScroll(classes="pane-scroll"):
-                    yield Static("已有结果", classes="section-title")
+                    yield self._localized_widget(Static("已有结果", classes="section-title"))
                     with Grid(classes="form-grid"):
-                        yield Label("结果目录")
-                        yield Input("", id="result-dir")
-                        yield Label("结果 CSV")
-                        yield Input("", id="result-csv")
-                        yield Label("补采工具")
-                        yield Input("torch,ncu", id="profile-tools")
-                        yield Label("")
-                        yield Static("")
+                        yield self._localized_widget(Label("结果目录"))
+                        yield self._localized_widget(Input("", id="result-dir"))
+                        yield self._localized_widget(Label("结果 CSV"))
+                        yield self._localized_widget(Input("", id="result-csv"))
+                        yield self._localized_widget(Label("补采工具"))
+                        yield self._localized_widget(Input("torch,ncu", id="profile-tools"))
+                        yield self._localized_widget(Label(""))
+                        yield self._localized_widget(Static(""))
                     with Horizontal(classes="button-row"):
-                        yield Button("读取摘要", id="summarize-results")
-                        yield Button("生成图表", id="plot-results", variant="primary")
-                        yield Button("补采计划（dry-run）", id="profile-dry-run")
-                        yield Button("执行补采", id="profile-run", variant="warning")
-                    yield Static(
+                        yield self._localized_widget(Button("读取摘要", id="summarize-results"))
+                        yield self._localized_widget(Button("生成图表", id="plot-results", variant="primary"))
+                        yield self._localized_widget(Button("补采计划（dry-run）", id="profile-dry-run"))
+                        yield self._localized_widget(Button("执行补采", id="profile-run", variant="warning"))
+                    yield self._localized_widget(Static(
                         "选择或完成一次实验后，这里会显示结果摘要。",
                         id="result-summary",
                         markup=False,
-                    )
+                    ))
 
             with TabPane("设置", id="settings-tab"):
                 with VerticalScroll(classes="pane-scroll"):
-                    yield Static("显示与日志", classes="section-title")
-                    yield Static(
+                    yield self._localized_widget(Static("显示与日志", classes="section-title"))
+                    yield self._localized_widget(Static(
                         "修改立即生效，点击保存后下次启动沿用。",
                         classes="page-hint", markup=False,
-                    )
+                    ))
                     with Grid(classes="form-grid"):
-                        yield Label("界面主题")
-                        yield Select(
+                        yield self._localized_widget(Label("界面语言"))
+                        yield self._localized_select(
+                            LANGUAGE_OPTIONS,
+                            value=self.ui_preferences.language, allow_blank=False,
+                            id="ui-language", classes="ui-preference",
+                        )
+                        yield self._localized_widget(Label("界面主题"))
+                        yield self._localized_select(
                             THEME_OPTIONS,
                             value=self.ui_preferences.theme, allow_blank=False,
                             id="ui-theme", classes="ui-preference",
                         )
-                        yield Label("保留日志行数")
-                        yield Select(
+                        yield self._localized_widget(Label("保留日志行数"))
+                        yield self._localized_select(
                             ((str(n), n) for n in (500, 1000, 3000, 10000)),
                             value=self.ui_preferences.log_max_lines, allow_blank=False,
                             id="ui-log-lines", classes="ui-preference",
                         )
                     with Vertical(classes="settings-options"):
-                        yield StatusCheckbox(
+                        yield self._localized_widget(StatusCheckbox(
                             "日志自动换行", value=self.ui_preferences.log_wrap,
                             id="ui-log-wrap", classes="ui-preference option-checkbox",
-                        )
-                        yield StatusCheckbox(
+                        ))
+                        yield self._localized_widget(StatusCheckbox(
                             "显示底部快捷命令框",
                             value=self.ui_preferences.show_command_bar,
                             id="ui-command-bar", classes="ui-preference option-checkbox",
-                        )
-                    yield Static("", id="settings-location", classes="page-hint", markup=False)
-                yield Static("", id="settings-status", markup=False)
+                        ))
+                    yield self._localized_widget(Static("", id="settings-location", classes="page-hint", markup=False))
+                yield self._localized_widget(Static("", id="settings-status", markup=False))
                 with Horizontal(id="settings-actions", classes="action-bar"):
-                    yield Button("恢复界面默认", id="restore-ui-defaults")
-                    yield Button("保存设置", id="save-ui-settings", variant="primary")
+                    yield self._localized_widget(Button("恢复界面默认", id="restore-ui-defaults"))
+                    yield self._localized_widget(Button("保存设置", id="save-ui-settings", variant="primary"))
 
         with Vertical(id="bottom-panel"):
             with Horizontal(id="slash-command-bar"):
-                yield Input(
+                yield self._localized_widget(Input(
                     placeholder="快捷命令：输入 /help 查看可用命令，按 Enter 执行",
                     id="slash-command",
-                )
+                ))
 
     def on_mount(self) -> None:
         self._configure_interaction()
         self._configure_scrollbars()
+        self._capture_language_text()
         self._apply_ui_preferences()
         self._update_saved_settings_summary()
         self._update_responsive_layout()
@@ -637,19 +658,104 @@ class AcprofTui(BarCursorApp):
         table.add_column("CPU", key="cpu")
         table.add_column("MEM (GB)", key="mem")
         table.add_column("GPU", key="gpu")
-        table.add_column("状态", key="status")
+        table.add_column(self.tr("状态"), key="status")
         self.query_one("#model", Input).focus()
         if self._settings_warning:
             self.notify(self._settings_warning, title="设置读取提示", severity="warning", timeout=8)
 
-    def on_resize(self) -> None:
-        self._update_responsive_layout()
+    def on_resize(self, event: events.Resize) -> None:
+        # App.size can still refer to the previous frame while Resize is
+        # dispatched. Use the event's new dimensions for responsive classes.
+        self._update_responsive_layout(event.size)
 
-    def _update_responsive_layout(self) -> None:
-        self.set_class(self.size.width < 110, "narrow")
-        self.set_class(self.size.height < 35, "short")
+    def _update_responsive_layout(self, size: Size | None = None) -> None:
+        size = self.size if size is None else size
+        self.set_class(size.width < 110, "narrow")
+        self.set_class(size.height < 35, "short")
+
+    def tr(self, source: str) -> str:
+        return translate(source, self.ui_preferences.language)
+
+    def notify(self, message: str, *, title: str = "", **kwargs) -> None:
+        super().notify(self.tr(message), title=self.tr(title), **kwargs)
+
+    def _localized_widget(self, widget: Widget) -> Widget:
+        """Register only our own widgets, before Textual creates their children."""
+        if isinstance(widget, (Button, Checkbox)):
+            self._localized_text[widget, "label"] = widget.label.plain
+        elif isinstance(widget, Static):
+            self._localized_text[widget, "content"] = widget.content
+        elif isinstance(widget, Input):
+            self._localized_text[widget, "placeholder"] = widget.placeholder
+        elif isinstance(widget, Collapsible):
+            self._localized_text[widget, "title"] = widget.title
+        if isinstance(widget.tooltip, str):
+            self._localized_text[widget, "tooltip"] = widget.tooltip
+        return widget
+
+    def _localized_select(self, options, **kwargs) -> Select:
+        sources = tuple(options)
+        widget = Select(sources, **kwargs)
+        self._localized_selects[widget] = sources
+        return widget
+
+    def _set_text(self, widget: Widget, source: str, attribute: str = "content") -> None:
+        self._localized_text[widget, attribute] = source
+        self._render_text(widget, attribute, source)
+
+    def _render_text(self, widget: Widget, attribute: str, source: str) -> None:
+        rendered = self.tr(source)
+        if attribute == "content":
+            assert isinstance(widget, Static)
+            widget.update(rendered)
+        else:
+            setattr(widget, attribute, rendered)
+            # Button labels do not invalidate cached content widths themselves.
+            # Recompute geometry when switching a visible page back and forth.
+            widget.refresh(layout=True)
+
+    def _capture_language_text(self) -> None:
+        tabs = self.query_one("#main-tabs", TabbedContent)
+        for pane in tabs.query(TabPane):
+            tab = tabs.get_tab(pane)
+            self._localized_text[tab, "label"] = tab.label.plain
+        self._source_bindings = {
+            key: list(bindings) for key, bindings in self._bindings.key_to_bindings.items()
+        }
+
+    def _apply_language(self) -> None:
+        if self._applied_language == self.ui_preferences.language:
+            return
+        self._applied_language = self.ui_preferences.language
+        # Keep mounted widgets, drafts, selected values, log text/selection,
+        # scroll positions and progress state. This runs only on a UI change.
+        with self.prevent(Select.Changed), self.batch_update():
+            self.sub_title = self.tr(self.SUB_TITLE)
+            for (widget, attribute), source in self._localized_text.items():
+                self._render_text(widget, attribute, source)
+            for widget, sources in self._localized_selects.items():
+                value = widget.value
+                widget.set_options((self.tr(label), key) for label, key in sources)
+                widget.value = value
+                # If the selection is the first option, its value did not
+                # change. Still refresh the displayed prompt from the catalog.
+                widget.mutate_reactive(Select.value)
+            self._bindings.key_to_bindings = {
+                key: [replace(binding, description=self.tr(binding.description)) for binding in bindings]
+                for key, bindings in self._source_bindings.items()
+            }
+            self.refresh_bindings()
+            table = self.query_one("#matrix-table", DataTable)
+            if "status" in table.columns:
+                # Status is the final column. Replacing only it uses public
+                # APIs to invalidate cached headers without discarding rows.
+                table.remove_column("status")
+                table.add_column(self.tr("状态"), key="status")
+                for row, source in self._matrix_status_text.items():
+                    table.update_cell(row, "status", self.tr(source))
 
     def _apply_ui_preferences(self) -> None:
+        self._apply_language()
         self.theme = self.ui_preferences.theme
         log = self.query_one("#run-log", SelectableLog)
         log.wrap = self.ui_preferences.log_wrap
@@ -661,13 +767,15 @@ class AcprofTui(BarCursorApp):
     def _update_saved_settings_summary(self) -> None:
         config = self._saved_settings.run_defaults
         summary = (
-            f"已记住：{config.model or '模型待填写'} · CPU {config.cpus} · 内存 {config.mems} GB"
-            if config else "尚未保存实验默认参数。"
+            message('已记住：{0} · CPU {1} · 内存 {2} GB', config.model or message('模型待填写'), config.cpus, config.mems)
+            if config else message("尚未保存实验默认参数。")
         )
         if self._saved_settings.last_model:
-            summary += f"\n下次启动自动填入模型：{self._saved_settings.last_model}"
-        self.query_one("#saved-run-summary", Static).update(summary)
-        self.query_one("#settings-location", Static).update(f"保存位置：{self.settings_path}")
+            summary = join_messages("", (
+                summary, message('\n下次启动自动填入模型：{0}', self._saved_settings.last_model),
+            ))
+        self._set_text(self.query_one('#saved-run-summary', Static), summary)
+        self._set_text(self.query_one('#settings-location', Static), message('保存位置：{0}', self.settings_path))
 
     @on(Select.Changed, ".ui-preference")
     @on(Checkbox.Changed, ".ui-preference")
@@ -675,6 +783,7 @@ class AcprofTui(BarCursorApp):
         if not self._form_ready or self._is_busy():
             return
         preferences = UiPreferences(
+            language=self._select("ui-language"),
             theme=self._select("ui-theme"),
             log_max_lines=int(self.query_one("#ui-log-lines", Select).value),
             log_wrap=self._checked("ui-log-wrap"),
@@ -684,20 +793,22 @@ class AcprofTui(BarCursorApp):
             return
         self.ui_preferences = preferences
         self._apply_ui_preferences()
-        self.query_one("#settings-status", Static).update("已应用 · 点击保存设置可在下次启动时沿用")
+        self._set_text(self.query_one('#settings-status', Static), '已应用 · 点击保存设置可在下次启动时沿用')
 
     @on(Button.Pressed, "#restore-ui-defaults")
     def restore_ui_defaults(self) -> None:
         if self._is_busy():
             return
         defaults = UiPreferences()
-        self.query_one("#ui-theme", Select).value = defaults.theme
-        self.query_one("#ui-log-lines", Select).value = defaults.log_max_lines
-        self.query_one("#ui-log-wrap", Checkbox).value = defaults.log_wrap
-        self.query_one("#ui-command-bar", Checkbox).value = defaults.show_command_bar
+        with self.prevent(Select.Changed, Checkbox.Changed):
+            self.query_one("#ui-language", Select).value = defaults.language
+            self.query_one("#ui-theme", Select).value = defaults.theme
+            self.query_one("#ui-log-lines", Select).value = defaults.log_max_lines
+            self.query_one("#ui-log-wrap", Checkbox).value = defaults.log_wrap
+            self.query_one("#ui-command-bar", Checkbox).value = defaults.show_command_bar
         self.ui_preferences = defaults
         self._apply_ui_preferences()
-        self.query_one("#settings-status", Static).update("界面已恢复默认 · 点击保存设置可保留")
+        self._set_text(self.query_one('#settings-status', Static), '界面已恢复默认 · 点击保存设置可保留')
 
     def _save_settings(self, *, remember_run: bool) -> None:
         if self._is_busy():
@@ -715,15 +826,15 @@ class AcprofTui(BarCursorApp):
             )
             save_settings(self.settings_path, settings, PROJECT_DIR)
         except (OSError, ValueError, TuiConfigError) as exc:
-            self.notify(str(exc), title="设置未保存", severity="error")
-            self.query_one("#settings-status", Static).update("保存失败 · 请检查配置或文件权限")
+            self.notify(error_message(exc), title="设置未保存", severity="error")
+            self._set_text(self.query_one('#settings-status', Static), '保存失败 · 请检查配置或文件权限')
             return
         self._saved_settings = settings
         self._settings_warning = ""
         self._update_saved_settings_summary()
         message = "已记住当前实验配置" if remember_run else "界面设置已保存"
         if not remember_run:
-            self.query_one("#settings-status", Static).update(message)
+            self._set_text(self.query_one('#settings-status', Static), message)
         self.notify(message, timeout=3)
 
     @on(Button.Pressed, "#save-ui-settings")
@@ -743,8 +854,9 @@ class AcprofTui(BarCursorApp):
         pages = self.query_one("#experiment-pages", ContentSwitcher)
         show_advanced = pages.current != "advanced-form"
         pages.current = "advanced-form" if show_advanced else "run-form"
-        self.query_one("#open-run-settings", Button).label = (
-            "返回基本配置" if show_advanced else "高级参数"
+        self._set_text(
+            self.query_one("#open-run-settings", Button),
+            "返回基本配置" if show_advanced else "高级参数", "label",
         )
 
     @staticmethod
@@ -761,7 +873,7 @@ class AcprofTui(BarCursorApp):
     def _gpu_options(self) -> list[tuple[str, str]]:
         options = [("仅 CPU", "off"), ("仅 GPU", "on"), ("CPU + GPU", "off,on")]
         if self.initial_config.gpus not in {value for _, value in options}:
-            options.append((f"自定义：{self.initial_config.gpus}", self.initial_config.gpus))
+            options.append((message('自定义：{0}', self.initial_config.gpus), self.initial_config.gpus))
         return options
 
     @staticmethod
@@ -814,9 +926,10 @@ class AcprofTui(BarCursorApp):
 
     @on(SelectableLog.FollowChanged)
     def log_follow_changed(self, event: SelectableLog.FollowChanged) -> None:
-        status = "正在跟随最新" if event.following else "正在查看历史 · 点击“回到最新”继续跟随"
-        self.query_one("#log-hint", Static).update(
-            "拖动选择 · Ctrl+C 复制 · F8 放大 · " + status
+        status = message("正在跟随最新" if event.following else "正在查看历史 · 点击“回到最新”继续跟随")
+        self._set_text(
+            self.query_one("#log-hint", Static),
+            message("拖动选择 · Ctrl+C 复制 · F8 放大 · {0}", status),
         )
 
     @on(Button.Pressed, "#expand-log")
@@ -877,7 +990,7 @@ class AcprofTui(BarCursorApp):
     def _pair(value: str, label: str) -> tuple[str, str]:
         parts = [part.strip() for part in value.split(",")]
         if len(parts) != 2 or not all(parts):
-            raise TuiConfigError([f"{label}必须填写两个逗号分隔的值"])
+            raise TuiConfigError([message('{0}必须填写两个逗号分隔的值', label)])
         return parts[0], parts[1]
 
     def _collect_config(self, *, allow_empty_model: bool = False) -> RunConfig:
@@ -970,8 +1083,8 @@ class AcprofTui(BarCursorApp):
             self._refresh_command_preview(notify=False)
 
     def _show_config_error(self, exc: TuiConfigError) -> None:
-        message = "\n".join(f"• {error}" for error in exc.errors)
-        self.notify(message, title="配置有误", severity="error", timeout=8)
+        text = join_messages("\n", (message("• {0}", error) for error in exc.errors))
+        self.notify(text, title="配置有误", severity="error", timeout=8)
 
     def _refresh_command_preview(
         self, *, notify: bool = True, sync_preset: bool = False
@@ -985,11 +1098,13 @@ class AcprofTui(BarCursorApp):
                 python_executable=PYTHON_EXECUTABLE,
             )
         except TuiConfigError as exc:
-            self.query_one("#config-summary", Static).update(
-                "配置待完善 · " + "；".join(exc.errors[:2])
+            self._set_text(
+                self.query_one("#config-summary", Static),
+                message("配置待完善 · {0}", join_messages("; ", exc.errors[:2])),
             )
-            self.query_one("#command-preview", Static).update(
-                "配置尚未完成：" + "；".join(exc.errors)
+            self._set_text(
+                self.query_one("#command-preview", Static),
+                message("配置尚未完成：{0}", join_messages("; ", exc.errors)),
             )
             if notify:
                 self._show_config_error(exc)
@@ -1007,27 +1122,24 @@ class AcprofTui(BarCursorApp):
             * len(config.gpus.split(","))
         )
         scale_summary = (
-            f"{len(config.input_scales.split(','))} 档"
+            message('{0} 档', len(config.input_scales.split(',')))
             if config.input_scales
-            else "自动规划"
+            else message("自动规划")
         )
         profiler_summary = (
-            "分析器关闭"
+            message("分析器关闭")
             if config.compute_profile_tool == "none"
             and config.execution_profile_tool == "none"
             else (
-                f"计算={config.compute_profile_tool} · "
-                f"执行={config.execution_profile_tool}"
+                message('计算={0} · 执行={1}', config.compute_profile_tool, config.execution_profile_tool)
             )
         )
-        self.query_one("#config-summary", Static).update(
-            f"{case_count} 个资源 case · 输入规模 {scale_summary} · "
-            f"单请求超时 {config.request_timeout_seconds:g}s · "
-            f"{profiler_summary} · 输出 {config.output_dir}"
-        )
-        self.query_one("#command-preview", Static).update(
-            format_command(command, project_dir=PROJECT_DIR)
-        )
+        self._set_text(self.query_one("#config-summary", Static), message(
+            "{0} 个资源 case · 输入规模 {1} · 单请求超时 {2:g}s · {3} · 输出 {4}",
+            case_count, scale_summary, config.request_timeout_seconds,
+            profiler_summary, config.output_dir,
+        ))
+        self._set_text(self.query_one('#command-preview', Static), format_command(command, project_dir=PROJECT_DIR))
         if notify:
             self.notify("命令预览已更新", timeout=2)
         return True
@@ -1120,7 +1232,7 @@ class AcprofTui(BarCursorApp):
             if config.input_scales
             else None
         )
-        scale_text = f"{largest_scale:g}" if largest_scale is not None else "自动规划后的最大值"
+        scale_text = f"{largest_scale:g}" if largest_scale is not None else message("自动规划后的最大值")
         memory_text = ",".join(
             f"{value}GB" for value in memory_candidates
         )
@@ -1129,14 +1241,17 @@ class AcprofTui(BarCursorApp):
         self.push_screen(
             ConfirmActionScreen(
                 "探测最低配置的最大输入？",
-                f"资源：CPU={cpu}、GPU={gpu}\n"
-                f"内存候选：{memory_text}（从小到大）\n"
-                f"输入规模：{scale_text}\n\n"
-                "每档使用全新容器并最多执行一次最大输入请求；OOM 时自动尝试下一档，"
-                "第一个成功值就是最低可用内存。结果单独写入 "
-                "probes/，不会写入或修改正式实验 CSV。最大输入请求不设超时，"
-                "可用 /stop 手动终止。\n\n"
-                + preview,
+                join_messages("", (
+                    message(
+                        "资源：CPU={0}、GPU={1}\n内存候选：{2}（从小到大）\n输入规模：{3}\n\n"
+                        "每档使用全新容器并最多执行一次最大输入请求；OOM 时自动尝试下一档，"
+                        "第一个成功值就是最低可用内存。结果单独写入 "
+                        "probes/，不会写入或修改正式实验 CSV。最大输入请求不设超时，"
+                        "可用 /stop 手动终止。\n\n",
+                        cpu, gpu, memory_text, scale_text,
+                    ),
+                    preview,
+                )),
                 "开始探测",
             ),
             self._confirmed_launch,
@@ -1157,13 +1272,15 @@ class AcprofTui(BarCursorApp):
             self._show_config_error(exc)
             return
         preview = format_command(command, project_dir=PROJECT_DIR)
-        self.query_one("#command-preview", Static).update(preview)
+        self._set_text(self.query_one('#command-preview', Static), preview)
         self._pending_launch = PendingLaunch(tuple(command), "run", config)
         self.push_screen(
             ConfirmActionScreen(
                 "开始 AC-Prof 采集？",
-                "将启动独立采集进程。正式测量窗口内 TUI 会停止常规日志刷新。\n\n"
-                + preview,
+                join_messages("", (
+                    message("将启动独立采集进程。正式测量窗口内 TUI 会停止常规日志刷新。\n\n"),
+                    preview,
+                )),
                 "开始采集",
             ),
             self._confirmed_launch,
@@ -1190,7 +1307,7 @@ class AcprofTui(BarCursorApp):
         try:
             save_settings(self.settings_path, settings, PROJECT_DIR)
         except (OSError, ValueError, TuiConfigError) as exc:
-            self.notify(str(exc), title="模型 ID 未保存", severity="warning")
+            self.notify(error_message(exc), title="模型 ID 未保存", severity="warning")
             return
         self._saved_settings = settings
         self._update_saved_settings_summary()
@@ -1230,7 +1347,7 @@ class AcprofTui(BarCursorApp):
             self._clear_matrix()
         log = self.query_one("#run-log", SelectableLog)
         log.write(f"$ {format_command(pending.command, project_dir=PROJECT_DIR)}")
-        log.write("[TUI] 子进程输出通过管道读取；tmux pane 捕获已对该子进程禁用。")
+        log.write(self.tr("[TUI] 子进程输出通过管道读取；tmux pane 捕获已对该子进程禁用。"))
         self._render_snapshot(self._latest_snapshot)
         self._execute_command(list(pending.command), pending.kind)
 
@@ -1241,13 +1358,14 @@ class AcprofTui(BarCursorApp):
         if not self._started_monotonic or not self._is_busy():
             return
         elapsed = self._format_elapsed(time.monotonic() - self._started_monotonic)
-        self.query_one("#status-elapsed", Static).update(elapsed)
+        self._set_text(self.query_one('#status-elapsed', Static), elapsed)
 
     def _init_matrix_for_run(self, config: RunConfig) -> None:
         """Pre-populate the resource matrix board from the run configuration."""
         table = self.query_one("#matrix-table", DataTable)
         table.clear()
         self._matrix_rows.clear()
+        self._matrix_status_text.clear()
         # run.py iterates CPU → MEM → GPU (innermost).
         cpus = config.cpus.split(",")
         mems = config.mems.split(",")
@@ -1259,9 +1377,10 @@ class AcprofTui(BarCursorApp):
                     case_num += 1
                     key = table.add_row(
                         str(case_num), cpu.strip(), mem.strip(),
-                        gpu.strip(), "⋯ 等待",
+                        gpu.strip(), self.tr("⋯ 等待"),
                     )
                     self._matrix_rows[case_num] = key
+                    self._matrix_status_text[key] = "⋯ 等待"
         # Keep the matrix collapsed until the user asks to inspect it, so
         # the running log retains most of the monitor page.
 
@@ -1269,6 +1388,7 @@ class AcprofTui(BarCursorApp):
         """Clear the matrix board for non-run tasks."""
         self.query_one("#matrix-table", DataTable).clear()
         self._matrix_rows.clear()
+        self._matrix_status_text.clear()
 
     _STAGE_CSS_CLASS = {
         "等待": "stage-idle",
@@ -1414,22 +1534,22 @@ class AcprofTui(BarCursorApp):
 
     def _process_started(self, pid: int, kind: str) -> None:
         self.query_one("#run-log", SelectableLog).write(
-            f"[TUI] {kind} 进程已启动，PID={pid}"
+            self.tr(message('[TUI] {0} 进程已启动，PID={1}', kind, pid))
         )
 
     def _show_suppressed_count(self, count: int) -> None:
         self.query_one("#run-log", SelectableLog).write(
-            f"[TUI] 为降低测量干扰，本窗口隐藏了 {count} 行常规输出。"
+            self.tr(message('[TUI] 为降低测量干扰，本窗口隐藏了 {0} 行常规输出。', count))
         )
 
     def _show_deferred_lines(self, lines: tuple[str, ...]) -> None:
         log = self.query_one("#run-log", SelectableLog)
-        log.write("[TUI] 测量窗口结束，显示期间延迟刷新的重要消息：")
+        log.write(self.tr("[TUI] 测量窗口结束，显示期间延迟刷新的重要消息："))
         for line in lines:
             log.write(line)
 
     def _write_log(self, line: str) -> None:
-        self.query_one("#run-log", SelectableLog).write(line)
+        self.query_one("#run-log", SelectableLog).write(self.tr(line))
 
     def _consume_process_line(
         self,
@@ -1466,22 +1586,21 @@ class AcprofTui(BarCursorApp):
         )
         # Stage text with visual category coloring.
         stage_widget = self.query_one("#status-stage", Static)
-        stage_widget.update(snapshot.stage)
+        self._set_text(stage_widget, snapshot.stage)
         stage_widget.set_classes(
             self._STAGE_CSS_CLASS.get(snapshot.stage, "stage-running")
         )
-        self.query_one("#status-elapsed", Static).update(elapsed)
-        self.query_one("#status-case", Static).update(
-            f"当前 {snapshot.current_case or '-'} · "
-            f"已完成 {snapshot.completed_cases}/{snapshot.total_cases}"
+        self._set_text(self.query_one('#status-elapsed', Static), elapsed)
+        self._set_text(self.query_one("#status-case", Static), message(
+            "当前 {0} · 已完成 {1}/{2}", snapshot.current_case or "-",
+            snapshot.completed_cases, snapshot.total_cases,
+        ))
+        self._set_text(
+            self.query_one("#status-resource", Static),
+            f"CPU={snapshot.cpu}  MEM={snapshot.mem}GB  GPU={snapshot.gpu}",
         )
-        self.query_one("#status-resource", Static).update(
-            f"CPU={snapshot.cpu}  MEM={snapshot.mem}GB  GPU={snapshot.gpu}"
-        )
-        self.query_one("#status-errors", Static).update(
-            f"{snapshot.warnings} / {snapshot.errors}"
-        )
-        self.query_one("#status-detail", Static).update(snapshot.detail)
+        self._set_text(self.query_one('#status-errors', Static), f'{snapshot.warnings} / {snapshot.errors}')
+        self._set_text(self.query_one('#status-detail', Static), snapshot.detail)
         total = max(1, snapshot.total_cases)
         self.query_one("#case-progress", ProgressBar).update(
             total=total,
@@ -1507,7 +1626,8 @@ class AcprofTui(BarCursorApp):
         # Update status column.
         status = self._MATRIX_STATUS.get(snapshot.stage)
         if status:
-            table.update_cell(row_key, "status", status)
+            self._matrix_status_text[row_key] = status
+            table.update_cell(row_key, "status", self.tr(status))
 
     def _process_finished(
         self,
@@ -1525,21 +1645,21 @@ class AcprofTui(BarCursorApp):
             final_elapsed = self._format_elapsed(
                 time.monotonic() - self._started_monotonic
             )
-            self.query_one("#status-elapsed", Static).update(final_elapsed)
+            self._set_text(self.query_one('#status-elapsed', Static), final_elapsed)
         self._set_busy(False)
         log = self.query_one("#run-log", SelectableLog)
         if launch_error:
-            log.write(f"[TUI][ERROR] 无法运行命令：{launch_error}")
+            log.write(self.tr(message('[TUI][ERROR] 无法运行命令：{0}', launch_error)))
             self.notify(launch_error, title="任务启动失败", severity="error", timeout=8)
         elif returncode == 0:
-            log.write(f"[TUI] {kind} 任务完成，退出码 0")
+            log.write(self.tr(message('[TUI] {0} 任务完成，退出码 0', kind)))
             self.notify("任务已完成", severity="information", timeout=5)
         elif self._stop_requested:
-            log.write(f"[TUI] 任务已由用户终止，退出码 {returncode}")
+            log.write(self.tr(message('[TUI] 任务已由用户终止，退出码 {0}', returncode)))
             self.notify("任务已终止；部分 case 结果可能仍可续跑", severity="warning", timeout=7)
         else:
-            log.write(f"[TUI][ERROR] {kind} 任务失败，退出码 {returncode}")
-            self.notify(f"任务失败，退出码 {returncode}", severity="error", timeout=8)
+            log.write(self.tr(message('[TUI][ERROR] {0} 任务失败，退出码 {1}', kind, returncode)))
+            self.notify(message('任务失败，退出码 {0}', returncode), severity="error", timeout=8)
 
         if kind == "run":
             if snapshot is not None:
@@ -1560,7 +1680,7 @@ class AcprofTui(BarCursorApp):
                 final_state = replace(
                     final_state,
                     stage="失败",
-                    detail=launch_error or f"采集进程退出码 {returncode}",
+                    detail=launch_error or message('采集进程退出码 {0}', returncode),
                     measurement_active=False,
                 )
             elif self._stop_requested:
@@ -1578,7 +1698,7 @@ class AcprofTui(BarCursorApp):
                 detail = launch_error or (
                     final_state.detail
                     if final_state.stage == "探测失败"
-                    else f"探测进程退出码 {returncode}"
+                    else message('探测进程退出码 {0}', returncode)
                 )
                 final_state = replace(
                     final_state,
@@ -1605,13 +1725,13 @@ class AcprofTui(BarCursorApp):
         else:
             if launch_error or (returncode != 0 and not self._stop_requested):
                 stage = "失败"
-                detail = launch_error or f"{kind} 进程退出码 {returncode}"
+                detail = launch_error or message('{0} 进程退出码 {1}', kind, returncode)
             elif self._stop_requested:
                 stage = "已终止"
-                detail = f"用户终止了 {kind} 任务"
+                detail = message('用户终止了 {0} 任务', kind)
             else:
                 stage = "已完成"
-                detail = f"{kind} 任务已完成"
+                detail = message('{0} 任务已完成', kind)
             self._latest_snapshot = ProgressSnapshot(stage=stage, detail=detail)
             self._render_snapshot(self._latest_snapshot)
 
@@ -1699,7 +1819,7 @@ class AcprofTui(BarCursorApp):
         # the old pane, which queues a request to reactivate that pane.
         self._activate_tab("monitor-tab")
         self.query_one("#quick-check", Button).disabled = True
-        self.query_one("#run-log", SelectableLog).write("[TUI] 开始只读快速环境检查……")
+        self.query_one("#run-log", SelectableLog).write(self.tr("[TUI] 开始只读快速环境检查……"))
         self._execute_quick_check(config)
 
     @work(thread=True, group="preflight", exclusive=True, exit_on_error=False)
@@ -1722,27 +1842,28 @@ class AcprofTui(BarCursorApp):
             self.query_one("#quick-check", Button).disabled = False
         log = self.query_one("#run-log", SelectableLog)
         if error:
-            log.write(f"[TUI][ERROR] 环境检查失败：{error}")
+            log.write(self.tr(message('[TUI][ERROR] 环境检查失败：{0}', error)))
             self.notify(error, severity="error")
             return
         # SelectableLog retains plain text for wrapping, selection, and copying;
         # Rich renderables cannot be written to its TextArea document.
-        log.write("[TUI] 环境检查结果：")
+        log.write(self.tr("[TUI] 环境检查结果："))
         status_label = {"ok": "通过", "warn": "警告", "fail": "失败"}
         for check in checks:
-            log.write(
-                f"[{status_label.get(check.status, check.status)}] "
-                f"{check.label}：{check.detail}"
-            )
+            log.write(self.tr(message(
+                "[{0}] {1}: {2}",
+                message(status_label.get(check.status, check.status)), check.label, check.detail,
+            )))
         failures = sum(check.status == "fail" for check in checks)
         warnings = sum(check.status == "warn" for check in checks)
-        log.write(
-            f"[TUI] 快速检查完成：{len(checks) - failures - warnings} 通过，"
-            f"{warnings} 警告，{failures} 失败。run.py 启动时仍会执行权威预检。"
-        )
+        log.write(self.tr(message(
+            "[TUI] 快速检查完成：{0} 通过，{1} 警告，{2} 失败。"
+            "run.py 启动时仍会执行权威预检。",
+            len(checks) - failures - warnings, warnings, failures,
+        )))
         severity = "error" if failures else ("warning" if warnings else "information")
         self.notify(
-            f"环境检查：{failures} 失败，{warnings} 警告",
+            message('环境检查：{0} 失败，{1} 警告', failures, warnings),
             severity=severity,
             timeout=6,
         )
@@ -1766,7 +1887,7 @@ class AcprofTui(BarCursorApp):
         try:
             summary = summarize_result_csv(result_csv)
         except (OSError, csv.Error, UnicodeError) as exc:
-            self.query_one("#result-summary", Static).update(f"无法读取结果：{exc}")
+            self._set_text(self.query_one('#result-summary', Static), message('无法读取结果：{0}', exc))
             if notify:
                 self.notify(str(exc), severity="error")
             return
@@ -1776,16 +1897,14 @@ class AcprofTui(BarCursorApp):
             max_ms = summary.max_latency_s * 1000 if summary.max_latency_s is not None else 0
             avg_ms = summary.avg_latency_s * 1000
             latency_info = (
-                f"\n应用延迟（均值）：{avg_ms:.1f}ms "
-                f"（范围 {min_ms:.1f}ms ~ {max_ms:.1f}ms）"
+                message('\n应用延迟（均值）：{0:.1f}ms （范围 {1:.1f}ms ~ {2:.1f}ms）', avg_ms, min_ms, max_ms)
             )
-        self.query_one("#result-summary", Static).update(
-            "结果已读取\n"
-            f"行数：{summary.rows}（成功 {summary.ok_rows} / 错误 {summary.error_rows}）\n"
-            f"资源 case：{summary.cases}\n"
-            f"Warmup 行：{summary.warmup_rows}（正常绘图会排除）"
-            f"{latency_info}"
-        )
+        self._set_text(self.query_one("#result-summary", Static), message(
+            "结果已读取\n行数：{0}（成功 {1} / 错误 {2}）\n资源 case：{3}\n"
+            "Warmup 行：{4}（正常绘图会排除）{5}",
+            summary.rows, summary.ok_rows, summary.error_rows,
+            summary.cases, summary.warmup_rows, latency_info,
+        ))
         if notify:
             self.notify("结果摘要已更新", timeout=3)
 
@@ -1805,7 +1924,7 @@ class AcprofTui(BarCursorApp):
         if not csv_path.is_absolute():
             csv_path = PROJECT_DIR / csv_path
         if not csv_path.is_file():
-            self.notify(f"结果 CSV 不存在：{csv_path}", severity="error")
+            self.notify(message('结果 CSV 不存在：{0}', csv_path), severity="error")
             return
         command = build_plot_command(
             csv_path,
@@ -1838,7 +1957,7 @@ class AcprofTui(BarCursorApp):
         if not result_path.is_absolute():
             result_path = PROJECT_DIR / result_path
         if not result_path.is_dir():
-            self.notify(f"结果目录不存在：{result_path}", severity="error")
+            self.notify(message('结果目录不存在：{0}', result_path), severity="error")
             return None
         try:
             return build_profile_command(
@@ -1889,9 +2008,13 @@ class AcprofTui(BarCursorApp):
         self.push_screen(
             ConfirmActionScreen(
                 "执行 profiler 补采？",
-                "该操作会启动隔离 profiler，并在成功后原子回填现有结果。"
-                "原文件会按项目规则备份。\n\n"
-                + format_command(command, project_dir=PROJECT_DIR),
+                join_messages("", (
+                    message(
+                        "该操作会启动隔离 profiler，并在成功后原子回填现有结果。"
+                        "原文件会按项目规则备份。\n\n"
+                    ),
+                    format_command(command, project_dir=PROJECT_DIR),
+                )),
                 "执行补采",
             ),
             self._confirmed_launch,
@@ -1918,7 +2041,7 @@ class AcprofTui(BarCursorApp):
         elif command == "status":
             snapshot = self._latest_snapshot
             self.query_one("#run-log", SelectableLog).write(
-                f"[TUI] status={snapshot.stage}; "
+                f"[TUI] status={self.tr(snapshot.stage)}; "
                 f"case={snapshot.completed_cases}/{snapshot.total_cases}; "
                 f"resource=CPU {snapshot.cpu}, MEM {snapshot.mem}GB, GPU {snapshot.gpu}; "
                 f"warnings={snapshot.warnings}; errors={snapshot.errors}"
@@ -1964,18 +2087,18 @@ class AcprofTui(BarCursorApp):
             self.action_show_settings()
         elif command == "help":
             self.query_one("#run-log", SelectableLog).write(
-                "[TUI] /run 采集 · /probe 最大输入探测 · /check 环境检查 · "
+                self.tr("[TUI] /run 采集 · /probe 最大输入探测 · /check 环境检查 · "
                 "/status 状态 · /stop 终止 · "
                 "/smoke 最小预设 · /main 主矩阵 · /defaults 默认 · /preview 命令预览 · "
                 "/matrix 切换矩阵看板 · /plot [csv] 绘图 · /profile [dir] [tools] 补采计划 · "
                 "/profile-run [dir] [tools] 执行补采 · /results [csv] 摘要 · "
-                "/settings 设置 · /log 放大日志 · /clear 清日志 · /quit 退出"
+                "/settings 设置 · /log 放大日志 · /clear 清日志 · /quit 退出")
             )
             self._activate_tab("monitor-tab")
         elif command in {"quit", "exit"}:
             self.action_request_quit()
         else:
-            self.notify(f"未知快捷命令：/{command}", severity="error")
+            self.notify(message('未知快捷命令：/{0}', command), severity="error")
 
     @on(Button.Pressed, "#quit-app")
     def action_request_quit(self) -> None:

@@ -16,11 +16,12 @@ import tempfile
 from typing import Any, get_type_hints
 
 from acprof.cli.tui_core import RunConfig
+from acprof.cli.tui_i18n import UI_LANGUAGES, error_message, message
 from acprof.cli.tui_themes import UI_THEMES
 
 
 LOG_MAX_LINES = (500, 1000, 3000, 10000)
-SETTINGS_VERSION = 2
+SETTINGS_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -29,13 +30,16 @@ class UiPreferences:
     log_wrap: bool = True
     log_max_lines: int = 3000
     show_command_bar: bool = True
+    language: str = "zh"
 
     def validate(self) -> "UiPreferences":
-        _validate_field_types(asdict(self), UiPreferences, "界面设置")
+        _validate_field_types(asdict(self), UiPreferences, message('界面设置'))
+        if self.language not in UI_LANGUAGES:
+            raise ValueError(message("无效的界面语言，请在设置页重新选择"))
         if self.theme not in UI_THEMES:
-            raise ValueError("无效的界面主题，请在设置页重新选择")
+            raise ValueError(message('无效的界面主题，请在设置页重新选择'))
         if self.log_max_lines not in LOG_MAX_LINES:
-            raise ValueError("日志保留行数只能是 500、1000、3000 或 10000")
+            raise ValueError(message('日志保留行数只能是 500、1000、3000 或 10000'))
         return self
 
 
@@ -47,15 +51,15 @@ class TuiSettings:
 
     def validate(self, *, project_dir: Path) -> "TuiSettings":
         if not isinstance(self.ui, UiPreferences):
-            raise ValueError("界面设置必须是 UiPreferences")
+            raise ValueError(message('界面设置必须是 UiPreferences'))
         ui = self.ui.validate()
         if type(self.last_model) is not str:
-            raise ValueError("上次运行的模型 ID 必须是字符串")
+            raise ValueError(message('上次运行的模型 ID 必须是字符串'))
         config = self.run_defaults
         if config is not None:
             if not isinstance(config, RunConfig):
-                raise ValueError("实验默认配置必须是 RunConfig")
-            _validate_field_types(asdict(config), RunConfig, "实验默认配置")
+                raise ValueError(message('实验默认配置必须是 RunConfig'))
+            _validate_field_types(asdict(config), RunConfig, message('实验默认配置'))
             # A reusable default need not select a model, but must otherwise
             # meet the same requirements as the live experiment form.
             model = config.model.strip()
@@ -63,7 +67,7 @@ class TuiSettings:
             try:
                 config = config.validate(project_dir=project_dir)
             except OverflowError as exc:
-                raise ValueError("实验默认配置中的数字超出支持范围") from exc
+                raise ValueError(message('实验默认配置中的数字超出支持范围')) from exc
             config = replace(config, model=model)
         return replace(self, ui=ui, run_defaults=config, last_model=self.last_model.strip())
 
@@ -85,7 +89,7 @@ def _validate_field_types(
     """Reject coercions, especially JSON booleans masquerading as integers."""
     allowed = {item.name for item in fields(cls)}
     if values.keys() - allowed:
-        raise ValueError(f"{label}包含无法识别的字段")
+        raise ValueError(message('{0}包含无法识别的字段', label))
     annotations = get_type_hints(cls)
     for name, value in values.items():
         expected = annotations[name]
@@ -95,26 +99,26 @@ def _validate_field_types(
             else type(value) is expected
         )
         if not valid:
-            raise ValueError(f"{label}字段 {name} 的类型不正确")
+            raise ValueError(message('{0}字段 {1} 的类型不正确', label, name))
 
 
 def _decode_settings(payload: Any, project_dir: Path) -> TuiSettings:
     if not isinstance(payload, dict):
-        raise ValueError("设置文件的最外层必须是 JSON 对象")
+        raise ValueError(message('设置文件的最外层必须是 JSON 对象'))
     version = payload.get("version", 1)
-    if type(version) is not int or version not in (1, SETTINGS_VERSION):
-        raise ValueError("不支持此设置文件版本")
+    if type(version) is not int or version not in (1, 2, SETTINGS_VERSION):
+        raise ValueError(message('不支持此设置文件版本'))
     ui_values = payload.get("ui", {})
     if not isinstance(ui_values, dict):
-        raise ValueError("界面设置必须是 JSON 对象")
-    _validate_field_types(ui_values, UiPreferences, "界面设置")
+        raise ValueError(message('界面设置必须是 JSON 对象'))
+    _validate_field_types(ui_values, UiPreferences, message('界面设置'))
     ui = UiPreferences(**ui_values)
     defaults_values = payload.get("run_defaults")
     defaults = None
     if defaults_values is not None:
         if not isinstance(defaults_values, dict):
-            raise ValueError("实验默认配置必须是 JSON 对象")
-        _validate_field_types(defaults_values, RunConfig, "实验默认配置")
+            raise ValueError(message('实验默认配置必须是 JSON 对象'))
+        _validate_field_types(defaults_values, RunConfig, message('实验默认配置'))
         defaults = RunConfig(**defaults_values)
     # Ignore unknown top-level keys; only recognized fields can be saved again.
     return TuiSettings(
@@ -134,7 +138,7 @@ def load_settings(path: Path, project_dir: Path) -> tuple[TuiSettings, str]:
     except FileNotFoundError:
         return TuiSettings(), ""
     except (OSError, ValueError, UnicodeError) as exc:
-        return TuiSettings(), f"无法读取本地设置，已使用默认值：{exc}"
+        return TuiSettings(), message('无法读取本地设置，已使用默认值：{0}', error_message(exc))
     return settings, ""
 
 
@@ -145,7 +149,7 @@ def save_settings(path: Path, settings: TuiSettings, project_dir: Path) -> None:
     A failed validation or replacement leaves the previous file untouched.
     """
     if not isinstance(settings, TuiSettings):
-        raise ValueError("设置必须是 TuiSettings")
+        raise ValueError(message('设置必须是 TuiSettings'))
     normalized = settings.validate(project_dir=Path(project_dir))
     payload = {
         "version": SETTINGS_VERSION,

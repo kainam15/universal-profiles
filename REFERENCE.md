@@ -672,6 +672,19 @@ Nsys 还需生成和解析 timeline；repeat 参数会进一步增加工作量�
 - 分别查看 `compute_profile_error_massif` 和 `compute_profile_error_nsys`。Massif 检查模型镜像中预装的 Valgrind；旧模型兼容构建失败时检查 Docker build/apt 网络与 `dockerfiles/massif.Dockerfile` 日志，不要求 host 安装 `valgrind`。Nsight Systems 检查 `nsys`、`--nsys-root`、实际分析镜像的 importer runtime preflight、NVIDIA driver / Container Toolkit 兼容性，以及 raw `.nsys-rep` 是否可导出；旧模型的依赖由 `dockerfiles/nsys.Dockerfile` 补齐。出现 `nsys_importer_unavailable` 时，优先检查分析镜像中 `libdw.so.1` 等动态库；probe 阶段只出现 `.qdstrm` 而没有 `.nsys-rep` 属于 importer 失败。
 - 两者是显式 opt-in 的独立 probe；一个失败不会影响另一个 execution probe、FLOP compute profiling 或主实验。完整状态与静态口径见 `execution_profile_plan.json` 和 `static_meta.json`。
 
+## TUI 本地设置
+
+`acprof/cli/tui_settings.py` 管理项目隔离的 `tui.json`，当前版本为 v3；
+路径与操作方式见 [README 的 TUI 说明](README.md#交互式终端界面)。
+`ui.language` 是字符串，仅接受 `zh`（简体中文，默认）和 `en`（English），不使用系统 locale 自动推断。
+兼容读取 v1、v2 设置，缺少语言字段时使用中文；加载时不改写文件，下次保存时写入 v3。
+未知语言值或错误类型遵循现有校验规则：提示、使用默认设置，并保留原文件，直到用户主动保存。
+
+切换语言仅更新当次界面，点击“保存设置”后持久化；“恢复界面默认”将当次语言恢复为中文。
+自动记住模型 ID 或显式记住实验配置时，不会顺带保存尚未保存的界面偏好。
+语言只影响 TUI 文案，原始子进程日志、命令参数、结果文件和进度解析状态值保持原有语义。
+切换时复用已挂载控件和已读取摘要，不重新读取结果 CSV，也不启动定时刷新；任务运行期间语言控件随其他偏好锁定。
+
 ## CLI 参数
 
 以下参数表对应 `run.py`。示例命令见 [README](README.md#运行正式实验)，

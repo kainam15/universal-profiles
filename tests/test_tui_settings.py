@@ -58,7 +58,7 @@ class TuiSettingsTests(unittest.TestCase):
         settings = TuiSettings(
             ui=UiPreferences(
                 theme="acprof-light", log_wrap=False,
-                log_max_lines=1000, show_command_bar=False,
+                log_max_lines=1000, show_command_bar=False, language="en",
             ),
             run_defaults=RunConfig.smoke("  demo/model  "),
             last_model="  demo/latest  ",
@@ -73,23 +73,26 @@ class TuiSettingsTests(unittest.TestCase):
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
 
     def test_legacy_settings_load_without_rewriting_and_upgrade_when_saved(self):
-        for version_fields in ({}, {"version": 1}):
+        for version_fields in ({}, {"version": 1}, {"version": 2}):
             with self.subTest(version_fields=version_fields):
+                last_model = "demo/recent" if version_fields.get("version") == 2 else ""
                 self.write_payload({
                     **version_fields,
                     "ui": {"theme": "acprof-light"},
                     "run_defaults": {"model": "demo/saved", "cpus": "1,3"},
+                    "last_model": last_model,
                 })
                 previous = self.path.read_bytes()
                 restored, warning = load_settings(self.path, self.project)
                 self.assertEqual(warning, "")
-                self.assertEqual(restored.last_model, "")
+                self.assertEqual(restored.last_model, last_model)
                 self.assertEqual(restored.run_defaults.model, "demo/saved")
+                self.assertEqual(restored.ui.language, "zh")
                 self.assertEqual(self.path.read_bytes(), previous)
                 updated = replace(restored, last_model="demo/latest")
                 save_settings(self.path, updated, self.project)
                 self.assertEqual(load_settings(self.path, self.project), (updated, ""))
-                self.assertEqual(json.loads(self.path.read_text())["version"], 2)
+                self.assertEqual(json.loads(self.path.read_text())["version"], SETTINGS_VERSION)
 
     def test_empty_model_is_valid_for_defaults_but_other_validation_remains(self):
         settings = TuiSettings(run_defaults=RunConfig(model="  ", cpus="1, 2", gpus="OFF"))
@@ -125,6 +128,10 @@ class TuiSettingsTests(unittest.TestCase):
             {"last_model": []},
             {"ui": []},
             {"ui": {"theme": "unknown"}},
+            {"ui": {"language": "fr"}},
+            {"ui": {"language": "EN"}},
+            {"ui": {"language": True}},
+            {"ui": {"language": None}},
             {"ui": {"log_wrap": "false"}},
             {"ui": {"show_command_bar": 0}},
             {"ui": {"log_max_lines": True}},
@@ -161,6 +168,7 @@ class TuiSettingsTests(unittest.TestCase):
     def test_save_rejects_invalid_dataclasses_before_creating_file(self):
         invalid = (
             TuiSettings(ui=UiPreferences(log_wrap=1)),
+            TuiSettings(ui=UiPreferences(language="fr")),
             TuiSettings(ui=UiPreferences(log_max_lines=3)),
             TuiSettings(last_model=False),
             TuiSettings(run_defaults=RunConfig(skip_build="false")),
