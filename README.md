@@ -387,6 +387,8 @@ CPU Torch、GPU Torch、NCU、Massif、Nsys 各自汇总实际采样项、失败
 
 ## 选择性能分析器
 
+### 计算分析器：`--compute-profile-tool`
+
 FLOP profiling 和主 latency / energy workload 相互独立：
 
 | 选项 | 采集内容 | 适合场景 |
@@ -399,13 +401,36 @@ FLOP profiling 和主 latency / energy workload 相互独立：
 Torch probe 会强制并验证 eager attention，正式请求仍使用正常运行时的 attention 实现。
 NCU 需要主机上的 `ncu` 和可用的 GPU 性能计数器，可用 `--ncu-root` 指定工具位置。
 
-Execution profiling 默认关闭。显式启用后采用缩减采样，并把来源记录到 plan 与静态元数据：
+### 执行分析器：`--execution-profile-tool`
 
-- `--execution-profile-tool massif`：CPU-only 的 process-lifetime 内存峰值。
-- `--execution-profile-tool nsys`：GPU 的 CUDA API、kernel 和 memcpy timeline。
-- `--execution-profile-tool both`：同时启用两者。
-- Massif 默认 `--massif-sampling per-scale`：最大 CPU/内存 × 每个 input scale。
-- Nsys 默认 `--nsys-sampling per-cpu-scale`：全部 CPU × 最大内存 × 每个 input scale。
+Execution profiling 用于分析内存峰值与执行时间线，默认关闭，与 FLOP profiling 独立选择。
+显式启用后，在主 latency / energy 矩阵开始前运行独立分析探针：
+
+| 选项 | 采集内容 | 适合场景 |
+| --- | --- | --- |
+| `--execution-profile-tool none` | 不运行 execution probe | 默认；smoke test、先完成主矩阵 |
+| `massif` | Valgrind Massif 的 heap、heap extra、stack 峰值，以及三者总量峰值和出现时间 | 分析 CPU-only 模型进程的内存占用 |
+| `nsys` | Nsight Systems 的推理窗口 host wall time，以及 CUDA API、GPU kernel、memcpy 时间线与汇总 | 分析 NVIDIA GPU 推理耗时、调用次数和数据搬运 |
+| `both` | CPU-only 行采 Massif，GPU 行采 Nsys | 同时分析 CPU 内存与 GPU 执行行为 |
+
+工具按本次 `--gpus` 选择的模式生效：Massif 只用于 `off`，Nsys 只用于 `on`；
+`both` 在 `--gpus off,on` 时才会运行两种工具。
+
+Massif 的内存峰值覆盖模型加载、预热和推理的整个进程生命周期。
+`--massif-repeat` 默认 `1`，只控制探针内的推理次数，峰值不按次数平均；
+解读时应与正式测量窗口的容器内存指标区分。
+
+Nsys 在预热后的推理窗口采集，时间、调用次数及 memcpy 字节数按
+`--nsys-repeat`（默认 `1`）归一化为单 request。
+CUDA API、kernel 和 memcpy 时间各自是活动时长之和，活动可能重叠，不能相加当作请求总延迟。
+完整字段口径见 [Massif 与 Nsight Systems 执行指标](REFERENCE.md#massif-与-nsight-systems-执行指标)。
+
+显式启用后默认采用缩减采样，并把来源资源与复用策略记录到 plan 与静态元数据：
+
+- Massif 默认 `--massif-sampling per-scale`：最大 CPU × 最大内存 × 每个 input scale，结果复用到其他 CPU-only 资源配置。
+- Nsys 默认 `--nsys-sampling per-cpu-scale`：全部 CPU × 最大内存 × 每个 input scale，结果复用到相同 CPU、不同内存上限的其他 GPU 结果行。
+- Nsys 也支持 `--nsys-sampling per-scale`：只采一个代表 CPU/内存 × 每个 input scale，结果复用到其他 GPU 资源配置。
+- 两者均支持 `full`：在各自适用的 GPU 模式下，逐 CPU × 内存 × input scale 采集。
 
 新构建的模型共享 `acprof-base` 中预装的 Valgrind 和 Nsys 运行库；启用分析时直接使用模型镜像，无需为每个新模型再构建 Massif / Nsys 镜像。Nsys 主程序仍从宿主机挂载，可用 `--nsys-root` 指定；host 无需安装 Valgrind。两个工具只在独立分析探针中运行。已有旧模型镜像无需重新下载权重：首次使用时按需构建兼容镜像，以后实际模型镜像 ID 和分析 Dockerfile 均未改变时直接复用，跳过 `docker build`。
 
@@ -413,13 +438,15 @@ Execution profiling 默认关闭。显式启用后采用缩减采样，并把来
 
 ```bash
 python run.py --model google-bert/bert-base-uncased \
+  --gpus off,on \
   --execution-profile-tool both \
   --massif-sampling full --nsys-sampling full
 ```
 
 代表资源默认取本次 `--cpus` / `--mems` 中的最大值，也可用
 `--massif-reference-cpu`、`--massif-reference-mem`、
-`--nsys-reference-cpu`、`--nsys-reference-mem` 显式选择。
+`--nsys-reference-cpu`、`--nsys-reference-mem` 显式选择，取值必须在本次资源矩阵中；
+Nsys 的 `per-cpu-scale` 只使用代表内存，`per-scale` 同时使用代表 CPU 和内存。
 
 ### 补采已有结果
 
