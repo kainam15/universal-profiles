@@ -841,6 +841,9 @@ python run.py --model openai/whisper-large-v3 \
 位置参数 `result_dir` 是已完成的模型结果目录。操作和恢复规则见
 [README 补采说明](README.md#补采已有结果)。
 
+TUI 使用四项复选框选择补采工具（初始勾选 `torch`、`ncu`），将勾选结果传给
+`--tools`；未勾选任何工具时不启动补采。工具适用范围、采样策略和指标口径与 CLI 相同。
+
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `--tools` | `torch,ncu,nsys,massif` | 选择需要补齐的工具，逗号分隔。 |

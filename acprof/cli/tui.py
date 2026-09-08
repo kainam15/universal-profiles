@@ -583,9 +583,21 @@ class AcprofTui(BarCursorApp):
                         yield self._localized_widget(Label("结果 CSV"))
                         yield self._localized_widget(Input(self._saved_settings.last_result_csv, id="result-csv"))
                         yield self._localized_widget(Label("补采工具"))
-                        yield self._localized_widget(Input("torch,ncu", id="profile-tools"))
-                        yield self._localized_widget(Label(""))
-                        yield self._localized_widget(Static(""))
+                        with Grid(id="profile-tools"):
+                            for tool, label, tooltip in (
+                                ("torch", "torch · CPU / GPU", "逻辑 FLOP；点击或按空格切换。"),
+                                ("ncu", "ncu · GPU", "GPU 实际执行 FLOP；点击或按空格切换。"),
+                                ("nsys", "nsys · GPU", "CUDA API、kernel 和 memcpy 时间线；点击或按空格切换。"),
+                                ("massif", "massif · CPU", "CPU-only 进程生命周期内存峰值；点击或按空格切换。"),
+                            ):
+                                yield self._localized_widget(StatusCheckbox(
+                                    label,
+                                    value=tool in {"torch", "ncu"},
+                                    name=tool,
+                                    id=f"profile-tool-{tool}",
+                                    classes="option-checkbox profile-tool",
+                                    tooltip=tooltip,
+                                ))
                     with Horizontal(classes="button-row"):
                         yield self._localized_widget(Button("读取摘要", id="summarize-results"))
                         yield self._localized_widget(Button("生成图表", id="plot-results", variant="primary"))
@@ -1156,7 +1168,7 @@ class AcprofTui(BarCursorApp):
         if busy:
             self._cancel_preview_timer()
         for widget in self.query(
-            ".config-control, #run-preset, .ui-preference, "
+            ".config-control, #run-preset, .ui-preference, .profile-tool, "
             "#save-run-default, #restore-ui-defaults, #save-ui-settings"
         ):
             widget.disabled = busy
@@ -1970,9 +1982,16 @@ class AcprofTui(BarCursorApp):
         tools: str | None = None,
     ) -> list[str] | None:
         directory = result_dir or self._input("result-dir")
-        selected_tools = tools or self._input("profile-tools")
+        selected_tools = tools if tools is not None else ",".join(
+            checkbox.name
+            for checkbox in self.query("#profile-tools Checkbox")
+            if checkbox.value and checkbox.name is not None
+        )
         if not directory:
             self.notify("请填写结果目录", severity="warning")
+            return None
+        if not selected_tools:
+            self.notify("请至少勾选一个补采工具", severity="warning")
             return None
         result_path = Path(directory).expanduser()
         if not result_path.is_absolute():

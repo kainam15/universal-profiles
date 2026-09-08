@@ -150,6 +150,16 @@ Button:disabled, Button:disabled:hover, Button:disabled:focus, Button:disabled.-
 .option-checkbox > .toggle--button { color: $text-muted; background: $panel; }
 .option-checkbox.-on > .toggle--button { color: $background; background: $accent; }
 .option-checkbox:focus { border: tall $accent; }
+#profile-tools {
+    column-span: 3;
+    grid-size: 2;
+    grid-columns: 1fr 1fr;
+    grid-rows: 3;
+    height: 6;
+}
+#profile-tools .option-checkbox { width: 1fr; margin-right: 0; }
+#profile-tools .option-checkbox > .toggle--button { color: $panel; }
+#profile-tools .option-checkbox.-on > .toggle--button { color: $background; }
 #allow-cgroup-v1 { display: none; }
 .settings-options { height: auto; margin: 1 0; }
 #settings-status { height: auto; min-height: 1; padding: 0 2; color: $accent; }
@@ -208,6 +218,7 @@ Button:disabled, Button:disabled:hover, Button:disabled:focus, Button:disabled.-
 
 /* Terminal cells, not pixels: stack fields when labels would squeeze inputs. */
 AcprofTui.narrow .form-grid { grid-size: 2; grid-columns: 18 1fr; }
+AcprofTui.narrow #profile-tools { column-span: 1; }
 AcprofTui.narrow #preset-hint, AcprofTui.narrow #preset-hint-label { display: none; }
 AcprofTui.narrow .checkbox-row { layout: vertical; }
 AcprofTui.narrow .button-row { layout: grid; grid-size: 2; grid-gutter: 0 1; }
