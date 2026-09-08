@@ -273,6 +273,26 @@ TUI 分为“实验配置”“运行监控”“结果工具”和“设置”�
 底部输入框还支持 `/run`、`/probe`、`/check`、`/status`、`/stop`、`/plot`、`/profile` 和 `/help`
 等快捷命令。
 
+如果 `Ctrl+Q` 在普通终端有效、在 VS Code 集成终端无效，可能是按键被 VS Code 拦截。
+Windows 客户端默认将它绑定到“快速打开视图”（`workbench.action.quickOpenView`）；
+Remote-SSH 也由发起连接的客户端处理快捷键。在 VS Code 工作区设置 JSON 中加入
+以下配置；已有 `terminal.integrated.commandsToSkipShell` 数组时，将该条目追加进去：
+
+```json
+{
+  "terminal.integrated.commandsToSkipShell": [
+    "-workbench.action.quickOpenView"
+  ]
+}
+```
+
+前缀 `-` 表示将该命令移出终端按键拦截名单，让终端应用接收按键。
+参见 [VS Code 官方终端快捷键说明](https://code.visualstudio.com/docs/terminal/advanced#_keyboard-shortcuts-and-the-shell)。
+保存后点击终端让其获得焦点，再按 `Ctrl+Q`。若仍无效，运行命令面板中的
+`Developer: Toggle Keyboard Shortcuts Troubleshooting`，再按一次 `Ctrl+Q`，查看
+快捷键日志中实际匹配的命令，以排查扩展或自定义绑定；排查后再次运行该命令关闭日志。
+也可以点击右上角“×”，或在底部快捷命令框输入 `/quit` 退出。
+
 点击“环境检查”或按 `F6` 后，界面立即切换到“运行监控”显示日志，无需等待检查结束。
 环境检查不会启动模型或正式采集。`perf instructions` 与正式启动共用权限探测，依次尝试
 普通用户、免交互 sudo，以及通过 `ACPROF_SUDO_PASSWORD` 配置的 sudo；读到有效指令计数
