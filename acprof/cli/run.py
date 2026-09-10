@@ -955,7 +955,7 @@ Examples:
         "--workload-spec",
         default=None,
         help=(
-            "Path to an audio, multimodal or diffusion workload manifest. ASR defaults to the "
+            "Path to a CV, audio, multimodal or diffusion workload manifest. ASR defaults to the "
             "bundled LibriSpeech short-form manifest."
         ),
     )

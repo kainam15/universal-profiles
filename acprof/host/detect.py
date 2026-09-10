@@ -257,6 +257,51 @@ def _record_failure(diagnostics: Optional[list[str]], stage: str, reason: str) -
         diagnostics.append(f"{stage}: {reason}")
 
 
+_DIFFUSERS_PIPELINE_TASKS = {
+    "DDPMPipeline": "unconditional-image-generation",
+    "DDIMPipeline": "unconditional-image-generation",
+    "PNDMPipeline": "unconditional-image-generation",
+    "ShapEPipeline": "text-to-3d",
+    "ShapEImg2ImgPipeline": "image-to-3d",
+    "StableDiffusionPipeline": "text-to-image",
+    "StableDiffusionXLPipeline": "text-to-image",
+    "StableDiffusionImg2ImgPipeline": "image-to-image",
+    "StableDiffusionXLImg2ImgPipeline": "image-to-image",
+    "StableDiffusionInstructPix2PixPipeline": "image-text-to-image",
+    "StableDiffusionUpscalePipeline": "image-to-image",
+    "StableVideoDiffusionPipeline": "image-to-video",
+    "CogVideoXPipeline": "text-to-video",
+    "CogVideoXImageToVideoPipeline": "image-to-video",
+    "CogVideoXVideoToVideoPipeline": "video-to-video",
+    "WanPipeline": "text-to-video",
+    "WanImageToVideoPipeline": "image-to-video",
+    "WanVideoToVideoPipeline": "video-to-video",
+    "TextToVideoSDPipeline": "text-to-video",
+    "VideoToVideoSDPipeline": "video-to-video",
+}
+
+
+def _diffusers_task_from_index(
+    model_id: str, revision: str, diagnostics: Optional[list[str]],
+) -> Optional[str]:
+    """Read native pipeline metadata only; never execute repository code."""
+    try:
+        from huggingface_hub import hf_hub_download
+
+        path = hf_hub_download(
+            repo_id=model_id, filename="model_index.json", revision=revision,
+        )
+        with open(path, "r", encoding="utf-8") as stream:
+            class_name = json.load(stream).get("_class_name")
+        task = _DIFFUSERS_PIPELINE_TASKS.get(class_name) if isinstance(class_name, str) else None
+        if task is None:
+            _record_failure(diagnostics, "model_index", f"unsupported pipeline class: {class_name!r}")
+        return task
+    except Exception as exc:
+        _record_failure(diagnostics, "model_index", _format_failure(exc))
+        return None
+
+
 def _detect_from_hub(
     model_id: str,
     diagnostics: Optional[list[str]] = None,
@@ -273,6 +318,8 @@ def _detect_from_hub(
     pipeline_tag = getattr(info, "pipeline_tag", None)
     library_name = getattr(info, "library_name", None) or ""
     sha = getattr(info, "sha", None) or "main"
+    if not pipeline_tag and library_name == "diffusers":
+        pipeline_tag = _diffusers_task_from_index(model_id, sha, diagnostics)
 
     # Determine task_family from pipeline_tag
     task_family = None

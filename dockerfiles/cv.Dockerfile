@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple \
     'transformers==4.57.6' \
     torchvision \
     Pillow \
+    scipy \
     accelerate
 
 # Triton compiles its GPU launcher on first use; the slim base has no compiler.

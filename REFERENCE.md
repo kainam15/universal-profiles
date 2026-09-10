@@ -753,7 +753,7 @@ TUI 保存实际使用的绝对路径，相对输入以项目根目录为基准�
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `--input-scales` | auto | 手动覆盖 input scale 列表；未提供时通常自动规划 6 档，自定义音频清单按声明档数。 |
-| `--workload-spec` | task default | audio、multimodal 或 diffusion 的 workload 清单 JSON。ASR 默认使用仓库内置的 LibriSpeech 英文短音频清单；其他 audio 任务必须显式提供清单；新多模态任务有内置输入，也可自定义本地素材和参数。 |
+| `--workload-spec` | task default | cv、audio、multimodal 或 diffusion 的 workload 清单 JSON。ASR 默认使用仓库内置的 LibriSpeech 英文短音频清单；其他 audio 任务必须显式提供清单；视觉／多模态任务有内置输入，也可自定义本地素材和参数。 |
 
 #### 计算分析器
 
@@ -805,10 +805,10 @@ TUI 保存实际使用的绝对路径，相对输入以项目根目录为基准�
 | task family | `input_scale_type` | 含义 |
 | --- | --- | --- |
 | `nlp` | `seq_length` | 输入 token length。 |
-| `cv` | `resolution_scale` | 图像基础尺寸的缩放倍率。 |
+| `cv` | `resolution_scale` | 图像／视频帧基础边长 224 像素的缩放倍率；视频帧数固定。 |
 | `audio` | `duration_s` | 输入音频时长，单位秒。 |
 | `timeseries` | `context_length` | 时间序列 context length。 |
-| `diffusion` | `resolution_px` | 方形输出图像或视频帧边长，单位像素；视频帧数是固定的二级参数。 |
+| `diffusion` | `resolution_px` 或 `denoising_steps` | 图像／视频生成是方形输出边长（像素），帧数固定；无条件图像与 Shap-E 3D 为去噪步数，分辨率／网格解码设置固定。以输入计划为准。 |
 | `multimodal` 图像理解／问答／文档检索 | `resolution_px` | 输入图像边长，单位像素；模型 processor 可能重新缩放、切块或固定尺寸。 |
 | `multimodal` 音频理解 | `duration_s` | 输入 WAV 的实际样本数 / 采样率，单位秒。 |
 | `multimodal` 视频理解 | `frame_count` | 输入 PNG 帧数；FPS 和帧分辨率固定并写入计划。 |
@@ -818,11 +818,11 @@ TUI 保存实际使用的绝对路径，相对输入以项目根目录为基准�
 
 - `nlp` 会启动容器读取 tokenizer / handler 的可用最大输入长度，最后一档尽量贴近有效上限。
 - `audio` 从 workload 清单读取默认尺度；内置英文 ASR 清单固定为 `1,2,5,10,20,30` 秒。`cv`、`timeseries` 仍根据各自 generator 的最大尺度或配置默认值生成。
-- `diffusion` 使用固定的 `128,192,256,320,384,512` 像素输出边长；提示词、随机种子、guidance scale 和去噪步数在各尺度间保持不变。
+- `diffusion` 图像／视频任务默认使用 `128,192,256,320,384,512` 像素输出边长；提示词、随机种子、guidance scale 和去噪步数在各尺度间保持不变。`unconditional-image-generation`、`text-to-3d`、`image-to-3d` 改为扫描 `1,2,4,8,16,20` 个去噪步；Shap-E 使用真实 mesh 解码，渲染图片尺寸不作为网格计算规模。
 - `multimodal` 从任务 workload 读取默认尺度：图像边长 `224,336,448`；音频 `1,2,5,10` 秒；视频 `2,4,8` 帧。清单 `input_scales` 可覆盖默认值，CLI `--input-scales` 优先。`static_meta.input_scale_type` 在计划完成后取实际 workload 的单位，不能将所有多模态任务统一解释为 token 数。
 - 同一次 run 的所有资源配置共用同一组 scale。
 - 所有任务族都会把已确定尺度的 payload 写入唯一的 `input_scale_plan.json`；主采集与 compute profiler 共同读取该文件，保证实际执行 payload、FLOP profiling 和 CSV 中记录的 `input_scale` 一致。
-- 手动传入 `--input-scales` 时以手动值为准；`nlp`、`audio`、`timeseries` 和 `diffusion` 会在 sweep 前验证合法性（文生图分辨率至少为 64 且必须是 8 的倍数）。
+- 手动传入 `--input-scales` 时以手动值为准；workload 会在 sweep 前验证合法性（图像／视频生成分辨率至少为 64 且必须是 8 的倍数；去噪步数是正整数；CV 倍率为有限正数）。
 
 #### 真实音频 workload
 
@@ -839,13 +839,17 @@ python run.py --model openai/whisper-large-v3 \
 
 当前音频 request 只实现 `batch_size=1` 和 `short_form`。清单会拒绝非空的 `chunk_length_s` / `stride_length_s`；长音频 sequential/chunked 应使用独立 workload，不能通过把本清单尺度直接扩展到 30 秒以上来混测。
 
-多模态与图像条件生成也接受 `--workload-spec`，其清单和支持边界见 [README 多模态任务](README.md#多模态任务)。多模态输入计划沿用 schema v2，新增信息写在扩展的 `workload`、`input_metadata` 和 `payload` object 内；CSV 未增加列，历史文件无需填补新字段。`workload` 保存素材路径／SHA256、清单 SHA256、提示词、参数、尺度单位和固定条件；实际序列化 payload 及计划 SHA256 是重放依据。
+视觉、多模态与图像条件生成也接受 `--workload-spec`，清单和支持边界见 [README 视觉任务](README.md#视觉任务) 与 [多模态任务](README.md#多模态任务)。输入计划沿用 schema v2，新增信息写在扩展的 `workload`、`input_metadata` 和 `payload` object 内；CSV 未增加列，历史文件无需填补新字段。`workload` 保存素材路径／SHA256、清单 SHA256、提示词、参数、尺度单位和固定条件；实际序列化 payload 及计划 SHA256 是重放依据。
+
+CV 每请求一个图片／视频样本，`input_num_samples=1`；视频帧数及每帧 SHA256 单独记录在 `input_metadata`。零样本标签、VitPose 的人物框和参数也随 payload 重放，不增加隐藏的人物检测请求。CV 响应按任务区分 classification、detection、caption、depth、segmentation、masks、features、keypoints；大张量／掩码／深度图只返回摘要。未产生文本的任务不填写输出 token 数，相关 CSV 指标保持 `NaN`。
+
+无条件图像与 3D 的 `input_units_per_request` 单位为去噪步；其 `task_param.num_inference_steps` 随输入尺度变化。Shap-E 响应 `output_type="mesh"`，输出长度表示网格数量，顶点和三角面数量另行记录，不冒充文本长度、像素数或 token 数。该任务的 profiler 覆盖去噪及真实网格解码；图像条件预处理仍属于请求应用延迟。此扩展不改变历史图像生成的分辨率单位，读取时应依据每次实验的 `input_scale_type`，不能只按 diffusion 任务族判断单位。
 
 多模态 `input_num_samples=1` 表示一个请求样本；其中可含图像、音频、视频或 query＋文档。音频 PCM 样本数与视频帧数分别保存在 `input_metadata.audio_num_samples` / `video_num_frames`。`input_units_per_request` 继续等于有效 `input_scale × batch_size`，因此其单位取决于上表，不可横跨不同尺度类型直接比较每单位延迟。
 
 文字生成／问答的 `output_length_avg` 是返回文字的字符数窗口均值；`output_token_count_avg` 是对输出文字重新分词的 token 数，不代表所有解码步或 Omni 音频 token。Omni 音频摘要另含 24000 Hz 采样率、PCM 样本数和秒数，不混入文字长度。图像生成 `output_length` 为图像数，视频生成为总帧数；检索仅返回 query-by-document 分数矩阵，不产生文字长度／token 字段，其对应 CSV 值保持 `NaN`。
 
-主请求延迟包含输入预处理、模型推理和结果摘要。后置 profiler 的 `predict()` 测量不包含 Base64 解码、processor、文字解码或媒体摘要，但包括完整生成、检索的两个编码器 forward 与 MaxSim。Omni GPU 采用 thinker/talker FP16 和 Token2Wav FP32；其 eager FLOP 请求明确不支持，NCU/Nsys 仍可测完整推理。Diffusers Transformer 视频架构在没有可验证 eager 替换时同样报告工具错误，不伪填 FLOP。生成媒体不会作为图片／音频／视频响应体返回，因此网络指标描述当前摘要服务协议。
+主请求延迟包含输入预处理、模型推理和结果摘要。后置 profiler 测量 handler 的 `predict()`：多模态理解、视频分类和关键点的直接模型路径不包含在 `preprocess()` 中运行的 processor；使用 Transformers pipeline 的 CV 路径仍包含 pipeline 内部预处理和后处理。Base64 解码与 handler 的摘要处理均在 profiler 的预测段之外；Diffusers 的完整生成／媒体解码、检索的两个编码器 forward 与 MaxSim 则在预测段内。Omni GPU 采用 thinker/talker FP16 和 Token2Wav FP32；其 eager FLOP 请求明确不支持，NCU/Nsys 仍可测完整推理。Shap-E 及 Diffusers Transformer 视频架构在没有可验证 eager 替换时同样报告工具错误，不伪填 FLOP。生成媒体不会作为图片／音频／视频／网格响应体返回，因此网络指标描述当前摘要服务协议。
 
 ### `probe.py`
 

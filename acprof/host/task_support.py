@@ -26,17 +26,17 @@ def require_task_support(task_info: TaskInfo, *, batch_size: int = 1) -> None:
             f"任务 {task} 对应任务族 {expected_family}，"
             f"当前选择的任务族 {task_info.task_family} 与之不匹配。"
         )
-    if reason is None and task == "image-to-text" and batch_size != 1:
-        reason = "图像描述采集每个请求只输入一张图片；请设置 --batch-size 1。"
+    if reason is None and expected_family == "cv" and batch_size != 1:
+        reason = "CV 采集每个请求使用一张图片或一个视频；请设置 --batch-size 1。"
     if reason is None and (
         expected_family == "multimodal"
-        or task in {"image-text-to-image", "image-text-to-video", "image-to-image", "image-to-video"}
+        or (expected_family == "diffusion" and task != "text-to-image")
     ) and batch_size != 1:
         reason = "多模态采集每个请求使用一个样本；请设置 --batch-size 1。"
-    if reason is None and expected_family == "multimodal" and task_info.runtime_backend not in {
+    if reason is None and expected_family in {"cv", "multimodal"} and task_info.runtime_backend not in {
         "transformers_model", "transformers_pipeline",
     }:
-        reason = "多模态任务需要 Transformers 后端；请设置 --backend transformers_model。"
+        reason = "视觉理解／多模态任务需要 Transformers 后端；请设置 --backend transformers_model。"
     if reason is None and expected_family == "diffusion" and task_info.runtime_backend != "diffusers":
         reason = "图像/视频生成任务需要 Diffusers 后端；请设置 --backend diffusers。"
     if reason is None:

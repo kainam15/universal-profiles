@@ -27,17 +27,17 @@ AC-Prof 是一个面向 Hugging Face 推理服务的零侵入运行时分析工�
 | 任务族 | `input_scale` 的含义 | 示例 |
 | --- | --- | --- |
 | NLP | token 序列长度 | BERT、文本生成、问答 |
-| CV | 基础图像尺寸的缩放倍率 | 图像分类、目标检测、BLIP 图像描述 |
+| CV | 基础图像／视频帧尺寸的缩放倍率 | 图像分类、目标检测、图像描述、关键点、视频分类 |
 | Audio | 音频时长（秒） | Whisper ASR、音频分类 |
 | Time series | context length | Chronos 时间序列预测 |
-| Diffusion | 方形输出图像／视频帧边长（像素） | 文生图、图像编辑、图文生视频 |
+| Diffusion | 图像／视频帧边长；无条件图像和 3D 为去噪步数 | 文生图、图像编辑、视频生成、Shap-E 网格生成 |
 | Multimodal | 依任务为输入图像边长、音频秒数或视频帧数 | 多模态问答、文档检索、文字＋音频输出 |
 
-大多数 Hugging Face 模型会自动识别任务族和后端；识别失败时再使用 `--task`、`--task-family` 或 `--backend` 覆盖。`image-to-text` 使用 CV 镜像中的 Transformers 4.57.6 图像描述 pipeline，每个请求一张图，要求 `--batch-size 1`。未登记的任务类型（如 `video-classification`）、与任务不匹配的任务族及图像描述的多图 batch 会被提前拦截；通过预检仍需模型架构和容器依赖兼容。
+大多数 Hugging Face 模型会自动识别任务族和后端；识别失败时再使用 `--task`、`--task-family` 或 `--backend` 覆盖。没有任务标签的 Diffusers 模型可根据固定 revision 的 `model_index.json` 中已登记的原生 pipeline 类名识别。CV 每个请求使用一张图或一个视频，要求 `--batch-size 1`。未登记的任务类型、任务族／后端不匹配及不支持的 batch 会被提前拦截；通过预检仍需模型架构和容器依赖兼容。
 
 图像描述响应包含 `output_type="caption"`、`captions` 文本列表、`n_results`、`output_length` 和 `output_token_count`；后两项进入现有 CSV 的窗口平均值与输出 token 能效指标。token 数按每条生成文本重新分词统计，排除额外特殊 token，不等于解码器实际生成步数。内置输入是固定种子的合成图片，`input_scale=1` 表示传入 224×224 图片；模型的 image processor 可能再次缩放到固定尺寸，不能把传入分辨率直接当作视觉编码器的计算规模。生成采用固定模型 revision 与 pipeline 的默认配置；HTTP `params` 可传入 `max_new_tokens`、`generate_kwargs` 等官方 pipeline 参数，原样写入输入计划和 CSV `task_param`。
 
-CV 镜像同时安装 `build-essential`，供 PyTorch/Triton 在首次 GPU 推理时编译所需模块。首次验证 BLIP 可运行以下命令。升级前构建的 CV 镜像需要重建，首次不要添加 `--skip-build`；后续可在 TUI 中复用新镜像。
+CV 镜像同时安装 `build-essential`，供 PyTorch/Triton 在首次 GPU 推理时编译所需模块，以及 VitPose 图像变换需要的 SciPy。首次验证 BLIP 可运行以下命令。升级前构建的 CV 镜像需要重建，首次不要添加 `--skip-build`；后续可在 TUI 中复用新镜像。
 
 ```bash
 .venv/bin/python run.py --model Salesforce/blip-image-captioning-base \
@@ -48,6 +48,53 @@ CV 镜像同时安装 `build-essential`，供 PyTorch/Triton 在首次 GPU 推�
 ```
 
 `text-to-image` 模型会自动选择 `diffusion` 任务族和 `diffusers` 后端。内置 workload 固定提示词、随机种子、guidance scale 和 20 个去噪步，只改变输出分辨率；服务端仅返回生成图像的数量与尺寸元数据，避免图片响应体影响网络和应用延迟测量。
+
+### 视觉任务
+
+以下 19 类任务接入同一输入计划、最大输入探测、采集和后置 profiler 流程。适配以镜像中 Transformers 4.57.6／Diffusers 0.39.0 的原生接口为边界，不表示 Hub 上同标签的任意模型或自定义代码均可运行。
+
+| Hugging Face 任务 | 任务族 | 适配范围 |
+| --- | --- | --- |
+| `depth-estimation` | CV | 原生深度估计 pipeline，返回深度图摘要 |
+| `image-classification` | CV | 原生图像分类 pipeline |
+| `object-detection` | CV | 原生目标检测 pipeline |
+| `image-segmentation` | CV | 原生语义／实例／全景分割 pipeline |
+| `text-to-image` | Diffusion | 原生文本条件图像生成 |
+| `image-to-text` | CV | 原生图像描述 pipeline，返回文字及 token 数 |
+| `image-to-image` | Diffusion | 原生 Img2Img／图像编辑／图像变体；须满足当前方形输出尺度约定 |
+| `image-to-video` | Diffusion | 原生图生视频，包括无文本条件的 Stable Video Diffusion |
+| `unconditional-image-generation` | Diffusion | DDPM／DDIM 等原生无条件生成；模型固定输出尺寸，扫描去噪步数 |
+| `video-classification` | CV | `AutoModelForVideoClassification` 与图像处理器；固定帧数，扫描帧分辨率 |
+| `text-to-video` | Diffusion | 原生文本条件视频生成 |
+| `zero-shot-image-classification` | CV | 原生 pipeline，同时传入候选标签 |
+| `mask-generation` | CV | 原生 SAM 自动掩码 pipeline |
+| `zero-shot-object-detection` | CV | 原生零样本检测 pipeline，同时传入候选标签 |
+| `text-to-3d` | Diffusion | Shap-E 文本条件网格生成，扫描去噪步数 |
+| `image-to-3d` | Diffusion | Shap-E 图像条件网格生成，扫描去噪步数 |
+| `image-feature-extraction` | CV | 原生图像特征 pipeline，返回特征形状摘要 |
+| `keypoint-detection` | CV | SuperPoint 关键点、VitPose／VitPose++ 姿态估计 |
+| `video-to-video` | Diffusion | 原生视频条件生成，消费有序输入帧 |
+
+除 `text-to-image` 外，上表任务均要求 `--batch-size 1`。CV 的 `input_scale=1` 仍表示 224×224 输入图像或帧，视频默认 16 帧。模型要求的帧数必须与清单一致，不静默丢帧或补帧；图像 processor 可能缩放输入，输入像素大小不能直接视为模型内部计算规模。
+
+CV 可使用 `--workload-spec` 指定图片、视频帧、候选标签、姿态框和推理参数。图片字段为 `image_path`，视频为有序的 `video_frames` 路径列表；路径相对清单文件解析。未提供素材时使用确定性合成图／帧，零样本默认标签为 `cat,dog,car,person`。例如：
+
+```json
+{
+  "schema_version": 1,
+  "input_scales": [0.5, 1.0, 2.0],
+  "candidate_labels": ["cat", "person"],
+  "params": {"threshold": 0.2}
+}
+```
+
+该示例用于 `zero-shot-object-detection`；视频可用 `num_frames` 设置合成帧数，也可由 `video_frames` 数量确定。VitPose 清单的 `boxes` 是归一化到 0–1 的 COCO `[x,y,width,height]`，默认全图框；主机按输入尺寸转换为像素坐标，不额外运行人物检测器。VitPose++ 可在 `params` 中指定 `dataset_index`。这些合成输入用于性能流程验证，不是准确率评测集。
+
+无条件图像与 3D 使用 `input_scale_type="denoising_steps"`，默认尺度 `1,2,4,8,16,20`；通过 `--input-scales` 或清单 `input_scales` 修改，不再同时用 `params.num_inference_steps` 指定。DDPM 分辨率来自模型，Shap-E 直接解码网格，不用渲染图像的 `frame_size` 冒充 3D 工作量。网格仅返回数量、顶点和面数摘要，不传输网格文件。其它生成任务继续扫描方形输出边长，默认视频 17 帧；模型必须满足对应分辨率、帧数与条件参数约束。
+
+`image-to-image`／`image-to-video` 的合成默认提示词仅在原生接口接受 `prompt` 时使用；显式写入清单的提示词必须被消费，不接受文字条件的模型会拒绝该清单。Diffusers 图像到图像可通过官方 `AutoPipelineForImage2Image.from_pipe` 复用已有组件；视频到视频仅转换已适配的 CogVideoX 文生视频、单 denoiser Wan 和旧版 TextToVideoSD pipeline，无法保留双 denoiser 等组件时明确失败。固定倍率的 Stable Diffusion Upscale／LatentUpscale 暂不符合当前方形输出边长约定，会明确拒绝。旧版 TextToVideoSD／VideoToVideoSD 上游已停止更新，保留固定版本兼容；现代视频模型另按原生参数检查。
+
+实现复用 [Transformers 原生 pipeline](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/pipelines/__init__.py)、[VitPose 接口](https://github.com/huggingface/transformers/blob/v4.57.6/docs/source/en/model_doc/vitpose.md)、[Diffusers DDPM](https://github.com/huggingface/diffusers/blob/v0.39.0/src/diffusers/pipelines/ddpm/pipeline_ddpm.py) 与 [Shap-E](https://github.com/huggingface/diffusers/blob/v0.39.0/src/diffusers/pipelines/shap_e/pipeline_shap_e.py)。两个上游采用 Apache-2.0、仍持续维护；沿用已固定版本，仅为姿态处理新增 SciPy。视频采用主机预先准备的 PNG 帧，不引入视频编解码库，素材生成和哈希计算均在测量窗口之前完成。
 
 ### 多模态任务
 
@@ -65,7 +112,7 @@ CV 镜像同时安装 `build-essential`，供 PyTorch/Triton 在首次 GPU 推�
 | `visual-document-retrieval` | Transformers / `multimodal` | ColPali、ColQwen2；每次编码一个 query 和一页文档，再计算 MaxSim 分数 |
 | `any-to-any` | Transformers / `multimodal` | Qwen2.5 Omni 的文字／图像／音频／视频输入 → 文字＋音频输出；默认输入为语音＋文字 |
 
-实际 Hub 标签 `image-to-image`、`image-to-video` 也会接入上述 Diffusers 适配。模型必须原生接收文字和图像条件；不接受提示词的纯图生视频模型会明确报错。模型如需要非方形输出、更大的分辨率、不同帧数或额外组件，需要满足其自身约束；当前不会自动转换 checkpoint 的 pipeline 类型或执行自定义远程代码。
+实际 Hub 标签 `image-to-image`、`image-to-video` 也会接入 Diffusers 适配。显式的 `image-text-to-image`／`image-text-to-video` 任务要求模型同时接收文字和图像条件；`image-to-video` 也可使用无文本的原生 pipeline。模型如需要非方形输出、更大的分辨率、不同帧数或额外组件，需要满足其自身约束；仅采用上述官方原生 pipeline 转换，不执行 Diffusers 自定义远程代码。
 
 TUI 的高级配置可选 `Multimodal`，也可使用 CLI。首次运行应重建模型镜像，后续再用 `--skip-build` 复用。以下例子只运行一个 VQA 输入尺度：
 

@@ -8,6 +8,8 @@ from acprof.host.detect import TaskInfo
 from acprof.host.orchestrator import _model_io_formats
 from acprof.host.task_support import require_task_support
 from acprof.workloads.cv import CVWorkloadGenerator
+from PIL import Image
+import numpy as np
 
 
 class CVCaptionTests(unittest.TestCase):
@@ -115,6 +117,72 @@ class CVCaptionTests(unittest.TestCase):
         payload = generator.generate(0.5)
         self.assertEqual(payload, generator.generate(0.5))
         self.assertIn("image_base64", payload)
+
+
+class CVExtendedHandlerTests(unittest.TestCase):
+    def setUp(self):
+        self.handler = CVHandler()
+
+    def test_zero_shot_tasks_forward_candidates_and_parameters(self):
+        for task in ("zero-shot-image-classification", "zero-shot-object-detection"):
+            pipe = Mock()
+            self.handler.predict({"pipeline": pipe, "task_type": task}, {
+                "image": "decoded", "candidate_labels": ["cat", "person"],
+                "params": {"threshold": 0.2},
+            })
+            pipe.assert_called_once_with("decoded", candidate_labels=["cat", "person"], threshold=0.2)
+
+    def test_zero_shot_missing_labels_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, "candidate_labels"):
+            self.handler.predict({"pipeline": Mock(), "task_type": "zero-shot-object-detection"},
+                                 {"image": "decoded", "params": {}})
+
+    def test_missing_or_invalid_images_do_not_turn_into_dummy_measurements(self):
+        for payload in ({}, {"image_base64": "garbage"}):
+            with self.subTest(payload=payload), self.assertRaises(ValueError):
+                self.handler.preprocess({"task_type": "image-classification"}, payload)
+
+    def test_summaries_match_depth_segmentation_masks_and_feature_tasks(self):
+        samples = [
+            ("depth-estimation", {"predicted_depth": np.zeros((1, 4, 5)), "depth": Image.new("L", (5, 4))}, "depth", 1),
+            ("image-segmentation", [{"mask": Image.new("L", (5, 4))}] * 2, "segmentation", 2),
+            ("mask-generation", {"masks": [np.zeros((4, 5))] * 3}, "masks", 3),
+            ("image-feature-extraction", [[[1.0, 2.0], [3.0, 4.0]]], "features", 1),
+        ]
+        for task, output, output_type, count in samples:
+            with self.subTest(task=task):
+                result = self.handler.postprocess({"task_type": task}, output)
+                self.assertEqual(result["output_type"], output_type)
+                self.assertEqual(result["n_results"], count)
+                if task == "depth-estimation":
+                    self.assertEqual(result["depth_shape"], [1, 4, 5])
+                if task == "image-feature-extraction":
+                    self.assertEqual(result["feature_shape"], [1, 2, 2])
+
+    def test_video_frame_count_mismatch_fails_before_model_forward(self):
+        generator = CVWorkloadGenerator("example/model", "video-classification", 1)
+        ctx = {"task_type": "video-classification", "model": Mock(config=types.SimpleNamespace(num_frames=8))}
+        with self.assertRaisesRegex(ValueError, "num_frames.*8|8.*num_frames"):
+            self.handler.preprocess(ctx, generator.generate(0.05))
+
+    def test_probe_metadata_preserves_multiplier_before_pixel_rounding(self):
+        payload = CVWorkloadGenerator("example/model", "image-classification", 1).generate(0.3)
+        processed = self.handler.preprocess({"task_type": "image-classification"}, payload)
+        self.assertEqual(processed["_effective_input_scale"], 0.3)
+        self.assertFalse(processed["_truncated_by_limit"])
+        payload["input_scale"] = 0.5
+        with self.assertRaisesRegex(ValueError, "input_scale.*resolution|resolution.*input_scale"):
+            self.handler.preprocess({"task_type": "image-classification"}, payload)
+
+    def test_keypoint_summary_counts_valid_points_and_persons(self):
+        ctx = {"task_type": "keypoint-detection", "processor": Mock(), "keypoint_kind": "vitpose"}
+        ctx["processor"].post_process_pose_estimation.return_value = [[
+            {"keypoints": np.ones((17, 2))}, {"keypoints": np.ones((17, 2))},
+        ]]
+        result = self.handler.postprocess(ctx, {"outputs": "raw", "boxes": [[[0, 0, 100, 100]]]})
+        self.assertEqual(result["output_type"], "keypoints")
+        self.assertEqual(result["n_results"], 2)
+        self.assertEqual(result["keypoint_count"], 34)
 
 
 if __name__ == "__main__":

@@ -1619,6 +1619,7 @@ def _model_io_formats(task_info: TaskInfo) -> Tuple[Dict[str, Any], Dict[str, An
                 "contentMediaType": "image/png",
             },
             "params": params_schema,
+            "input_scale": {"type": "number", "exclusiveMinimum": 0},
         }
         input_required = ["image_base64"]
         output_properties = {
@@ -1628,6 +1629,7 @@ def _model_io_formats(task_info: TaskInfo) -> Tuple[Dict[str, Any], Dict[str, An
                 "enum": ["classification", "detection"],
             },
             "n_results": {"type": "integer"},
+            "effective_input_scale": {"type": "number"},
         }
         output_required.extend(["output_type", "n_results"])
         if task_info.pipeline_tag == "image-to-text":
@@ -1638,6 +1640,37 @@ def _model_io_formats(task_info: TaskInfo) -> Tuple[Dict[str, Any], Dict[str, An
                 "output_token_count": {"type": ["integer", "null"]},
             })
             output_required.extend(["captions", "output_length", "output_token_count"])
+        else:
+            output_types = {
+                "depth-estimation": "depth", "image-segmentation": "segmentation",
+                "mask-generation": "masks", "image-feature-extraction": "features",
+                "keypoint-detection": "keypoints",
+            }
+            output_properties["output_type"]["enum"] = [output_types.get(
+                task_info.pipeline_tag,
+                "classification" if "classification" in task_info.pipeline_tag else "detection",
+            )]
+        if task_info.pipeline_tag == "video-classification":
+            image_schema = input_properties.pop("image_base64")
+            input_properties["frames_base64"] = {
+                "type": "array", "items": image_schema, "minItems": 1,
+            }
+            input_required = ["frames_base64"]
+        if task_info.pipeline_tag.startswith("zero-shot-"):
+            input_properties["candidate_labels"] = {
+                "type": "array", "items": string_schema, "minItems": 1,
+            }
+            input_required.append("candidate_labels")
+        if task_info.pipeline_tag == "keypoint-detection":
+            input_properties["boxes"] = {
+                "type": "array", "description": "COCO xywh boxes in input-image pixels for pose estimation",
+            }
+            output_properties["keypoint_count"] = {"type": "integer"}
+        if task_info.pipeline_tag in {"depth-estimation", "image-feature-extraction"}:
+            name = "depth_shape" if task_info.pipeline_tag == "depth-estimation" else "feature_shape"
+            output_properties[name] = {"type": "array", "items": {"type": "integer"}}
+        if task_info.pipeline_tag == "video-classification":
+            output_properties["classifications"] = {"type": "array", "items": {"type": "object"}}
     elif task_info.task_family == "audio":
         input_properties = {
             "audio_base64": {
@@ -1762,12 +1795,28 @@ def _model_io_formats(task_info: TaskInfo) -> Tuple[Dict[str, Any], Dict[str, An
             "effective_input_scale": {"type": "number"},
         }
         output_required.extend(["output_type", "n_results"])
-        if task_info.pipeline_tag != "text-to-image":
+        if task_info.pipeline_tag in {
+            "image-text-to-image", "image-text-to-video", "image-to-image",
+            "image-to-video", "image-to-3d",
+        }:
             input_properties["image_base64"] = {
                 "type": "string", "contentEncoding": "base64", "contentMediaType": "image/png",
             }
             input_required.append("image_base64")
-        if task_info.pipeline_tag in {"image-text-to-video", "image-to-video"}:
+        if task_info.pipeline_tag in {"unconditional-image-generation", "image-to-3d", "image-to-video", "image-to-image"}:
+            input_required.remove("prompt")
+        if task_info.pipeline_tag in {"image-to-video", "image-to-image"}:
+            input_properties["prompt_optional"] = {
+                "type": "boolean",
+                "description": "Only synthetic default text may be omitted by an image-only native pipeline",
+            }
+        if task_info.pipeline_tag == "video-to-video":
+            input_properties["frames_base64"] = {
+                "type": "array", "minItems": 1,
+                "items": {"type": "string", "contentEncoding": "base64", "contentMediaType": "image/png"},
+            }
+            input_required.append("frames_base64")
+        if task_info.pipeline_tag in {"image-text-to-video", "image-to-video", "text-to-video", "video-to-video"}:
             output_properties["output_type"]["enum"] = ["video"]
             output_properties.pop("image_width")
             output_properties.pop("image_height")
@@ -1776,6 +1825,21 @@ def _model_io_formats(task_info: TaskInfo) -> Tuple[Dict[str, Any], Dict[str, An
                 "video_width": {"type": "integer", "unit": "px"},
                 "video_height": {"type": "integer", "unit": "px"},
                 "output_shape": {"type": "array", "items": {"type": "integer"}},
+            })
+        if task_info.pipeline_tag in {"unconditional-image-generation", "text-to-3d", "image-to-3d"}:
+            input_properties.pop("resolution")
+            input_required.remove("resolution")
+            input_properties["input_scale"] = {
+                "type": "integer", "minimum": 1, "unit": "denoising steps",
+            }
+            input_required.append("input_scale")
+        if task_info.pipeline_tag in {"text-to-3d", "image-to-3d"}:
+            output_properties["output_type"]["enum"] = ["mesh"]
+            output_properties.pop("image_width")
+            output_properties.pop("image_height")
+            output_properties.update({
+                "mesh_vertex_counts": {"type": "array", "items": {"type": "integer"}},
+                "mesh_face_counts": {"type": "array", "items": {"type": "integer"}},
             })
     else:
         input_properties = {}
@@ -2999,9 +3063,9 @@ def plan_input_scales(
     input_scales: Optional[str] = None,
     workload_spec_path: Optional[str] = None,
 ) -> PlannedInputScales:
-    if workload_spec_path and task_info.task_family not in {"audio", "multimodal", "diffusion"}:
+    if workload_spec_path and task_info.task_family not in {"cv", "audio", "multimodal", "diffusion"}:
         raise ValueError(
-            "--workload-spec is implemented for audio, multimodal and diffusion tasks"
+            "--workload-spec is implemented for cv, audio, multimodal and diffusion tasks"
         )
     plan_file = _scale_plan_file_path(output_dir)
     _clear_scale_plan_file(plan_file)
@@ -3089,7 +3153,9 @@ def plan_input_scales(
             workload_spec_path=workload_spec_path,
         )
 
-    if task_info.task_family in {"diffusion", "multimodal"}:
+    if task_info.task_family in {"diffusion", "multimodal"} or (
+        task_info.task_family == "cv" and workload_spec_path
+    ):
         from acprof.workloads import get_generator
 
         workload_gen = get_generator(
@@ -3100,6 +3166,10 @@ def plan_input_scales(
             workload_spec_path=workload_spec_path,
         )
         default_scales = workload_gen.default_input_scales()
+        if not default_scales and task_info.task_family == "cv":
+            default_scales = _float_auto_scales(
+                _default_family_max_scale(task_info, batch_size), count=AUTO_INPUT_SCALE_COUNT,
+            )
         if not default_scales:
             raise RuntimeError(
                 f"{task_info.task_family} workload did not provide default scales"

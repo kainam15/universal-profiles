@@ -10,6 +10,7 @@ from pathlib import Path
 from acprof.container.handlers.diffusion import (
     DiffusionHandler,
     _conditioned_pipeline_parameters,
+    _native_pipeline_parameters,
 )
 from acprof.workloads.diffusion import DiffusionWorkloadGenerator
 
@@ -153,6 +154,94 @@ class DiffusionRuntimeTests(unittest.TestCase):
                 self.assertEqual(metadata["video_frame_count"], 5)
                 self.assertEqual(metadata["output_length"], 5)
                 self.assertNotIn("frames", metadata)
+
+    def test_tiny_ddpm_runs_offline_with_native_resolution_and_step_scales(self):
+        import torch
+        from diffusers import DDPMPipeline, DDPMScheduler, UNet2DModel
+
+        torch.manual_seed(42)
+        pipe = DDPMPipeline(
+            unet=UNet2DModel(
+                sample_size=32, in_channels=3, out_channels=3,
+                block_out_channels=(8, 16), layers_per_block=1,
+                down_block_types=("DownBlock2D", "DownBlock2D"),
+                up_block_types=("UpBlock2D", "UpBlock2D"), norm_num_groups=4,
+            ), scheduler=DDPMScheduler(num_train_timesteps=20),
+        )
+        handler = DiffusionHandler()
+        task = "unconditional-image-generation"
+        with tempfile.TemporaryDirectory() as directory:
+            pipe.save_pretrained(directory)
+            context = handler.load(directory, task, "diffusers", "cpu")
+            payload = DiffusionWorkloadGenerator("local/ddpm", task, 1).generate(2)
+            processed = handler.preprocess(context, payload)
+            first = handler.predict(context, processed)
+            second = handler.predict(context, processed)
+            metadata = handler.postprocess(context, first)
+            self.assertEqual(first.images[0].tobytes(), second.images[0].tobytes())
+            self.assertEqual(metadata["output_shape"], [1, 32, 32, 3])
+            self.assertEqual(handler.get_scale_metadata(context, payload)["native_output_width"], 32)
+
+    def test_new_native_video_and_shap_e_signatures_match_pinned_runtime(self):
+        from diffusers import (
+            CogVideoXPipeline, CogVideoXVideoToVideoPipeline,
+            StableVideoDiffusionPipeline, ShapEPipeline, ShapEImg2ImgPipeline,
+            TextToVideoSDPipeline, VideoToVideoSDPipeline,
+        )
+        import types
+
+        for pipeline_class, task in [
+            (CogVideoXPipeline, "text-to-video"),
+            (CogVideoXVideoToVideoPipeline, "video-to-video"),
+            (StableVideoDiffusionPipeline, "image-to-video"),
+            (TextToVideoSDPipeline, "text-to-video"),
+            (VideoToVideoSDPipeline, "video-to-video"),
+            (ShapEPipeline, "text-to-3d"),
+            (ShapEImg2ImgPipeline, "image-to-3d"),
+        ]:
+            with self.subTest(task=task):
+                call = functools.partial(pipeline_class.__call__, None)
+                call.shap_e_renderer = types.SimpleNamespace(decode_to_mesh=lambda: None)
+                parameters = _native_pipeline_parameters(call, task)
+                self.assertIn("num_inference_steps", parameters)
+                if task in {"text-to-3d", "image-to-3d"}:
+                    self.assertIn("frame_size", parameters)
+                    self.assertNotIn("height", parameters)
+                elif task == "video-to-video":
+                    self.assertIn("video", parameters)
+                    self.assertNotIn("num_frames", parameters)
+
+    def test_tiny_native_video_generation_and_task_conversion(self):
+        from diffusers import TextToVideoSDPipeline, UNet3DConditionModel
+
+        with tempfile.TemporaryDirectory() as directory:
+            image_pipe = self._tiny_pipeline(directory, False)
+            pipe = TextToVideoSDPipeline(
+                vae=image_pipe.vae, tokenizer=image_pipe.tokenizer,
+                text_encoder=image_pipe.text_encoder, scheduler=image_pipe.scheduler,
+                unet=UNet3DConditionModel(
+                    sample_size=32, in_channels=4, out_channels=4,
+                    layers_per_block=1, block_out_channels=(32, 32),
+                    down_block_types=("DownBlock3D", "CrossAttnDownBlock3D"),
+                    up_block_types=("CrossAttnUpBlock3D", "UpBlock3D"),
+                    cross_attention_dim=16, attention_head_dim=4,
+                    norm_num_groups=8,
+                ),
+            )
+            snapshot = Path(directory) / "video"
+            pipe.save_pretrained(snapshot)
+            handler = DiffusionHandler()
+            for task in ("text-to-video", "video-to-video"):
+                with self.subTest(task=task):
+                    context = handler.load(str(snapshot), task, "diffusers", "cpu")
+                    payload = DiffusionWorkloadGenerator("local/video", task, 1).generate(64)
+                    payload["prompt"] = ["a"]
+                    payload["params"].update(num_inference_steps=2, num_frames=5, guidance_scale=2.0)
+                    if task == "video-to-video":
+                        payload["frames_base64"] = payload["frames_base64"][:5]
+                    processed = handler.preprocess(context, payload)
+                    output = handler.predict(context, processed)
+                    self.assertEqual(handler.postprocess(context, output)["output_shape"], [1, 5, 64, 64, 3])
 
 
 if __name__ == "__main__":

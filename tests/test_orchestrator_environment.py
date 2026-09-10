@@ -1124,7 +1124,7 @@ class DetectEnvironmentTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp, self.assertRaisesRegex(
             ValueError,
-            "implemented for audio, multimodal and diffusion",
+            "implemented for cv, audio, multimodal and diffusion",
         ):
             orchestrator.plan_input_scales(
                 task_info=task_info,

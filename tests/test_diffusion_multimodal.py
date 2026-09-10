@@ -104,11 +104,12 @@ class DiffusionMultimodalWorkloadTests(unittest.TestCase):
                         DiffusionWorkloadGenerator("example/edit", "image-text-to-image", 1, workload_spec_path=str(manifest))
 
     def test_hub_aliases_generate_and_execute_conditioned_workloads(self):
-        for alias, canonical in [("image-to-image", "image-text-to-image"), ("image-to-video", "image-text-to-video")]:
-            with self.subTest(alias=alias):
-                generator = DiffusionWorkloadGenerator("example/model", alias, 1)
-                reference = DiffusionWorkloadGenerator("example/model", canonical, 1)
-                self.assertEqual(generator.generate(128), reference.generate(128))
+        for task in ("image-to-image", "image-to-video"):
+            with self.subTest(task=task):
+                payload = DiffusionWorkloadGenerator("example/model", task, 1).generate(128)
+                self.assertTrue(payload["prompt_optional"])
+                self.assertIn("image_base64", payload)
+                self.assertEqual(len(payload["prompt"]), 1)
 
     def test_conditioned_tasks_reject_batch_greater_than_one(self):
         for task in ["image-text-to-image", "image-text-to-video"]:
