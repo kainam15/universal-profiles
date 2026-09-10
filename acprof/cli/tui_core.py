@@ -482,6 +482,9 @@ CASE_RE = re.compile(
 MATRIX_RE = re.compile(r"Resource matrix:.*=\s*(?P<total>\d+)\s+cases")
 FINAL_CSV_RE = re.compile(r"Merged results:\s+(?P<path>.+)$")
 MERGE_CSV_RE = re.compile(r"\[merge\]\s+Final CSV:\s+(?P<path>.+?)\s+\(\d+\s+rows\)")
+TASK_SUPPORT_ERROR_RE = re.compile(
+    r"^\[task-support\]\[ERROR\] Unsupported collection task: (?P<task>.+)$"
+)
 LARGEST_PROBE_START_RE = re.compile(
     r"\[largest-probe\] Starting minimum configuration:\s+"
     r"CPU=(?P<cpu>\d+),\s+MEM=(?P<mem>\d+)GB,\s+"
@@ -559,6 +562,17 @@ class RunProgressTracker:
             updates["warnings"] = state.warnings + 1
         if "[ERROR]" in line or line.startswith("Traceback"):
             updates["errors"] = state.errors + 1
+
+        task_support_error = TASK_SUPPORT_ERROR_RE.match(line)
+        if task_support_error:
+            updates.update(
+                stage=message('任务不支持'),
+                detail=message(
+                    '解决办法见日志（F8）；任务：{0}',
+                    task_support_error.group("task"),
+                ),
+                measurement_active=False,
+            )
 
         probe_start = LARGEST_PROBE_START_RE.search(line)
         if probe_start:

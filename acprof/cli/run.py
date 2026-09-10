@@ -44,6 +44,7 @@ from acprof.host.orchestrator import (
     require_packet_latency_prerequisites,
 )
 from acprof.host.profiler_progress import ProfilerProgress
+from acprof.host.task_support import TaskSupportError, require_task_support
 from acprof.monitors.perf_mips import require_mips_prerequisites
 from acprof.notifications import (
     NotificationConfigError,
@@ -1206,6 +1207,7 @@ Examples:
         override_family=args.task_family,
         override_backend=args.backend,
     )
+    require_task_support(task_info)
 
     print(f"\n  Model:    {task_info.model_id}")
     print(f"  Task:     {task_info.pipeline_tag} (family={task_info.task_family})")
@@ -1542,6 +1544,10 @@ def main():
     _ACTIVE_RUN_NOTIFICATION = None
     try:
         return _run_main()
+    except TaskSupportError as exc:
+        print(str(exc), file=sys.stderr)
+        _record_run_termination("failed", str(exc))
+        raise SystemExit(2) from None
     except KeyboardInterrupt:
         _record_run_termination("cancelled", "用户中断了采集")
         raise

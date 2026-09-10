@@ -58,6 +58,9 @@ def translate(source: str, language: str) -> str:
 
 
 ENGLISH: dict[str, str] = {
+    "任务不支持": "Unsupported task",
+    "解决办法见日志（F8）；任务：{0}": "See log (F8) for remedies; task: {0}",
+    "处理办法：换用已适配任务的模型；识别有误时修正配置；需要该任务时等待或开发适配。": "Remedies: choose a model with an adapted task; correct misidentified settings; or wait for or implement task support.",
     "取消": "Cancel",
     "确认": "Confirm",
     "推理实验控制台": "Inference experiment console",

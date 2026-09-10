@@ -16,6 +16,7 @@ from acprof.cli.run import (
     require_native_linux_host,
 )
 from acprof.host.env_utils import bootstrap_project_env
+from acprof.host.task_support import TaskSupportError, require_task_support
 from acprof.host.largest_scale_probe import (
     create_probe_output_dir,
     run_largest_scale_probe,
@@ -129,6 +130,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         override_family=args.task_family,
         override_backend=args.backend,
     )
+    try:
+        require_task_support(task_info)
+    except TaskSupportError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     output_root = Path(args.output_dir).expanduser()
     if not output_root.is_absolute():
         output_root = PROJECT_DIR / output_root

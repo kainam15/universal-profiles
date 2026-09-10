@@ -1423,6 +1423,7 @@ class AcprofTui(BarCursorApp):
         "case 完成": "stage-success",
         "失败": "stage-error",
         "探测失败": "stage-error",
+        "任务不支持": "stage-error",
         "已终止": "stage-error",
         "正式测量": "stage-measuring",
         "最大尺度探测": "stage-measuring",
@@ -1673,6 +1674,10 @@ class AcprofTui(BarCursorApp):
             self._set_text(self.query_one('#status-elapsed', Static), final_elapsed)
         self._set_busy(False)
         log = self.query_one("#run-log", SelectableLog)
+        unsupported_task = (
+            snapshot is not None and snapshot.stage == "任务不支持"
+            and returncode != 0 and not self._stop_requested and not launch_error
+        )
         if launch_error:
             log.write(self.tr(message('[TUI][ERROR] 无法运行命令：{0}', launch_error)))
             self.notify(launch_error, title="任务启动失败", severity="error", timeout=8)
@@ -1682,11 +1687,22 @@ class AcprofTui(BarCursorApp):
         elif self._stop_requested:
             log.write(self.tr(message('[TUI] 任务已由用户终止，退出码 {0}', returncode)))
             self.notify("任务已终止；部分 case 结果可能仍可续跑", severity="warning", timeout=7)
+        elif unsupported_task:
+            log.write(self.tr(snapshot.detail))
+            log.write(self.tr(message(
+                '处理办法：换用已适配任务的模型；识别有误时修正配置；需要该任务时等待或开发适配。'
+            )))
+            self.notify(snapshot.detail, title="任务不支持", severity="error", timeout=12)
         else:
             log.write(self.tr(message('[TUI][ERROR] {0} 任务失败，退出码 {1}', kind, returncode)))
             self.notify(message('任务失败，退出码 {0}', returncode), severity="error", timeout=8)
 
-        if kind == "run":
+        if unsupported_task:
+            self._latest_snapshot = snapshot
+            self._render_snapshot(snapshot)
+            # No measurement ran. Do not show an older CSV as this run's result.
+            self._clear_matrix()
+        elif kind == "run":
             if snapshot is not None:
                 self._latest_snapshot = snapshot
             final_csv = snapshot.final_csv if snapshot is not None else ""

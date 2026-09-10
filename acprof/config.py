@@ -56,6 +56,11 @@ DEFAULT_BACKEND = "transformers_pipeline"
 # Architecture → Pipeline Tag 推断（Level 2 检测兜底）
 # ─────────────────────────────────────────────
 ARCHITECTURE_TO_TASK: Dict[str, str] = {
+    # Specific vision generation names must precede ForConditionalGeneration.
+    "BlipForConditionalGeneration": "image-to-text",
+    "Blip2ForConditionalGeneration": "image-to-text",
+    "InstructBlipForConditionalGeneration": "image-to-text",
+    "VisionEncoderDecoderModel": "image-to-text",
     "ForCausalLM": "text-generation",
     "ForMaskedLM": "fill-mask",
     "ForSequenceClassification": "text-classification",

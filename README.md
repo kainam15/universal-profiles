@@ -32,7 +32,7 @@ AC-Prof 是一个面向 Hugging Face 推理服务的零侵入运行时分析工�
 | Time series | context length | Chronos 时间序列预测 |
 | Diffusion | 方形输出图像边长（像素） | Stable Diffusion 文生图 |
 
-大多数 Hugging Face 模型会自动识别任务族和后端；识别失败时再使用 `--task`、`--task-family` 或 `--backend` 覆盖。
+大多数 Hugging Face 模型会自动识别任务族和后端；识别失败时再使用 `--task`、`--task-family` 或 `--backend` 覆盖。能识别任务类型不代表该类型已经完成采集适配：当前 `image-to-text`（例如 BLIP 图像描述生成）尚未完整适配，`run.py` / `probe.py` 会在镜像准备前停止并给出原因和解决办法。未登记的任务类型及与任务不匹配的任务族也会被提前拦截；通过预检仍需模型架构和容器依赖兼容。
 
 `text-to-image` 模型会自动选择 `diffusion` 任务族和 `diffusers` 后端。内置 workload 固定提示词、随机种子、guidance scale 和 20 个去噪步，只改变输出分辨率；服务端仅返回生成图像的数量与尺寸元数据，避免图片响应体影响网络和应用延迟测量。
 
@@ -574,6 +574,18 @@ cat /proc/sys/kernel/perf_event_paranoid
 
 本机可能仍是旧镜像。去掉 `--skip-build` 重新构建一次。
 
+### `[task-support][ERROR]` / TUI 显示“任务不支持”
+
+项目已经识别任务，但当前采集实现尚未适配该类型，或手动选择了不匹配的任务族。采集与最大输入探测都会在模型镜像准备、输入规划及推理测量前退出（退出码 `2`），日志显示模型、任务、具体原因与解决办法。TUI 保留“任务不支持”状态并提示查看日志，不把原因覆盖成普通退出码，也不把旧 CSV 当成本次结果。此次不会生成测量 CSV 或资源失败占位行，已有测量结果保留。
+
+- **想立即采集：** 换用上方任务族示例中的模型，例如图像分类、目标检测或 ASR 模型。
+- **必须采集此类型：** 等待支持该类型的项目版本，或按下方扩展说明补齐输入、推理、输出与指标口径，再验证后采集。
+- **确实是识别错误：** 核对模型页的 `pipeline_tag`，通过 `--task`、`--task-family`、`--backend`（TUI 高级配置中的“识别覆盖”）纠正。仅在模型实际支持目标任务时使用；把图像描述模型改填成图像分类不会获得分类能力。
+
+`image-to-text` 的已知缺口是生成结果及生成长度指标未适配，现有 CV 处理器仍按分类/检测解释输出。此外，[官方 BLIP 模型页](https://huggingface.co/Salesforce/blip-image-captioning-base)说明 Transformers v5 已移除旧的 `image-to-text` pipeline。开发适配时可直接加载模型，或固定兼容的 Transformers 4.x 并重建镜像（取消 `--skip-build` / “复用现有镜像”）；**仅降级依赖仍不能补齐采集适配**。增加内存、延长超时或重复运行矩阵也不能解决任务不支持。
+
+Hub 已明确给出的未知任务标签会保留并提示，不再被通用架构后缀猜成另一类任务。Hub 无法访问、缺少元数据等识别失败仍保留独立诊断，不统一归为“不支持”。
+
 更多诊断，包括 idle baseline 波动、Profiler `nan`、GPU energy 和 PMU event 问题，见[常见判断](REFERENCE.md#常见判断)。
 
 ## 项目结构与开发
@@ -610,6 +622,7 @@ acprof-tui         # 自动使用项目 .venv 的便捷启动器
 同一任务族中的新模型通常由 `acprof/host/detect.py` 自动识别；确需新增任务族时，要同步
 补齐 `acprof/config.py` 的检测映射与尺度定义、`acprof/container/handlers/` 的模型处理、
 `acprof/workloads/` 的确定性输入、`dockerfiles/` 的离线镜像构建，并覆盖检测、尺度、
-离线加载和编排测试。
+离线加载和编排测试。任务支持预检在 `acprof/host/task_support.py` 中维护；只有完成相应
+输入、输出、指标及实际采集验证后，才移除该任务的已知限制。检测映射本身不作为完成适配的证明。
 
 修改输出或指标时，同步维护 [REFERENCE.md](REFERENCE.md) 的字段来源、单位、适用条件与历史兼容说明。

@@ -298,18 +298,13 @@ def _detect_from_hub(
         )
         return None
 
-    if not task_family:
-        _record_failure(
-            diagnostics,
-            "hub_api",
-            f"unsupported pipeline_tag '{pipeline_tag}' (library_name={library_name or 'unknown'})",
-        )
-        return None
-
     return TaskInfo(
         model_id=model_id,
         pipeline_tag=pipeline_tag,
-        task_family=task_family,
+        # Explicit Hub metadata must survive even without a collection adapter.
+        # Falling back to a generic architecture suffix can misroute multimodal
+        # models to NLP. CLI overrides still apply before the support check.
+        task_family=task_family or "unknown",
         runtime_backend=runtime_backend,
         library_name=library_name,
         model_revision=sha,
