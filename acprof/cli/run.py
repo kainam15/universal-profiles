@@ -882,7 +882,7 @@ Examples:
     parser.add_argument(
         "--task-family",
         default=None,
-        help="Override task family (nlp/cv/audio/timeseries/diffusion)",
+        help="Override task family (nlp/cv/audio/timeseries/diffusion/multimodal)",
     )
     parser.add_argument("--backend", default=None, help="Override runtime backend (transformers_pipeline/chronos/...)")
 
@@ -955,7 +955,7 @@ Examples:
         "--workload-spec",
         default=None,
         help=(
-            "Path to an audio workload manifest. ASR defaults to the "
+            "Path to an audio, multimodal or diffusion workload manifest. ASR defaults to the "
             "bundled LibriSpeech short-form manifest."
         ),
     )

@@ -280,7 +280,13 @@ def main() -> None:
     processed = handler.preprocess(model_ctx, payload)
 
     with torch.inference_mode():
-        handler.predict(model_ctx, processed)
+        warmup_output = handler.predict(model_ctx, processed)
+        # Validate the same output contract as /predict before capture. This
+        # catches missing modalities or silently changed image/video geometry
+        # without adding postprocessing to the gated inference capture windows.
+        # Whole-process tools such as Massif still include this warmup phase.
+        handler.postprocess(model_ctx, warmup_output)
+        del warmup_output
         _cuda_synchronize()
 
         repeat = max(1, int(args.repeat))

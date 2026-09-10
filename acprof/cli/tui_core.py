@@ -32,7 +32,7 @@ from acprof.monitors.perf_mips import MIPSProfilingError, resolve_perf_command_p
 from acprof.cli.tui_i18n import message
 
 
-TASK_FAMILIES = ("nlp", "cv", "audio", "timeseries", "diffusion")
+TASK_FAMILIES = ("nlp", "cv", "audio", "timeseries", "diffusion", "multimodal")
 GPU_MODES = ("off", "on")
 COMPUTE_PROFILE_TOOLS = ("none", "both", "torch", "ncu")
 EXECUTION_PROFILE_TOOLS = ("none", "both", "massif", "nsys")
@@ -244,7 +244,7 @@ class RunConfig:
 
         task_family = self.task_family.strip().lower()
         if task_family and task_family not in TASK_FAMILIES:
-            errors.append(message('任务族必须是 nlp/cv/audio/timeseries/diffusion'))
+            errors.append(message('任务族必须是 nlp/cv/audio/timeseries/diffusion/multimodal'))
         if self.compute_profile_tool not in COMPUTE_PROFILE_TOOLS:
             errors.append(message('无效的计算分析器'))
         if self.execution_profile_tool not in EXECUTION_PROFILE_TOOLS:

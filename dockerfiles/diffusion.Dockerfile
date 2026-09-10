@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir \
     "${TORCH_PACKAGE_SPEC}" \
     --index-url ${TORCH_INDEX_URL}
 
-# Text-to-image dependencies (without replacing the selected torch build).
+# Image/video diffusion dependencies (preserve the selected torch build).
 # Diffusers 0.40+ requires huggingface_hub 1.x while Transformers 4.x still
 # requires huggingface_hub <1, so keep this image on the compatible 0.39/4.57
 # release line until both libraries share the same Hub major version.
@@ -22,7 +22,12 @@ RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple \
     'transformers==4.57.6' \
     'accelerate==1.14.0' \
     'safetensors==0.8.0' \
+    sentencepiece \
+    protobuf \
     Pillow
+
+# T5/UMT5 tokenizers used by native image/video pipelines need SentencePiece
+# and protobuf. Outputs remain decoded PIL frames; no video encoder is needed.
 
 # Download the complete Diffusers repository snapshot into the image.
 ARG MODEL_ID

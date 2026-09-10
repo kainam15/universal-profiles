@@ -1,7 +1,10 @@
 import importlib
+import io
+import json
 import sys
 import types
 import unittest
+from contextlib import ExitStack, contextmanager, nullcontext, redirect_stdout
 from unittest.mock import patch
 
 
@@ -122,6 +125,89 @@ class ComputeProfileRunnerITTTests(unittest.TestCase):
             "expected=eager,actual=sdpa",
         ):
             runner._verify_eager_attention(model_ctx)
+
+    @contextmanager
+    def _main_context(self, mode, events, *, invalid_output=False):
+        runner = self._import_runner()
+        output = object()
+        model_ctx = {"model": types.SimpleNamespace(
+            config=types.SimpleNamespace(_attn_implementation="eager"),
+        )}
+
+        class Handler:
+            def load(self, *_args, **_kwargs):
+                events.append("load")
+                return model_ctx
+
+            def preprocess(self, *_args):
+                events.append("preprocess")
+                return {"input": "prepared"}
+
+            def predict(self, *_args):
+                events.append("predict")
+                return output
+
+            def postprocess(self, _ctx, generated):
+                if generated is not output:
+                    raise AssertionError("postprocess must validate the actual warmup output")
+                events.append("postprocess")
+                if invalid_output:
+                    raise ValueError("pipeline video frame count differs from requested num_frames")
+                return {"output_type": "video", "video_frame_count": 17}
+
+        @contextmanager
+        def profiler(*_args, **_kwargs):
+            events.append("capture_start")
+            try:
+                yield types.SimpleNamespace(
+                    key_averages=lambda: [types.SimpleNamespace(flops=32)],
+                )
+            finally:
+                events.append("capture_end")
+
+        stdout = io.StringIO()
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(runner.os.environ, {"MODEL_ID": "local/tiny"}, clear=True))
+            stack.enter_context(patch.object(sys, "argv", [
+                "compute_profile_runner", "--payload-file", "unused.json",
+                "--input-scale", "64", "--repeat", "2", "--profile-mode", mode,
+            ]))
+            stack.enter_context(patch.object(runner.HandlerRegistry, "get", return_value=Handler()))
+            stack.enter_context(patch.object(runner, "_find_payload", return_value={"resolution": 64}))
+            stack.enter_context(patch.object(runner.torch, "inference_mode", side_effect=nullcontext))
+            stack.enter_context(patch.object(runner.torch.profiler, "profile", side_effect=profiler))
+            stack.enter_context(patch.object(runner, "_ITTControl", return_value=types.SimpleNamespace(
+                resume=lambda: events.append("capture_start"),
+                pause=lambda: events.append("capture_end"),
+            )))
+            stack.enter_context(patch.object(runner.torch.cuda.nvtx, "range_push", side_effect=lambda *_args: events.append("capture_start")))
+            stack.enter_context(patch.object(runner.torch.cuda.nvtx, "range_pop", side_effect=lambda: events.append("capture_end")))
+            stack.enter_context(redirect_stdout(stdout))
+            yield runner, stdout
+
+    def test_invalid_warmup_output_prevents_all_profiler_capture_and_success(self):
+        for mode in ("cpu", "gpu", "torch_eager_cpu"):
+            with self.subTest(mode=mode):
+                events = []
+                with self._main_context(mode, events, invalid_output=True) as (runner, stdout):
+                    with self.assertRaisesRegex(ValueError, "frame count differs"):
+                        runner.main()
+                self.assertEqual(events, ["load", "preprocess", "predict", "postprocess"])
+                self.assertEqual(stdout.getvalue(), "")
+
+    def test_warmup_validates_once_before_capture_without_extra_inference(self):
+        for mode in ("cpu", "gpu", "torch_eager_cpu"):
+            with self.subTest(mode=mode):
+                events = []
+                with self._main_context(mode, events) as (runner, stdout):
+                    runner.main()
+                self.assertEqual(events, [
+                    "load", "preprocess", "predict", "postprocess",
+                    "capture_start", "predict", "predict", "capture_end",
+                ])
+                result = json.loads(stdout.getvalue())
+                self.assertEqual(result["status"], "ok")
+                self.assertEqual(result["repeat"], 2)
 
 
 if __name__ == "__main__":

@@ -30,9 +30,10 @@ AC-Prof 是一个面向 Hugging Face 推理服务的零侵入运行时分析工�
 | CV | 基础图像尺寸的缩放倍率 | 图像分类、目标检测、BLIP 图像描述 |
 | Audio | 音频时长（秒） | Whisper ASR、音频分类 |
 | Time series | context length | Chronos 时间序列预测 |
-| Diffusion | 方形输出图像边长（像素） | Stable Diffusion 文生图 |
+| Diffusion | 方形输出图像／视频帧边长（像素） | 文生图、图像编辑、图文生视频 |
+| Multimodal | 依任务为输入图像边长、音频秒数或视频帧数 | 多模态问答、文档检索、文字＋音频输出 |
 
-大多数 Hugging Face 模型会自动识别任务族和后端；识别失败时再使用 `--task`、`--task-family` 或 `--backend` 覆盖。`image-to-text` 使用 CV 镜像中的 Transformers 4.57.6 图像描述 pipeline，每个请求一张图，要求 `--batch-size 1`。未登记的任务类型（如多模态对话 `image-text-to-text`）、与任务不匹配的任务族及图像描述的多图 batch 会被提前拦截；通过预检仍需模型架构和容器依赖兼容。
+大多数 Hugging Face 模型会自动识别任务族和后端；识别失败时再使用 `--task`、`--task-family` 或 `--backend` 覆盖。`image-to-text` 使用 CV 镜像中的 Transformers 4.57.6 图像描述 pipeline，每个请求一张图，要求 `--batch-size 1`。未登记的任务类型（如 `video-classification`）、与任务不匹配的任务族及图像描述的多图 batch 会被提前拦截；通过预检仍需模型架构和容器依赖兼容。
 
 图像描述响应包含 `output_type="caption"`、`captions` 文本列表、`n_results`、`output_length` 和 `output_token_count`；后两项进入现有 CSV 的窗口平均值与输出 token 能效指标。token 数按每条生成文本重新分词统计，排除额外特殊 token，不等于解码器实际生成步数。内置输入是固定种子的合成图片，`input_scale=1` 表示传入 224×224 图片；模型的 image processor 可能再次缩放到固定尺寸，不能把传入分辨率直接当作视觉编码器的计算规模。生成采用固定模型 revision 与 pipeline 的默认配置；HTTP `params` 可传入 `max_new_tokens`、`generate_kwargs` 等官方 pipeline 参数，原样写入输入计划和 CSV `task_param`。
 
@@ -47,6 +48,72 @@ CV 镜像同时安装 `build-essential`，供 PyTorch/Triton 在首次 GPU 推�
 ```
 
 `text-to-image` 模型会自动选择 `diffusion` 任务族和 `diffusers` 后端。内置 workload 固定提示词、随机种子、guidance scale 和 20 个去噪步，只改变输出分辨率；服务端仅返回生成图像的数量与尺寸元数据，避免图片响应体影响网络和应用延迟测量。
+
+### 多模态任务
+
+下列 9 类任务已接入任务识别、输入计划、容器处理器、最大输入探测、正式采集与后置 profiler。新任务统一要求 `--batch-size 1`。它们使用已安装版本中的原生模型接口；支持任务类型不表示任意同标签 checkpoint 都兼容。
+
+| Hugging Face 任务 | 后端 / 任务族 | 适配范围与默认输入尺度 |
+| --- | --- | --- |
+| `audio-text-to-text` | Transformers / `multimodal` | Qwen2 Audio、Qwen2.5 Omni Thinker；真实语音＋文字；1、2、5、10 秒 |
+| `image-text-to-text` | Transformers / `multimodal` | `AutoModelForImageTextToText` 支持且带 chat template 的原生模型；224、336、448 像素输入边长 |
+| `image-text-to-image` | Diffusers / `diffusion` | 原生同时接收 `image` 和 `prompt` 的图像编辑／Img2Img pipeline；128–512 像素输出边长 |
+| `image-text-to-video` | Diffusers / `diffusion` | 原生同时接收图像和文本的 CogVideoX、Wan 等 I2V pipeline；方形帧，默认固定 17 帧 |
+| `visual-question-answering` | Transformers / `multimodal` | 原生 VQA pipeline，区分分类式与生成式回答；224、336、448 像素 |
+| `document-question-answering` | Transformers / `multimodal` | 原生 DocQA pipeline；内置可读票据与词框；外部文档须给出 OCR 词和坐标 |
+| `video-text-to-text` | Transformers / `multimodal` | 同时支持视频 processor 和图文生成 Auto 类的模型；2、4、8 帧，固定 2 FPS |
+| `visual-document-retrieval` | Transformers / `multimodal` | ColPali、ColQwen2；每次编码一个 query 和一页文档，再计算 MaxSim 分数 |
+| `any-to-any` | Transformers / `multimodal` | Qwen2.5 Omni 的文字／图像／音频／视频输入 → 文字＋音频输出；默认输入为语音＋文字 |
+
+实际 Hub 标签 `image-to-image`、`image-to-video` 也会接入上述 Diffusers 适配。模型必须原生接收文字和图像条件；不接受提示词的纯图生视频模型会明确报错。模型如需要非方形输出、更大的分辨率、不同帧数或额外组件，需要满足其自身约束；当前不会自动转换 checkpoint 的 pipeline 类型或执行自定义远程代码。
+
+TUI 的高级配置可选 `Multimodal`，也可使用 CLI。首次运行应重建模型镜像，后续再用 `--skip-build` 复用。以下例子只运行一个 VQA 输入尺度：
+
+```bash
+.venv/bin/python run.py --model dandelin/vilt-b32-finetuned-vqa \
+  --task visual-question-answering --task-family multimodal \
+  --backend transformers_model --cpus 2 --mems 8 --gpus off \
+  --input-scales 224 --batch-size 1 --warmup 0 --repeat 1 \
+  --repeat-in-window 1 --compute-profile-tool none \
+  --execution-profile-tool none --notify none --output-dir results/smoke-vqa
+```
+
+图像和视频默认使用确定性的合成场景；DocQA 使用带词框的合成票据，音频复用仓库内带来源与 SHA256 的真实语音。它们适合验证采集与性能流程，不是准确率评测集。图像 processor 可能缩放或切块，因此输入像素边长不等于模型实际视觉 token 数。
+
+`--workload-spec` 可为新任务指定本地 JSON。多模态清单使用 `text`，Diffusers 清单使用 `prompt`；文件路径相对清单所在目录。图片示例：
+
+```json
+{
+  "schema_version": 1,
+  "task": "image-text-to-text",
+  "image_path": "scene.png",
+  "text": "Describe this image briefly.",
+  "input_scales": [224, 448],
+  "params": {"max_new_tokens": 32, "do_sample": false}
+}
+```
+
+多模态清单还支持 `audio_path`（单声道 PCM16 WAV，采样率须符合模型）、`video_frames`（有序本地图片路径列表）、`fps`、`image_resolution`（视频帧／固定条件图边长）。视频在主机侧准备成 PNG 帧，音频使用同一波形的前缀，主采集与 profiler 复用计划内的 Base64 素材，不在容器运行时下载。自定义文档需同时提供 `words` 和归一化到 0–1000 的 `boxes`，避免运行 OCR；仍需模型所需的图像后端依赖，依赖 detectron2 等额外组件的模型不包含在镜像默认支持范围内。
+
+Any-to-Any 可用 `"modalities": ["image", "audio"]` 和 `"scale_modality": "audio"` 组合输入；一次只改变一个维度，其余由 `image_resolution`、`audio_duration_s`、`video_num_frames` 固定。音频生成保持开启（`return_audio=true`），默认文本最多 64 token、talker 最多 256 token、`speaker="Chelsie"`、关闭 token 采样，并用 `seed=12345` 固定声码器噪声。固定种子不保证跨硬件／软件版本逐位一致。这里的 Any-to-Any 明确为 Omni 的文字＋音频输出，未实现任意图像／视频输出协议。
+
+Diffusers 清单示例（还可设置 `strength`、`image_guidance_scale`、`negative_prompt`，目标 pipeline 必须支持所传参数）：
+
+```json
+{
+  "schema_version": 1,
+  "image_path": "scene.png",
+  "prompt": "The camera slowly moves to the left.",
+  "input_scales": [256, 512],
+  "params": {"num_inference_steps": 20, "num_frames": 17, "guidance_scale": 7.5, "seed": 12345}
+}
+```
+
+清单及素材摘要、实际 payload、参数和尺度单位保存在 `input_scale_plan.json` / `static_meta.json`。检索请求包含 query 编码、文档编码和评分，不缓存文档向量。生成图像、视频、音频只返回尺寸／数量摘要，不编码为响应媒体；文字输出按既有 CSV 字段统计，检索分数不会冒充输出 token。详细单位见 [REFERENCE](REFERENCE.md#输入规模与音频清单)。
+
+普通采集与 NCU／Nsys 复用完整 `predict()`。profiler 在推理计算捕获前的预热阶段验证一次输出协议，计算捕获只重复推理；Massif 按整个进程生命周期统计，包含加载、预热和这次验证。Omni 的 Token2Wav 不支持 eager 注意力，因此 `any-to-any` 的 `torch_profiler_eager` 会明确失败；Diffusers 的 Transformer 视频模型也会拒绝尚未验证的 eager 替换。这些失败按工具隔离，不能把未采集的 FLOP 当成 0。已有 UNet 文生图 eager 路径保留。
+
+适配复用官方 [Transformers 多模态接口](https://github.com/huggingface/transformers/blob/v4.57.6/docs/source/en/chat_templating_multimodal.md)、[检索接口](https://github.com/huggingface/transformers/blob/v4.57.6/docs/source/en/tasks/visual_document_retrieval.md)、[Omni 实现](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/models/qwen2_5_omni/modeling_qwen2_5_omni.py) 和 [Diffusers pipeline](https://github.com/huggingface/diffusers/tree/v0.39.0/src/diffusers/pipelines)，固定 Transformers 4.57.6 / Diffusers 0.39.0，沿用项目依赖，不引入评测框架。两库采用 Apache-2.0；具体模型权重的许可与访问条件以其模型页为准。
 
 ## 快速开始
 

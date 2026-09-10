@@ -436,4 +436,10 @@ def detect_task(
         info.runtime_backend = override_backend
         info.detection_method = "manual"
 
+    if not override_backend:
+        if info.task_family == "diffusion" and info.library_name in {"", "unknown", "diffusers"}:
+            info.runtime_backend = "diffusers"
+        elif info.task_family == "multimodal" and info.runtime_backend == "transformers_pipeline":
+            info.runtime_backend = "transformers_model"
+
     return info

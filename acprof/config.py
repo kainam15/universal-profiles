@@ -30,6 +30,18 @@ PIPELINE_TAG_TO_FAMILY: Dict[str, str] = {
     "image-feature-extraction": "cv",
     # Diffusion / generative vision
     "text-to-image": "diffusion",
+    "image-text-to-image": "diffusion",
+    "image-text-to-video": "diffusion",
+    "image-to-image": "diffusion",
+    "image-to-video": "diffusion",
+    # Multimodal understanding, retrieval and mixed output
+    "audio-text-to-text": "multimodal",
+    "image-text-to-text": "multimodal",
+    "visual-question-answering": "multimodal",
+    "document-question-answering": "multimodal",
+    "video-text-to-text": "multimodal",
+    "visual-document-retrieval": "multimodal",
+    "any-to-any": "multimodal",
     # Audio
     "automatic-speech-recognition": "audio",
     "audio-classification": "audio",
@@ -56,6 +68,32 @@ DEFAULT_BACKEND = "transformers_pipeline"
 # Architecture → Pipeline Tag 推断（Level 2 检测兜底）
 # ─────────────────────────────────────────────
 ARCHITECTURE_TO_TASK: Dict[str, str] = {
+    # Match multimodal architectures before generic LM / QA suffixes.
+    "Qwen2AudioForConditionalGeneration": "audio-text-to-text",
+    "Qwen2_5OmniForConditionalGeneration": "any-to-any",
+    "Qwen2VLForConditionalGeneration": "image-text-to-text",
+    "Qwen2_5_VLForConditionalGeneration": "image-text-to-text",
+    "Qwen3VLForConditionalGeneration": "image-text-to-text",
+    "Qwen3VLMoeForConditionalGeneration": "image-text-to-text",
+    "Qwen3OmniMoeForConditionalGeneration": "any-to-any",
+    "LlavaForConditionalGeneration": "image-text-to-text",
+    "LlavaNextForConditionalGeneration": "image-text-to-text",
+    "LlavaOnevisionForConditionalGeneration": "image-text-to-text",
+    "LlavaNextVideoForConditionalGeneration": "video-text-to-text",
+    "Idefics2ForConditionalGeneration": "image-text-to-text",
+    "Idefics3ForConditionalGeneration": "image-text-to-text",
+    "SmolVLMForConditionalGeneration": "image-text-to-text",
+    "MllamaForConditionalGeneration": "image-text-to-text",
+    "PaliGemmaForConditionalGeneration": "image-text-to-text",
+    "Gemma3ForConditionalGeneration": "image-text-to-text",
+    "Gemma3nForConditionalGeneration": "image-text-to-text",
+    "ColPaliForRetrieval": "visual-document-retrieval",
+    "ColQwen2ForRetrieval": "visual-document-retrieval",
+    "ViltForQuestionAnswering": "visual-question-answering",
+    "BlipForQuestionAnswering": "visual-question-answering",
+    "LayoutLMForQuestionAnswering": "document-question-answering",
+    "LayoutLMv2ForQuestionAnswering": "document-question-answering",
+    "LayoutLMv3ForQuestionAnswering": "document-question-answering",
     # Specific vision generation names must precede ForConditionalGeneration.
     "BlipForConditionalGeneration": "image-to-text",
     "Blip2ForConditionalGeneration": "image-to-text",
@@ -113,6 +151,11 @@ SCALING_DIMENSIONS: Dict[str, ScalingConfig] = {
         values=[128, 192, 256, 320, 384, 512],
         description="square output image side length (pixels)",
     ),
+    "multimodal": ScalingConfig(
+        param_name="media_scale",
+        values=[224, 336, 448],
+        description="task-specific media scale; authoritative unit is in the workload plan",
+    ),
 }
 
 # ─────────────────────────────────────────────
@@ -124,6 +167,7 @@ DEFAULT_TASK_PARAMS: Dict[str, Dict[str, Any]] = {
     "audio": {},
     "timeseries": {"prediction_length": 64},
     "diffusion": {"num_inference_steps": 20, "guidance_scale": 7.5},
+    "multimodal": {"max_new_tokens": 64},
 }
 
 # ─────────────────────────────────────────────

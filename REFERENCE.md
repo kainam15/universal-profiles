@@ -64,7 +64,7 @@
 | `quantization_config` | Hub model config 中的完整量化配置；没有时为空 object。 |
 | `model_license` | Hugging Face model card 许可证，例如 `apache-2.0`、`mit`；无法确认时为 `null`。 |
 | `model_metadata_source` | 参数量、参数 payload、精度、量化和许可证的元数据来源，当前在线 Hub 检测成功时为 `huggingface_hub`。 |
-| `task_family` | 任务族：`nlp`、`cv`、`audio`、`timeseries`、`diffusion`。 |
+| `task_family` | 任务族：`nlp`、`cv`、`audio`、`timeseries`、`diffusion`、`multimodal`。 |
 | `pipeline_tag` | Hugging Face pipeline tag，例如 `fill-mask`、`image-classification`。 |
 | `runtime_backend` | 容器内使用的 runtime backend，例如 `transformers_pipeline`、`chronos`、`diffusers`。 |
 | `image_tag` | 本次使用的 Docker image tag。 |
@@ -279,7 +279,7 @@ CPU 模型除共同的二次 log input-scale 项外，还使用二次 log CPU �
 | `packet_protocol_overhead_bytes_per_request` | `packet_total_wire_bytes_per_request - packet_tcp_payload_bytes_per_request`，表示捕获到的 L2/L3/L4 header、ACK/握手/关闭等开销；不拆分 TCP payload 内的 HTTP header 与 JSON body。 |
 | `packet_protocol_overhead_ratio` | 本行所有请求的 protocol overhead bytes 总和 / total wire bytes 总和；分母无效时为 `nan`。 |
 | `task_param` | 本行 payload 真正发送给 handler 的二级参数，使用稳定排序的 JSON 字符串；通常来自 `params`，时序任务同时记录顶层 `prediction_length`，不再记录未执行的任务族默认值。 |
-| `output_length_avg` | 同一 workload window 内每次响应文本字符数的平均值；ASR 为转录文本长度，图像描述为该请求所有 caption 的字符数之和（Unicode 字符，不是 UTF-8 字节）；不适用时为 `nan`。 |
+| `output_length_avg` | 同一 workload window 内响应长度的平均值：文字任务为该请求所有返回文本的 Unicode 字符数之和（不是 UTF-8 字节）；Diffusers 图像生成为图像数，视频生成为总帧数；检索等不适用任务为 `nan`。 |
 | `output_token_count_avg` | 同一 workload window 内每次响应文本 tokenizer token 数的平均值；ASR/图像描述按输出文本重新分词，`add_special_tokens=False`。图像描述先逐条分词再求和，不拼接 caption，也不等于实际生成 token ID 数或解码步数。tokenizer 不可用或统计失败时响应为 `null`；窗口内全部不可得时 CSV 为 `nan`，有效空文本为 `0`。 |
 | `repeat_idx` | 当前 warmup 或 repeat phase 内的 0-based iteration index。 |
 | `warmup` | `1` 表示 warmup 行，`0` 表示正式测量行。`plot.py` 默认排除 warmup 行。 |
@@ -608,7 +608,7 @@ Nsys 还需生成和解析 timeline；repeat 参数会进一步增加工作量�
 ### 任务尚未适配的预检退出
 
 - `run.py` 与 `probe.py` 在任务识别及显式覆盖后，检查已知采集缺口、未登记的任务标签和任务族不匹配；失败时显示 `[task-support][ERROR]` 及解决办法，退出码为 `2`。TUI 显示“任务不支持”，详细原因保留在日志中。
-- `image-to-text` 已支持 CV 单图请求及图像描述输出，要求 `--batch-size 1`；多图 batch 会在预检退出。`image-text-to-text` 多模态对话仍未登记。预检不是对全部模型架构或依赖版本的兼容保证。
+- `image-to-text` 已支持 CV 单图请求及图像描述输出，要求 `--batch-size 1`；多图 batch 会在预检退出。`image-text-to-text` 等九类多模态任务及适配边界见 [README](README.md#多模态任务)，同样要求单样本请求。预检不是对全部模型架构或依赖版本的兼容保证。
 - 预检在模型镜像准备、输入规划和测量前执行，因此不新增测量 CSV、OOM/超时占位行或探测请求记录；已有测量结果保留。不要将此类退出解释为资源不足或一次实际推理失败。
 - 支持范围与适配步骤见 [README 的任务支持诊断](README.md#task-supporterror--tui-显示任务不支持)。Hub 连接、鉴权或缺少元数据导致的识别失败继续使用独立诊断。
 
@@ -753,7 +753,7 @@ TUI 保存实际使用的绝对路径，相对输入以项目根目录为基准�
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `--input-scales` | auto | 手动覆盖 input scale 列表；未提供时通常自动规划 6 档，自定义音频清单按声明档数。 |
-| `--workload-spec` | task default | workload 清单 JSON。ASR 默认使用仓库内置的 LibriSpeech 英文短音频清单；其他音频任务必须显式提供清单。 |
+| `--workload-spec` | task default | audio、multimodal 或 diffusion 的 workload 清单 JSON。ASR 默认使用仓库内置的 LibriSpeech 英文短音频清单；其他 audio 任务必须显式提供清单；新多模态任务有内置输入，也可自定义本地素材和参数。 |
 
 #### 计算分析器
 
@@ -808,13 +808,18 @@ TUI 保存实际使用的绝对路径，相对输入以项目根目录为基准�
 | `cv` | `resolution_scale` | 图像基础尺寸的缩放倍率。 |
 | `audio` | `duration_s` | 输入音频时长，单位秒。 |
 | `timeseries` | `context_length` | 时间序列 context length。 |
-| `diffusion` | `resolution_px` | 方形输出图像边长，单位像素。 |
+| `diffusion` | `resolution_px` | 方形输出图像或视频帧边长，单位像素；视频帧数是固定的二级参数。 |
+| `multimodal` 图像理解／问答／文档检索 | `resolution_px` | 输入图像边长，单位像素；模型 processor 可能重新缩放、切块或固定尺寸。 |
+| `multimodal` 音频理解 | `duration_s` | 输入 WAV 的实际样本数 / 采样率，单位秒。 |
+| `multimodal` 视频理解 | `frame_count` | 输入 PNG 帧数；FPS 和帧分辨率固定并写入计划。 |
+| `multimodal` Any-to-Any | 由 `scale_modality` 决定 | 单一输入模态随尺度变化，其余固定；默认改变音频秒数。 |
 
 未提供 `--input-scales` 时，当前内置 workload/legacy 配置通常会为一次 profiling run 规划 6 档 input scale；自定义音频清单则使用清单中声明的档数：
 
 - `nlp` 会启动容器读取 tokenizer / handler 的可用最大输入长度，最后一档尽量贴近有效上限。
 - `audio` 从 workload 清单读取默认尺度；内置英文 ASR 清单固定为 `1,2,5,10,20,30` 秒。`cv`、`timeseries` 仍根据各自 generator 的最大尺度或配置默认值生成。
 - `diffusion` 使用固定的 `128,192,256,320,384,512` 像素输出边长；提示词、随机种子、guidance scale 和去噪步数在各尺度间保持不变。
+- `multimodal` 从任务 workload 读取默认尺度：图像边长 `224,336,448`；音频 `1,2,5,10` 秒；视频 `2,4,8` 帧。清单 `input_scales` 可覆盖默认值，CLI `--input-scales` 优先。`static_meta.input_scale_type` 在计划完成后取实际 workload 的单位，不能将所有多模态任务统一解释为 token 数。
 - 同一次 run 的所有资源配置共用同一组 scale。
 - 所有任务族都会把已确定尺度的 payload 写入唯一的 `input_scale_plan.json`；主采集与 compute profiler 共同读取该文件，保证实际执行 payload、FLOP profiling 和 CSV 中记录的 `input_scale` 一致。
 - 手动传入 `--input-scales` 时以手动值为准；`nlp`、`audio`、`timeseries` 和 `diffusion` 会在 sweep 前验证合法性（文生图分辨率至少为 64 且必须是 8 的倍数）。
@@ -833,6 +838,14 @@ python run.py --model openai/whisper-large-v3 \
 ```
 
 当前音频 request 只实现 `batch_size=1` 和 `short_form`。清单会拒绝非空的 `chunk_length_s` / `stride_length_s`；长音频 sequential/chunked 应使用独立 workload，不能通过把本清单尺度直接扩展到 30 秒以上来混测。
+
+多模态与图像条件生成也接受 `--workload-spec`，其清单和支持边界见 [README 多模态任务](README.md#多模态任务)。多模态输入计划沿用 schema v2，新增信息写在扩展的 `workload`、`input_metadata` 和 `payload` object 内；CSV 未增加列，历史文件无需填补新字段。`workload` 保存素材路径／SHA256、清单 SHA256、提示词、参数、尺度单位和固定条件；实际序列化 payload 及计划 SHA256 是重放依据。
+
+多模态 `input_num_samples=1` 表示一个请求样本；其中可含图像、音频、视频或 query＋文档。音频 PCM 样本数与视频帧数分别保存在 `input_metadata.audio_num_samples` / `video_num_frames`。`input_units_per_request` 继续等于有效 `input_scale × batch_size`，因此其单位取决于上表，不可横跨不同尺度类型直接比较每单位延迟。
+
+文字生成／问答的 `output_length_avg` 是返回文字的字符数窗口均值；`output_token_count_avg` 是对输出文字重新分词的 token 数，不代表所有解码步或 Omni 音频 token。Omni 音频摘要另含 24000 Hz 采样率、PCM 样本数和秒数，不混入文字长度。图像生成 `output_length` 为图像数，视频生成为总帧数；检索仅返回 query-by-document 分数矩阵，不产生文字长度／token 字段，其对应 CSV 值保持 `NaN`。
+
+主请求延迟包含输入预处理、模型推理和结果摘要。后置 profiler 的 `predict()` 测量不包含 Base64 解码、processor、文字解码或媒体摘要，但包括完整生成、检索的两个编码器 forward 与 MaxSim。Omni GPU 采用 thinker/talker FP16 和 Token2Wav FP32；其 eager FLOP 请求明确不支持，NCU/Nsys 仍可测完整推理。Diffusers Transformer 视频架构在没有可验证 eager 替换时同样报告工具错误，不伪填 FLOP。生成媒体不会作为图片／音频／视频响应体返回，因此网络指标描述当前摘要服务协议。
 
 ### `probe.py`
 

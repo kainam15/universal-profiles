@@ -453,6 +453,7 @@ class AcprofTui(BarCursorApp):
                                     ("Audio", "audio"),
                                     ("Time series", "timeseries"),
                                     ("Diffusion", "diffusion"),
+                                    ("Multimodal", "multimodal"),
                                 ),
                                 value=self.initial_config.task_family,
                                 allow_blank=False,
@@ -469,7 +470,7 @@ class AcprofTui(BarCursorApp):
                             yield self._localized_widget(Label("Workload manifest"))
                             yield self._localized_widget(Input(
                                 value=self.initial_config.workload_spec,
-                                placeholder="音频 manifest，可留空",
+                                placeholder="输入素材 manifest，可留空",
                                 id="workload-spec",
                                 classes="config-control",
                             ))

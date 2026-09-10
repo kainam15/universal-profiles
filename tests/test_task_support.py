@@ -25,7 +25,7 @@ def task_info(tag="image-text-to-text", family="unknown"):
         model_id="example/caption-model",
         pipeline_tag=tag,
         task_family=family,
-        runtime_backend="transformers_pipeline",
+        runtime_backend="diffusers" if family == "diffusion" else "transformers_pipeline",
         library_name="transformers",
         model_revision="test-revision",
         detection_method="hub_api",
@@ -85,12 +85,12 @@ class TaskSupportTests(unittest.TestCase):
                         self.assertEqual(sorted(str(p.relative_to(root)) for p in root.rglob("*")), ["example--caption-model", "example--caption-model/result_all.csv"])
 
     def test_hub_task_without_adapter_is_preserved_instead_of_guessed_as_nlp(self):
-        hub = SimpleNamespace(pipeline_tag="image-text-to-text", library_name="transformers", sha="rev")
+        hub = SimpleNamespace(pipeline_tag="video-classification", library_name="transformers", sha="rev")
         with patch("huggingface_hub.model_info", return_value=hub), patch.object(
             detect, "_detect_from_config", return_value=task_info("text2text-generation", "nlp")
         ) as fallback:
             info = detect.detect_task("example/multimodal")
-        self.assertEqual(info.pipeline_tag, "image-text-to-text")
+        self.assertEqual(info.pipeline_tag, "video-classification")
         self.assertEqual(info.task_family, "unknown")
         fallback.assert_not_called()
 

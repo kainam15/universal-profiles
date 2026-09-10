@@ -1686,6 +1686,48 @@ def _model_io_formats(task_info: TaskInfo) -> Tuple[Dict[str, Any], Dict[str, An
                 "enum": ["forecast"],
             },
         }
+    elif task_info.task_family == "multimodal":
+        input_properties = {
+            "samples": {
+                "type": "array", "minItems": 1, "maxItems": 1,
+                "items": _json_object_schema({
+                    "text": string_schema,
+                    "image_base64": {"type": "string", "contentEncoding": "base64", "contentMediaType": "image/png"},
+                    "audio_base64": {"type": "string", "contentEncoding": "base64", "contentMediaType": "audio/wav"},
+                    "sampling_rate": {"type": "integer", "unit": "Hz"},
+                    "video_frames_base64": {"type": "array", "items": string_schema},
+                    "fps": {"type": "number", "unit": "frames/s"},
+                    "words": {"type": "array", "items": string_schema},
+                    "boxes": {"type": "array", "description": "OCR boxes normalized to 0..1000"},
+                }, ["text"]),
+            },
+            "params": params_schema,
+            "input_scale": {"type": "number", "exclusiveMinimum": 0},
+            "input_scale_type": {"type": "string", "enum": ["resolution_px", "duration_s", "frame_count"]},
+        }
+        input_required = ["samples", "input_scale", "input_scale_type"]
+        output_properties = {
+            "task": string_schema,
+            "output_type": string_schema,
+            "n_results": {"type": "integer"},
+            "output_length": {"type": ["integer", "null"]},
+            "output_token_count": {"type": ["integer", "null"]},
+            "effective_input_scale": {"type": "number"},
+        }
+        if task_info.pipeline_tag == "visual-document-retrieval":
+            output_properties["scores"] = {"type": "array", "description": "query-by-page MaxSim scores, including both encoders"}
+            output_properties.update({"n_queries": {"type": "integer"}, "n_documents": {"type": "integer"}, "retrieval_scope": string_schema})
+        elif task_info.pipeline_tag in {"visual-question-answering", "document-question-answering"}:
+            output_properties["answers"] = {"type": "array", "items": {"type": "object"}}
+        else:
+            output_properties["texts"] = {"type": "array", "items": string_schema}
+        if task_info.pipeline_tag == "any-to-any":
+            output_properties.update({
+                "audio_num_samples": {"type": "integer"},
+                "audio_sample_rate": {"type": "integer", "unit": "Hz"},
+                "audio_duration_s": {"type": "number", "unit": "s"},
+            })
+        output_required.extend(["output_type", "n_results"])
     elif task_info.task_family == "diffusion":
         input_properties = {
             "prompt": {
@@ -1720,6 +1762,21 @@ def _model_io_formats(task_info: TaskInfo) -> Tuple[Dict[str, Any], Dict[str, An
             "effective_input_scale": {"type": "number"},
         }
         output_required.extend(["output_type", "n_results"])
+        if task_info.pipeline_tag != "text-to-image":
+            input_properties["image_base64"] = {
+                "type": "string", "contentEncoding": "base64", "contentMediaType": "image/png",
+            }
+            input_required.append("image_base64")
+        if task_info.pipeline_tag in {"image-text-to-video", "image-to-video"}:
+            output_properties["output_type"]["enum"] = ["video"]
+            output_properties.pop("image_width")
+            output_properties.pop("image_height")
+            output_properties.update({
+                "video_frame_count": {"type": "integer"},
+                "video_width": {"type": "integer", "unit": "px"},
+                "video_height": {"type": "integer", "unit": "px"},
+                "output_shape": {"type": "array", "items": {"type": "integer"}},
+            })
     else:
         input_properties = {}
         input_required = []
@@ -1748,6 +1805,8 @@ def _model_io_formats(task_info: TaskInfo) -> Tuple[Dict[str, Any], Dict[str, An
 
 
 def _inference_precision_by_device(task_info: TaskInfo) -> Dict[str, str]:
+    if task_info.pipeline_tag == "any-to-any" and task_info.task_family == "multimodal":
+        return {"cpu": "FP32", "gpu": "mixed FP16 (thinker/talker), FP32 (token2wav)"}
     if (
         task_info.runtime_backend == "diffusers"
         and task_info.task_family == "diffusion"
@@ -1755,7 +1814,7 @@ def _inference_precision_by_device(task_info: TaskInfo) -> Dict[str, str]:
         return {"cpu": "FP32", "gpu": "FP16"}
     if (
         task_info.runtime_backend in {"transformers_pipeline", "transformers_model"}
-        and task_info.task_family in {"nlp", "cv", "audio"}
+        and task_info.task_family in {"nlp", "cv", "audio", "multimodal"}
     ):
         return {"cpu": "FP32", "gpu": "FP16"}
     if task_info.precision_dtype:
@@ -1906,6 +1965,7 @@ def enrich_static_meta_from_input_plan(
     return replace(
         static_meta,
         workload=dict(planned.workload),
+        input_scale_type=str(planned.workload.get("input_scale_type") or static_meta.input_scale_type),
         input_scale_plan_sha256=str(planned.plan_sha256 or ""),
     )
 
@@ -2154,7 +2214,7 @@ def build_image(task_info: TaskInfo, project_dir: str) -> ImageInfo:
             "--secret",
             "id=hf_token,env=HF_TOKEN",
         ])
-    if task_info.task_family in {"nlp", "diffusion"}:
+    if task_info.task_family in {"nlp", "diffusion", "multimodal"}:
         torch_index_url = _select_nlp_torch_index_url()
         torch_spec = _select_nlp_torch_spec(torch_index_url)
         family_build_args.extend([
@@ -2939,9 +2999,9 @@ def plan_input_scales(
     input_scales: Optional[str] = None,
     workload_spec_path: Optional[str] = None,
 ) -> PlannedInputScales:
-    if workload_spec_path and task_info.task_family != "audio":
+    if workload_spec_path and task_info.task_family not in {"audio", "multimodal", "diffusion"}:
         raise ValueError(
-            "--workload-spec is currently implemented only for task_family='audio'"
+            "--workload-spec is implemented for audio, multimodal and diffusion tasks"
         )
     plan_file = _scale_plan_file_path(output_dir)
     _clear_scale_plan_file(plan_file)
@@ -3029,7 +3089,7 @@ def plan_input_scales(
             workload_spec_path=workload_spec_path,
         )
 
-    if task_info.task_family == "diffusion":
+    if task_info.task_family in {"diffusion", "multimodal"}:
         from acprof.workloads import get_generator
 
         workload_gen = get_generator(
@@ -3037,15 +3097,16 @@ def plan_input_scales(
             task_info.model_id,
             task_info.pipeline_tag,
             batch_size,
+            workload_spec_path=workload_spec_path,
         )
         default_scales = workload_gen.default_input_scales()
         if not default_scales:
             raise RuntimeError(
-                "diffusion workload did not provide default output resolutions"
+                f"{task_info.task_family} workload did not provide default scales"
             )
         scales = [float(scale) for scale in default_scales]
         print(
-            "[scale] Using diffusion output resolutions: "
+            f"[scale] Using {task_info.task_family} workload scales: "
             f"{serialize_input_scales(scales)}"
         )
         return _materialize_scale_plan(
@@ -3054,6 +3115,7 @@ def plan_input_scales(
             batch_size=batch_size,
             output_dir=output_dir,
             source="workload_default",
+            workload_spec_path=workload_spec_path,
         )
 
     max_scale = _default_family_max_scale(task_info, batch_size)
