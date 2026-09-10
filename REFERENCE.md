@@ -279,8 +279,8 @@ CPU 模型除共同的二次 log input-scale 项外，还使用二次 log CPU �
 | `packet_protocol_overhead_bytes_per_request` | `packet_total_wire_bytes_per_request - packet_tcp_payload_bytes_per_request`，表示捕获到的 L2/L3/L4 header、ACK/握手/关闭等开销；不拆分 TCP payload 内的 HTTP header 与 JSON body。 |
 | `packet_protocol_overhead_ratio` | 本行所有请求的 protocol overhead bytes 总和 / total wire bytes 总和；分母无效时为 `nan`。 |
 | `task_param` | 本行 payload 真正发送给 handler 的二级参数，使用稳定排序的 JSON 字符串；通常来自 `params`，时序任务同时记录顶层 `prediction_length`，不再记录未执行的任务族默认值。 |
-| `output_length_avg` | 同一 workload window 内响应文本字符数的平均值；不适用时为 `nan`。 |
-| `output_token_count_avg` | 同一 workload window 内响应文本 tokenizer token 数的平均值；用于解释 ASR 解码器工作量，不适用时为 `nan`。 |
+| `output_length_avg` | 同一 workload window 内每次响应文本字符数的平均值；ASR 为转录文本长度，图像描述为该请求所有 caption 的字符数之和（Unicode 字符，不是 UTF-8 字节）；不适用时为 `nan`。 |
+| `output_token_count_avg` | 同一 workload window 内每次响应文本 tokenizer token 数的平均值；ASR/图像描述按输出文本重新分词，`add_special_tokens=False`。图像描述先逐条分词再求和，不拼接 caption，也不等于实际生成 token ID 数或解码步数。tokenizer 不可用或统计失败时响应为 `null`；窗口内全部不可得时 CSV 为 `nan`，有效空文本为 `0`。 |
 | `repeat_idx` | 当前 warmup 或 repeat phase 内的 0-based iteration index。 |
 | `warmup` | `1` 表示 warmup 行，`0` 表示正式测量行。`plot.py` 默认排除 warmup 行。 |
 | `repeat_in_window` | 本行内部连续发送的 request 数量。`latency_app_s` 和 `latency_s` 都是该 window 内 request 的平均值。 |
@@ -394,7 +394,7 @@ Torch eager 记录模型逻辑计算量，NCU 记录 GPU 实际执行量；两�
 | `container_attributed_energy_eff_j` | 不增加采集轮次的派生值。CPU-only 行等于 estimated `vcpu_energy_eff_j`；GPU 行等于 `vcpu_energy_eff_j + gpu_energy_eff_j`。任一必需分量缺失或为负时为 `nan`。它只覆盖已采集并归因的 vCPU/GPU 分量，不代表 wall-plug system energy。 |
 | `container_attributed_samples_per_j` | `batch_size / container_attributed_energy_eff_j`，单位 samples/J；能量不为正或缺失时为 `nan`。 |
 | `container_attributed_edp_app_js` | `container_attributed_energy_eff_j * latency_app_s`，即 application-latency energy-delay product，单位 J·s/request。 |
-| `output_tokens_per_s_app` | `output_token_count_avg / latency_app_s`。只在 handler 能可靠返回 output token count 时有值，当前主要用于 ASR。 |
+| `output_tokens_per_s_app` | `output_token_count_avg / latency_app_s`。只在 handler 能可靠返回正数 output token count 时有值，适用于 ASR 和图像描述；分母包含完整请求的图像/音频预处理、推理、后处理和传输，不是纯解码速度。 |
 | `container_attributed_j_per_output_token` | `container_attributed_energy_eff_j / output_token_count_avg`；没有可靠 output token count 时为 `nan`。 |
 | `container_attributed_j_per_input_unit` | `container_attributed_energy_eff_j / input_units_per_request`；沿用上述任务族 input unit 语义，不增加能耗采集窗口。 |
 
@@ -608,9 +608,17 @@ Nsys 还需生成和解析 timeline；repeat 参数会进一步增加工作量�
 ### 任务尚未适配的预检退出
 
 - `run.py` 与 `probe.py` 在任务识别及显式覆盖后，检查已知采集缺口、未登记的任务标签和任务族不匹配；失败时显示 `[task-support][ERROR]` 及解决办法，退出码为 `2`。TUI 显示“任务不支持”，详细原因保留在日志中。
-- 当前 `image-to-text` 尚未完成生成输出与生成长度指标适配，即使某个 Transformers 版本可以加载模型，也不能据此认定采集语义已经完整支持。预检不是对全部模型架构或依赖版本的兼容保证。
+- `image-to-text` 已支持 CV 单图请求及图像描述输出，要求 `--batch-size 1`；多图 batch 会在预检退出。`image-text-to-text` 多模态对话仍未登记。预检不是对全部模型架构或依赖版本的兼容保证。
 - 预检在模型镜像准备、输入规划和测量前执行，因此不新增测量 CSV、OOM/超时占位行或探测请求记录；已有测量结果保留。不要将此类退出解释为资源不足或一次实际推理失败。
 - 支持范围与适配步骤见 [README 的任务支持诊断](README.md#task-supporterror--tui-显示任务不支持)。Hub 连接、鉴权或缺少元数据导致的识别失败继续使用独立诊断。
+
+### 图像描述输出与兼容范围
+
+- CV 镜像固定 Transformers 4.57.6 并调用官方 `image-to-text` pipeline。升级前构建的镜像需重新构建；新的输出协议和依赖不会自动写入已存在的 Docker 镜像。
+- `/predict` 返回 `task="image-to-text"`、`output_type="caption"`、`captions: string[]`、`n_results`、`output_length` 和可空的 `output_token_count`。一次请求输入一张图；若生成多条候选，`n_results` 为候选数，字符/token 指标为该请求所有候选之和。空字符串是有效输出，缺少 `generated_text`、非字符串内容或没有候选则报请求错误，不计为成功检测结果。
+- 输入 `params` 直接传给官方 pipeline，缺省时使用该 pipeline 与固定模型 revision 的默认生成配置。响应文本解析与重新分词属于原请求的后处理，计入 application/packet 延迟；不新增推理轮次。输出文本会增加相应响应字节，不能与旧版误标为 detection 的响应直接比较。
+- `input_scale` 仍是传入合成 RGB 图片相对 224 像素基准的缩放倍率。模型内部可能缩放到固定分辨率；输出 token 数也不能代表视觉编码器 FLOP。此实现覆盖官方旧 pipeline 可加载的图像描述模型，不扩展到多模态对话或所有模型架构。
+- 使用现有 CSV 列和任务相关的 `static_meta.json.output_format`，保持 static schema v6；窗口聚合沿用现有逻辑，只对有限的输出计数求平均，全部不可得时为 `nan`。旧 CSV 缺少输出字段时沿用 `nan`，旧元数据按原样读取，不回填历史结果。正式性能分析仍筛选 `status=ok` 且 `warmup=0`。
 
 ### 启动 OOM 与剪枝占位
 

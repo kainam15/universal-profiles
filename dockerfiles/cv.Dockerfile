@@ -7,10 +7,16 @@ FROM ${BASE_IMAGE}
 RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple \
     --trusted-host pypi.tuna.tsinghua.edu.cn \
     'torch>=2.2' \
-    'transformers>=4.40' \
+    'transformers==4.57.6' \
     torchvision \
     Pillow \
     accelerate
+
+# Triton compiles its GPU launcher on first use; the slim base has no compiler.
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
 # Download model weights (baked into image layer)
 ARG MODEL_ID

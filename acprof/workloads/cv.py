@@ -18,6 +18,8 @@ class CVWorkloadGenerator(WorkloadGenerator):
 
     def __init__(self, model_id: str, task_type: str, batch_size: int):
         super().__init__(model_id, task_type, batch_size)
+        if task_type == "image-to-text" and batch_size != 1:
+            raise ValueError("image-to-text uses one image per request; requires batch_size=1")
         self._rng = random.Random(BASE_SEED)
         self._base_res = BASE_RESOLUTION
 

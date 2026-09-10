@@ -6,6 +6,8 @@ import base64
 import io
 from typing import Any, Dict, Optional
 
+import numpy as np
+
 from acprof.container.handlers import (
     BaseHandler,
     HandlerRegistry,
@@ -31,15 +33,23 @@ class CVHandler(BaseHandler):
         device_map = device if device == "cpu" else "auto"
         torch_dtype = torch.float16 if device != "cpu" else torch.float32
 
-        pipe = hf_pipeline(
-            task=task_type,
-            model=model_source,
-            **model_revision_kwargs(model_source, model_revision),
-            **transformers_pipeline_load_kwargs(load_options),
-            device_map=device_map,
-            torch_dtype=torch_dtype,
-            trust_remote_code=True,
-        )
+        try:
+            pipe = hf_pipeline(
+                task=task_type,
+                model=model_source,
+                **model_revision_kwargs(model_source, model_revision),
+                **transformers_pipeline_load_kwargs(load_options),
+                device_map=device_map,
+                torch_dtype=torch_dtype,
+                trust_remote_code=True,
+            )
+        except KeyError as exc:
+            if task_type == "image-to-text" and "Unknown task image-to-text" in str(exc):
+                raise RuntimeError(
+                    "image-to-text requires the CV image with transformers==4.57.6; "
+                    "rebuild it without --skip-build / 取消“复用现有镜像”后重新构建"
+                ) from exc
+            raise
         return {
             "pipeline": pipe,
             "task_type": task_type,
@@ -64,10 +74,57 @@ class CVHandler(BaseHandler):
     def predict(self, model_ctx: Dict[str, Any], processed_input: Any) -> Any:
         pipe = model_ctx["pipeline"]
         image = processed_input["image"]
+        if model_ctx["task_type"] == "image-to-text":
+            params = processed_input.get("params", {})
+            if not isinstance(params, dict):
+                raise ValueError("params must be an object")
+            return pipe(image, **params)
         return pipe(image)
+
+    @staticmethod
+    def _caption_token_count(pipe: Any, captions: list[str]) -> Optional[int]:
+        """Count decoded text tokens, not generation steps or special tokens."""
+        tokenizer = getattr(pipe, "tokenizer", None)
+        if tokenizer is None:
+            return None
+        total = 0
+        try:
+            for text in captions:
+                if callable(getattr(tokenizer, "encode", None)):
+                    token_ids = tokenizer.encode(text, add_special_tokens=False)
+                elif callable(tokenizer):
+                    token_ids = tokenizer(text, add_special_tokens=False).get("input_ids")
+                else:
+                    return None
+                if token_ids is None:
+                    return None
+                total += int(np.asarray(token_ids).size)
+        except (AttributeError, TypeError, ValueError, RuntimeError):
+            return None
+        return total
 
     def postprocess(self, model_ctx: Dict[str, Any], raw_output: Any) -> Dict[str, Any]:
         task_type = model_ctx["task_type"]
+
+        if task_type == "image-to-text":
+            records = [raw_output] if isinstance(raw_output, dict) else raw_output
+            if not isinstance(records, list) or not records or any(
+                not isinstance(record, dict)
+                or not isinstance(record.get("generated_text"), str)
+                for record in records
+            ):
+                raise ValueError("invalid caption output: expected generated_text strings")
+            captions = [record["generated_text"] for record in records]
+            return {
+                "task": task_type,
+                "output_type": "caption",
+                "captions": captions,
+                "n_results": len(captions),
+                "output_length": sum(len(text) for text in captions),
+                "output_token_count": self._caption_token_count(
+                    model_ctx.get("pipeline"), captions
+                ),
+            }
 
         if isinstance(raw_output, list):
             n_results = len(raw_output)

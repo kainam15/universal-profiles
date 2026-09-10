@@ -1207,7 +1207,7 @@ Examples:
         override_family=args.task_family,
         override_backend=args.backend,
     )
-    require_task_support(task_info)
+    require_task_support(task_info, batch_size=args.batch_size)
 
     print(f"\n  Model:    {task_info.model_id}")
     print(f"  Task:     {task_info.pipeline_tag} (family={task_info.task_family})")

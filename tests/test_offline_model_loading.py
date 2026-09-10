@@ -30,6 +30,7 @@ class OfflineModelLoadingTests(unittest.TestCase):
         handlers = [
             (NLPHandler(), "fill-mask", "transformers_pipeline"),
             (CVHandler(), "image-classification", "transformers_pipeline"),
+            (CVHandler(), "image-to-text", "transformers_pipeline"),
             (AudioHandler(), "audio-classification", "transformers_pipeline"),
             (
                 TimeseriesTransformersHandler(),

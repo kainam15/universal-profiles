@@ -131,7 +131,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         override_backend=args.backend,
     )
     try:
-        require_task_support(task_info)
+        require_task_support(task_info, batch_size=args.batch_size)
     except TaskSupportError as exc:
         print(str(exc), file=sys.stderr)
         return 2

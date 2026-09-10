@@ -27,12 +27,24 @@ AC-Prof 是一个面向 Hugging Face 推理服务的零侵入运行时分析工�
 | 任务族 | `input_scale` 的含义 | 示例 |
 | --- | --- | --- |
 | NLP | token 序列长度 | BERT、文本生成、问答 |
-| CV | 基础图像尺寸的缩放倍率 | 图像分类、目标检测 |
+| CV | 基础图像尺寸的缩放倍率 | 图像分类、目标检测、BLIP 图像描述 |
 | Audio | 音频时长（秒） | Whisper ASR、音频分类 |
 | Time series | context length | Chronos 时间序列预测 |
 | Diffusion | 方形输出图像边长（像素） | Stable Diffusion 文生图 |
 
-大多数 Hugging Face 模型会自动识别任务族和后端；识别失败时再使用 `--task`、`--task-family` 或 `--backend` 覆盖。能识别任务类型不代表该类型已经完成采集适配：当前 `image-to-text`（例如 BLIP 图像描述生成）尚未完整适配，`run.py` / `probe.py` 会在镜像准备前停止并给出原因和解决办法。未登记的任务类型及与任务不匹配的任务族也会被提前拦截；通过预检仍需模型架构和容器依赖兼容。
+大多数 Hugging Face 模型会自动识别任务族和后端；识别失败时再使用 `--task`、`--task-family` 或 `--backend` 覆盖。`image-to-text` 使用 CV 镜像中的 Transformers 4.57.6 图像描述 pipeline，每个请求一张图，要求 `--batch-size 1`。未登记的任务类型（如多模态对话 `image-text-to-text`）、与任务不匹配的任务族及图像描述的多图 batch 会被提前拦截；通过预检仍需模型架构和容器依赖兼容。
+
+图像描述响应包含 `output_type="caption"`、`captions` 文本列表、`n_results`、`output_length` 和 `output_token_count`；后两项进入现有 CSV 的窗口平均值与输出 token 能效指标。token 数按每条生成文本重新分词统计，排除额外特殊 token，不等于解码器实际生成步数。内置输入是固定种子的合成图片，`input_scale=1` 表示传入 224×224 图片；模型的 image processor 可能再次缩放到固定尺寸，不能把传入分辨率直接当作视觉编码器的计算规模。生成采用固定模型 revision 与 pipeline 的默认配置；HTTP `params` 可传入 `max_new_tokens`、`generate_kwargs` 等官方 pipeline 参数，原样写入输入计划和 CSV `task_param`。
+
+CV 镜像同时安装 `build-essential`，供 PyTorch/Triton 在首次 GPU 推理时编译所需模块。首次验证 BLIP 可运行以下命令。升级前构建的 CV 镜像需要重建，首次不要添加 `--skip-build`；后续可在 TUI 中复用新镜像。
+
+```bash
+.venv/bin/python run.py --model Salesforce/blip-image-captioning-base \
+  --cpus 2 --mems 8 --gpus off,on --input-scales 1 --batch-size 1 \
+  --warmup 0 --repeat 1 --repeat-in-window 1 \
+  --compute-profile-tool none --execution-profile-tool none \
+  --notify none --output-dir results/smoke-blip
+```
 
 `text-to-image` 模型会自动选择 `diffusion` 任务族和 `diffusers` 后端。内置 workload 固定提示词、随机种子、guidance scale 和 20 个去噪步，只改变输出分辨率；服务端仅返回生成图像的数量与尺寸元数据，避免图片响应体影响网络和应用延迟测量。
 
@@ -582,7 +594,7 @@ cat /proc/sys/kernel/perf_event_paranoid
 - **必须采集此类型：** 等待支持该类型的项目版本，或按下方扩展说明补齐输入、推理、输出与指标口径，再验证后采集。
 - **确实是识别错误：** 核对模型页的 `pipeline_tag`，通过 `--task`、`--task-family`、`--backend`（TUI 高级配置中的“识别覆盖”）纠正。仅在模型实际支持目标任务时使用；把图像描述模型改填成图像分类不会获得分类能力。
 
-`image-to-text` 的已知缺口是生成结果及生成长度指标未适配，现有 CV 处理器仍按分类/检测解释输出。此外，[官方 BLIP 模型页](https://huggingface.co/Salesforce/blip-image-captioning-base)说明 Transformers v5 已移除旧的 `image-to-text` pipeline。开发适配时可直接加载模型，或固定兼容的 Transformers 4.x 并重建镜像（取消 `--skip-build` / “复用现有镜像”）；**仅降级依赖仍不能补齐采集适配**。增加内存、延长超时或重复运行矩阵也不能解决任务不支持。
+`image-to-text` 已有图像描述输出适配，要求 `--batch-size 1`。如果启动时报 `Unknown task image-to-text`，说明复用了不兼容的容器依赖：[Transformers v5 迁移说明](https://github.com/huggingface/transformers/blob/main/MIGRATION_GUIDE_V5.md#vision-pipelines-that-should-just-be-vlms)确认旧 pipeline 已移除。当前 CV Dockerfile 固定 `transformers==4.57.6`，请取消 `--skip-build` / “复用现有镜像”并重建；只修改主机 `.venv` 不会改变镜像内依赖。该版本的[官方实现](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/pipelines/image_to_text.py)采用 Apache-2.0 许可，项目直接调用其图像预处理和生成流程，未另引入推理框架。此兼容路径不包含多模态对话任务，也不保证所有图像描述模型架构都能运行。
 
 Hub 已明确给出的未知任务标签会保留并提示，不再被通用架构后缀猜成另一类任务。Hub 无法访问、缺少元数据等识别失败仍保留独立诊断，不统一归为“不支持”。
 

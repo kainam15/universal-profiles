@@ -1630,6 +1630,14 @@ def _model_io_formats(task_info: TaskInfo) -> Tuple[Dict[str, Any], Dict[str, An
             "n_results": {"type": "integer"},
         }
         output_required.extend(["output_type", "n_results"])
+        if task_info.pipeline_tag == "image-to-text":
+            output_properties["output_type"]["enum"] = ["caption"]
+            output_properties.update({
+                "captions": {"type": "array", "items": {"type": "string"}},
+                "output_length": {"type": "integer"},
+                "output_token_count": {"type": ["integer", "null"]},
+            })
+            output_required.extend(["captions", "output_length", "output_token_count"])
     elif task_info.task_family == "audio":
         input_properties = {
             "audio_base64": {

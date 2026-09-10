@@ -20,7 +20,7 @@ from acprof.host import detect
 from acprof.host.task_support import TaskSupportError, require_task_support
 
 
-def task_info(tag="image-to-text", family="cv"):
+def task_info(tag="image-text-to-text", family="unknown"):
     return detect.TaskInfo(
         model_id="example/caption-model",
         pipeline_tag=tag,
@@ -35,7 +35,11 @@ def task_info(tag="image-to-text", family="cv"):
 class TaskSupportTests(unittest.TestCase):
     def test_run_and_probe_reject_unsupported_tasks_before_build_or_results(self):
         for module in (run, probe):
-            for tag, family in (("image-to-text", "cv"), ("video-classification", "unknown")):
+            for tag, family, batch_size in (
+                ("image-to-text", "nlp", 1),
+                ("video-classification", "unknown", 1),
+                ("image-to-text", "cv", 2),
+            ):
                 with self.subTest(entrypoint=module.__name__, task=tag):
                     with tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
                         root = Path(tmp)
@@ -54,7 +58,7 @@ class TaskSupportTests(unittest.TestCase):
                         build = stack.enter_context(patch(build_target, side_effect=AssertionError("unsupported task reached image preparation")))
                         stderr = stack.enter_context(redirect_stderr(io.StringIO()))
                         stack.enter_context(redirect_stdout(io.StringIO()))
-                        argv = ["--model", "example/caption-model", "--output-dir", tmp, "--skip-build"]
+                        argv = ["--model", "example/caption-model", "--output-dir", tmp, "--skip-build", "--batch-size", str(batch_size)]
                         if module is run:
                             stack.enter_context(patch.object(sys, "argv", ["run.py", *argv, "--notify", "none"]))
                             with self.assertRaises(SystemExit) as caught:
@@ -73,10 +77,10 @@ class TaskSupportTests(unittest.TestCase):
                         self.assertIn("README.md", output)
                         self.assertNotIn("Traceback", output)
                         self.assertNotIn("startup_oom", output)
-                        if tag == "image-to-text":
-                            self.assertIn("Transformers", output)
-                            self.assertIn("仅降级", output)
-                            self.assertIn("--skip-build", output)
+                        if batch_size != 1:
+                            self.assertIn("--batch-size 1", output)
+                        elif tag == "image-to-text":
+                            self.assertIn("--task-family", output)
                         self.assertEqual(csv.read_text(encoding="utf-8"), "existing measurement\n")
                         self.assertEqual(sorted(str(p.relative_to(root)) for p in root.rglob("*")), ["example--caption-model", "example--caption-model/result_all.csv"])
 
@@ -112,6 +116,7 @@ class TaskSupportTests(unittest.TestCase):
         for task, family in (
             ("fill-mask", "nlp"), ("text-generation", "nlp"),
             ("image-classification", "cv"), ("object-detection", "cv"),
+            ("image-to-text", "cv"),
             ("automatic-speech-recognition", "audio"),
             ("time-series-forecasting", "timeseries"), ("text-to-image", "diffusion"),
         ):
@@ -122,23 +127,24 @@ class TaskSupportTests(unittest.TestCase):
         self.assertIn("任务族 nlp 与之不匹配", str(caught.exception))
         self.assertIn("--task-family", str(caught.exception))
 
-    def test_manual_image_task_cannot_bypass_known_gap(self):
+    def test_manual_caption_task_is_supported_but_requires_single_image_batch(self):
         with patch.object(detect, "_detect_from_hub", return_value=task_info("fill-mask", "nlp")):
             info = detect.detect_task("example/model", override_tag="image-to-text")
-        with self.assertRaises(TaskSupportError):
-            require_task_support(info)
+        require_task_support(info)
+        with self.assertRaisesRegex(TaskSupportError, "--batch-size 1"):
+            require_task_support(info, batch_size=2)
 
     def test_progress_preserves_unsupported_task_and_points_to_remedies(self):
         tracker = RunProgressTracker()
-        state = tracker.feed("[task-support][ERROR] Unsupported collection task: image-to-text")
+        state = tracker.feed("[task-support][ERROR] Unsupported collection task: image-text-to-text")
         self.assertEqual(state.stage, "任务不支持")
-        self.assertIn("image-to-text", state.detail)
+        self.assertIn("image-text-to-text", state.detail)
         self.assertIn("解决办法见日志", state.detail)
         self.assertFalse(state.measurement_active)
         self.assertEqual(state.errors, 1)
-        state = tracker.feed("  原因：当前项目尚未完成图像描述生成适配。")
+        state = tracker.feed("  原因：当前项目尚未登记该任务类型的采集适配。")
         self.assertEqual(state.stage, "任务不支持")
-        self.assertIn("image-to-text", translate(state.detail, "en"))
+        self.assertIn("image-text-to-text", translate(state.detail, "en"))
         self.assertIn("log", translate(state.detail, "en"))
 
 
@@ -183,13 +189,13 @@ class TaskSupportTuiTests(unittest.IsolatedAsyncioTestCase):
                                 self.assertGreater(stage.region.height, 0)
                                 self.assertLess(stage.region.bottom, size[1])
                                 self.assertTrue(stage.is_on_screen)
-                                self.assertIn("image-to-text", app._latest_snapshot.detail)
+                                self.assertIn("image-text-to-text", app._latest_snapshot.detail)
                                 self.assertIn("解决办法", app.query_one("#run-log", SelectableLog).text)
                                 self.assertIn(
                                     "处理办法" if language == "zh" else "Remedies:",
                                     app.query_one("#run-log", SelectableLog).text.splitlines()[-1],
                                 )
-                                self.assertIn("image-to-text", str(notify.call_args.args[0]))
+                                self.assertIn("image-text-to-text", str(notify.call_args.args[0]))
                                 self.assertFalse(app.query_one("#start-run", Button).disabled)
                                 self.assertFalse(app.query_one("#probe-largest", Button).disabled)
                                 self.assertEqual(app.query_one("#matrix-table", DataTable).row_count, 0)
