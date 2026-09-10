@@ -54,7 +54,7 @@
 | `parameter_bytes` | 根据 `parameter_dtype_counts` 的各 dtype 元素数量与字节宽度精确求和得到的逻辑 tensor payload 大小，不含序列化 header；没有 dtype 统计或存在未知 dtype 时为 `null`。 |
 | `precision_dtype` | SafeTensors 参数中数量占主导的权重精度，例如 `FP32`、`FP16`、`BF16`、`INT8`；无法确认时为 `null`。 |
 | `parameter_dtype_counts` | 按 dtype 统计的参数/张量元素数量，保留混合精度与少量整型 buffer 信息。 |
-| `inference_precision_by_device` | 当前 handler 明确请求的 CPU/GPU 推理精度。Transformers NLP/CV/audio handler 当前为 `{"cpu":"FP32","gpu":"FP16"}`。 |
+| `inference_precision_by_device` | 当前 handler 明确请求的 CPU/GPU 推理精度。通常 Transformers NLP/CV/audio 为 CPU FP32、GPU FP16；Encodec/DAC 两者均 FP32。TorchScript 保留导出权重精度、输入 FP32；skops 保留 estimator 内部精度、输入 FP32。Silero 和 skops 仅声明 CPU。 |
 | `static_flops` | Torch eager profiler 得到的逻辑 shape FLOPs，按 `input_scale` 保存 `flops_per_request`；未采集成功时为 `null`。 |
 | `static_macs` | 静态 MACs。当前不做不可靠的 FLOPs/2 推断，因此未单独采集时为 `null`。 |
 | `input_format` | 实际 `/predict` HTTP JSON 输入协议及其 JSON Schema。 |
@@ -64,7 +64,7 @@
 | `quantization_config` | Hub model config 中的完整量化配置；没有时为空 object。 |
 | `model_license` | Hugging Face model card 许可证，例如 `apache-2.0`、`mit`；无法确认时为 `null`。 |
 | `model_metadata_source` | 参数量、参数 payload、精度、量化和许可证的元数据来源，当前在线 Hub 检测成功时为 `huggingface_hub`。 |
-| `task_family` | 任务族：`nlp`、`cv`、`audio`、`timeseries`、`diffusion`、`multimodal`。 |
+| `task_family` | 任务族：`nlp`、`cv`、`audio`、`timeseries`、`diffusion`、`multimodal`、`structured`。 |
 | `pipeline_tag` | Hugging Face pipeline tag，例如 `fill-mask`、`image-classification`。 |
 | `runtime_backend` | 容器内使用的 runtime backend，例如 `transformers_pipeline`、`chronos`、`diffusers`。 |
 | `image_tag` | 本次使用的 Docker image tag。 |
@@ -726,7 +726,7 @@ TUI 保存实际使用的绝对路径，相对输入以项目根目录为基准�
 | --- | --- | --- |
 | `--model` | required | Hugging Face model ID，例如 `google-bert/bert-base-uncased`。 |
 | `--task` | auto | 覆盖 `pipeline_tag`，例如 `fill-mask`、`text-generation`。 |
-| `--task-family` | auto | 覆盖任务族：`nlp`、`cv`、`audio`、`timeseries`、`diffusion`。 |
+| `--task-family` | auto | 覆盖任务族：`nlp`、`cv`、`audio`、`timeseries`、`diffusion`、`multimodal`、`structured`。 |
 | `--backend` | auto | 覆盖 runtime backend，例如 `transformers_pipeline`、`chronos`、`diffusers`。 |
 | `--cpus` | `1,2,4,8` | CPU core 限制列表。 |
 | `--mems` | `2,4,8,16` | Memory cap GB 列表。 |
@@ -753,7 +753,7 @@ TUI 保存实际使用的绝对路径，相对输入以项目根目录为基准�
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `--input-scales` | auto | 手动覆盖 input scale 列表；未提供时通常自动规划 6 档，自定义音频清单按声明档数。 |
-| `--workload-spec` | task default | cv、audio、multimodal 或 diffusion 的 workload 清单 JSON。ASR 默认使用仓库内置的 LibriSpeech 英文短音频清单；其他 audio 任务必须显式提供清单；视觉／多模态任务有内置输入，也可自定义本地素材和参数。 |
+| `--workload-spec` | task default | cv、audio、multimodal、diffusion 或 structured 的 workload 清单 JSON。读取音频的任务默认复用内置 LibriSpeech 语音；文本到音频使用确定性文本。结构化清单声明输入宽度、尺度与种子。各任务须使用对应的清单格式。 |
 
 #### 计算分析器
 
@@ -804,20 +804,26 @@ TUI 保存实际使用的绝对路径，相对输入以项目根目录为基准�
 
 | task family | `input_scale_type` | 含义 |
 | --- | --- | --- |
-| `nlp` | `seq_length` | 输入 token length。 |
+| `nlp` 文本任务 | `seq_length` | 输入 token length；问答取 context，检索／排序取候选文本 token 数的最大值，固定 query。 |
+| `nlp` 表格问答 | `table_rows` | 每张表的行数；query 和列结构固定。 |
 | `cv` | `resolution_scale` | 图像／视频帧基础边长 224 像素的缩放倍率；视频帧数固定。 |
-| `audio` | `duration_s` | 输入音频时长，单位秒。 |
+| `audio` 读取音频 | `duration_s` | 输入音频时长，单位秒。 |
+| `audio` 文本到语音／音频 | `seq_length` | tokenizer 实测输入 token 数；不是生成音频的秒数。 |
 | `timeseries` | `context_length` | 时间序列 context length。 |
 | `diffusion` | `resolution_px` 或 `denoising_steps` | 图像／视频生成是方形输出边长（像素），帧数固定；无条件图像与 Shap-E 3D 为去噪步数，分辨率／网格解码设置固定。以输入计划为准。 |
 | `multimodal` 图像理解／问答／文档检索 | `resolution_px` | 输入图像边长，单位像素；模型 processor 可能重新缩放、切块或固定尺寸。 |
 | `multimodal` 音频理解 | `duration_s` | 输入 WAV 的实际样本数 / 采样率，单位秒。 |
 | `multimodal` 视频理解 | `frame_count` | 输入 PNG 帧数；FPS 和帧分辨率固定并写入计划。 |
 | `multimodal` Any-to-Any | 由 `scale_modality` 决定 | 单一输入模态随尺度变化，其余固定；默认改变音频秒数。 |
+| `structured` 表格 | `table_rows` | 每个 batch 项的表格行数，特征宽度固定。 |
+| `structured` 策略 | `observation_count` | 每个 batch 项的独立向量观测数，观测宽度固定；不是交互时间步。 |
+| `structured` 图 | `node_count` | 每张图的节点数，特征宽度固定，默认双向环有 2 × 节点数条边。 |
 
 未提供 `--input-scales` 时，当前内置 workload/legacy 配置通常会为一次 profiling run 规划 6 档 input scale；自定义音频清单则使用清单中声明的档数：
 
-- `nlp` 会启动容器读取 tokenizer / handler 的可用最大输入长度，最后一档尽量贴近有效上限。
-- `audio` 从 workload 清单读取默认尺度；内置英文 ASR 清单固定为 `1,2,5,10,20,30` 秒。`cv`、`timeseries` 仍根据各自 generator 的最大尺度或配置默认值生成。
+- `nlp` 文本任务会启动容器读取 tokenizer / handler 的可用最大输入长度，最后一档尽量贴近有效上限。Decoder-only 生成额外预留 `max_new_tokens`；encoder-decoder 不从 encoder 输入预算扣除 decoder 输出长度。表格问答按 `1,2,4,8,16,32` 行规划，不进入 token 二分搜索；超出模型容量时明确失败。
+- 读取音频的任务从 workload 清单读取默认尺度；内置英文语音清单为 `1,2,5,10,20,30` 秒。文本到语音／音频进入同一 token 规划器；tokenizer 没有有限上限时采用显式 512-token 采集上限，该值不是模型最大容量，Bark 使用自身 semantic 输入限制。`cv` 使用 generator 最大尺度；`timeseries` 读取已加载 Chronos 的 context limit，并与 workload 上限取较小值，拒绝静默截断。
+- `structured` 表格／策略默认 `1,8,32,128` 行／观测，图默认 `8,32,128,512` 节点；可用清单或 CLI 覆盖，当前生成器限制非图不超过 4096、图不超过 2048。该限制是 workload 的输入大小限制，不是模型容量。
 - `diffusion` 图像／视频任务默认使用 `128,192,256,320,384,512` 像素输出边长；提示词、随机种子、guidance scale 和去噪步数在各尺度间保持不变。`unconditional-image-generation`、`text-to-3d`、`image-to-3d` 改为扫描 `1,2,4,8,16,20` 个去噪步；Shap-E 使用真实 mesh 解码，渲染图片尺寸不作为网格计算规模。
 - `multimodal` 从任务 workload 读取默认尺度：图像边长 `224,336,448`；音频 `1,2,5,10` 秒；视频 `2,4,8` 帧。清单 `input_scales` 可覆盖默认值，CLI `--input-scales` 优先。`static_meta.input_scale_type` 在计划完成后取实际 workload 的单位，不能将所有多模态任务统一解释为 token 数。
 - 同一次 run 的所有资源配置共用同一组 scale。
@@ -827,6 +833,12 @@ TUI 保存实际使用的绝对路径，相对输入以项目根目录为基准�
 #### 真实音频 workload
 
 `automatic-speech-recognition` 默认使用 `assets/audio/librispeech-clean-test-en-30s/source.json`。该清单引用 LibriSpeech `clean/test` 中同一说话人、同一章节的三条连续语音，按固定顺序拼接后截取前 30 秒；素材是单声道 16 kHz PCM16 WAV，许可证为 CC BY 4.0。每一档输入都从同一个 30 秒基准音频取前缀，不做逐档归一化、补全或循环。
+
+音频分类、Encodec／DAC 音频重建和 Silero VAD 默认复用相同语音前缀。codec 按模型需要在预处理阶段重采样，输入规模仍按源音频时长记录。生成／重建响应的 `audio_num_samples`、`audio_sample_rate`、`audio_duration_s` 描述输出波形，不能写入文字 token 计数；VAD 的 `segments` 是秒为单位的连续阈值帧区间，阈值与分帧策略随响应记录，不是识别文本。Silero 每个请求重置状态，profiler 重复调用也不会延续上一请求的隐藏状态。
+
+新增任务沿用现有 CSV 字段、静态 schema v6 与输入计划 schema v2，旧文件无需迁移。`input_units_per_request = effective_input_scale × batch_size`：表格／策略是总行数／观测数，图是总节点数。结构化 `input_num_samples` 对表格／策略记总行数／观测数，对图记图数量，另外在计划记录总节点数与边数。NLP 检索／排序的单位仍为候选文本尺度乘 batch，不再乘候选数量；固定 query、候选数及重复编码成本属于该请求，比较实验时必须保持一致。零样本 NLI 的候选标签推理成本同样包含在请求中。
+
+结构化输入为固定种子的合成矩阵／环图，保存特征宽度、种子、结构、清单 SHA256 及实际 payload；各资源组合和 profiler 使用同一计划。模型缺少 SafeTensors 元数据时，参数量／权重字节数保持 `null`，不能以输入大小代替。skops 与 Silero 的 GPU 配置失败不会生成虚假的 GPU 指标；TorchScript 不支持加载时更换 attention implementation，eager FLOP 采集明确失败并保留工具状态，不能把缺失 FLOP 当作 0。
 
 音频请求采用 JSON 内的 Base64 WAV；handler 仍能读取历史 `audio_samples` 浮点数组。短音频模式会读取模型 feature extractor 的约束并拒绝超过 receptive field 的尺度。对于 Whisper，30 秒是音频 receptive field；当前 feature extractor 会把接受的短音频补齐为固定的 480,000 samples / 3,000 frames，`/scale_meta` 会显式记录这一点。`max_target_positions=448` 是解码器输出 token 上限，不是音频输入上限，因此框架不会把 latency 必须随 `duration_s` 单调增加作为正确性条件。
 

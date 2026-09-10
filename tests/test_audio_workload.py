@@ -291,7 +291,7 @@ class AudioWorkloadTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     generator.generate(value)
 
-    def test_rejects_batching_and_non_asr_without_a_spec(self):
+    def test_rejects_batching_and_unsupported_audio_tasks(self):
         with self.assertRaisesRegex(ValueError, "batch_size=1"):
             AudioWorkloadGenerator(
                 "openai/whisper-large-v3",
@@ -299,8 +299,8 @@ class AudioWorkloadTests(unittest.TestCase):
                 2,
                 workload_spec_path=str(self.spec_path),
             )
-        with self.assertRaisesRegex(ValueError, "explicit workload spec"):
-            AudioWorkloadGenerator("model", "audio-classification", 1)
+        with self.assertRaisesRegex(ValueError, "unsupported audio workload"):
+            AudioWorkloadGenerator("model", "unsupported-audio-task", 1)
 
     def test_rejects_pipeline_mismatch(self):
         with self.assertRaisesRegex(ValueError, "does not match"):

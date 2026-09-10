@@ -7,10 +7,13 @@ FROM ${BASE_IMAGE}
 RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple \
     --trusted-host pypi.tuna.tsinghua.edu.cn \
     'torch>=2.2' \
-    'transformers>=4.40' \
+    'transformers==4.57.6' \
     torchaudio \
     librosa \
     soundfile \
+    scipy \
+    sentencepiece \
+    protobuf \
     accelerate
 
 # Recent PyTorch/Triton releases JIT-compile a small CUDA launcher during

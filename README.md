@@ -26,12 +26,13 @@ AC-Prof 是一个面向 Hugging Face 推理服务的零侵入运行时分析工�
 
 | 任务族 | `input_scale` 的含义 | 示例 |
 | --- | --- | --- |
-| NLP | token 序列长度 | BERT、文本生成、问答 |
+| NLP | token 序列长度；表格问答为行数 | BERT、文本生成、问答、句子相似度、文本排序 |
 | CV | 基础图像／视频帧尺寸的缩放倍率 | 图像分类、目标检测、图像描述、关键点、视频分类 |
-| Audio | 音频时长（秒） | Whisper ASR、音频分类 |
+| Audio | 输入音频秒数；文本生成音频为输入 token 数 | ASR、分类、语音／音频生成、codec 重建、VAD |
 | Time series | context length | Chronos 时间序列预测 |
 | Diffusion | 图像／视频帧边长；无条件图像和 3D 为去噪步数 | 文生图、图像编辑、视频生成、Shap-E 网格生成 |
 | Multimodal | 依任务为输入图像边长、音频秒数或视频帧数 | 多模态问答、文档检索、文字＋音频输出 |
+| Structured | 表格行数、独立观测数或每图节点数 | 表格分类／回归、离线策略推理、图模型 |
 
 大多数 Hugging Face 模型会自动识别任务族和后端；识别失败时再使用 `--task`、`--task-family` 或 `--backend` 覆盖。没有任务标签的 Diffusers 模型可根据固定 revision 的 `model_index.json` 中已登记的原生 pipeline 类名识别。CV 每个请求使用一张图或一个视频，要求 `--batch-size 1`。未登记的任务类型、任务族／后端不匹配及不支持的 batch 会被提前拦截；通过预检仍需模型架构和容器依赖兼容。
 
@@ -48,6 +49,69 @@ CV 镜像同时安装 `build-essential`，供 PyTorch/Triton 在首次 GPU 推�
 ```
 
 `text-to-image` 模型会自动选择 `diffusion` 任务族和 `diffusers` 后端。内置 workload 固定提示词、随机种子、guidance scale 和 20 个去噪步，只改变输出分辨率；服务端仅返回生成图像的数量与尺寸元数据，避免图片响应体影响网络和应用延迟测量。
+
+### NLP、音频、表格和策略任务
+
+以下 24 个任务类别接入统一输入计划与采集流程。适配范围以表中模型接口／文件格式为准，同一个 Hub 标签可能包含多种不兼容的框架。新增适配需要重建对应模型镜像，首次使用不要加 `--skip-build`。
+
+| Hugging Face 任务 | 适配接口／格式 | 输入尺度 |
+| --- | --- | --- |
+| `text-classification` | Transformers 分类 pipeline | 文本 token 数 |
+| `token-classification` | Transformers token 分类 pipeline | 文本 token 数 |
+| `table-question-answering` | Transformers 表格问答 pipeline；列数组表格＋query | 表格行数，默认 1、2、4、8、16、32 |
+| `question-answering` | Transformers 问答 pipeline；question＋context | context token 数，问题固定 |
+| `zero-shot-classification` | Transformers NLI pipeline；固定候选标签和假设模板 | 输入文本 token 数 |
+| `translation` | Transformers 翻译 pipeline | 输入 token 数 |
+| `summarization` | Transformers 摘要 pipeline | 输入 token 数 |
+| `feature-extraction` | Transformers 特征提取 pipeline | 输入 token 数 |
+| `text-generation` | Transformers 生成 pipeline | 输入 token 数 |
+| `fill-mask` | Transformers 掩码填充 pipeline，自动使用 tokenizer 的 mask token | 输入 token 数 |
+| `sentence-similarity` | SentenceTransformer 编码并计算相似度；后端 `sentence_transformers` | 候选文本 token 数的最大值，query 和候选数量固定 |
+| `text-ranking` | CrossEncoder 成对评分；后端 `cross_encoder` | 候选文本 token 数的最大值，query 和候选数量固定 |
+| `text-to-speech` | Transformers TextToAudioPipeline 的自包含波形模型，如 VITS／Bark | 输入文本 token 数 |
+| `text-to-audio` | 同一官方 pipeline 的自包含文本条件模型，如 MusicGen | 输入文本 token 数 |
+| `automatic-speech-recognition` | Transformers ASR pipeline | 输入音频秒数 |
+| `audio-to-audio` | Transformers Encodec／DAC 音频编码后重建 | 输入音频秒数 |
+| `audio-classification` | Transformers 音频分类 pipeline | 输入音频秒数 |
+| `voice-activity-detection` | Silero `silero_vad.jit`；后端 `torchscript`，仅 CPU | 输入音频秒数 |
+| `tabular-classification` | skops 保存的 sklearn 分类器，或约定格式的 TorchScript | 每个 batch 项的表格行数 |
+| `tabular-regression` | skops 保存的 sklearn 回归器，或约定格式的 TorchScript | 每个 batch 项的表格行数 |
+| `time-series-forecasting` | Chronos／Chronos-Bolt | 历史时间步数 |
+| `reinforcement-learning` | TorchScript 向量观测策略 | 每个 batch 项的独立观测数 |
+| `robotics` | TorchScript 向量观测策略 | 每个 batch 项的独立观测数 |
+| `graph-ml` | TorchScript `forward(x, edge_index, batch)` | 每张图的节点数 |
+
+NLP 的输入计划保存真实 payload，句子相似度／排序每次重新编码 query 和文档，零样本分类完整运行候选标签对应的 NLI 推理。表格问答固定列结构并改变行数，超出模型容量时失败，不通过删行伪装成原尺度。音频任务要求 `--batch-size 1`；读取音频的任务默认复用有来源与 SHA256 的内置 LibriSpeech 前缀，文本到音频使用确定性文本。生成音频仅返回形状、采样率、样本数和时长摘要。需要额外声码器／说话人资产的 SpeechT5、FastSpeech2Conformer 暂未适配，会在加载时明确拒绝。
+
+例如运行一个表格问答尺度，或将 `--task` 换为表中任务并选择对应模型：
+
+```bash
+.venv/bin/python run.py --model google/tapas-base-finetuned-wtq \
+  --task table-question-answering --cpus 2 --mems 8 --gpus off \
+  --input-scales 4 --batch-size 1 --warmup 0 --repeat 1 --repeat-in-window 1 \
+  --compute-profile-tool none --execution-profile-tool none --notify none \
+  --output-dir results/smoke-table-qa
+```
+
+表格分类／回归、强化学习、机器人和图任务使用 `structured` 任务族。TorchScript 模型仓库需同时提供模型文件和以下 `acprof_model.json`；`task` 必须匹配，`feature_dim` 必须等于输入宽度。表格／策略的模型签名为 `forward(features)`／`forward(observations)`，输入为 FP32 `[batch_size × input_scale, feature_dim]`；图模型接收 FP32 节点特征、INT64 COO 边与 INT64 图编号，按不相连图合批。输出要求一个至少一维的 tensor／array。
+
+```json
+{"schema_version": 1, "task": "robotics", "format": "torchscript", "model_file": "model.pt", "feature_dim": 7}
+```
+
+`--workload-spec` 指定结构化输入宽度、尺度和种子，例如：
+
+```json
+{"schema_version": 1, "task": "robotics", "feature_dim": 7, "input_scales": [1, 8, 32, 128], "seed": 12345}
+```
+
+默认表格宽度 8、强化学习 4、机器人 7、图节点特征 16；应按模型更改。非图默认尺度 1、8、32、128，图为 8、32、128、512；固定特征宽度，图结构为双向环。skops 使用 `--backend skops --gpus off`，仓库内唯一 `.skops` 可自动发现，也可由模型清单指定；仅加载 sklearn 已知类型，模型版本须与镜像的 sklearn 版本兼容。
+
+策略任务测量独立向量观测的前向推理，不包含环境交互、训练、回报评估、传感器采集和机器人执行；图像／多模态策略需要另行适配输入，不能通过展平图像宣称等价兼容。结构化合成输入用于性能流程，不能据此报告模型准确率或策略效果。TorchScript 是已被上游标记 deprecated 的导出兼容接口，兼容性取决于导出版本及算子；不能在加载时更换注意力实现，`torch_profiler_eager` 因此会明确拒绝。其它 profiler 仍按各自适用条件隔离执行。可运行的五类导出示例见 [export_models.py](examples/structured/export_models.py)，对应真实四阶段检查见 [smoke.py](examples/structured/smoke.py)。
+
+实现复用 [Transformers 4.57.6 pipeline](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/pipelines/__init__.py)、[Sentence Transformers 5.1.2](https://github.com/huggingface/sentence-transformers/tree/v5.1.2)、[PyTorch 模型加载](https://github.com/pytorch/pytorch/blob/v2.5.1/torch/jit/_serialization.py) 和 [skops](https://github.com/skops-dev/skops)。Transformers／Sentence Transformers 为 Apache-2.0，PyTorch 为 BSD 风格许可，skops 为 MIT；模型权重另按其许可。NLP 镜像补齐 pandas 与编码器依赖，结构化镜像隔离安装 sklearn／skops，主机不安装推理框架。LeRobot 的运行时依赖与本项目 Python 3.10 镜像不同，旧 Graphormer 位于 Transformers 的 deprecated 目录，因此策略／图任务采用显式导出接口；没有引入模拟器或旧框架。素材生成、哈希与输入规划在正式测量窗口之外执行。
+
+运行接口验证可使用 [NLP 十二任务示例](examples/nlp/smoke.py)、[音频原生模型测试](tests/test_audio_runtime_optional.py) 和 [Chronos 小模型示例](examples/structured/chronos_smoke.py)。这些脚本需要对应容器的依赖，使用随机小模型／确定性导出样例验证输入和推理接口，不提供真实模型准确率或性能结论。文本到音频目前使用内置文本，不能传 WAV 清单作为 `--workload-spec`。
 
 ### 视觉任务
 

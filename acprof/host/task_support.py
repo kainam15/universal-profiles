@@ -28,6 +28,8 @@ def require_task_support(task_info: TaskInfo, *, batch_size: int = 1) -> None:
         )
     if reason is None and expected_family == "cv" and batch_size != 1:
         reason = "CV 采集每个请求使用一张图片或一个视频；请设置 --batch-size 1。"
+    if reason is None and expected_family == "audio" and batch_size != 1:
+        reason = "音频任务每个请求使用一个音频或文本输入；请设置 --batch-size 1。"
     if reason is None and (
         expected_family == "multimodal"
         or (expected_family == "diffusion" and task != "text-to-image")
@@ -39,6 +41,27 @@ def require_task_support(task_info: TaskInfo, *, batch_size: int = 1) -> None:
         reason = "视觉理解／多模态任务需要 Transformers 后端；请设置 --backend transformers_model。"
     if reason is None and expected_family == "diffusion" and task_info.runtime_backend != "diffusers":
         reason = "图像/视频生成任务需要 Diffusers 后端；请设置 --backend diffusers。"
+    if reason is None and expected_family == "timeseries" and task_info.runtime_backend != "chronos":
+        reason = "时间序列预测适配 Chronos／Chronos-Bolt；模型须兼容 --backend chronos。Transformers 没有通用预测 pipeline。"
+    if reason is None and expected_family == "structured":
+        backends = {"torchscript"}
+        if task in {"tabular-classification", "tabular-regression"}:
+            backends.add("skops")
+        if task_info.runtime_backend not in backends:
+            reason = "结构化任务需要已适配的模型格式与后端：" + " / ".join(sorted(backends)) + "；模型格式见 README.md。"
+    if reason is None and task == "voice-activity-detection" and task_info.runtime_backend != "torchscript":
+        reason = "语音活动检测适配 Silero TorchScript 模型；请设置 --backend torchscript。"
+    if reason is None and expected_family == "nlp":
+        backends = {"transformers_model", "transformers_pipeline"}
+        if task == "sentence-similarity":
+            backends.add("sentence_transformers")
+        if task == "text-ranking":
+            backends.add("cross_encoder")
+        if task_info.runtime_backend not in backends:
+            reason = "此 NLP 任务的后端需要为 " + " / ".join(sorted(backends)) + "。"
+    if reason is None and expected_family == "audio" and task != "voice-activity-detection":
+        if task_info.runtime_backend not in {"transformers_model", "transformers_pipeline"}:
+            reason = "此音频任务需要 Transformers 后端；请设置 --backend transformers_model。"
     if reason is None:
         return
 

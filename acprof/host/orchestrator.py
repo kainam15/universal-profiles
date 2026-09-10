@@ -1611,6 +1611,31 @@ def _model_io_formats(task_info: TaskInfo) -> Tuple[Dict[str, Any], Dict[str, An
             "effective_input_scale": {"type": "number"},
         }
         output_required.extend(["output_type", "n_results"])
+        input_properties["batch_size"] = {"type": "integer", "minimum": 1}
+        if task_info.pipeline_tag == "table-question-answering":
+            input_properties = {
+                "table": {"type": "object", "additionalProperties": {"type": "array", "items": string_schema}},
+                "query": string_schema, "params": params_schema,
+                "batch_size": {"type": "integer", "minimum": 1},
+            }
+            input_required = ["table", "query"]
+            output_properties["output_type"]["enum"] = ["table_answer"]
+        elif task_info.pipeline_tag in {"sentence-similarity", "text-ranking"}:
+            input_properties = {
+                "query": string_schema,
+                "documents": {"type": "array", "items": string_schema, "minItems": 1},
+                "params": params_schema, "batch_size": {"type": "integer", "minimum": 1},
+            }
+            input_required = ["query", "documents"]
+            output_properties["output_type"]["enum"] = [
+                "similarity" if task_info.pipeline_tag == "sentence-similarity" else "ranking"
+            ]
+        elif task_info.pipeline_tag == "zero-shot-classification":
+            input_properties["candidate_labels"] = {"type": "array", "items": string_schema, "minItems": 1}
+            input_properties["hypothesis_template"] = string_schema
+            input_required.append("candidate_labels")
+        elif task_info.pipeline_tag == "feature-extraction":
+            output_properties["output_type"]["enum"] = ["embedding"]
     elif task_info.task_family == "cv":
         input_properties = {
             "image_base64": {
@@ -1696,6 +1721,60 @@ def _model_io_formats(task_info: TaskInfo) -> Tuple[Dict[str, Any], Dict[str, An
             "effective_input_scale": {"type": "number"},
         }
         output_required.append("output_type")
+        if task_info.pipeline_tag in {"text-to-speech", "text-to-audio"}:
+            input_properties = {"text": string_schema, "params": params_schema}
+            input_required = ["text"]
+        if task_info.pipeline_tag in {"text-to-speech", "text-to-audio", "audio-to-audio"}:
+            output_properties["output_type"]["enum"] = ["audio"]
+            output_properties.update({
+                "audio_shape": {"type": "array", "items": {"type": "integer"}},
+                "audio_num_samples": {"type": "integer"},
+                "audio_sample_rate": {"type": "integer", "unit": "Hz"},
+                "audio_duration_s": {"type": "number", "unit": "s"},
+            })
+        elif task_info.pipeline_tag == "voice-activity-detection":
+            output_properties["output_type"]["enum"] = ["voice_activity"]
+            output_properties.update({
+                "segments": {"type": "array", "items": _json_object_schema({
+                    "start": {"type": "number", "unit": "s"}, "end": {"type": "number", "unit": "s"},
+                }, ["start", "end"])},
+                "timestamp_unit": {"type": "string", "enum": ["seconds"]},
+                "speech_duration_s": {"type": "number", "unit": "s"},
+                "threshold": {"type": "number", "minimum": 0, "maximum": 1},
+                "frame_duration_s": {"type": "number", "unit": "s"},
+                "segmentation_policy": {"type": "string", "enum": ["adjacent_frames_above_threshold"]},
+            })
+    elif task_info.task_family == "structured":
+        is_graph = task_info.pipeline_tag == "graph-ml"
+        is_table = task_info.pipeline_tag in {"tabular-classification", "tabular-regression"}
+        field_name = "graphs" if is_graph else "features" if is_table else "observations"
+        matrix_schema = {"type": "array", "minItems": 1, "items": {
+            "type": "array", "minItems": 1, "items": {"type": "number", "format": "float32"},
+        }}
+        values_schema = matrix_schema
+        if is_graph:
+            values_schema = {"type": "array", "minItems": 1, "items": _json_object_schema({
+                "node_features": matrix_schema,
+                "edge_index": {"type": "array", "minItems": 2, "maxItems": 2, "items": {
+                    "type": "array", "items": {"type": "integer", "minimum": 0},
+                }},
+            }, ["node_features", "edge_index"])}
+        input_properties = {
+            field_name: values_schema,
+            "batch_size": {"type": "integer", "minimum": 1},
+            "input_scale": {"type": "integer", "minimum": 1},
+        }
+        input_required = [field_name, "batch_size", "input_scale"]
+        output_type = {
+            "tabular-classification": "classification", "tabular-regression": "regression",
+            "reinforcement-learning": "actions", "robotics": "actions", "graph-ml": "graph",
+        }[task_info.pipeline_tag]
+        output_properties = {
+            "task": string_schema, "output_type": {"type": "string", "enum": [output_type]},
+            "output_shape": {"type": "array", "items": {"type": "integer"}},
+            "n_results": {"type": "integer"}, "effective_input_scale": {"type": "number"},
+        }
+        output_required.extend(["output_type", "output_shape", "n_results"])
     elif task_info.task_family == "timeseries":
         input_properties = {
             "context": {
@@ -1869,6 +1948,14 @@ def _model_io_formats(task_info: TaskInfo) -> Tuple[Dict[str, Any], Dict[str, An
 
 
 def _inference_precision_by_device(task_info: TaskInfo) -> Dict[str, str]:
+    if task_info.pipeline_tag == "voice-activity-detection":
+        return {"cpu": "artifact-defined; FP32 inputs"}
+    if task_info.pipeline_tag == "audio-to-audio":
+        return {"cpu": "FP32", "gpu": "FP32"}
+    if task_info.runtime_backend == "torchscript":
+        return {"cpu": "artifact-defined; FP32 inputs", "gpu": "artifact-defined; FP32 inputs"}
+    if task_info.runtime_backend == "skops":
+        return {"cpu": "estimator-defined; FP32 inputs"}
     if task_info.pipeline_tag == "any-to-any" and task_info.task_family == "multimodal":
         return {"cpu": "FP32", "gpu": "mixed FP16 (thinker/talker), FP32 (token2wav)"}
     if (
@@ -1877,7 +1964,7 @@ def _inference_precision_by_device(task_info: TaskInfo) -> Dict[str, str]:
     ):
         return {"cpu": "FP32", "gpu": "FP16"}
     if (
-        task_info.runtime_backend in {"transformers_pipeline", "transformers_model"}
+        task_info.runtime_backend in {"transformers_pipeline", "transformers_model", "sentence_transformers", "cross_encoder"}
         and task_info.task_family in {"nlp", "cv", "audio", "multimodal"}
     ):
         return {"cpu": "FP32", "gpu": "FP16"}
@@ -2278,7 +2365,7 @@ def build_image(task_info: TaskInfo, project_dir: str) -> ImageInfo:
             "--secret",
             "id=hf_token,env=HF_TOKEN",
         ])
-    if task_info.task_family in {"nlp", "diffusion", "multimodal"}:
+    if task_info.task_family in {"nlp", "diffusion", "multimodal", "structured"}:
         torch_index_url = _select_nlp_torch_index_url()
         torch_spec = _select_nlp_torch_spec(torch_index_url)
         family_build_args.extend([
@@ -2609,6 +2696,7 @@ def _request_audio_scale_meta(
     }
     numeric_fields = (
         "required_sampling_rate",
+        "source_sampling_rate",
         "max_short_form_duration_s",
         "model_input_num_samples",
         "model_input_frames",
@@ -2644,6 +2732,11 @@ def _request_audio_scale_meta(
             f"{raw_fixed_padding!r}"
         )
     result["short_form_fixed_padding"] = raw_fixed_padding
+    resampling_policy = data.get("resampling_policy")
+    if resampling_policy is not None:
+        if resampling_policy != "scipy.signal.resample_poly_if_required_in_preprocess":
+            raise RuntimeError(f"/scale_meta returned unsupported resampling_policy: {resampling_policy!r}")
+        result["resampling_policy"] = resampling_policy
     return result
 
 
@@ -2733,6 +2826,7 @@ def _plan_manual_nlp_scales(
     scales: List[float],
     batch_size: int,
     output_dir: str,
+    workload_spec_path: Optional[str] = None,
 ) -> PlannedInputScales:
     from acprof.workloads import get_generator
 
@@ -2744,6 +2838,7 @@ def _plan_manual_nlp_scales(
             task_info.model_id,
             task_info.pipeline_tag,
             batch_size,
+            workload_spec_path=workload_spec_path,
         )
         invalid: Dict[float, str] = {}
         entries: List[Dict[str, Any]] = []
@@ -2768,6 +2863,7 @@ def _plan_manual_nlp_scales(
             entries.append({
                 "input_scale": actual_scale,
                 "scale_label": workload_gen.scale_label(actual_scale),
+                "input_metadata": workload_gen.input_metadata(actual_scale, result["payload"]),
                 "payload": result["payload"],
             })
 
@@ -2781,7 +2877,8 @@ def _plan_manual_nlp_scales(
             _stop_container_session(session.name, log_prefix="[probe]")
 
     plan_file = _scale_plan_file_path(output_dir)
-    plan_sha256 = _write_scale_plan_file(plan_file, task_info, entries)
+    workload_metadata = workload_gen.plan_metadata()
+    plan_sha256 = _write_scale_plan_file(plan_file, task_info, entries, workload=workload_metadata)
 
     print(
         "[scale] Using manual input scales: "
@@ -2793,6 +2890,7 @@ def _plan_manual_nlp_scales(
         source="manual",
         plan_file=plan_file,
         plan_sha256=plan_sha256,
+        workload=workload_metadata,
     )
 
 
@@ -2804,6 +2902,7 @@ def _plan_nlp_auto_scales(
     gpu_list: List[str],
     batch_size: int,
     output_dir: str,
+    workload_spec_path: Optional[str] = None,
 ) -> PlannedInputScales:
     from acprof.workloads import get_generator
 
@@ -2815,6 +2914,7 @@ def _plan_nlp_auto_scales(
             task_info.model_id,
             task_info.pipeline_tag,
             batch_size,
+            workload_spec_path=workload_spec_path,
         )
         metadata_payload = workload_gen.generate(1.0)
         scale_meta = _request_nlp_scale_meta(session, metadata_payload)
@@ -2906,11 +3006,14 @@ def _plan_nlp_auto_scales(
             entries.append({
                 "input_scale": actual_scale,
                 "scale_label": workload_gen.scale_label(actual_scale),
+                "input_metadata": workload_gen.input_metadata(actual_scale, candidate["payload"]),
                 "payload": candidate["payload"],
             })
 
         plan_file = _scale_plan_file_path(output_dir)
-        plan_sha256 = _write_scale_plan_file(plan_file, task_info, entries)
+        workload_metadata = workload_gen.plan_metadata()
+        plan_sha256 = _write_scale_plan_file(plan_file, task_info, entries,
+                                           workload=workload_metadata, model_constraints=scale_meta)
 
         print(
             "[scale] Auto-planned NLP scales from tokenizer limit "
@@ -2922,6 +3025,7 @@ def _plan_nlp_auto_scales(
             source="auto",
             plan_file=plan_file,
             plan_sha256=plan_sha256,
+            workload=workload_metadata,
         )
     finally:
         if session is not None:
@@ -2996,7 +3100,13 @@ def _plan_audio_scales(
         expected_rate = model_constraints.get("required_sampling_rate")
         payload_rate = first_payload.get("sample_rate")
         if expected_rate is not None and payload_rate is not None:
-            if int(expected_rate) != int(payload_rate):
+            permits_resampling = (
+                task_info.pipeline_tag not in {"automatic-speech-recognition", "asr", "speech-recognition"}
+                and model_constraints.get("resampling_policy")
+                == "scipy.signal.resample_poly_if_required_in_preprocess"
+                and model_constraints.get("source_sampling_rate") == int(payload_rate)
+            )
+            if int(expected_rate) != int(payload_rate) and not permits_resampling:
                 raise RuntimeError(
                     "audio workload sampling rate does not match the model: "
                     f"payload={payload_rate}Hz, model={expected_rate}Hz"
@@ -3052,6 +3162,39 @@ def _plan_audio_scales(
     )
 
 
+def _plan_timeseries_scales(
+    task_info: TaskInfo, image_info: ImageInfo,
+    cpu_list: List[int], mem_list: List[int], gpu_list: List[str],
+    batch_size: int, output_dir: str, input_scales: Optional[str],
+) -> PlannedInputScales:
+    """Use the loaded forecasting model's context limit before materialization."""
+    from acprof.workloads import get_generator
+
+    generator = get_generator(task_info.task_family, task_info.model_id, task_info.pipeline_tag, batch_size)
+    session = _start_probe_session(task_info, image_info, cpu_list, mem_list, gpu_list)
+    try:
+        constraints = _request_scale_meta(session, generator.generate(1))
+    finally:
+        _stop_container_session(session.name, log_prefix="[probe]")
+    limit = constraints.get("max_effective_input_scale")
+    if (isinstance(limit, bool) or not isinstance(limit, (float, int))
+            or not math.isfinite(limit) or limit < 1 or int(limit) != limit):
+        raise RuntimeError("cannot determine forecasting model context limit from /scale_meta; rebuild the timeseries image")
+    maximum = min(int(limit), int(generator.max_input_scale()))
+    if input_scales:
+        scales = resolve_input_scales(task_info.task_family, input_scales)
+        if any(not math.isfinite(scale) or scale < 1 or int(scale) != scale or scale > maximum for scale in scales):
+            raise RuntimeError(f"manual input scales must be positive integer context lengths <= {maximum}")
+        source = "manual"
+    else:
+        scales = _integer_auto_scales(maximum, count=min(AUTO_INPUT_SCALE_COUNT, maximum))
+        source = "auto"
+    return _materialize_scale_plan(
+        task_info=task_info, scales=scales, batch_size=batch_size, output_dir=output_dir,
+        source=source, model_constraints=constraints,
+    )
+
+
 def plan_input_scales(
     task_info: TaskInfo,
     image_info: ImageInfo,
@@ -3063,16 +3206,22 @@ def plan_input_scales(
     input_scales: Optional[str] = None,
     workload_spec_path: Optional[str] = None,
 ) -> PlannedInputScales:
-    if workload_spec_path and task_info.task_family not in {"cv", "audio", "multimodal", "diffusion"}:
+    if workload_spec_path and task_info.task_family not in {"cv", "audio", "multimodal", "diffusion", "structured"}:
         raise ValueError(
-            "--workload-spec is implemented for cv, audio, multimodal and diffusion tasks"
+            "--workload-spec is implemented for cv, audio, multimodal, diffusion and structured tasks"
         )
     plan_file = _scale_plan_file_path(output_dir)
     _clear_scale_plan_file(plan_file)
+    text_audio = task_info.pipeline_tag in {"text-to-speech", "text-to-audio"}
+    table_qa = task_info.pipeline_tag == "table-question-answering"
+    if task_info.task_family == "timeseries":
+        return _plan_timeseries_scales(
+            task_info, image_info, cpu_list, mem_list, gpu_list, batch_size, output_dir, input_scales,
+        )
 
     if input_scales:
         manual_scales = resolve_input_scales(task_info.task_family, input_scales=input_scales)
-        if task_info.task_family == "audio":
+        if task_info.task_family == "audio" and not text_audio:
             return _plan_audio_scales(
                 task_info=task_info,
                 image_info=image_info,
@@ -3085,7 +3234,7 @@ def plan_input_scales(
                 source="manual",
                 workload_spec_path=workload_spec_path,
             )
-        if task_info.task_family == "nlp":
+        if (task_info.task_family == "nlp" and not table_qa) or text_audio:
             return _plan_manual_nlp_scales(
                 task_info=task_info,
                 image_info=image_info,
@@ -3095,6 +3244,7 @@ def plan_input_scales(
                 scales=manual_scales,
                 batch_size=batch_size,
                 output_dir=output_dir,
+                **({"workload_spec_path": workload_spec_path} if text_audio else {}),
             )
         if task_info.task_family == "timeseries":
             manual_scales = _assert_manual_timeseries_scales_legal(
@@ -3114,7 +3264,7 @@ def plan_input_scales(
             workload_spec_path=workload_spec_path,
         )
 
-    if task_info.task_family == "nlp":
+    if (task_info.task_family == "nlp" and not table_qa) or text_audio:
         return _plan_nlp_auto_scales(
             task_info=task_info,
             image_info=image_info,
@@ -3123,6 +3273,7 @@ def plan_input_scales(
             gpu_list=gpu_list,
             batch_size=batch_size,
             output_dir=output_dir,
+            **({"workload_spec_path": workload_spec_path} if text_audio else {}),
         )
 
     if task_info.task_family == "audio":
@@ -3153,7 +3304,7 @@ def plan_input_scales(
             workload_spec_path=workload_spec_path,
         )
 
-    if task_info.task_family in {"diffusion", "multimodal"} or (
+    if table_qa or task_info.task_family in {"diffusion", "multimodal", "structured"} or (
         task_info.task_family == "cv" and workload_spec_path
     ):
         from acprof.workloads import get_generator

@@ -5,6 +5,9 @@ from __future__ import annotations
 import base64
 import binascii
 import io
+import math
+from pathlib import Path
+from types import SimpleNamespace
 import wave
 from typing import Any, Dict, Optional, Tuple
 
@@ -24,6 +27,9 @@ _ASR_TASK_TYPES = {
     "speech-recognition",
 }
 _WHISPER_SHORT_FORM_SECONDS = 30.0
+_TEXT_AUDIO_TASK_TYPES = {"text-to-speech", "text-to-audio"}
+_CODEC_MODEL_TYPES = {"encodec": "EncodecModel", "dac": "DacModel"}
+_TEXT_AUDIO_PROFILE_TOKEN_CAP = 512
 
 
 def _positive_int(value: Any, field_name: str) -> int:
@@ -65,9 +71,27 @@ class AudioHandler(BaseHandler):
         model_revision: str = "main",
         load_options: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        if task_type == "voice-activity-detection":
+            return self._load_vad(model_source, device, model_revision, load_options)
+        if task_type == "audio-to-audio":
+            return self._load_codec(model_source, device, model_revision, load_options)
+        if task_type not in _ASR_TASK_TYPES | _TEXT_AUDIO_TASK_TYPES | {"audio-classification"}:
+            raise ValueError(f"unsupported audio task: {task_type}")
         import torch
         from transformers import pipeline as hf_pipeline
 
+        if task_type in _TEXT_AUDIO_TASK_TYPES:
+            from transformers import AutoConfig
+
+            config = AutoConfig.from_pretrained(
+                model_source, **model_revision_kwargs(model_source, model_revision)
+            )
+            if config.model_type in {"speecht5", "fastspeech2_conformer"}:
+                raise ValueError(
+                    "text-to-audio/speech currently requires a self-contained waveform model "
+                    "(for example VITS, Bark or MusicGen); spectrogram models require an "
+                    "additional vocoder/speaker asset contract and are not supported"
+                )
         device_map = device if device == "cpu" else "auto"
         torch_dtype = torch.float16 if device != "cpu" else torch.float32
 
@@ -87,6 +111,125 @@ class AudioHandler(BaseHandler):
             "model_revision": model_revision or "main",
             "load_options": dict(load_options or {}),
             "audio_metadata": self._extract_audio_metadata(pipe),
+        }
+
+    @staticmethod
+    def _load_vad(
+        model_source: str, device: str, model_revision: str,
+        load_options: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        if device != "cpu":
+            raise ValueError("Silero TorchScript voice activity detection supports CPU execution only")
+        if load_options:
+            raise ValueError("Silero TorchScript does not support attention load options")
+        root = Path(model_source)
+        if not root.is_dir():
+            raise ValueError("Silero VAD requires a baked local snapshot containing silero_vad.jit")
+        candidates = sorted(root.rglob("silero_vad.jit"))
+        if len(candidates) != 1:
+            raise ValueError(
+                "Silero VAD snapshot must contain exactly one silero_vad.jit "
+                f"(found {len(candidates)}); ONNX and other TorchScript architectures are unsupported"
+            )
+        import torch
+
+        model = torch.jit.load(str(candidates[0]), map_location="cpu").eval()
+        if not callable(getattr(model, "reset_states", None)):
+            raise ValueError("silero_vad.jit must expose the Silero reset_states interface")
+        return {
+            "model": model, "task_type": "voice-activity-detection", "device": device,
+            "model_revision": model_revision or "main", "load_options": {},
+            "audio_metadata": {
+                "sampling_rate": 16000, "model_type": "silero_vad", "short_form_fixed_padding": False,
+            },
+            "vad_model_file": str(candidates[0].relative_to(root)),
+        }
+
+    @staticmethod
+    def _load_codec(
+        model_source: str, device: str, model_revision: str,
+        load_options: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        import transformers
+        import torch
+
+        revision = model_revision_kwargs(model_source, model_revision)
+        config = transformers.AutoConfig.from_pretrained(model_source, **revision)
+        model_class = _CODEC_MODEL_TYPES.get(config.model_type)
+        if model_class is None:
+            raise ValueError(
+                "audio-to-audio supports Transformers Encodec/DAC waveform reconstruction; "
+                f"model_type={config.model_type!r} needs a separate enhancement/separation adapter"
+            )
+        if getattr(config, "audio_channels", 1) != 1:
+            raise ValueError("audio-to-audio currently requires a mono Encodec/DAC checkpoint")
+        options = transformers_pipeline_load_kwargs(load_options).get("model_kwargs", {})
+        model = getattr(transformers, model_class).from_pretrained(
+            model_source, **revision, **options, torch_dtype=torch.float32
+        ).to(device).eval()
+        processor = transformers.AutoProcessor.from_pretrained(model_source, **revision)
+        feature_extractor = getattr(processor, "feature_extractor", processor)
+        metadata = AudioHandler._extract_audio_metadata(
+            SimpleNamespace(model=model, feature_extractor=feature_extractor)
+        )
+        if metadata["sampling_rate"] is None:
+            metadata["sampling_rate"] = _optional_positive_int(getattr(config, "sampling_rate", None))
+        if metadata["sampling_rate"] is None:
+            raise ValueError("audio codec must expose its input sampling rate")
+        # Encodec chunk_length is an internal processing block, not an input limit.
+        metadata["max_short_form_duration_s"] = None
+        return {
+            "model": model, "processor": processor, "task_type": "audio-to-audio",
+            "device": device, "model_revision": model_revision or "main",
+            "load_options": dict(load_options or {}), "audio_metadata": metadata,
+        }
+
+    @staticmethod
+    def _text_tokenizer(model_ctx: Dict[str, Any]) -> Any:
+        pipe = model_ctx.get("pipeline")
+        tokenizer = getattr(pipe, "tokenizer", None)
+        if tokenizer is None:
+            tokenizer = getattr(getattr(pipe, "processor", None), "tokenizer", None)
+        if not callable(getattr(tokenizer, "encode", None)):
+            raise ValueError("text-to-audio/speech requires a tokenizer exposing encode for input measurement")
+        return tokenizer
+
+    @classmethod
+    def _text_input_limit(cls, model_ctx: Dict[str, Any]) -> Optional[int]:
+        tokenizer = cls._text_tokenizer(model_ctx)
+        pipe = model_ctx.get("pipeline")
+        config = getattr(getattr(pipe, "model", None), "config", None)
+        if getattr(config, "model_type", None) == "bark":
+            # TextToAudioPipeline feeds Bark a fixed semantic input window with
+            # add_special_tokens=False, independent of the base BERT tokenizer.
+            semantic = getattr(getattr(pipe, "generation_config", None), "semantic_config", {})
+            semantic_limit = (
+                semantic.get("max_input_semantic_length") if isinstance(semantic, dict)
+                else getattr(semantic, "max_input_semantic_length", None)
+            )
+            return _optional_positive_int(semantic_limit) or 256
+        limit = _optional_positive_int(getattr(tokenizer, "model_max_length", None))
+        if limit is None or limit >= 1_000_000:
+            return None
+        special = getattr(tokenizer, "num_special_tokens_to_add", None)
+        special_count = int(special(pair=False)) if callable(special) else 0
+        return max(1, limit - special_count)
+
+    def _preprocess_text(self, model_ctx: Dict[str, Any], raw_input: Dict[str, Any]) -> Any:
+        text = raw_input.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("text-to-audio/speech input requires non-empty text")
+        tokenizer = self._text_tokenizer(model_ctx)
+        token_ids = tokenizer.encode(text, add_special_tokens=False)
+        limit = self._text_input_limit(model_ctx) or _TEXT_AUDIO_PROFILE_TOKEN_CAP
+        truncated = limit is not None and len(token_ids) > limit
+        if truncated:
+            text = tokenizer.decode(token_ids[:limit], skip_special_tokens=True)
+            token_ids = tokenizer.encode(text, add_special_tokens=False)
+        return {
+            "text": text, "params": raw_input.get("params", {}),
+            "_effective_input_scale": len(token_ids), "_truncated_by_limit": truncated,
+            "_probe_reason": "text input token count excludes special tokens; output audio duration is independent",
         }
 
     @staticmethod
@@ -198,6 +341,9 @@ class AudioHandler(BaseHandler):
         return audio_array, int(sample_rate)
 
     def preprocess(self, model_ctx: Dict[str, Any], raw_input: Dict[str, Any]) -> Any:
+        task_type = model_ctx["task_type"]
+        if task_type in _TEXT_AUDIO_TASK_TYPES:
+            return self._preprocess_text(model_ctx, raw_input)
         has_base64 = "audio_base64" in raw_input
         has_legacy_samples = "audio_samples" in raw_input
         if has_base64 and has_legacy_samples:
@@ -242,14 +388,23 @@ class AudioHandler(BaseHandler):
             if not np.all(np.isfinite(audio_array)):
                 raise ValueError("audio_samples must contain only finite values")
 
-        if required_sample_rate and sample_rate != required_sample_rate:
-            raise ValueError(
-                "audio sample rate does not match the model feature extractor "
-                f"({sample_rate} != {required_sample_rate})"
-            )
-
         input_num_samples = int(audio_array.size)
         duration_s = input_num_samples / sample_rate
+        source_sample_rate = sample_rate
+        if required_sample_rate and sample_rate != required_sample_rate:
+            if task_type in _ASR_TASK_TYPES:
+                # Preserve the established ASR input contract and provenance.
+                raise ValueError(
+                    "audio sample rate does not match the model feature extractor "
+                    f"({sample_rate} != {required_sample_rate})"
+                )
+            from scipy.signal import resample_poly
+
+            divisor = math.gcd(sample_rate, required_sample_rate)
+            audio_array = resample_poly(
+                audio_array, required_sample_rate // divisor, sample_rate // divisor
+            ).astype(np.float32)
+            sample_rate = required_sample_rate
         max_short_form_duration_s = _optional_positive_number(
             metadata.get("max_short_form_duration_s")
         )
@@ -270,7 +425,7 @@ class AudioHandler(BaseHandler):
         else:
             reason = "model does not expose a short-form duration limit"
 
-        return {
+        processed = {
             "audio": audio_array,
             "sample_rate": sample_rate,
             "params": raw_input.get("params", {}),
@@ -280,13 +435,50 @@ class AudioHandler(BaseHandler):
             "_truncated_by_limit": exceeds_short_form_limit,
             "_probe_reason": reason,
         }
+        if task_type not in _ASR_TASK_TYPES:
+            processed["_source_sample_rate"] = source_sample_rate
+            processed["_model_input_num_samples"] = int(audio_array.size)
+            if task_type == "audio-to-audio":
+                processor_kwargs = {}
+                if metadata.get("model_type") == "dac":
+                    # DAC's model accepts input_values only. Its feature extractor's
+                    # batched padding path emits a padding_mask and an extra axis.
+                    # One waveform needs neither; the model handles codec framing.
+                    processor_kwargs["padding"] = False
+                inputs = model_ctx["processor"](
+                    raw_audio=audio_array, sampling_rate=sample_rate, return_tensors="pt",
+                    **processor_kwargs,
+                )
+                processed["model_inputs"] = {
+                    key: value.to(model_ctx["device"]) for key, value in inputs.items()
+                }
+            elif task_type == "voice-activity-detection":
+                import torch
+
+                frame_samples = 512
+                padding = (-len(audio_array)) % frame_samples
+                framed = np.pad(audio_array, (0, padding)).reshape(-1, frame_samples)
+                processed["frames"] = torch.from_numpy(framed)
+        return processed
 
     def get_scale_metadata(
         self,
         model_ctx: Dict[str, Any],
         raw_input: Dict[str, Any],
     ) -> Dict[str, Any]:
-        del raw_input
+        if model_ctx["task_type"] in _TEXT_AUDIO_TASK_TYPES:
+            model_limit = self._text_input_limit(model_ctx)
+            return {
+                "input_scale_type": "seq_length",
+                "max_effective_input_scale": model_limit or _TEXT_AUDIO_PROFILE_TOKEN_CAP,
+                "model_max_input_tokens": model_limit,
+                "input_limit_source": "tokenizer_or_generation_config" if model_limit else "profiling_text_token_cap",
+                "reason": (
+                    "text input token count excludes special tokens; generated audio samples are output"
+                    if model_limit else
+                    "tokenizer exposes no finite limit; profiling uses an explicit 512-token workload cap, not a model limit"
+                ),
+            }
         metadata = self._audio_metadata(model_ctx)
         max_duration = _optional_positive_number(
             metadata.get("max_short_form_duration_s")
@@ -319,7 +511,7 @@ class AudioHandler(BaseHandler):
                     "not audio input duration"
                 )
 
-        return {
+        result = {
             "input_scale_type": "duration_s",
             "required_sampling_rate": metadata.get("sampling_rate"),
             "max_short_form_duration_s": max_duration,
@@ -339,6 +531,10 @@ class AudioHandler(BaseHandler):
             "model_type": model_type,
             "reason": reason,
         }
+        if model_ctx["task_type"] not in _ASR_TASK_TYPES:
+            result["source_sampling_rate"] = raw_input.get("sample_rate", 16000)
+            result["resampling_policy"] = "scipy.signal.resample_poly_if_required_in_preprocess"
+        return result
 
     @staticmethod
     def _is_whisper(model_ctx: Dict[str, Any]) -> bool:
@@ -350,13 +546,47 @@ class AudioHandler(BaseHandler):
         return str(getattr(config, "model_type", "") or "").lower() == "whisper"
 
     def predict(self, model_ctx: Dict[str, Any], processed_input: Any) -> Any:
-        pipe = model_ctx["pipeline"]
         task_type = model_ctx["task_type"]
-        audio = processed_input["audio"]
-        sample_rate = processed_input["sample_rate"]
         params = processed_input.get("params", {})
         if not isinstance(params, dict):
             raise ValueError("params must be an object")
+        pipeline_kwargs = params.get("pipeline_kwargs", {})
+        if not isinstance(pipeline_kwargs, dict):
+            raise ValueError("pipeline_kwargs must be an object")
+        if task_type in _TEXT_AUDIO_TASK_TYPES:
+            if "preprocess_params" in pipeline_kwargs:
+                raise ValueError("preprocess_params cannot override tokenization after input scale measurement")
+            return model_ctx["pipeline"](processed_input["text"], **pipeline_kwargs)
+        if task_type == "audio-to-audio":
+            import torch
+
+            if set(pipeline_kwargs) - {"bandwidth", "n_quantizers"}:
+                raise ValueError("audio codec only accepts bandwidth (Encodec) or n_quantizers (DAC)")
+            with torch.inference_mode():
+                output = model_ctx["model"](**processed_input["model_inputs"], **pipeline_kwargs)
+            return {"audio": output.audio_values, "sampling_rate": model_ctx["audio_metadata"]["sampling_rate"]}
+        if task_type == "voice-activity-detection":
+            import torch
+
+            if set(pipeline_kwargs) - {"threshold"}:
+                raise ValueError("Silero VAD only accepts pipeline_kwargs.threshold")
+            threshold = pipeline_kwargs.get("threshold", 0.5)
+            if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not 0 < threshold < 1:
+                raise ValueError("VAD threshold must be a number strictly between zero and one")
+            model = model_ctx["model"]
+            # The recurrent state belongs to one request, including profiler replays.
+            model.reset_states()
+            with torch.inference_mode():
+                probabilities = [model(frame, 16000) for frame in processed_input["frames"]]
+            return {
+                "probabilities": probabilities, "frame_samples": 512,
+                "sample_rate": 16000, "input_num_samples": len(processed_input["audio"]),
+                "threshold": float(threshold),
+            }
+
+        pipe = model_ctx["pipeline"]
+        audio = processed_input["audio"]
+        sample_rate = processed_input["sample_rate"]
 
         mode = params.get("mode", "short_form")
         if mode != "short_form":
@@ -464,6 +694,44 @@ class AudioHandler(BaseHandler):
     def postprocess(self, model_ctx: Dict[str, Any], raw_output: Any) -> Dict[str, Any]:
         task_type = model_ctx["task_type"]
 
+        if task_type in _TEXT_AUDIO_TASK_TYPES | {"audio-to-audio"}:
+            if not isinstance(raw_output, dict) or "audio" not in raw_output:
+                raise ValueError("audio generation must return an audio waveform")
+            waveform = raw_output["audio"]
+            if callable(getattr(waveform, "detach", None)):
+                waveform = waveform.detach().float().cpu().numpy()
+            waveform = np.asarray(waveform)
+            if waveform.ndim not in (1, 2, 3) or not waveform.size or not np.isfinite(waveform).all():
+                raise ValueError("generated audio must be a non-empty finite waveform")
+            sample_rate = _positive_int(raw_output.get("sampling_rate"), "output sampling_rate")
+            return {
+                "task": task_type, "output_type": "audio", "n_results": 1,
+                "audio_shape": list(waveform.shape), "audio_num_samples": int(waveform.shape[-1]),
+                "audio_sample_rate": sample_rate, "audio_duration_s": waveform.shape[-1] / sample_rate,
+            }
+        if task_type == "voice-activity-detection":
+            probabilities = [float(value) for value in raw_output["probabilities"]]
+            if any(not np.isfinite(value) or not 0 <= value <= 1 for value in probabilities):
+                raise ValueError("VAD model must return finite speech probabilities in [0, 1]")
+            frame_size = raw_output["frame_samples"]
+            sample_count = raw_output["input_num_samples"]
+            sample_rate = raw_output["sample_rate"]
+            segments = []
+            start = None
+            for index, probability in enumerate(probabilities + [0.0]):
+                position = min(index * frame_size, sample_count)
+                if probability >= raw_output["threshold"] and start is None:
+                    start = position
+                elif probability < raw_output["threshold"] and start is not None:
+                    segments.append({"start": start / sample_rate, "end": position / sample_rate})
+                    start = None
+            return {
+                "task": task_type, "output_type": "voice_activity", "n_results": len(segments),
+                "segments": segments, "timestamp_unit": "seconds",
+                "speech_duration_s": sum(segment["end"] - segment["start"] for segment in segments),
+                "threshold": raw_output["threshold"], "frame_duration_s": frame_size / sample_rate,
+                "segmentation_policy": "adjacent_frames_above_threshold",
+            }
         if task_type in _ASR_TASK_TYPES:
             text = raw_output.get("text", "") if isinstance(raw_output, dict) else ""
             if not isinstance(text, str):
@@ -497,3 +765,4 @@ class AudioHandler(BaseHandler):
 
 HandlerRegistry.register("audio", "transformers_pipeline", AudioHandler)
 HandlerRegistry.register("audio", "transformers_model", AudioHandler)
+HandlerRegistry.register("audio", "torchscript", AudioHandler)

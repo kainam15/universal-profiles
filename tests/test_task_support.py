@@ -25,7 +25,7 @@ def task_info(tag="image-text-to-text", family="unknown"):
         model_id="example/caption-model",
         pipeline_tag=tag,
         task_family=family,
-        runtime_backend="diffusers" if family == "diffusion" else "transformers_pipeline",
+        runtime_backend="diffusers" if family == "diffusion" else "chronos" if family == "timeseries" else "transformers_pipeline",
         library_name="transformers",
         model_revision="test-revision",
         detection_method="hub_api",

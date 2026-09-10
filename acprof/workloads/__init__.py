@@ -104,6 +104,10 @@ def _auto_register():
         from acprof.workloads import multimodal  # noqa: F401
     except ImportError:
         pass
+    try:
+        from acprof.workloads import structured  # noqa: F401
+    except ImportError:
+        pass
 
 
 _auto_register()

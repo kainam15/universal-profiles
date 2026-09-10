@@ -26,6 +26,10 @@ SAMPLE_RATE = 16000
 CHANNELS = 1
 SAMPLE_WIDTH_BYTES = 2
 ASR_TASK_TYPE = "automatic-speech-recognition"
+TEXT_AUDIO_TASK_TYPES = {"text-to-speech", "text-to-audio"}
+WAVEFORM_TASK_TYPES = {
+    ASR_TASK_TYPE, "audio-classification", "audio-to-audio", "voice-activity-detection",
+}
 SHORT_FORM_MAX_DURATION_S = 30.0
 DEFAULT_WORKLOAD_ID = "librispeech-clean-test-en-transcribe-short-v1"
 DEFAULT_WORKLOAD_SPEC = (
@@ -307,15 +311,19 @@ def _load_workload_spec(path: Path) -> Dict[str, Any]:
         raise ValueError("input_scale.values must be strictly increasing")
 
     inference = _require_object(spec["inference"], "inference")
-    _require_exact_keys(inference, _INFERENCE_KEYS, "inference")
+    is_asr = spec["pipeline_tag"] == ASR_TASK_TYPE
+    _require_exact_keys(
+        inference, _INFERENCE_KEYS if is_asr else {"mode", "pipeline_kwargs"}, "inference"
+    )
     if inference["mode"] != "short_form":
         raise ValueError("schema v1 only supports inference.mode='short_form'")
-    if inference["asr_task"] != "transcribe":
+    if is_asr and inference["asr_task"] != "transcribe":
         raise ValueError("schema v1 only supports inference.asr_task='transcribe'")
-    _require_nonempty_string(inference["language"], "inference.language")
-    if not isinstance(inference["return_timestamps"], bool):
+    if is_asr:
+        _require_nonempty_string(inference["language"], "inference.language")
+    if is_asr and not isinstance(inference["return_timestamps"], bool):
         raise ValueError("inference.return_timestamps must be a boolean")
-    if inference["return_timestamps"] is not False:
+    if is_asr and inference["return_timestamps"] is not False:
         raise ValueError("schema v1 requires inference.return_timestamps=false")
     pipeline_kwargs = _require_object(
         inference["pipeline_kwargs"],
@@ -387,17 +395,26 @@ class AudioWorkloadGenerator(WorkloadGenerator):
                 "audio workloads require batch_size=1; batching repeated audio "
                 "would not represent a larger real input"
             )
+        self._text_generator = None
+        if task_type in TEXT_AUDIO_TASK_TYPES:
+            if workload_spec_path is not None:
+                raise ValueError("text-to-audio/speech uses text input, not a WAV workload spec")
+            from acprof.workloads.nlp import NLPWorkloadGenerator
+
+            self._text_generator = NLPWorkloadGenerator(model_id, task_type, batch_size)
+            return
+        if task_type not in WAVEFORM_TASK_TYPES:
+            raise ValueError(f"unsupported audio workload task: {task_type}")
         if workload_spec_path is None:
-            if task_type != ASR_TASK_TYPE:
-                raise ValueError(
-                    f"audio task '{task_type}' requires an explicit workload spec; "
-                    "the built-in workload is only for automatic speech recognition"
-                )
             spec_path = DEFAULT_WORKLOAD_SPEC
         else:
             spec_path = Path(workload_spec_path).expanduser()
         self.workload_spec_path = spec_path.resolve()
         self._spec = _load_workload_spec(self.workload_spec_path)
+        if workload_spec_path is None and task_type != ASR_TASK_TYPE:
+            self._spec["pipeline_tag"] = task_type
+            self._spec["workload_id"] = f"librispeech-clean-test-en-{task_type}-short-v1"
+            self._spec["inference"] = {"mode": "short_form", "pipeline_kwargs": {}}
         if self._spec["pipeline_tag"] != task_type:
             raise ValueError(
                 f"workload pipeline_tag={self._spec['pipeline_tag']!r} does not match "
@@ -490,6 +507,11 @@ class AudioWorkloadGenerator(WorkloadGenerator):
         return duration_s, num_samples
 
     def generate(self, scale_value: float) -> Dict[str, Any]:
+        if self._text_generator is not None:
+            scale = _require_number(scale_value, "text input scale")
+            if scale < 1 or not scale.is_integer():
+                raise ValueError("text input scale must be a positive integer")
+            return self.generate_for_word_count(int(scale))
         _, num_samples = self._validate_scale(scale_value)
         pcm_byte_count = num_samples * CHANNELS * SAMPLE_WIDTH_BYTES
         prefix_pcm = self._asset_pcm_bytes[:pcm_byte_count]
@@ -499,16 +521,19 @@ class AudioWorkloadGenerator(WorkloadGenerator):
             "audio_base64": base64.b64encode(wav_bytes).decode("ascii"),
             "audio_format": "wav",
             "sample_rate": self._sample_rate,
-            "params": {
-                "mode": inference["mode"],
-                "asr_task": inference["asr_task"],
-                "language": inference["language"],
-                "return_timestamps": inference["return_timestamps"],
-                "pipeline_kwargs": copy.deepcopy(inference["pipeline_kwargs"]),
-            },
+            "params": copy.deepcopy(inference),
         }
 
+    def generate_for_word_count(self, word_count: int) -> Dict[str, Any]:
+        if self._text_generator is None:
+            raise ValueError("word counts only apply to text-to-audio/speech")
+        payload = self._text_generator.generate_for_word_count(word_count)
+        payload["params"] = {"pipeline_kwargs": {}}
+        return payload
+
     def scale_label(self, scale_value: float) -> str:
+        if self._text_generator is not None:
+            return self._text_generator.scale_label(scale_value)
         return f"dur{float(scale_value):g}s"
 
     def effective_input_scale(
@@ -516,6 +541,9 @@ class AudioWorkloadGenerator(WorkloadGenerator):
         scale_value: float,
         payload: Optional[Dict[str, Any]] = None,
     ) -> Optional[float]:
+        if self._text_generator is not None:
+            # The container tokenizer supplies the measured effective token count.
+            return None
         if payload is not None and "audio_samples" in payload:
             sample_rate = payload.get("sample_rate", SAMPLE_RATE)
             if isinstance(sample_rate, bool) or not isinstance(sample_rate, (int, float)):
@@ -530,14 +558,27 @@ class AudioWorkloadGenerator(WorkloadGenerator):
         return float(metadata["duration_s"])
 
     def max_input_scale(self) -> Optional[float]:
+        if self._text_generator is not None:
+            return None
         if not hasattr(self, "_asset_duration_s"):
             return SHORT_FORM_MAX_DURATION_S
         return min(self._asset_duration_s, self._max_short_form_duration_s)
 
     def default_input_scales(self) -> Optional[List[float]]:
+        if self._text_generator is not None:
+            return None
         return list(self._default_scales)
 
     def plan_metadata(self) -> Dict[str, Any]:
+        if self._text_generator is not None:
+            return {
+                "workload_id": "deterministic-text-audio-v1",
+                "task_family": "audio",
+                "pipeline_tag": self.task_type,
+                "input_scale_type": "seq_length",
+                "input_scale": {"type": "seq_length", "construction": "fixed_corpus_prefix"},
+                "inference": {"pipeline_kwargs": {}},
+            }
         metadata = copy.deepcopy(self._spec)
         metadata["workload_spec_path"] = _portable_workload_spec_path(
             self.workload_spec_path
@@ -555,6 +596,12 @@ class AudioWorkloadGenerator(WorkloadGenerator):
         scale_value: float,
         payload: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        if self._text_generator is not None:
+            materialized = self.generate(scale_value) if payload is None else payload
+            text = materialized.get("text")
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError("text audio payload requires non-empty text")
+            return {"text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(), "text_characters": len(text)}
         materialized = self.generate(scale_value) if payload is None else payload
         if not isinstance(materialized, dict):
             raise ValueError("audio payload must be a JSON object")

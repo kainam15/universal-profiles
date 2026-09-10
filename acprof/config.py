@@ -19,6 +19,8 @@ PIPELINE_TAG_TO_FAMILY: Dict[str, str] = {
     "feature-extraction": "nlp",
     "zero-shot-classification": "nlp",
     "sentence-similarity": "nlp",
+    "table-question-answering": "nlp",
+    "text-ranking": "nlp",
     "conversational": "nlp",
     # CV
     "image-classification": "cv",
@@ -55,7 +57,15 @@ PIPELINE_TAG_TO_FAMILY: Dict[str, str] = {
     "automatic-speech-recognition": "audio",
     "audio-classification": "audio",
     "text-to-speech": "audio",
+    "text-to-audio": "audio",
     "audio-to-audio": "audio",
+    "voice-activity-detection": "audio",
+    # Structured data and offline policy inference
+    "tabular-classification": "structured",
+    "tabular-regression": "structured",
+    "reinforcement-learning": "structured",
+    "robotics": "structured",
+    "graph-ml": "structured",
     # Time-series
     "time-series-forecasting": "timeseries",
 }
@@ -69,6 +79,8 @@ LIBRARY_TO_BACKEND: Dict[str, str] = {
     "chronos": "chronos",
     "diffusers": "diffusers",
     "timm": "transformers_model",
+    "sklearn": "skops",
+    "skops": "skops",
 }
 
 DEFAULT_BACKEND = "transformers_pipeline"
@@ -119,6 +131,13 @@ ARCHITECTURE_TO_TASK: Dict[str, str] = {
     "ForUniversalSegmentation": "image-segmentation",
     "ForInstanceSegmentation": "image-segmentation",
     "ForCausalLM": "text-generation",
+    "TapasForQuestionAnswering": "table-question-answering",
+    "VitsModel": "text-to-speech",
+    "BarkModel": "text-to-audio",
+    "MusicgenForConditionalGeneration": "text-to-audio",
+    "SpeechT5ForTextToSpeech": "text-to-speech",
+    "EncodecModel": "audio-to-audio",
+    "DacModel": "audio-to-audio",
     "ForMaskedLM": "fill-mask",
     "ForSequenceClassification": "text-classification",
     "ForTokenClassification": "token-classification",
@@ -165,6 +184,11 @@ SCALING_DIMENSIONS: Dict[str, ScalingConfig] = {
         values=[64, 128, 256, 512, 1024, 2048],
         description="context length (time steps)",
     ),
+    "structured": ScalingConfig(
+        param_name="structured_scale",
+        values=[1, 8, 32, 128],
+        description="rows, observations or graph nodes; unit is recorded in the workload plan",
+    ),
     "diffusion": ScalingConfig(
         param_name="resolution_px",
         values=[128, 192, 256, 320, 384, 512],
@@ -185,6 +209,7 @@ DEFAULT_TASK_PARAMS: Dict[str, Dict[str, Any]] = {
     "cv": {},
     "audio": {},
     "timeseries": {"prediction_length": 64},
+    "structured": {},
     "diffusion": {"num_inference_steps": 20, "guidance_scale": 7.5},
     "multimodal": {"max_new_tokens": 64},
 }

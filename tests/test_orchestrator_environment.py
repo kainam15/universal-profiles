@@ -957,10 +957,19 @@ class DetectEnvironmentTests(unittest.TestCase):
             def scale_label(self, scale: float) -> str:
                 return f"scale{scale:g}"
 
+            def max_input_scale(self) -> float:
+                return 2048.0
+
         for task_family in ("cv", "timeseries"):
             with self.subTest(task_family=task_family), tempfile.TemporaryDirectory() as tmp, patch(
                 "acprof.workloads.get_generator",
                 return_value=FakeWorkloadGenerator(),
+            ), patch.object(orchestrator, "_start_probe_session", return_value=SimpleNamespace(name="probe")), patch.object(
+                orchestrator, "_stop_container_session"
+            ), patch.object(orchestrator, "_request_scale_meta", return_value={
+                "max_effective_input_scale": 512, "input_scale_type": "context_length",
+                "reason": "test model context limit",
+            }
             ):
                 task_info = TaskInfo(
                     model_id=f"test/{task_family}",
@@ -1124,7 +1133,7 @@ class DetectEnvironmentTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp, self.assertRaisesRegex(
             ValueError,
-            "implemented for cv, audio, multimodal and diffusion",
+            "implemented for cv, audio, multimodal, diffusion and structured",
         ):
             orchestrator.plan_input_scales(
                 task_info=task_info,

@@ -9,7 +9,6 @@ from acprof.container.handlers.cv import CVHandler
 from acprof.container.handlers.nlp import NLPHandler
 from acprof.container.handlers.timeseries import (
     ChronosHandler,
-    TimeseriesTransformersHandler,
 )
 
 
@@ -32,11 +31,6 @@ class OfflineModelLoadingTests(unittest.TestCase):
             (CVHandler(), "image-classification", "transformers_pipeline"),
             (CVHandler(), "image-to-text", "transformers_pipeline"),
             (AudioHandler(), "audio-classification", "transformers_pipeline"),
-            (
-                TimeseriesTransformersHandler(),
-                "time-series-forecasting",
-                "transformers_pipeline",
-            ),
         ]
 
         with tempfile.TemporaryDirectory() as model_source, patch.dict(

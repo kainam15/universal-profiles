@@ -131,6 +131,10 @@ def _auto_register():
         from acprof.container.handlers import multimodal  # noqa: F401
     except ImportError:
         pass
+    try:
+        from acprof.container.handlers import structured  # noqa: F401
+    except ImportError:
+        pass
 
 
 _auto_register()

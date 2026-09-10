@@ -454,6 +454,7 @@ class AcprofTui(BarCursorApp):
                                     ("Time series", "timeseries"),
                                     ("Diffusion", "diffusion"),
                                     ("Multimodal", "multimodal"),
+                                    ("结构化数据／策略", "structured"),
                                 ),
                                 value=self.initial_config.task_family,
                                 allow_blank=False,

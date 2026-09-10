@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import math
 from typing import Any, Dict
 
 from acprof.workloads import WorkloadGenerator, register_generator
@@ -26,6 +27,10 @@ class TimeseriesWorkloadGenerator(WorkloadGenerator):
         self._base_seq = [rng.random() for _ in range(self._max_len)]
 
     def generate(self, scale_value: float) -> Dict[str, Any]:
+        if (isinstance(scale_value, bool) or not isinstance(scale_value, (int, float))
+                or not math.isfinite(scale_value) or scale_value <= 0 or int(scale_value) != scale_value
+                or scale_value > self._max_len):
+            raise ValueError(f"context length must be a positive integer <= {self._max_len}")
         context_len = int(scale_value)
         seq = self._base_seq[:context_len]
 
