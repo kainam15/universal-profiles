@@ -4,6 +4,7 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
+from acprof.host import docker_runtime
 from acprof.host import orchestrator
 from acprof.host.detect import TaskInfo
 
@@ -24,10 +25,10 @@ class PrepareImageTests(unittest.TestCase):
     def test_existing_image_is_reused_without_building(self) -> None:
         query = subprocess.CompletedProcess([], 0, stdout="abc123\n", stderr="")
         stdout = io.StringIO()
-        with patch.object(orchestrator, "_run", return_value=query) as docker, patch.object(
-            orchestrator, "build_image",
+        with patch.object(docker_runtime, "_run", return_value=query) as docker, patch.object(
+            docker_runtime, "build_image",
         ) as build, redirect_stdout(stdout):
-            image = orchestrator.prepare_image(self.task, "/project", reuse_existing=True)
+            image = docker_runtime.prepare_image(self.task, "/project", reuse_existing=True)
 
         self.assertEqual(image.tag, self.tag)
         build.assert_not_called()
@@ -40,7 +41,7 @@ class PrepareImageTests(unittest.TestCase):
     def test_missing_image_is_announced_before_building_and_returns_built_image(self) -> None:
         query = subprocess.CompletedProcess([], 0, stdout="", stderr="")
         stdout = io.StringIO()
-        built_image = orchestrator.ImageInfo(tag=self.tag)
+        built_image = docker_runtime.ImageInfo(tag=self.tag)
 
         def build_image(task, project_dir):
             self.assertIs(task, self.task)
@@ -50,10 +51,10 @@ class PrepareImageTests(unittest.TestCase):
             self.assertIn("自动构建", stdout.getvalue())
             return built_image
 
-        with patch.object(orchestrator, "_run", return_value=query), patch.object(
-            orchestrator, "build_image", side_effect=build_image,
+        with patch.object(docker_runtime, "_run", return_value=query), patch.object(
+            docker_runtime, "build_image", side_effect=build_image,
         ) as build, redirect_stdout(stdout):
-            image = orchestrator.prepare_image(self.task, "/project", reuse_existing=True)
+            image = docker_runtime.prepare_image(self.task, "/project", reuse_existing=True)
 
         self.assertIs(image, built_image)
         build.assert_called_once_with(self.task, "/project")
@@ -62,28 +63,28 @@ class PrepareImageTests(unittest.TestCase):
         for error in ("Cannot connect to the Docker daemon", "permission denied"):
             with self.subTest(error=error):
                 query = subprocess.CompletedProcess([], 1, stdout="", stderr=error)
-                with patch.object(orchestrator, "_run", return_value=query), patch.object(
-                    orchestrator, "build_image",
+                with patch.object(docker_runtime, "_run", return_value=query), patch.object(
+                    docker_runtime, "build_image",
                 ) as build, self.assertRaisesRegex(RuntimeError, error):
-                    orchestrator.prepare_image(self.task, "/project", reuse_existing=True)
+                    docker_runtime.prepare_image(self.task, "/project", reuse_existing=True)
                 build.assert_not_called()
 
     def test_build_failure_is_propagated_after_missing_image(self) -> None:
         query = subprocess.CompletedProcess([], 0, stdout="", stderr="")
-        with patch.object(orchestrator, "_run", return_value=query), patch.object(
-            orchestrator, "build_image", side_effect=SystemExit(1),
+        with patch.object(docker_runtime, "_run", return_value=query), patch.object(
+            docker_runtime, "build_image", side_effect=SystemExit(1),
         ) as build, self.assertRaises(SystemExit) as raised:
-            orchestrator.prepare_image(self.task, "/project", reuse_existing=True)
+            docker_runtime.prepare_image(self.task, "/project", reuse_existing=True)
 
         self.assertEqual(raised.exception.code, 1)
         build.assert_called_once_with(self.task, "/project")
 
     def test_without_reuse_builds_without_querying_the_image_store(self) -> None:
-        built_image = orchestrator.ImageInfo(tag=self.tag)
-        with patch.object(orchestrator, "_run") as docker, patch.object(
-            orchestrator, "build_image", return_value=built_image,
+        built_image = docker_runtime.ImageInfo(tag=self.tag)
+        with patch.object(docker_runtime, "_run") as docker, patch.object(
+            docker_runtime, "build_image", return_value=built_image,
         ) as build:
-            image = orchestrator.prepare_image(self.task, "/project")
+            image = docker_runtime.prepare_image(self.task, "/project")
 
         self.assertIs(image, built_image)
         docker.assert_not_called()

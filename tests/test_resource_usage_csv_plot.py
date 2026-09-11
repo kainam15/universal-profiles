@@ -15,6 +15,95 @@ from acprof.config import CSV_FIELDS
 
 
 class ResourceUsageCsvPlotTests(unittest.TestCase):
+    def test_legacy_runtime_options_control_aggregation_and_metric_display(self) -> None:
+        df = pd.DataFrame([
+            {
+                "cpu_cores": 1,
+                "mem_cap_gb": 4,
+                "gpu_mode": "off",
+                "input_scale": 64,
+                "latency_s": value,
+                "cold_start_s": 2 * value,
+            }
+            for value in (1.0, 2.0, 9.0)
+        ])
+        for aggregation, expected, show_plots in (
+            ("median", 2.0, True),
+            ("mean", 4.0, False),
+        ):
+            with self.subTest(aggregation=aggregation):
+                try:
+                    with patch.object(plot, "AGG_FUNC", aggregation), patch.object(
+                        plot, "SHOW_PLOTS", show_plots
+                    ), patch.object(plot.plt, "show") as show, patch.object(plot.plt, "close"):
+                        self.assertEqual(
+                            plot.aggregate_metric(df, "latency_s")["latency_s"].tolist(),
+                            [expected],
+                        )
+                        self.assertEqual(
+                            plot.aggregate_cold_start(df)["cold_start_s"].tolist(),
+                            [2 * expected],
+                        )
+                        plot.plot_metric(
+                            df, "latency_s", "Latency", "Seconds", "input_scale", None,
+                        )
+                        self.assertEqual(
+                            list(plot.plt.gca().lines[0].get_ydata()), [expected],
+                        )
+                        self.assertEqual(show.call_count, int(show_plots))
+                finally:
+                    plot.plt.close("all")
+
+    def test_legacy_runtime_options_reach_energy_overview_panels(self) -> None:
+        effective = ("gpu_energy_eff_j", "gpu_avg_power_eff_w", "gpu_peak_power_eff_w")
+        total = ("gpu_energy_total_j", "gpu_avg_power_total_w", "gpu_peak_power_total_w")
+        df = pd.DataFrame([
+            {
+                "cpu_cores": 1,
+                "mem_cap_gb": 4,
+                "gpu_mode": "on",
+                "input_scale": 64,
+                **{metric: value for metric in (*effective, *total)},
+            }
+            for value in (1.0, 2.0, 9.0)
+        ])
+        try:
+            with patch.object(plot, "AGG_FUNC", "median"), patch.object(
+                plot, "SHOW_PLOTS", True
+            ), patch.object(plot.plt, "show") as show, patch.object(plot.plt, "close"):
+                plot.plot_energy_power_overview(
+                    df, effective_metrics=effective, total_metrics=total,
+                    title="Energy", xlabel="input_scale", out_png=None,
+                )
+                axes = plot.plt.gcf().axes
+                self.assertEqual(len(axes), 6)
+                for axis in axes:
+                    self.assertEqual(list(axis.lines[0].get_ydata()), [2.0])
+                show.assert_called_once_with()
+        finally:
+            plot.plt.close("all")
+
+    def test_legacy_csv_filter_defaults_remain_bound_at_definition(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = os.path.join(tmp, "result_all.csv")
+            pd.DataFrame([
+                {
+                    "cpu_cores": 1,
+                    "mem_cap_gb": 4,
+                    "gpu_mode": "off",
+                    "input_scale": 64,
+                    "status": status,
+                    "warmup": warmup,
+                    "latency_s": 1.0,
+                }
+                for status, warmup in (("ok", 0), ("ok", 1), ("error", 0))
+            ]).to_csv(csv_path, index=False)
+            with patch.object(plot, "ONLY_OK", False), patch.object(plot, "EXCLUDE_WARMUP", False):
+                self.assertEqual(len(plot.prepare_df(csv_path)), 1)
+                self.assertEqual(
+                    len(plot.prepare_df(csv_path, only_ok=False, exclude_warmup=False)), 3,
+                )
+
     @staticmethod
     def _overview_spec(filename: str):
         return next(

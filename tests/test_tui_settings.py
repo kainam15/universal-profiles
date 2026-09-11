@@ -203,7 +203,7 @@ class TuiSettingsTests(unittest.TestCase):
     def test_failed_atomic_replace_preserves_old_file_and_removes_temp(self):
         save_settings(self.path, TuiSettings(), self.project)
         previous = self.path.read_bytes()
-        with patch("acprof.cli.tui_settings.os.replace", side_effect=OSError("disk error")):
+        with patch("acprof.tui.settings.os.replace", side_effect=OSError("disk error")):
             with self.assertRaisesRegex(OSError, "disk error"):
                 save_settings(
                     self.path, TuiSettings(ui=UiPreferences(theme="acprof-light")), self.project

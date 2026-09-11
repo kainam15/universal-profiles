@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from acprof.host import docker_runtime, input_plan, model_schema
 from acprof.host import detect, orchestrator
 from acprof.host.task_support import TaskSupportError, require_task_support
 
@@ -18,14 +19,14 @@ def info(task, family="nlp", backend="transformers_pipeline"):
 
 class TaskCatalogIntegrationTests(unittest.TestCase):
     def test_chronos_default_scales_respect_loaded_model_context(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.object(orchestrator, "_start_probe_session", return_value=SimpleNamespace(name="probe")), patch.object(
-            orchestrator, "_stop_container_session"
-        ), patch.object(orchestrator, "_request_scale_meta", return_value={
+        with tempfile.TemporaryDirectory() as tmp, patch.object(input_plan, "_start_probe_session", return_value=SimpleNamespace(name="probe")), patch.object(
+            input_plan, "_stop_container_session"
+        ), patch.object(input_plan, "_request_scale_meta", return_value={
             "input_scale_type": "context_length", "max_effective_input_scale": 512,
             "reason": "model context length",
         }) as metadata:
-            planned = orchestrator.plan_input_scales(
-                info("time-series-forecasting", "timeseries", "chronos"), orchestrator.ImageInfo("unused"),
+            planned = input_plan.plan_input_scales(
+                info("time-series-forecasting", "timeseries", "chronos"), docker_runtime.ImageInfo("unused"),
                 [1], [2], ["off"], 1, tmp,
             )
             metadata.assert_called_once()
@@ -72,10 +73,10 @@ class TaskCatalogIntegrationTests(unittest.TestCase):
             input_metadata=lambda scale, payload: {"table_rows": len(payload["table"]["name"])},
         )
         with tempfile.TemporaryDirectory() as tmp, patch("acprof.workloads.get_generator", return_value=generator), patch.object(
-            orchestrator, "_start_probe_session", side_effect=AssertionError("table rows entered token planner")
+            input_plan, "_start_probe_session", side_effect=AssertionError("table rows entered token planner")
         ):
-            planned = orchestrator.plan_input_scales(
-                info("table-question-answering"), orchestrator.ImageInfo("unused"),
+            planned = input_plan.plan_input_scales(
+                info("table-question-answering"), docker_runtime.ImageInfo("unused"),
                 [1], [2], ["off"], 1, tmp,
             )
             self.assertEqual(planned.scales, [1.0, 4.0])
@@ -86,10 +87,10 @@ class TaskCatalogIntegrationTests(unittest.TestCase):
     def test_text_audio_uses_token_planning_and_forwards_manifest(self):
         for task in ("text-to-speech", "text-to-audio"):
             with self.subTest(task=task), tempfile.TemporaryDirectory() as tmp, patch.object(
-                orchestrator, "_plan_manual_nlp_scales", return_value="planned tokens"
-            ) as plan, patch.object(orchestrator, "_plan_audio_scales", side_effect=AssertionError("text treated as waveform")):
-                result = orchestrator.plan_input_scales(
-                    info(task, "audio"), orchestrator.ImageInfo("unused"),
+                input_plan, "_plan_manual_nlp_scales", return_value="planned tokens"
+            ) as plan, patch.object(input_plan, "_plan_audio_scales", side_effect=AssertionError("text treated as waveform")):
+                result = input_plan.plan_input_scales(
+                    info(task, "audio"), docker_runtime.ImageInfo("unused"),
                     [1], [2], ["off"], 1, tmp, input_scales="8,16", workload_spec_path="text.json",
                 )
                 self.assertEqual(result, "planned tokens")
@@ -104,7 +105,7 @@ class TaskCatalogIntegrationTests(unittest.TestCase):
             ("text-to-audio", "audio", {"text"}, "audio"),
         ):
             with self.subTest(task=task):
-                inputs, outputs = orchestrator._model_io_formats(info(task, family))
+                inputs, outputs = model_schema._model_io_formats(info(task, family))
                 self.assertTrue(required.issubset(inputs["json_schema"]["required"]))
                 self.assertIn(output_type, outputs["json_schema"]["properties"]["output_type"]["enum"])
 

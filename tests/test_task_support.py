@@ -54,7 +54,7 @@ class TaskSupportTests(unittest.TestCase):
                             for guard in ("require_packet_latency_prerequisites", "require_cpu_energy_prerequisites", "require_mips_prerequisites", "_start_tmux_terminal_log"):
                                 stack.enter_context(patch.object(run, guard, return_value=None))
                         stack.enter_context(patch("acprof.host.detect.detect_task", return_value=task_info(tag, family)))
-                        build_target = "acprof.host.orchestrator.prepare_image" if module is run else "acprof.cli.probe.prepare_image"
+                        build_target = "acprof.host.docker_runtime.prepare_image" if module is run else "acprof.cli.probe.prepare_image"
                         build = stack.enter_context(patch(build_target, side_effect=AssertionError("unsupported task reached image preparation")))
                         stderr = stack.enter_context(redirect_stderr(io.StringIO()))
                         stack.enter_context(redirect_stdout(io.StringIO()))

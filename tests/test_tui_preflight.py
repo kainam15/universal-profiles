@@ -20,15 +20,15 @@ class TuiPreflightTests(unittest.TestCase):
         environment.start()
         self.addCleanup(environment.stop)
         which = patch(
-            "acprof.cli.tui_core.shutil.which",
+            "acprof.tui.diagnostics.shutil.which",
             side_effect=lambda command, **kwargs: f"/usr/bin/{command}",
         )
         self.which = which.start()
         self.addCleanup(which.stop)
-        host_platform = patch("acprof.cli.tui_core.platform.platform", return_value="test Linux")
+        host_platform = patch("acprof.tui.diagnostics.platform.platform", return_value="test Linux")
         host_platform.start()
         self.addCleanup(host_platform.stop)
-        rapl = patch("acprof.cli.tui_core._readable_rapl_paths", return_value=["/fake/energy_uj"])
+        rapl = patch("acprof.tui.diagnostics._readable_rapl_paths", return_value=["/fake/energy_uj"])
         rapl.start()
         self.addCleanup(rapl.stop)
 

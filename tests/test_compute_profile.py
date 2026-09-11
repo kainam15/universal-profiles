@@ -146,6 +146,10 @@ class ComputeProfileTests(unittest.TestCase):
             f"{os.path.abspath(payload_file)}:/payloads/input_scale_plan.json:ro",
             cmd,
         )
+        package_root = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "acprof"
+        )
+        self.assertIn(f"{package_root}:/app/acprof:ro", cmd)
         self.assertIn("HF_HUB_OFFLINE=1", cmd)
         self.assertIn("TRANSFORMERS_OFFLINE=1", cmd)
         self.assertIn("MODEL_LOCAL_PATH=/models/model-snapshot", cmd)

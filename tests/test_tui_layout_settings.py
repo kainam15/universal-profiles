@@ -370,7 +370,7 @@ class TuiModelMemoryTests(unittest.IsolatedAsyncioTestCase):
         config = RunConfig.smoke("demo/first")
         app = AcprofTui(config, settings_path=self.settings_path)
         async with app.run_test(size=(120, 30)) as pilot:
-            with patch("acprof.cli.tui.subprocess.Popen", side_effect=OSError("test failure")):
+            with patch("acprof.tui.app.subprocess.Popen", side_effect=OSError("test failure")):
                 app._launch(PendingLaunch(("unused",), "run", config))
                 await app.workers.wait_for_complete()
             await pilot.pause()
@@ -399,7 +399,7 @@ class TuiModelMemoryTests(unittest.IsolatedAsyncioTestCase):
                     with (
                         patch.object(app, "_execute_command") as execute,
                         patch.object(app, "notify") as notify,
-                        patch("acprof.cli.tui.save_settings", side_effect=OSError("disk error")) as save,
+                        patch("acprof.tui.app.save_settings", side_effect=OSError("disk error")) as save,
                     ):
                         app._launch(PendingLaunch(("unused",), "run", config))
                         execute.assert_called_once()
@@ -436,7 +436,7 @@ class TuiModelMemoryTests(unittest.IsolatedAsyncioTestCase):
         save_settings(self.settings_path, self.saved, PROJECT_DIR)
         original = self.settings_path.read_bytes()
         app = AcprofTui(RunConfig.smoke("demo/other"), settings_path=self.settings_path)
-        with patch("acprof.cli.tui.summarize_result_csv") as read_results:
+        with patch("acprof.tui.app.summarize_result_csv") as read_results:
             async with app.run_test(size=(80, 24)) as pilot:
                 app._activate_tab("results-tab")
                 await pilot.pause()
@@ -463,7 +463,7 @@ class TuiModelMemoryTests(unittest.IsolatedAsyncioTestCase):
             # The launched configuration and final log determine the result,
             # even if the form is subsequently edited.
             app.query_one("#output-dir", Input).value = "results/draft"
-            with patch("acprof.cli.tui.save_settings", wraps=save_settings) as save:
+            with patch("acprof.tui.app.save_settings", wraps=save_settings) as save:
                 app._process_finished(
                     "run", 0,
                     ProgressSnapshot(stage="已完成", final_csv=str(csv_path.relative_to(PROJECT_DIR))),
@@ -496,7 +496,7 @@ class TuiModelMemoryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.query_one("#result-csv", Input).value, str(csv_path))
             self.assertIn("成功 1", app.query_one("#result-summary", Static).content)
             original = self.settings_path.read_bytes()
-            with patch("acprof.cli.tui.save_settings") as save:
+            with patch("acprof.tui.app.save_settings") as save:
                 app.summarize_results_button()
                 app.query_one("#result-csv", Input).value = str(csv_path.with_name("missing.csv"))
                 app.summarize_results_button()
@@ -556,7 +556,7 @@ class TuiModelMemoryTests(unittest.IsolatedAsyncioTestCase):
                 original = self.settings_path.read_bytes()
                 app = AcprofTui(settings_path=self.settings_path)
                 async with app.run_test(size=(120, 30)):
-                    with patch("acprof.cli.tui.save_settings", side_effect=OSError("disk error")) as save:
+                    with patch("acprof.tui.app.save_settings", side_effect=OSError("disk error")) as save:
                         app._update_result_summary(str(csv_path))
                         self.assertEqual(save.call_count, 0 if corrupt else 1)
                     self.assertIn("成功 1", app.query_one("#result-summary", Static).content)
@@ -572,7 +572,7 @@ class TuiModelMemoryTests(unittest.IsolatedAsyncioTestCase):
             app._latest_snapshot = ProgressSnapshot(measurement_active=True)
             app._set_busy(True)
             self.assertTrue(app.query_one("#summarize-results", Button).disabled)
-            with patch("acprof.cli.tui.summarize_result_csv") as read_results:
+            with patch("acprof.tui.app.summarize_result_csv") as read_results:
                 app.summarize_results_button()
                 app.slash_command_submitted(Input.Submitted(
                     app.query_one("#slash-command", Input), "/results unused.csv",

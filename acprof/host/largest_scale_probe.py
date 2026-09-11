@@ -13,15 +13,15 @@ from typing import Any, Dict, Sequence
 import requests
 
 from acprof.host.detect import TaskInfo
-from acprof.host.orchestrator import (
+from acprof.host.docker_runtime import (
     ImageInfo,
-    PlannedInputScales,
     RunningContainer,
     _inspect_container_state,
     _sanitize_model_id,
     _start_container_session,
     _stop_container_session,
 )
+from acprof.host.input_plan import PlannedInputScales
 
 
 PROBE_SUMMARY_NAME = "largest_scale_probe.json"

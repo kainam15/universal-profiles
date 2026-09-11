@@ -8,6 +8,7 @@ from contextlib import redirect_stderr
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from acprof.host import docker_runtime, input_plan
 from acprof.host import orchestrator
 from acprof.cli import run
 from acprof.host.detect import TaskInfo
@@ -108,20 +109,20 @@ class NativeDockerGuardTests(unittest.TestCase):
         self.addCleanup(notification_env.stop)
 
     def test_native_linux_host_allows_ubuntu(self) -> None:
-        with patch("acprof.cli.run.platform.system", return_value="Linux"), patch(
-            "acprof.cli.run.platform.release",
+        with patch("acprof.host.preflight.platform.system", return_value="Linux"), patch(
+            "acprof.host.preflight.platform.release",
             return_value="7.0.0-28-generic",
-        ), patch.dict("acprof.cli.run.os.environ", {}, clear=True):
+        ), patch.dict("acprof.host.preflight.os.environ", {}, clear=True):
             run.require_native_linux_host()
 
     def test_native_linux_host_rejects_wsl(self) -> None:
         stderr = io.StringIO()
 
-        with patch("acprof.cli.run.platform.system", return_value="Linux"), patch(
-            "acprof.cli.run.platform.release",
+        with patch("acprof.host.preflight.platform.system", return_value="Linux"), patch(
+            "acprof.host.preflight.platform.release",
             return_value="6.6.87.2-microsoft-standard-WSL2",
         ), patch.dict(
-            "acprof.cli.run.os.environ",
+            "acprof.host.preflight.os.environ",
             {"WSL_DISTRO_NAME": "Ubuntu"},
             clear=True,
         ), self.assertRaises(SystemExit) as raised, redirect_stderr(stderr):
@@ -136,8 +137,8 @@ class NativeDockerGuardTests(unittest.TestCase):
     def test_native_linux_host_rejects_windows(self) -> None:
         stderr = io.StringIO()
 
-        with patch("acprof.cli.run.platform.system", return_value="Windows"), patch.dict(
-            "acprof.cli.run.os.environ",
+        with patch("acprof.host.preflight.platform.system", return_value="Windows"), patch.dict(
+            "acprof.host.preflight.os.environ",
             {},
             clear=True,
         ), self.assertRaises(SystemExit) as raised, redirect_stderr(stderr):
@@ -184,7 +185,7 @@ class NativeDockerGuardTests(unittest.TestCase):
     def test_cgroup_preflight_requires_v2_by_default(self) -> None:
         stderr = io.StringIO()
         with patch(
-            "acprof.cli.run.detect_cgroup_version",
+            "acprof.host.preflight.detect_cgroup_version",
             return_value="v1",
         ), self.assertRaises(SystemExit) as raised, redirect_stderr(stderr):
             run.require_cgroup_prerequisites()
@@ -198,7 +199,7 @@ class NativeDockerGuardTests(unittest.TestCase):
     def test_cgroup_preflight_allows_explicit_v1_compatibility(self) -> None:
         stderr = io.StringIO()
         with patch(
-            "acprof.cli.run.detect_cgroup_version",
+            "acprof.host.preflight.detect_cgroup_version",
             return_value="v1",
         ), redirect_stderr(stderr):
             version = run.require_cgroup_prerequisites(allow_cgroup_v1=True)
@@ -361,8 +362,8 @@ class NativeDockerGuardTests(unittest.TestCase):
     def test_docker_desktop_context_exits_before_docker_info(self) -> None:
         context = SimpleNamespace(returncode=0, stdout="desktop-linux\n", stderr="")
 
-        with patch.dict("acprof.cli.run.os.environ", {}, clear=True), patch(
-            "acprof.cli.run.subprocess.run",
+        with patch.dict("acprof.host.preflight.os.environ", {}, clear=True), patch(
+            "acprof.host.preflight.subprocess.run",
             return_value=context,
         ) as mock_run, patch(
             "builtins.print"
@@ -393,8 +394,8 @@ class NativeDockerGuardTests(unittest.TestCase):
             stderr="",
         )
 
-        with patch.dict("acprof.cli.run.os.environ", {}, clear=True), patch(
-            "acprof.cli.run.subprocess.run",
+        with patch.dict("acprof.host.preflight.os.environ", {}, clear=True), patch(
+            "acprof.host.preflight.subprocess.run",
             side_effect=[context, endpoint, completed],
         ), patch(
             "builtins.print"
@@ -425,8 +426,8 @@ class NativeDockerGuardTests(unittest.TestCase):
             stderr="",
         )
 
-        with patch.dict("acprof.cli.run.os.environ", {}, clear=True), patch(
-            "acprof.cli.run.subprocess.run",
+        with patch.dict("acprof.host.preflight.os.environ", {}, clear=True), patch(
+            "acprof.host.preflight.subprocess.run",
             side_effect=[context, endpoint, completed],
         ):
             run.require_native_docker()
@@ -440,8 +441,8 @@ class NativeDockerGuardTests(unittest.TestCase):
         )
         stderr = io.StringIO()
 
-        with patch.dict("acprof.cli.run.os.environ", {}, clear=True), patch(
-            "acprof.cli.run.subprocess.run",
+        with patch.dict("acprof.host.preflight.os.environ", {}, clear=True), patch(
+            "acprof.host.preflight.subprocess.run",
             side_effect=[context, endpoint],
         ) as mock_run, self.assertRaises(SystemExit) as raised, redirect_stderr(stderr):
             run.require_native_docker()
@@ -456,11 +457,11 @@ class NativeDockerGuardTests(unittest.TestCase):
         stderr = io.StringIO()
 
         with patch.dict(
-            "acprof.cli.run.os.environ",
+            "acprof.host.preflight.os.environ",
             {"DOCKER_HOST": "unix:///var/run/docker-native.sock"},
             clear=True,
         ), patch(
-            "acprof.cli.run.subprocess.run",
+            "acprof.host.preflight.subprocess.run",
             return_value=context,
         ) as mock_run, self.assertRaises(SystemExit) as raised, redirect_stderr(stderr):
             run.require_native_docker()
@@ -536,7 +537,7 @@ class NativeDockerGuardTests(unittest.TestCase):
             detection_method="unit",
         )
         stderr = io.StringIO()
-        built_image = orchestrator.ImageInfo(tag="acprof-nlp-dummy-model:latest")
+        built_image = docker_runtime.ImageInfo(tag="acprof-nlp-dummy-model:latest")
 
         def collect_metadata(**kwargs):
             build_image.assert_called_once_with(task_info, run.PROJECT_DIR)
@@ -580,19 +581,19 @@ class NativeDockerGuardTests(unittest.TestCase):
             "acprof.host.detect.detect_task",
             return_value=task_info,
         ), patch(
-            "acprof.host.orchestrator._run",
+            "acprof.host.docker_runtime._run",
             return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
         ), patch(
-            "acprof.host.orchestrator.build_image",
+            "acprof.host.docker_runtime.build_image",
             return_value=built_image,
         ) as build_image, patch(
-            "acprof.host.orchestrator.collect_static_meta",
+            "acprof.host.static_metadata.collect_static_meta",
             side_effect=collect_metadata,
         ) as collect_static_meta, patch(
-            "acprof.host.orchestrator.write_static_meta_json"
+            "acprof.host.static_metadata.write_static_meta_json"
         ), patch(
-            "acprof.host.orchestrator.plan_input_scales",
-            return_value=orchestrator.PlannedInputScales(
+            "acprof.host.input_plan.plan_input_scales",
+            return_value=input_plan.PlannedInputScales(
                 scales=[1.0],
                 source="unit",
                 plan_file=None,
@@ -671,16 +672,16 @@ class NativeDockerGuardTests(unittest.TestCase):
             "acprof.host.detect.detect_task",
             return_value=task_info,
         ), patch(
-            "acprof.host.orchestrator.prepare_image",
-            return_value=orchestrator.ImageInfo(tag="acprof-nlp-dummy-model:latest"),
+            "acprof.host.docker_runtime.prepare_image",
+            return_value=docker_runtime.ImageInfo(tag="acprof-nlp-dummy-model:latest"),
         ), patch(
-            "acprof.host.orchestrator.collect_static_meta",
+            "acprof.host.static_metadata.collect_static_meta",
             return_value=SimpleNamespace(),
         ), patch(
-            "acprof.host.orchestrator.write_static_meta_json"
+            "acprof.host.static_metadata.write_static_meta_json"
         ), patch(
-            "acprof.host.orchestrator.plan_input_scales",
-            return_value=orchestrator.PlannedInputScales(
+            "acprof.host.input_plan.plan_input_scales",
+            return_value=input_plan.PlannedInputScales(
                 scales=[1.0],
                 source="unit",
                 plan_file=None,
@@ -773,18 +774,18 @@ class NativeDockerGuardTests(unittest.TestCase):
             "acprof.host.detect.detect_task",
             return_value=task_info,
         ), patch(
-            "acprof.host.orchestrator.prepare_image",
-            return_value=orchestrator.ImageInfo(tag="acprof-nlp-dummy-model:latest"),
+            "acprof.host.docker_runtime.prepare_image",
+            return_value=docker_runtime.ImageInfo(tag="acprof-nlp-dummy-model:latest"),
         ), patch(
-            "acprof.host.orchestrator.collect_static_meta",
+            "acprof.host.static_metadata.collect_static_meta",
             return_value=SimpleNamespace(),
         ) as collect_static_meta, patch(
-            "acprof.host.orchestrator.write_static_meta_json"
+            "acprof.host.static_metadata.write_static_meta_json"
         ) as write_static_meta_json, patch(
             "acprof.cli.run.write_collection_history_json"
         ) as write_collection_history_json, patch(
-            "acprof.host.orchestrator.plan_input_scales",
-            return_value=orchestrator.PlannedInputScales(
+            "acprof.host.input_plan.plan_input_scales",
+            return_value=input_plan.PlannedInputScales(
                 scales=[1.0],
                 source="unit",
                 plan_file=None,

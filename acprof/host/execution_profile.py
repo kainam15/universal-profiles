@@ -21,8 +21,16 @@ from time import perf_counter
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from uuid import uuid4
 
-from acprof.host import compute_profile
 from acprof.host.detect import TaskInfo
+from acprof.host.profiler_common import (
+    _base_docker_cmd,
+    _format_scale_value,
+    _load_input_scale_plan_entries,
+    _parse_last_json_line,
+    _run,
+    _runner_args,
+    _write_json_atomic,
+)
 from acprof.host.profiler_progress import (
     ProfilerProgressCallback,
     report_profiler_completion,
@@ -89,16 +97,6 @@ NSYS_FIELDS = (
     "gpu_memcpy_count_per_request_nsys",
     "gpu_memcpy_bytes_per_request_nsys",
 )
-
-# Local aliases make the collector easy to test without changing the shared
-# compute profiler implementation.
-_run = compute_profile._run
-_base_docker_cmd = compute_profile._base_docker_cmd
-_runner_args = compute_profile._runner_args
-_load_input_scale_plan_entries = compute_profile._load_input_scale_plan_entries
-_parse_last_json_line = compute_profile._parse_last_json_line
-_write_json_atomic = compute_profile._write_json_atomic
-
 
 def _finite_float(value: Any) -> Optional[float]:
     try:
@@ -978,7 +976,7 @@ def _massif_artifact_paths(
     input_scale: float,
 ) -> Tuple[str, str]:
     scale_label = _safe_filename_token(
-        compute_profile._format_scale_value(input_scale)
+        _format_scale_value(input_scale)
     )
     filename = f"massif_cpu_{cpu}_mem_{mem}_scale_{scale_label}.out"
     host_report = os.path.join(profile_root, filename)
@@ -1108,7 +1106,7 @@ def _resume_massif_entry(
     repeat: int,
 ) -> Optional[Dict[str, Any]]:
     input_scale = float(entry["input_scale"])
-    scale_label = compute_profile._format_scale_value(input_scale)
+    scale_label = _format_scale_value(input_scale)
     host_report, checkpoint_path = _massif_artifact_paths(
         profile_root=profile_root,
         cpu=cpu,
@@ -1200,7 +1198,7 @@ def _collect_massif_entry(
 ) -> Dict[str, Any]:
     input_scale = float(entry["input_scale"])
     scale_label = _safe_filename_token(
-        compute_profile._format_scale_value(input_scale)
+        _format_scale_value(input_scale)
     )
     host_report, checkpoint_path = _massif_artifact_paths(
         profile_root=profile_root,
@@ -1342,7 +1340,7 @@ def _collect_nsys_entry(
     repeat: int,
 ) -> Dict[str, Any]:
     scale_label = _safe_filename_token(
-        compute_profile._format_scale_value(float(entry["input_scale"]))
+        _format_scale_value(float(entry["input_scale"]))
     )
     stem = f"nsys_cpu_{cpu}_mem_{mem}_scale_{scale_label}"
     filename = f"{stem}.nsys-rep"

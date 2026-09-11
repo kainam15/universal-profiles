@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from acprof.host import docker_runtime
 from acprof.container.handlers.diffusion import DiffusionHandler
 from acprof.host import orchestrator
 from acprof.host.detect import TaskInfo
@@ -272,16 +273,16 @@ class DiffusionMetadataTests(unittest.TestCase):
             return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
         project_dir = str(Path(__file__).resolve().parents[1])
-        with patch.object(orchestrator, "_run", side_effect=fake_run), patch.object(
-            orchestrator,
+        with patch.object(docker_runtime, "_run", side_effect=fake_run), patch.object(
+            docker_runtime,
             "_select_nlp_torch_index_url",
             return_value="https://download.pytorch.org/whl/cu124",
         ), patch.object(
-            orchestrator,
+            docker_runtime,
             "_select_nlp_torch_spec",
             return_value="torch>=2.6,<2.7",
         ):
-            image = orchestrator.build_image(self._task_info(), project_dir)
+            image = docker_runtime.build_image(self._task_info(), project_dir)
 
         self.assertEqual(
             image.tag,

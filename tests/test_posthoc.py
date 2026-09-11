@@ -369,9 +369,9 @@ class PosthocProfileTests(unittest.TestCase):
                 json.dumps(self._torch_plan()), encoding="utf-8"
             )
             with patch(
-                "acprof.cli.posthoc.find_active_processes", return_value=[]
+                "acprof.host.posthoc.service.find_active_processes", return_value=[]
             ), patch(
-                "acprof.cli.posthoc._validate_profiler_runtime",
+                "acprof.host.posthoc.service._validate_profiler_runtime",
                 side_effect=AssertionError("complete Torch plan should be reused"),
             ):
                 summary = posthoc.run_posthoc(root, tools="torch")
@@ -498,9 +498,9 @@ class PosthocProfileTests(unittest.TestCase):
             )
 
             with patch(
-                "acprof.cli.posthoc.find_active_processes", return_value=[]
+                "acprof.host.posthoc.service.find_active_processes", return_value=[]
             ), patch(
-                "acprof.cli.posthoc._validate_profiler_runtime",
+                "acprof.host.posthoc.service._validate_profiler_runtime",
                 side_effect=AssertionError("runtime should not be used"),
             ):
                 summary = posthoc.run_posthoc(root)
@@ -578,7 +578,7 @@ class PosthocProfileTests(unittest.TestCase):
                 return real_replace(source, destination)
 
             with patch(
-                "acprof.cli.posthoc.os.replace",
+                "acprof.host.posthoc.storage.os.replace",
                 side_effect=fail_history_publish,
             ), self.assertRaisesRegex(OSError, "simulated history publish failure"):
                 posthoc.commit_result_files(
@@ -600,14 +600,14 @@ class PosthocProfileTests(unittest.TestCase):
             root = Path(tmp) / "example--model"
             self._write_fixture(root, include_cpu=False)
             with patch(
-                "acprof.cli.posthoc.find_active_processes", return_value=[]
+                "acprof.host.posthoc.service.find_active_processes", return_value=[]
             ), patch(
-                "acprof.cli.posthoc._validate_profiler_runtime"
+                "acprof.host.posthoc.service._validate_profiler_runtime"
             ) as validate_runtime, patch(
-                "acprof.cli.posthoc._collect_compute_plan",
+                "acprof.host.posthoc.service._collect_compute_plan",
                 return_value=self._compute_plan(),
             ) as collect_compute, patch(
-                "acprof.cli.posthoc._collect_execution_plan",
+                "acprof.host.posthoc.service._collect_execution_plan",
                 return_value=self._execution_plan(),
             ) as collect_execution:
                 summary = posthoc.run_posthoc(root)
@@ -626,7 +626,7 @@ class PosthocProfileTests(unittest.TestCase):
             csv_path = self._write_fixture(root)
             original = csv_path.read_bytes()
             with patch(
-                "acprof.cli.posthoc.find_active_processes", return_value=[]
+                "acprof.host.posthoc.service.find_active_processes", return_value=[]
             ):
                 summary = posthoc.run_posthoc(root, dry_run=True)
 
@@ -640,7 +640,7 @@ class PosthocProfileTests(unittest.TestCase):
             root = Path(tmp) / "example--model"
             self._write_fixture(root)
             with patch(
-                "acprof.cli.posthoc.find_active_processes",
+                "acprof.host.posthoc.service.find_active_processes",
                 return_value=[(123, "python run.py --model example/model")],
             ):
                 with self.assertRaisesRegex(posthoc.PosthocError, "still using"):

@@ -8,6 +8,7 @@ from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from acprof.host import docker_runtime, input_plan, model_schema, packet_capture, static_metadata
 from acprof.host import orchestrator
 from acprof.config import (
     CSV_FIELDS,
@@ -67,10 +68,10 @@ class DetectEnvironmentTests(unittest.TestCase):
         }
 
         with patch(
-            "acprof.host.orchestrator.os.sysconf",
+            "acprof.host.static_metadata.os.sysconf",
             side_effect=lambda name: values[name],
         ):
-            total = orchestrator._host_mem_total_bytes()
+            total = static_metadata._host_mem_total_bytes()
 
         self.assertEqual(total, 32_768_000_000)
 
@@ -88,7 +89,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             with open(swappiness_path, "w", encoding="utf-8") as f:
                 f.write("60\n")
 
-            metadata = orchestrator._host_swap_metadata(
+            metadata = static_metadata._host_swap_metadata(
                 proc_meminfo_path=meminfo_path,
                 proc_swaps_path=swaps_path,
                 swappiness_path=swappiness_path,
@@ -112,7 +113,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             with open(swappiness_path, "w", encoding="utf-8") as f:
                 f.write("0\n")
 
-            metadata = orchestrator._host_swap_metadata(
+            metadata = static_metadata._host_swap_metadata(
                 proc_meminfo_path=meminfo_path,
                 proc_swaps_path=swaps_path,
                 swappiness_path=swappiness_path,
@@ -125,19 +126,19 @@ class DetectEnvironmentTests(unittest.TestCase):
 
     def test_docker_storage_metadata_uses_daemon_root_backing_filesystem(self) -> None:
         with patch(
-            "acprof.host.orchestrator._docker_root_dir",
+            "acprof.host.static_metadata._docker_root_dir",
             return_value="/var/lib/docker",
         ), patch(
-            "acprof.host.orchestrator.shutil.disk_usage",
+            "acprof.host.static_metadata.shutil.disk_usage",
             return_value=SimpleNamespace(total=1_000, used=400, free=600),
         ) as disk_usage, patch(
-            "acprof.host.orchestrator._docker_mount_metadata",
+            "acprof.host.static_metadata._docker_mount_metadata",
             return_value=("/dev/nvme0n1p2", "ext4"),
         ), patch(
-            "acprof.host.orchestrator._block_device_storage_type",
+            "acprof.host.static_metadata._block_device_storage_type",
             return_value="nvme_ssd",
         ):
-            metadata = orchestrator._docker_storage_metadata()
+            metadata = static_metadata._docker_storage_metadata()
 
         disk_usage.assert_called_once_with("/var/lib/docker")
         self.assertEqual(
@@ -159,12 +160,12 @@ class DetectEnvironmentTests(unittest.TestCase):
             ({"tran": None, "rota": None}, "unknown"),
         )
         with patch(
-            "acprof.host.orchestrator.shutil.which",
+            "acprof.host.static_metadata.shutil.which",
             return_value="/usr/bin/lsblk",
         ):
             for device_metadata, expected in cases:
                 with self.subTest(expected=expected), patch(
-                    "acprof.host.orchestrator._run",
+                    "acprof.host.static_metadata._run",
                     return_value=SimpleNamespace(
                         returncode=0,
                         stdout=json.dumps({"blockdevices": [device_metadata]}),
@@ -172,18 +173,18 @@ class DetectEnvironmentTests(unittest.TestCase):
                     ),
                 ):
                     self.assertEqual(
-                        orchestrator._block_device_storage_type("/dev/test"),
+                        static_metadata._block_device_storage_type("/dev/test"),
                         expected,
                     )
 
     def test_docker_storage_metadata_is_unknown_when_daemon_root_is_unavailable(self) -> None:
         with patch(
-            "acprof.host.orchestrator._docker_root_dir",
+            "acprof.host.static_metadata._docker_root_dir",
             return_value=None,
         ), patch(
-            "acprof.host.orchestrator.shutil.disk_usage",
+            "acprof.host.static_metadata.shutil.disk_usage",
         ) as disk_usage:
-            metadata = orchestrator._docker_storage_metadata()
+            metadata = static_metadata._docker_storage_metadata()
 
         disk_usage.assert_not_called()
         self.assertIsNone(metadata["docker_storage_total_bytes"])
@@ -191,8 +192,8 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(metadata["docker_storage_type"], "unknown")
 
     def test_select_nlp_torch_index_url_uses_cu124_for_cuda_12_4_driver(self) -> None:
-        with patch("acprof.host.orchestrator.shutil.which", return_value="/usr/bin/nvidia-smi"), patch(
-            "acprof.host.orchestrator._run",
+        with patch("acprof.host.docker_runtime.shutil.which", return_value="/usr/bin/nvidia-smi"), patch(
+            "acprof.host.docker_runtime._run",
             return_value=SimpleNamespace(
                 returncode=0,
                 stdout="Driver Version: 550.78    CUDA Version: 12.4\n",
@@ -200,43 +201,43 @@ class DetectEnvironmentTests(unittest.TestCase):
             ),
         ):
             self.assertEqual(
-                orchestrator._select_nlp_torch_index_url(),
-                orchestrator.CUDA124_NLP_TORCH_INDEX_URL,
+                docker_runtime._select_nlp_torch_index_url(),
+                docker_runtime.CUDA124_NLP_TORCH_INDEX_URL,
             )
 
     def test_select_nlp_torch_index_url_respects_explicit_override(self) -> None:
         with patch.dict(
-            "acprof.host.orchestrator.os.environ",
+            "acprof.host.docker_runtime.os.environ",
             {"ACPROF_NLP_TORCH_INDEX_URL": "https://example.invalid/torch"},
             clear=True,
         ):
             self.assertEqual(
-                orchestrator._select_nlp_torch_index_url(),
+                docker_runtime._select_nlp_torch_index_url(),
                 "https://example.invalid/torch",
             )
 
     def test_select_nlp_torch_spec_uses_compatible_range_for_cu124(self) -> None:
         self.assertEqual(
-            orchestrator._select_nlp_torch_spec(orchestrator.CUDA124_NLP_TORCH_INDEX_URL),
-            orchestrator.CUDA124_NLP_TORCH_SPEC,
+            docker_runtime._select_nlp_torch_spec(docker_runtime.CUDA124_NLP_TORCH_INDEX_URL),
+            docker_runtime.CUDA124_NLP_TORCH_SPEC,
         )
 
     def test_select_nlp_torch_spec_accepts_cu124_index_with_trailing_slash(self) -> None:
         self.assertEqual(
-            orchestrator._select_nlp_torch_spec(
-                orchestrator.CUDA124_NLP_TORCH_INDEX_URL + "/"
+            docker_runtime._select_nlp_torch_spec(
+                docker_runtime.CUDA124_NLP_TORCH_INDEX_URL + "/"
             ),
-            orchestrator.CUDA124_NLP_TORCH_SPEC,
+            docker_runtime.CUDA124_NLP_TORCH_SPEC,
         )
 
     def test_select_nlp_torch_spec_respects_explicit_override(self) -> None:
         with patch.dict(
-            "acprof.host.orchestrator.os.environ",
+            "acprof.host.docker_runtime.os.environ",
             {"ACPROF_NLP_TORCH_SPEC": "torch==9.9.9"},
             clear=True,
         ):
             self.assertEqual(
-                orchestrator._select_nlp_torch_spec(),
+                docker_runtime._select_nlp_torch_spec(),
                 "torch==9.9.9",
             )
 
@@ -263,20 +264,20 @@ class DetectEnvironmentTests(unittest.TestCase):
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with patch(
-            "acprof.host.orchestrator._select_nlp_torch_index_url",
-            return_value=orchestrator.CUDA124_NLP_TORCH_INDEX_URL,
-        ), patch("acprof.host.orchestrator.os.path.exists", return_value=True), patch(
-            "acprof.host.orchestrator._run",
+            "acprof.host.docker_runtime._select_nlp_torch_index_url",
+            return_value=docker_runtime.CUDA124_NLP_TORCH_INDEX_URL,
+        ), patch("acprof.host.docker_runtime.os.path.exists", return_value=True), patch(
+            "acprof.host.docker_runtime._run",
             side_effect=fake_run,
         ):
-            orchestrator.build_image(task_info, ".")
+            docker_runtime.build_image(task_info, ".")
 
         self.assertIn(
-            f"TORCH_INDEX_URL={orchestrator.CUDA124_NLP_TORCH_INDEX_URL}",
+            f"TORCH_INDEX_URL={docker_runtime.CUDA124_NLP_TORCH_INDEX_URL}",
             commands[1],
         )
         self.assertIn(
-            f"TORCH_PACKAGE_SPEC={orchestrator.CUDA124_NLP_TORCH_SPEC}",
+            f"TORCH_PACKAGE_SPEC={docker_runtime.CUDA124_NLP_TORCH_SPEC}",
             commands[1],
         )
 
@@ -298,20 +299,20 @@ class DetectEnvironmentTests(unittest.TestCase):
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with patch.dict(
-            "acprof.host.orchestrator.os.environ",
+            "acprof.host.docker_runtime.os.environ",
             {"HF_TOKEN": "test-secret-value"},
             clear=True,
         ), patch(
-            "acprof.host.orchestrator.os.path.exists",
+            "acprof.host.docker_runtime.os.path.exists",
             return_value=True,
         ), patch(
-            "acprof.host.orchestrator._run",
+            "acprof.host.docker_runtime._run",
             side_effect=fake_run,
         ), patch(
-            "acprof.host.orchestrator._select_nlp_torch_index_url",
-            return_value=orchestrator.CUDA124_NLP_TORCH_INDEX_URL,
+            "acprof.host.docker_runtime._select_nlp_torch_index_url",
+            return_value=docker_runtime.CUDA124_NLP_TORCH_INDEX_URL,
         ):
-            orchestrator.build_image(task_info, ".")
+            docker_runtime.build_image(task_info, ".")
 
         family_build = commands[1]
         self.assertIn("--secret", family_build)
@@ -347,18 +348,18 @@ class DetectEnvironmentTests(unittest.TestCase):
         )
 
         with patch(
-            "acprof.host.orchestrator._run",
+            "acprof.host.docker_runtime._run",
             side_effect=lambda cmd, **_kwargs: (
                 commands.append(cmd)
                 or SimpleNamespace(returncode=0, stdout="", stderr="")
             ),
         ), patch("requests.get", return_value=ready_response):
-            orchestrator._start_container_session(
+            docker_runtime._start_container_session(
                 task_info=task_info,
                 cpu=1,
                 mem=2,
                 gpu="off",
-                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                 container_name="offline-test",
                 log_prefix="[test]",
             )
@@ -371,7 +372,7 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertNotIn("HUGGING_FACE_HUB_TOKEN", docker_run)
 
     def test_cold_start_breakdown_uses_container_startup_timestamps(self) -> None:
-        metrics = orchestrator._cold_start_breakdown(
+        metrics = docker_runtime._cold_start_breakdown(
             {
                 "load_time_s": 9.0,
                 "startup_timing": {
@@ -420,22 +421,22 @@ class DetectEnvironmentTests(unittest.TestCase):
             "Error": "",
         }
         with patch(
-            "acprof.host.orchestrator._run",
+            "acprof.host.docker_runtime._run",
             side_effect=fake_run,
         ), patch(
-            "acprof.host.orchestrator._inspect_container_state",
+            "acprof.host.docker_runtime._inspect_container_state",
             return_value=container_state,
         ), patch(
             "requests.get",
             side_effect=ConnectionError("connection refused"),
         ):
             with self.assertRaises(RuntimeError) as raised:
-                orchestrator._start_container_session(
+                docker_runtime._start_container_session(
                     task_info=task_info,
                     cpu=1,
                     mem=2,
                     gpu="off",
-                    image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                    image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                     container_name="oom-test",
                     log_prefix="[test]",
                 )
@@ -450,27 +451,27 @@ class DetectEnvironmentTests(unittest.TestCase):
         )
 
     def test_detect_environment_windows_11_with_wsl_kernel(self) -> None:
-        with patch("acprof.host.orchestrator.platform.system", return_value="Windows"), patch(
-            "acprof.host.orchestrator.platform.release", return_value="11"
-        ), patch.dict("acprof.host.orchestrator.os.environ", {}, clear=True), patch(
-            "acprof.host.orchestrator._run",
+        with patch("acprof.host.static_metadata.platform.system", return_value="Windows"), patch(
+            "acprof.host.static_metadata.platform.release", return_value="11"
+        ), patch.dict("acprof.host.static_metadata.os.environ", {}, clear=True), patch(
+            "acprof.host.static_metadata._run",
             return_value=SimpleNamespace(
                 returncode=0,
                 stdout="6.6.87.2-microsoft-standard-WSL2\n",
                 stderr="",
             ),
         ):
-            self.assertEqual(orchestrator._detect_environment(), "windows11+wsl")
+            self.assertEqual(static_metadata._detect_environment(), "windows11+wsl")
 
     def test_detect_environment_linux_ubuntu_without_wsl(self) -> None:
-        with patch("acprof.host.orchestrator.platform.system", return_value="Linux"), patch(
-            "acprof.host.orchestrator.platform.freedesktop_os_release",
+        with patch("acprof.host.static_metadata.platform.system", return_value="Linux"), patch(
+            "acprof.host.static_metadata.platform.freedesktop_os_release",
             return_value={"ID": "ubuntu", "VERSION_ID": "24.04"},
-        ), patch.dict("acprof.host.orchestrator.os.environ", {}, clear=True), patch(
-            "acprof.host.orchestrator._run",
+        ), patch.dict("acprof.host.static_metadata.os.environ", {}, clear=True), patch(
+            "acprof.host.static_metadata._run",
             return_value=SimpleNamespace(returncode=1, stdout="", stderr="docker unavailable"),
         ):
-            self.assertEqual(orchestrator._detect_environment(), "ubuntu24.04")
+            self.assertEqual(static_metadata._detect_environment(), "ubuntu24.04")
 
     def test_collect_static_meta_includes_environment(self) -> None:
         task_info = TaskInfo(
@@ -490,14 +491,14 @@ class DetectEnvironmentTests(unittest.TestCase):
             model_metadata_source="huggingface_hub",
         )
 
-        with patch("acprof.host.orchestrator._detect_environment", return_value="windows11+wsl"), patch(
-            "acprof.host.orchestrator._get_gpu_name", return_value="Test GPU"
+        with patch("acprof.host.static_metadata._detect_environment", return_value="windows11+wsl"), patch(
+            "acprof.host.static_metadata._get_gpu_name", return_value="Test GPU"
         ), patch(
-            "acprof.host.orchestrator._get_gpu_mem_total_bytes", return_value=987654321
+            "acprof.host.static_metadata._get_gpu_mem_total_bytes", return_value=987654321
         ), patch(
-            "acprof.host.orchestrator._host_mem_total_bytes", return_value=64_000_000_000
+            "acprof.host.static_metadata._host_mem_total_bytes", return_value=64_000_000_000
         ), patch(
-            "acprof.host.orchestrator._host_swap_metadata",
+            "acprof.host.static_metadata._host_swap_metadata",
             return_value={
                 "host_swap_total_bytes": 2_000_000_000,
                 "host_swap_used_bytes_at_start": 100_000_000,
@@ -505,9 +506,9 @@ class DetectEnvironmentTests(unittest.TestCase):
                 "host_vm_swappiness": 60,
             },
         ), patch(
-            "acprof.host.orchestrator._docker_model_cache_bytes", return_value=123
-        ), patch("acprof.host.orchestrator._docker_image_size_bytes", return_value=456), patch(
-            "acprof.host.orchestrator._docker_storage_metadata",
+            "acprof.host.static_metadata._docker_model_cache_bytes", return_value=123
+        ), patch("acprof.host.static_metadata._docker_image_size_bytes", return_value=456), patch(
+            "acprof.host.static_metadata._docker_storage_metadata",
             return_value={
                 "docker_storage_total_bytes": 1_000_000,
                 "docker_storage_available_bytes_at_start": 600_000,
@@ -516,24 +517,24 @@ class DetectEnvironmentTests(unittest.TestCase):
                 "docker_storage_type": "nvme_ssd",
             },
         ), patch(
-            "acprof.host.orchestrator._cpu_power_metadata",
+            "acprof.host.static_metadata._cpu_power_metadata",
             return_value=("rapl", "rapl_cgroup_cpu_share"),
         ), patch(
-            "acprof.host.orchestrator._cpu_frequency_policy_metadata",
+            "acprof.host.static_metadata._cpu_frequency_policy_metadata",
             return_value=("performance", "on"),
         ):
-            meta = orchestrator.collect_static_meta(
+            meta = static_metadata.collect_static_meta(
                 task_info=task_info,
-                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                 batch_size=1,
                 input_scale_type="seq_length",
                 run_command="python run.py --model google-bert/bert-base-uncased",
                 cgroup_version="v2",
                 cgroup_collection_mode="strict_v2",
             )
-            disabled_meta = orchestrator.collect_static_meta(
+            disabled_meta = static_metadata.collect_static_meta(
                 task_info=task_info,
-                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                 batch_size=1,
                 input_scale_type="seq_length",
                 run_command=(
@@ -631,7 +632,7 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(STATIC_META_FIELDS[-1], "execution_profile_provenance")
 
     def test_enrich_static_meta_preserves_native_json_types(self) -> None:
-        base = orchestrator.StaticMeta(
+        base = static_metadata.StaticMeta(
             model_name="model",
             model_revision="main",
             task_family="nlp",
@@ -665,7 +666,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             cpu_boost="off",
         )
 
-        enriched = orchestrator.enrich_static_meta(
+        enriched = static_metadata.enrich_static_meta(
             base,
             {
                 "compute_profile_tools": ["torch_profiler_eager", "ncu"],
@@ -685,7 +686,7 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertTrue(enriched.compute_profiles_retained)
         self.assertEqual(enriched.run_command, base.run_command)
 
-        execution_enriched = orchestrator.enrich_static_meta(
+        execution_enriched = static_metadata.enrich_static_meta(
             enriched,
             {
                 "execution_profile_schema_version": 1,
@@ -706,7 +707,7 @@ class DetectEnvironmentTests(unittest.TestCase):
         )
 
     def test_write_static_meta_json_includes_enriched_fields_atomically(self) -> None:
-        meta = orchestrator.StaticMeta(
+        meta = static_metadata.StaticMeta(
             model_name="model",
             model_revision="main",
             task_family="nlp",
@@ -752,7 +753,7 @@ class DetectEnvironmentTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "static_meta.json")
-            orchestrator.write_static_meta_json(meta, path)
+            static_metadata.write_static_meta_json(meta, path)
             with open(path, "r", encoding="utf-8") as f:
                 payload = json.load(f)
             leftovers = [
@@ -790,7 +791,7 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(leftovers, [])
 
     def test_compute_plan_adds_static_flops_by_input_scale(self) -> None:
-        meta = orchestrator.StaticMeta(
+        meta = static_metadata.StaticMeta(
             model_name="model",
             model_revision="main",
             task_family="nlp",
@@ -843,7 +844,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             path = os.path.join(tmp, "compute_profile_plan.json")
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(plan, f)
-            enriched = orchestrator.enrich_static_meta_from_compute_plan(
+            enriched = static_metadata.enrich_static_meta_from_compute_plan(
                 meta,
                 path,
             )
@@ -883,9 +884,9 @@ class DetectEnvironmentTests(unittest.TestCase):
             with open(os.path.join(cpufreq, "boost"), "w", encoding="utf-8") as f:
                 f.write("1\n")
 
-            with patch("acprof.host.orchestrator.CPU_SYSFS_ROOT", tmp):
+            with patch("acprof.host.static_metadata.CPU_SYSFS_ROOT", tmp):
                 self.assertEqual(
-                    orchestrator._cpu_frequency_policy_metadata(),
+                    static_metadata._cpu_frequency_policy_metadata(),
                     ("performance", "on"),
                 )
 
@@ -899,7 +900,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             model_revision="main",
             detection_method="hub_api",
         )
-        session = orchestrator.RunningContainer(
+        session = docker_runtime.RunningContainer(
             name="probe_google-bert--bert-base-uncased_1c_4g_off",
             base_url="http://127.0.0.1:8106",
             host_port=8106,
@@ -907,12 +908,12 @@ class DetectEnvironmentTests(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as tmp, patch(
-            "acprof.host.orchestrator._start_probe_session",
+            "acprof.host.input_plan._start_probe_session",
             return_value=session,
         ), patch(
-            "acprof.host.orchestrator._stop_container_session",
+            "acprof.host.input_plan._stop_container_session",
         ), patch(
-            "acprof.host.orchestrator._post_probe_payload",
+            "acprof.host.input_plan._post_probe_payload",
             return_value={
                 "effective_input_scale": 254.0,
                 "truncated_by_limit": False,
@@ -920,9 +921,9 @@ class DetectEnvironmentTests(unittest.TestCase):
                 "payload": {"text": "hello [MASK]", "params": {}},
             },
         ):
-            planned = orchestrator.plan_input_scales(
+            planned = input_plan.plan_input_scales(
                 task_info=task_info,
-                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                 cpu_list=[1],
                 mem_list=[4],
                 gpu_list=["off"],
@@ -964,9 +965,9 @@ class DetectEnvironmentTests(unittest.TestCase):
             with self.subTest(task_family=task_family), tempfile.TemporaryDirectory() as tmp, patch(
                 "acprof.workloads.get_generator",
                 return_value=FakeWorkloadGenerator(),
-            ), patch.object(orchestrator, "_start_probe_session", return_value=SimpleNamespace(name="probe")), patch.object(
-                orchestrator, "_stop_container_session"
-            ), patch.object(orchestrator, "_request_scale_meta", return_value={
+            ), patch.object(input_plan, "_start_probe_session", return_value=SimpleNamespace(name="probe")), patch.object(
+                input_plan, "_stop_container_session"
+            ), patch.object(input_plan, "_request_scale_meta", return_value={
                 "max_effective_input_scale": 512, "input_scale_type": "context_length",
                 "reason": "test model context limit",
             }
@@ -981,9 +982,9 @@ class DetectEnvironmentTests(unittest.TestCase):
                     detection_method="unit",
                 )
 
-                planned = orchestrator.plan_input_scales(
+                planned = input_plan.plan_input_scales(
                     task_info=task_info,
-                    image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                    image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                     cpu_list=[1],
                     mem_list=[4],
                     gpu_list=["off"],
@@ -1037,7 +1038,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             detection_method="unit",
         )
 
-        expected = orchestrator.PlannedInputScales(
+        expected = input_plan.PlannedInputScales(
             scales=[1.0, 2.0, 5.0, 10.0, 20.0, 30.0],
             source="workload_spec",
             plan_file="/tmp/input_scale_plan.json",
@@ -1046,13 +1047,13 @@ class DetectEnvironmentTests(unittest.TestCase):
             "acprof.workloads.get_generator",
             return_value=FakeWorkloadGenerator(),
         ), patch.object(
-            orchestrator,
+            input_plan,
             "_plan_audio_scales",
             return_value=expected,
         ) as plan_audio:
-            planned = orchestrator.plan_input_scales(
+            planned = input_plan.plan_input_scales(
                 task_info=task_info,
-                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                 cpu_list=[1],
                 mem_list=[4],
                 gpu_list=["off"],
@@ -1082,18 +1083,18 @@ class DetectEnvironmentTests(unittest.TestCase):
             "model_type": "whisper",
             "reason": "fixed frontend; 448 is an output limit",
         }
-        session = orchestrator.RunningContainer(
+        session = docker_runtime.RunningContainer(
             name="probe",
             base_url="http://127.0.0.1:1",
             host_port=1,
             cold_start_s=0.0,
         )
         with patch.object(
-            orchestrator,
+            input_plan,
             "_request_scale_meta",
             return_value=response,
         ):
-            metadata = orchestrator._request_audio_scale_meta(session, {})
+            metadata = input_plan._request_audio_scale_meta(session, {})
 
         self.assertTrue(metadata["short_form_fixed_padding"])
         self.assertEqual(metadata["fixed_frontend_num_samples"], 480000)
@@ -1112,7 +1113,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             detection_method="unit",
         )
 
-        _, output_format = orchestrator._model_io_formats(task_info)
+        _, output_format = model_schema._model_io_formats(task_info)
         properties = output_format["json_schema"]["properties"]
 
         self.assertEqual(properties["effective_input_scale"], {"type": "number"})
@@ -1135,9 +1136,9 @@ class DetectEnvironmentTests(unittest.TestCase):
             ValueError,
             "implemented for cv, audio, multimodal, diffusion and structured",
         ):
-            orchestrator.plan_input_scales(
+            input_plan.plan_input_scales(
                 task_info=task_info,
-                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                 cpu_list=[1],
                 mem_list=[4],
                 gpu_list=["off"],
@@ -1157,15 +1158,15 @@ class DetectEnvironmentTests(unittest.TestCase):
             detection_method="unit",
         )
         with tempfile.TemporaryDirectory() as tmp, patch.object(
-            orchestrator,
+            input_plan,
             "_start_probe_session",
         ) as start_probe, self.assertRaisesRegex(
             ValueError,
             "long-form workload",
         ):
-            orchestrator._plan_audio_scales(
+            input_plan._plan_audio_scales(
                 task_info=task_info,
-                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                 cpu_list=[1],
                 mem_list=[4],
                 gpu_list=["off"],
@@ -1208,7 +1209,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             "acprof.workloads.get_generator",
             return_value=FakeWorkloadGenerator(),
         ):
-            planned = orchestrator._materialize_scale_plan(
+            planned = input_plan._materialize_scale_plan(
                 task_info=task_info,
                 scales=[1.0, 2.0],
                 batch_size=1,
@@ -1256,7 +1257,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             {"ACPROF_WECOM_WEBHOOK_URL": "https://example.invalid/secret"},
         ), patch(
             "acprof.host.orchestrator._start_container_session",
-            return_value=orchestrator.RunningContainer(
+            return_value=docker_runtime.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_off",
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
@@ -1277,7 +1278,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 cpu=1,
                 mem=4,
                 gpu="off",
-                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                 output_dir="results/test-unit",
                 project_dir=".",
                 warmup=0,
@@ -1321,7 +1322,7 @@ class DetectEnvironmentTests(unittest.TestCase):
 
         with patch(
             "acprof.host.orchestrator._start_container_session",
-            return_value=orchestrator.RunningContainer(
+            return_value=docker_runtime.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_off",
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
@@ -1335,7 +1336,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 cpu=1,
                 mem=4,
                 gpu="off",
-                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                 output_dir="results/test-unit",
                 project_dir=".",
                 warmup=0,
@@ -1371,7 +1372,7 @@ class DetectEnvironmentTests(unittest.TestCase):
 
         with patch(
             "acprof.host.orchestrator._start_container_session",
-            return_value=orchestrator.RunningContainer(
+            return_value=docker_runtime.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_off",
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
@@ -1391,7 +1392,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 cpu=1,
                 mem=4,
                 gpu="off",
-                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                 output_dir="results/test-unit",
                 project_dir=".",
                 warmup=0,
@@ -1429,7 +1430,7 @@ class DetectEnvironmentTests(unittest.TestCase):
 
         with patch(
             "acprof.host.orchestrator._start_container_session",
-            return_value=orchestrator.RunningContainer(
+            return_value=docker_runtime.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_off",
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
@@ -1443,7 +1444,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 cpu=1,
                 mem=4,
                 gpu="off",
-                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                 output_dir="results/test-unit",
                 project_dir=".",
                 warmup=0,
@@ -1486,7 +1487,7 @@ class DetectEnvironmentTests(unittest.TestCase):
 
         with patch(
             "acprof.host.orchestrator._start_container_session",
-            return_value=orchestrator.RunningContainer(
+            return_value=docker_runtime.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_on",
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
@@ -1500,7 +1501,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 cpu=1,
                 mem=4,
                 gpu="on",
-                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                 output_dir="results/test-unit",
                 project_dir=".",
                 warmup=0,
@@ -1536,7 +1537,7 @@ class DetectEnvironmentTests(unittest.TestCase):
 
         with patch(
             "acprof.host.orchestrator._start_container_session",
-            return_value=orchestrator.RunningContainer(
+            return_value=docker_runtime.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_on",
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
@@ -1550,7 +1551,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 cpu=1,
                 mem=4,
                 gpu="on",
-                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                 output_dir="results/test-unit",
                 project_dir=".",
                 warmup=0,
@@ -1582,7 +1583,7 @@ class DetectEnvironmentTests(unittest.TestCase):
 
         with patch(
             "acprof.host.orchestrator._start_container_session",
-            return_value=orchestrator.RunningContainer(
+            return_value=docker_runtime.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_on",
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
@@ -1600,7 +1601,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                     cpu=1,
                     mem=4,
                     gpu="on",
-                    image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                    image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                     output_dir="results/test-unit",
                     project_dir=".",
                     warmup=0,
@@ -1674,7 +1675,7 @@ class DetectEnvironmentTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmp_dir, patch(
             "acprof.host.orchestrator._start_container_session",
-            return_value=orchestrator.RunningContainer(
+            return_value=docker_runtime.RunningContainer(
                 name="case_google-bert--bert-base-uncased_2c_2g_on",
                 base_url="http://127.0.0.1:8204",
                 host_port=8204,
@@ -1684,7 +1685,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             "acprof.host.orchestrator._resolve_packet_latency_runtime",
             return_value=None,
         ), patch(
-            "acprof.host.orchestrator._inspect_container_state",
+            "acprof.host.docker_runtime._inspect_container_state",
             return_value=container_state,
         ) as inspect_state, patch(
             "acprof.host.orchestrator._stop_container_session"
@@ -1697,7 +1698,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 cpu=2,
                 mem=2,
                 gpu="on",
-                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                 output_dir=tmp_dir,
                 project_dir=".",
                 warmup=0,
@@ -1747,7 +1748,7 @@ class DetectEnvironmentTests(unittest.TestCase):
 
         with patch(
             "acprof.host.orchestrator._start_container_session",
-            return_value=orchestrator.RunningContainer(
+            return_value=docker_runtime.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_off",
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
@@ -1771,7 +1772,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                     cpu=1,
                     mem=4,
                     gpu="off",
-                    image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                    image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                     output_dir="results/test-unit",
                     project_dir=".",
                     warmup=0,
@@ -1818,7 +1819,7 @@ class DetectEnvironmentTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_dir, patch(
             "acprof.host.orchestrator._start_container_session",
-            return_value=orchestrator.RunningContainer(
+            return_value=docker_runtime.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_off",
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
@@ -1841,7 +1842,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 cpu=1,
                 mem=4,
                 gpu="off",
-                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                 output_dir=tmp_dir,
                 project_dir=".",
                 warmup=1,
@@ -1937,7 +1938,7 @@ class DetectEnvironmentTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_dir, patch(
             "acprof.host.orchestrator._start_container_session",
-            return_value=orchestrator.RunningContainer(
+            return_value=docker_runtime.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_off",
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
@@ -1960,7 +1961,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 cpu=1,
                 mem=4,
                 gpu="off",
-                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                 output_dir=tmp_dir,
                 project_dir=".",
                 warmup=0,
@@ -2008,7 +2009,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 cpu=1,
                 mem=2,
                 gpu="on",
-                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                 output_dir=tmp_dir,
                 project_dir=".",
                 warmup=1,
@@ -2065,7 +2066,7 @@ class DetectEnvironmentTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_dir, patch(
             "acprof.host.orchestrator._start_container_session",
-            return_value=orchestrator.RunningContainer(
+            return_value=docker_runtime.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_on",
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
@@ -2079,7 +2080,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 cpu=1,
                 mem=4,
                 gpu="on",
-                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                 output_dir=tmp_dir,
                 project_dir=".",
                 warmup=0,
@@ -2110,7 +2111,7 @@ class DetectEnvironmentTests(unittest.TestCase):
         stdout = StringIO()
         with tempfile.TemporaryDirectory() as tmp_dir, patch(
             "acprof.host.orchestrator._start_container_session",
-            return_value=orchestrator.RunningContainer(
+            return_value=docker_runtime.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_on",
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
@@ -2124,7 +2125,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 cpu=1,
                 mem=4,
                 gpu="on",
-                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                 output_dir=tmp_dir,
                 project_dir=".",
                 warmup=0,
@@ -2162,7 +2163,7 @@ class DetectEnvironmentTests(unittest.TestCase):
         stdout = StringIO()
         with tempfile.TemporaryDirectory() as tmp_dir, patch(
             "acprof.host.orchestrator._start_container_session",
-            return_value=orchestrator.RunningContainer(
+            return_value=docker_runtime.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_off",
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
@@ -2176,7 +2177,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 cpu=1,
                 mem=4,
                 gpu="off",
-                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                 output_dir=tmp_dir,
                 project_dir=".",
                 warmup=0,
@@ -2196,8 +2197,8 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertIn("host background processes", message)
 
     def test_resolve_packet_latency_runtime_requires_local_linux_tools(self) -> None:
-        with patch("acprof.host.orchestrator.shutil.which", return_value=None):
-            runtime = orchestrator._resolve_packet_latency_runtime(
+        with patch("acprof.host.packet_capture.shutil.which", return_value=None):
+            runtime = packet_capture._resolve_packet_latency_runtime(
                 project_dir="/repo",
                 pcap_file="/repo/results/sniff_case.pcap",
                 sniff_iface="docker0",
@@ -2221,11 +2222,11 @@ class DetectEnvironmentTests(unittest.TestCase):
                 )
             return SimpleNamespace(returncode=1, stdout="", stderr="")
 
-        with patch("acprof.host.orchestrator.shutil.which", side_effect=fake_which), patch(
-            "acprof.host.orchestrator._run",
+        with patch("acprof.host.packet_capture.shutil.which", side_effect=fake_which), patch(
+            "acprof.host.packet_capture._run",
             side_effect=fake_run,
         ):
-            runtime = orchestrator._resolve_packet_latency_runtime(
+            runtime = packet_capture._resolve_packet_latency_runtime(
                 project_dir="/repo",
                 pcap_file="/repo/results/sniff_case.pcap",
                 sniff_iface="docker0",
@@ -2263,18 +2264,18 @@ class DetectEnvironmentTests(unittest.TestCase):
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
             return SimpleNamespace(returncode=1, stdout="", stderr="")
 
-        with patch("acprof.host.orchestrator.shutil.which", side_effect=fake_which), patch(
-            "acprof.host.orchestrator.os.geteuid",
+        with patch("acprof.host.packet_capture.shutil.which", side_effect=fake_which), patch(
+            "acprof.host.packet_capture.os.geteuid",
             return_value=1000,
         ), patch.dict(
-            "acprof.host.orchestrator.os.environ",
+            "acprof.host.packet_capture.os.environ",
             {"ACPROF_SUDO_PASSWORD": "secret"},
             clear=True,
         ), patch(
-            "acprof.host.orchestrator._run",
+            "acprof.host.packet_capture._run",
             side_effect=fake_run,
         ):
-            runtime = orchestrator._resolve_packet_latency_runtime(
+            runtime = packet_capture._resolve_packet_latency_runtime(
                 project_dir="/repo",
                 pcap_file="/repo/results/sniff_case.pcap",
                 sniff_iface="docker0",
@@ -2301,7 +2302,7 @@ class DetectEnvironmentTests(unittest.TestCase):
 
         with patch(
             "acprof.host.orchestrator._start_container_session",
-            return_value=orchestrator.RunningContainer(
+            return_value=docker_runtime.RunningContainer(
                 name="case_google-bert--bert-base-uncased_1c_4g_off",
                 base_url="http://127.0.0.1:8106",
                 host_port=8106,
@@ -2310,13 +2311,13 @@ class DetectEnvironmentTests(unittest.TestCase):
         ), patch("acprof.host.orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
             "acprof.host.orchestrator._stop_container_session"
         ):
-            with self.assertRaises(orchestrator.PacketLatencyError) as raised:
+            with self.assertRaises(packet_capture.PacketLatencyError) as raised:
                 orchestrator.run_single_case(
                     task_info=task_info,
                     cpu=1,
                     mem=4,
                     gpu="off",
-                    image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                    image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                     output_dir="results/test-unit",
                     project_dir=".",
                     warmup=0,
@@ -2337,7 +2338,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             with open(csv_path, "w", encoding="utf-8", newline="") as f:
                 f.write("latency_s,status\nnan,ok\n")
 
-            with self.assertRaises(orchestrator.PacketLatencyError) as raised:
+            with self.assertRaises(packet_capture.PacketLatencyError) as raised:
                 orchestrator._assert_packet_latency_csv_complete(csv_path)
 
         self.assertIn("latency_s is missing", str(raised.exception))
@@ -2401,7 +2402,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             mem = kwargs["mem"]
             gpu = kwargs["gpu"]
             calls.append((cpu, mem, gpu, kwargs["request_timeout_seconds"]))
-            model_tag = orchestrator._sanitize_model_id(task_info.model_id)
+            model_tag = docker_runtime._sanitize_model_id(task_info.model_id)
             path = os.path.join(
                 kwargs["output_dir"],
                 f"result_case_{model_tag}_{cpu}c_{mem}g_{gpu}.csv",
@@ -2438,7 +2439,7 @@ class DetectEnvironmentTests(unittest.TestCase):
         ):
             result_csvs = orchestrator.run_matrix(
                 task_info=task_info,
-                image_info=orchestrator.ImageInfo(tag="acprof-test:latest"),
+                image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
                 cpu_list=[2, 1],
                 mem_list=[4, 2],
                 gpu_list=["off"],

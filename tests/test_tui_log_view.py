@@ -76,7 +76,7 @@ class TuiLogViewTests(unittest.IsolatedAsyncioTestCase):
 
             # Exercise the existing process-output delivery while maximized;
             # no collection command or external process may start in this test.
-            with patch("acprof.cli.tui.subprocess.Popen", side_effect=AssertionError("unexpected process")):
+            with patch("acprof.tui.app.subprocess.Popen", side_effect=AssertionError("unexpected process")):
                 app._process_started(12345, "test")
                 app._consume_process_line("[build] second line", None, False)
                 await pilot.pause()

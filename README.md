@@ -782,8 +782,12 @@ Hub 已明确给出的未知任务标签会保留并提示，不再被通用架�
 
 ```text
 acprof/
-├── cli/          # run / probe / plot / posthoc CLI 与 TUI
-├── host/         # 模型检测、容器编排、client、compute profile
+├── cli/          # 命令参数、入口调度及旧导入路径的兼容层
+├── tui/          # Textual 应用、页面、命令、进度、设置与控件
+├── analysis/     # 延迟模型拟合、验证与报告
+├── plotting/     # CSV 整理、图表配置与渲染
+├── host/         # 预检、输入计划、镜像与容器、采集编排、profiler
+│   └── posthoc/  # 补采计划、指标回填、备份与事务式写入
 ├── container/    # 容器内 server、模型下载与 task handlers
 ├── workloads/    # 各任务族 workload generator
 ├── monitors/     # GPU / CPU / resource / perf side-channel monitors
@@ -798,9 +802,14 @@ tui.py            # Textual 交互式终端界面入口
 acprof-tui         # 自动使用项目 .venv 的便捷启动器
 ```
 
-终端界面的交互逻辑位于 `acprof/cli/tui.py`，布局与主题样式位于 `acprof/cli/tui.tcss`；
-`tui_core.py` 负责命令、验证和进度解析，`tui_settings.py` 负责本地设置的验证与原子保存，
-`tui_i18n.py` 集中管理界面文案与语言选项。
+终端界面的交互与进程生命周期位于 `acprof/tui/app.py`，页面构建位于 `views.py`，
+样式位于同包的 `tui.tcss`；`commands.py`、`progress.py`、`diagnostics.py` 分别管理
+命令配置、进度解析、预检与结果摘要，`settings.py` 管理本地设置，`i18n.py` 管理界面文案。
+原来的 `acprof.cli.tui*` 模块保留兼容导出。
+
+主机公共预检位于 `acprof/host/preflight.py`；`orchestrator.py` 负责 case/matrix 流程，
+镜像和容器实现、输入计划、静态元数据分别归 `docker_runtime.py`、`input_plan.py`、
+`static_metadata.py`。模块职责、依赖方向和兼容约定见 [代码架构](docs/Architecture.md)。
 
 运行测试：
 

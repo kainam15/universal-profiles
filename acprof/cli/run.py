@@ -14,7 +14,6 @@ from dataclasses import dataclass, replace
 import json
 import math
 import os
-import platform
 import shlex
 import subprocess
 import sys
@@ -31,6 +30,23 @@ from acprof.config import (
     SCALING_DIMENSIONS,
 )
 from acprof.host.env_utils import bootstrap_project_env
+from acprof.host.preflight import (
+    NATIVE_DOCKER_SOCKET,
+    _docker_info_is_docker_desktop,
+    _docker_context_is_docker_desktop,
+    _process_is_wsl,
+    _exit_unsupported_host,
+    require_native_linux_host,
+    detect_cgroup_version,
+    require_cgroup_prerequisites,
+    require_result_cgroup_compatibility,
+    _docker_host_is_native_socket,
+    _exit_nonlocal_docker,
+    _exit_docker_desktop,
+    require_native_docker,
+    require_cpu_energy_prerequisites,
+)
+from acprof.cli.run_args import build_parser as _build_parser
 from acprof.host.collection_history import (
     COLLECTION_HISTORY_NAME,
     empty_collection_history,
@@ -40,6 +56,8 @@ from acprof.host.orchestrator import (
     EnergyProfilingError,
     MatrixProgress,
     MIPSProfilingError,
+)
+from acprof.host.packet_capture import (
     PacketLatencyError,
     require_packet_latency_prerequisites,
 )
@@ -54,7 +72,6 @@ from acprof.notifications import (
 )
 
 PROJECT_DIR = str(Path(__file__).resolve().parents[2])
-NATIVE_DOCKER_SOCKET = "/var/run/docker.sock"
 TMUX_TERMINAL_LOG_FILENAME = "tmux_all.log"
 DEFAULT_NOTIFY_PROVIDER = "auto"
 _ACTIVE_TMUX_TERMINAL_LOG: tuple[str, str, str] | None = None
@@ -484,332 +501,6 @@ def _deliver_run_notification(terminal_log: str | None = None) -> None:
     )
 
 
-def _docker_info_is_docker_desktop(info: str) -> bool:
-    normalized = (info or "").lower()
-    return "docker desktop" in normalized or "name=docker-desktop" in normalized
-
-
-def _docker_context_is_docker_desktop(context_name: str) -> bool:
-    normalized = (context_name or "").strip().lower()
-    return normalized in {"desktop-linux", "docker-desktop"} or normalized.startswith("desktop-")
-
-
-def _process_is_wsl() -> bool:
-    if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"):
-        return True
-    try:
-        return "microsoft" in platform.release().lower()
-    except Exception:
-        return False
-
-
-def _exit_unsupported_host(reason: str) -> None:
-    print(
-        "[infra][ERROR] AC-Prof requires a native Linux host; "
-        f"{reason}.\n\n"
-        "WSL and Docker Desktop do not reliably expose all host-side data "
-        "sources used by this project, including RAPL, perf PMU events, the "
-        "Docker bridge, cgroups, and the NVIDIA runtime.\n\n"
-        "Run AC-Prof directly from native Ubuntu as a normal user:\n"
-        f"  cd {PROJECT_DIR}\n"
-        "  source .venv/bin/activate\n"
-        "  unset DOCKER_HOST DOCKER_CONTEXT\n"
-        "  docker context use default\n"
-        "  python run.py --model <model-id> ...\n",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-
-def require_native_linux_host() -> None:
-    """Exit before profiling when the process is not on native Linux."""
-    try:
-        system = platform.system()
-    except Exception:
-        system = ""
-
-    if system != "Linux":
-        _exit_unsupported_host(f"detected host OS {system or 'unknown'}")
-    if _process_is_wsl():
-        _exit_unsupported_host("WSL was detected")
-
-
-def detect_cgroup_version(
-    *,
-    cgroup_root: str = "/sys/fs/cgroup",
-    proc_self_cgroup_path: str = "/proc/self/cgroup",
-) -> str:
-    """Return the host cgroup hierarchy version used by this process."""
-    if os.path.isfile(os.path.join(cgroup_root, "cgroup.controllers")):
-        return "v2"
-
-    try:
-        with open(proc_self_cgroup_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-    except OSError:
-        return "unknown"
-
-    for raw_line in lines:
-        parts = raw_line.strip().split(":", 2)
-        if len(parts) == 3 and parts[1].strip():
-            return "v1"
-    return "unknown"
-
-
-def require_cgroup_prerequisites(*, allow_cgroup_v1: bool = False) -> str:
-    """Require unified cgroup v2 unless legacy compatibility was requested."""
-    version = detect_cgroup_version()
-    if version == "v2":
-        return version
-
-    if version == "v1" and allow_cgroup_v1:
-        print(
-            "[cgroup][WARN] cgroup v1 legacy compatibility is enabled. "
-            "memory.events and per-cgroup PSI remain unavailable; do not mix "
-            "this run with the formal cgroup v2 dataset.",
-            file=sys.stderr,
-        )
-        return version
-
-    compatibility_hint = (
-        "\n\nFor legacy diagnostics only, rerun with --allow-cgroup-v1. "
-        "That mode is recorded in static_meta.json and is not equivalent to "
-        "the formal cgroup v2 collection mode."
-        if version == "v1"
-        else ""
-    )
-    print(
-        "[cgroup][ERROR] Formal AC-Prof collection requires the unified "
-        "cgroup v2 hierarchy.\n\n"
-        f"Detected: cgroup_version={version}\n\n"
-        "Verify the host before collecting data:\n"
-        "  test -f /sys/fs/cgroup/cgroup.controllers\n"
-        "  cat /proc/self/cgroup\n\n"
-        "Enable unified cgroup v2 in the host boot/systemd configuration, "
-        "reboot, and rerun AC-Prof."
-        f"{compatibility_hint}",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-
-def require_result_cgroup_compatibility(
-    output_dir: str,
-    *,
-    cgroup_version: str,
-) -> None:
-    """Refuse to append partial case rows collected under another hierarchy."""
-    result_dir = Path(output_dir)
-    if not result_dir.is_dir():
-        return
-
-    partial_results = sorted(
-        path
-        for path in result_dir.glob("result_case_*.csv")
-        if path.is_file() and path.stat().st_size > 0
-    )
-    if not partial_results:
-        return
-
-    static_meta_path = result_dir / "static_meta.json"
-    try:
-        with static_meta_path.open("r", encoding="utf-8") as f:
-            existing_meta = json.load(f)
-        existing_version = str(existing_meta.get("cgroup_version") or "unknown")
-    except (OSError, ValueError, TypeError, AttributeError):
-        existing_version = "unknown"
-
-    if existing_version == cgroup_version:
-        return
-
-    examples = ", ".join(path.name for path in partial_results[:3])
-    if len(partial_results) > 3:
-        examples += ", ..."
-    print(
-        "[cgroup][ERROR] Refusing to append to partial result files with a "
-        "different or unknown cgroup provenance.\n\n"
-        f"Current cgroup_version:  {cgroup_version}\n"
-        f"Existing cgroup_version: {existing_version}\n"
-        f"Partial files: {examples}\n\n"
-        "Use a different --output-dir for this run, or archive the existing "
-        "partial result files before retrying. AC-Prof will not mix them "
-        "automatically.",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-
-def _docker_host_is_native_socket(docker_host: str) -> bool:
-    normalized = (docker_host or "").strip()
-    if not normalized:
-        return False
-    if normalized.startswith("unix://"):
-        normalized = normalized[len("unix://"):]
-    elif normalized.startswith("unix:"):
-        normalized = normalized[len("unix:"):]
-    else:
-        return False
-    return os.path.normpath(normalized) == NATIVE_DOCKER_SOCKET
-
-
-def _exit_nonlocal_docker(docker_host: str) -> None:
-    print(
-        "[infra][ERROR] AC-Prof is not connected to the native Docker socket "
-        f"{NATIVE_DOCKER_SOCKET}.\n\n"
-        f"Detected Docker endpoint: {docker_host or 'unknown'}\n\n"
-        "Packet capture, container cgroups, perf PID attachment, and host "
-        "profilers must observe containers created by the local Ubuntu daemon.\n\n"
-        "Switch back to the native daemon before running again:\n"
-        "  unset DOCKER_HOST DOCKER_CONTEXT\n"
-        "  docker context use default\n"
-        f"  test \"$(docker context inspect default --format "
-        f"'{{{{(index .Endpoints \"docker\").Host}}}}')\" = "
-        f"\"unix://{NATIVE_DOCKER_SOCKET}\"\n",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-
-def _exit_docker_desktop() -> None:
-    print(
-        "[infra][ERROR] AC-Prof is currently connected to Docker Desktop, not "
-        "the native Linux Docker daemon.\n\n"
-        "Docker Desktop cannot reliably expose the host /opt profiler installs, "
-        "docker0 traffic, or NVIDIA GPU runtime needed by this project.\n\n"
-        "Switch to native Docker before running again, for example:\n"
-        "  docker context use default\n"
-        "or run one command with:\n"
-        "  DOCKER_HOST=unix:///var/run/docker.sock python run.py ...\n",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-
-def require_native_docker() -> None:
-    """Require the local native-Linux Docker daemon used by host monitors."""
-    try:
-        context_result = subprocess.run(
-            ["docker", "context", "show"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=15,
-        )
-        if (
-            context_result.returncode == 0
-            and _docker_context_is_docker_desktop(context_result.stdout)
-        ):
-            _exit_docker_desktop()
-
-        docker_host = os.environ.get("DOCKER_HOST", "").strip()
-        if not docker_host and context_result.returncode == 0:
-            context_name = context_result.stdout.strip()
-            endpoint_result = subprocess.run(
-                [
-                    "docker",
-                    "context",
-                    "inspect",
-                    context_name,
-                    "--format",
-                    '{{(index .Endpoints "docker").Host}}',
-                ],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=15,
-            )
-            if endpoint_result.returncode == 0:
-                docker_host = endpoint_result.stdout.strip()
-
-        if docker_host and not _docker_host_is_native_socket(docker_host):
-            _exit_nonlocal_docker(docker_host)
-
-        result = subprocess.run(
-            [
-                "docker",
-                "info",
-                "--format",
-                "Name={{.Name}}\n"
-                "OperatingSystem={{.OperatingSystem}}\n"
-                "DockerRootDir={{.DockerRootDir}}",
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=15,
-        )
-    except FileNotFoundError:
-        print(
-            "[infra][ERROR] Docker CLI was not found. Install Docker and run AC-Prof "
-            "against the native Linux Docker daemon.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    except subprocess.TimeoutExpired:
-        print(
-            "[infra][ERROR] `docker info` timed out. Check that the native Linux "
-            "Docker daemon is running before starting AC-Prof.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()
-        print(
-            "[infra][ERROR] Could not talk to Docker. Start the native Linux Docker "
-            f"daemon and retry.\n\nDocker output:\n{detail}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    if _docker_info_is_docker_desktop(result.stdout):
-        _exit_docker_desktop()
-
-
-def require_cpu_energy_prerequisites() -> None:
-    """Exit early when CPU/vCPU energy profiling cannot be collected."""
-    try:
-        from acprof.monitors import energy_cpu
-
-        cpu_power_source = energy_cpu.detect_cpu_power_source()
-        vcpu_power_method = energy_cpu.detect_vcpu_power_method()
-    except Exception as exc:
-        print(
-            "[cpu-energy][ERROR] CPU/vCPU energy profiling is required, but "
-            f"AC-Prof could not run the CPU energy detector: {exc}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    if cpu_power_source == "rapl" and vcpu_power_method == "rapl_cgroup_cpu_share":
-        return
-
-    print(
-        "[cpu-energy][ERROR] CPU/vCPU energy profiling is required, but AC-Prof "
-        "cannot read the Linux RAPL powercap counters needed for CPU package "
-        "energy and estimated vCPU energy.\n\n"
-        f"Detected: cpu_power_source={cpu_power_source}, "
-        f"vcpu_power_method={vcpu_power_method}\n\n"
-        "Common cause on Linux: /sys/class/powercap/intel-rapl:*/energy_uj "
-        "exists but is only readable by root.\n\n"
-        "Check current permissions:\n"
-        "  ls -l /sys/class/powercap/intel-rapl:*/energy_uj\n\n"
-        "Temporary fix for the current boot:\n"
-        "  sudo chmod a+r /sys/class/powercap/intel-rapl:*/energy_uj\n\n"
-        "Persistent fix with systemd-tmpfiles:\n"
-        "  echo 'z /sys/class/powercap/intel-rapl:*/energy_uj 0444 root root -' | "
-        "sudo tee /etc/tmpfiles.d/acprof-rapl.conf\n"
-        "  sudo systemd-tmpfiles --create /etc/tmpfiles.d/acprof-rapl.conf\n\n"
-        "After fixing permissions, rerun AC-Prof as your normal user. Avoid "
-        "`sudo python run.py ...` because it can leave result files owned by root.",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-
 def _cleanup_intermediate_results(csv_paths: list[str], output_dir: str, final_csv: str) -> None:
     """Delete per-run intermediate artifacts after the merged CSV is safely written."""
     if not csv_paths:
@@ -862,267 +553,7 @@ def _run_main():
     start_time = time.perf_counter()
     bootstrap_project_env(PROJECT_DIR)
 
-    parser = argparse.ArgumentParser(
-        description="AC-Prof: Universal HuggingFace Model Profiler",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python run.py --model bert-base-uncased
-  python run.py --model google/vit-base-patch16-224 --cpus 1,2 --mems 4,8 --gpus off
-  python run.py --model amazon/chronos-bolt-base --task-family timeseries --backend chronos
-  python run.py --model stable-diffusion-v1-5/stable-diffusion-v1-5 --gpus on
-        """,
-    )
-
-    # Required
-    parser.add_argument("--model", required=True, help="HuggingFace model ID")
-
-    # Detection overrides
-    parser.add_argument("--task", default=None, help="Override pipeline_tag (e.g., text-generation)")
-    parser.add_argument(
-        "--task-family",
-        default=None,
-        help="Override task family (nlp/cv/audio/timeseries/diffusion/multimodal/structured)",
-    )
-    parser.add_argument("--backend", default=None, help="Override runtime backend (transformers_pipeline/chronos/...)")
-
-    # Resource matrix
-    parser.add_argument("--cpus", default="1,2,4,8", help="CPU core counts (comma-separated)")
-    parser.add_argument("--mems", default="2,4,8,16", help="Memory caps in GB (comma-separated)")
-    parser.add_argument("--gpus", default="off,on", help="GPU modes (comma-separated: off,on)")
-    startup_oom_pruning_group = parser.add_mutually_exclusive_group()
-    startup_oom_pruning_group.add_argument(
-        "--prune-startup-oom",
-        dest="prune_startup_oom",
-        action="store_true",
-        help=(
-            "Explicitly enable the default startup-OOM pruning behavior"
-        ),
-    )
-    startup_oom_pruning_group.add_argument(
-        "--no-prune-startup-oom",
-        dest="prune_startup_oom",
-        action="store_false",
-        help=(
-            "Disable startup-OOM pruning and independently attempt every "
-            "selected CPU/memory/GPU case"
-        ),
-    )
-    parser.set_defaults(prune_startup_oom=True)
-
-    # Experiment parameters
-    parser.add_argument("--batch-size", type=int, default=1, help="Batch size")
-    parser.add_argument("--warmup", type=int, default=2, help="Warmup iterations")
-    parser.add_argument("--repeat", type=int, default=5, help="Measurement repeat count")
-    parser.add_argument(
-        "--repeat-in-window",
-        type=int,
-        default=DEFAULT_REPEAT_IN_WINDOW,
-        help="Requests per energy window; 0 enables auto calibration",
-    )
-    parser.add_argument(
-        "--repeat-window-seconds",
-        type=float,
-        default=DEFAULT_REPEAT_WINDOW_SECONDS,
-        help="Target workload window duration for auto repeat-in-window",
-    )
-    parser.add_argument(
-        "--request-timeout-seconds",
-        type=float,
-        default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
-        help="Timeout for each formal /predict request",
-    )
-    parser.add_argument("--sample-hz", type=float, default=20.0, help="GPU energy sampling rate")
-    parser.add_argument(
-        "--idle-seconds",
-        type=float,
-        default=DEFAULT_IDLE_SECONDS,
-        help="Idle baseline measurement duration before each workload window",
-    )
-    parser.add_argument(
-        "--idle-cooldown-seconds",
-        type=float,
-        default=DEFAULT_IDLE_COOLDOWN_SECONDS,
-        help="Cooldown duration before collecting idle baselines for each workload window",
-    )
-    parser.add_argument(
-        "--idle-debug",
-        action="store_true",
-        help="Write CPU idle baseline timestamps and per-row diagnostic JSONL sidecars",
-    )
-    parser.add_argument("--input-scales", default=None, help="Override input scale values (comma-separated)")
-    parser.add_argument(
-        "--workload-spec",
-        default=None,
-        help=(
-            "Path to a CV, audio, multimodal, diffusion or structured workload manifest. ASR defaults to the "
-            "bundled LibriSpeech short-form manifest."
-        ),
-    )
-
-    # Compute profiling
-    # Kept as a hidden compatibility alias for existing scripts. New commands
-    # should use --compute-profile-tool none, matching execution profiling.
-    parser.add_argument(
-        "--no-compute-profile",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
-        "--compute-profile-tool",
-        choices=("none", "both", "auto", "torch", "ncu", "vendor"),
-        default=DEFAULT_COMPUTE_PROFILE_TOOL,
-        help=(
-            "Compute FLOP profiler (default: none): none skips all compute "
-            "probes; both independently collects torch_profiler_eager logical "
-            "FLOP and ncu GPU executed FLOP; auto is a deprecated alias for both"
-        ),
-    )
-    parser.add_argument("--advisor-root", default=None, help="Host Intel Advisor install root or advisor executable")
-    parser.add_argument("--ncu-root", default=None, help="Host Nsight Compute install root or ncu executable")
-    parser.add_argument("--advisor-repeat", type=int, default=20, help="Intel Advisor profiled inference repetitions")
-    parser.add_argument(
-        "--torch-profiler-repeat",
-        type=int,
-        default=1,
-        help="torch_profiler_eager profiled inference repetitions",
-    )
-    parser.add_argument("--ncu-repeat", type=int, default=1, help="ncu profiled inference repetitions")
-    parser.add_argument("--compute-profile-cpus", type=int, default=None, help="CPU cores for temporary compute profiler containers (default: host logical CPUs)")
-    parser.add_argument("--compute-profile-mem", type=int, default=None, help="Memory GB for temporary compute profiler containers (default: 75%% of host memory)")
-    profile_artifact_group = parser.add_mutually_exclusive_group()
-    profile_artifact_group.add_argument(
-        "--keep-compute-profiles",
-        dest="keep_compute_profiles",
-        action="store_true",
-        help="Keep raw Advisor/ncu profiler artifacts (default)",
-    )
-    profile_artifact_group.add_argument(
-        "--discard-compute-profiles",
-        dest="keep_compute_profiles",
-        action="store_false",
-        help="Discard raw profiler artifacts after summaries are recorded",
-    )
-    parser.set_defaults(keep_compute_profiles=True)
-
-    # High-overhead execution profiling. These probes are intentionally
-    # opt-in and use reduced resource sampling by default.
-    parser.add_argument(
-        "--execution-profile-tool",
-        choices=("none", "both", "massif", "nsys"),
-        default="none",
-        help=(
-            "Optional execution profiler: Massif for CPU heap peaks, Nsight "
-            "Systems for CUDA/GPU timelines, both, or none (default)"
-        ),
-    )
-    parser.add_argument(
-        "--massif-sampling",
-        choices=("per-scale", "full"),
-        default="per-scale",
-        help=(
-            "Massif resource sampling: per-scale profiles the largest selected "
-            "CPU/memory case and reuses it across CPU-only rows (default); "
-            "full profiles every selected CPU/memory case"
-        ),
-    )
-    parser.add_argument(
-        "--massif-reference-cpu",
-        type=int,
-        default=None,
-        help="Representative CPU for Massif per-scale sampling (default: largest selected)",
-    )
-    parser.add_argument(
-        "--massif-reference-mem",
-        type=int,
-        default=None,
-        help="Representative memory GB for Massif per-scale sampling (default: largest selected)",
-    )
-    parser.add_argument(
-        "--massif-repeat",
-        type=int,
-        default=1,
-        help="Inference repetitions inside each Valgrind Massif probe",
-    )
-    parser.add_argument(
-        "--nsys-sampling",
-        choices=("per-cpu-scale", "per-scale", "full"),
-        default="per-cpu-scale",
-        help=(
-            "Nsight Systems resource sampling: per-cpu-scale profiles every "
-            "selected CPU at the largest selected memory (default); per-scale "
-            "uses one representative CPU/memory case; full profiles every case"
-        ),
-    )
-    parser.add_argument(
-        "--nsys-reference-cpu",
-        type=int,
-        default=None,
-        help="Representative CPU for Nsys per-scale sampling (default: largest selected)",
-    )
-    parser.add_argument(
-        "--nsys-reference-mem",
-        type=int,
-        default=None,
-        help=(
-            "Representative memory GB for Nsys reduced sampling "
-            "(default: largest selected)"
-        ),
-    )
-    parser.add_argument(
-        "--nsys-repeat",
-        type=int,
-        default=1,
-        help="Inference repetitions inside each Nsight Systems capture range",
-    )
-    parser.add_argument(
-        "--nsys-root",
-        default=None,
-        help="Host Nsight Systems install root or nsys executable",
-    )
-    execution_artifact_group = parser.add_mutually_exclusive_group()
-    execution_artifact_group.add_argument(
-        "--keep-execution-profiles",
-        dest="keep_execution_profiles",
-        action="store_true",
-        help=(
-            "Keep raw Massif .out and Nsight Systems .nsys-rep artifacts "
-            "(default); derived Nsight SQLite caches are always discarded"
-        ),
-    )
-    execution_artifact_group.add_argument(
-        "--discard-execution-profiles",
-        dest="keep_execution_profiles",
-        action="store_false",
-        help="Discard raw execution-profiler artifacts after summaries are recorded",
-    )
-    parser.set_defaults(keep_execution_profiles=True)
-
-    # Infrastructure
-    parser.add_argument("--sniff-iface", default="docker0", help="Network interface for tcpdump")
-    parser.add_argument("--output-dir", default="results", help="Output directory")
-    parser.add_argument(
-        "--skip-build",
-        action="store_true",
-        help="Reuse the local model image if present; automatically build it if missing",
-    )
-    parser.add_argument(
-        "--notify",
-        choices=("auto", "none", "wecom"),
-        default=DEFAULT_NOTIFY_PROVIDER,
-        help=(
-            "Notification mode: auto (default) enables WeCom when "
-            "ACPROF_WECOM_WEBHOOK_URL is configured; none disables notifications"
-        ),
-    )
-    parser.add_argument(
-        "--allow-cgroup-v1",
-        action="store_true",
-        help=(
-            "Allow legacy cgroup v1 for diagnostic compatibility; formal "
-            "collection requires cgroup v2"
-        ),
-    )
+    parser = _build_parser(default_notify_provider=DEFAULT_NOTIFY_PROVIDER)
 
     args = parser.parse_args()
     run_command = _format_run_command(sys.argv)
@@ -1228,16 +659,14 @@ Examples:
     )
 
     # ── Step 2: Build Docker image ──
-    from acprof.host.orchestrator import (
-        prepare_image,
+    from acprof.host.docker_runtime import prepare_image
+    from acprof.host.input_plan import plan_input_scales, serialize_input_scales
+    from acprof.host.orchestrator import merge_all_csvs, run_matrix
+    from acprof.host.static_metadata import (
         collect_static_meta,
         enrich_static_meta_from_input_plan,
         enrich_static_meta_from_compute_plan,
         enrich_static_meta_from_execution_plan,
-        merge_all_csvs,
-        plan_input_scales,
-        run_matrix,
-        serialize_input_scales,
         write_static_meta_json,
     )
 

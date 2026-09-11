@@ -139,7 +139,7 @@ class TuiLanguageTests(unittest.IsolatedAsyncioTestCase):
             app._latest_snapshot = snapshot
             app._render_snapshot(snapshot)
             summary = ResultSummary(3, 2, 1, 1, 2, 0.01, 0.03, 0.02)
-            with patch("acprof.cli.tui.summarize_result_csv", return_value=summary) as read_results:
+            with patch("acprof.tui.app.summarize_result_csv", return_value=summary) as read_results:
                 app._update_result_summary("read-once.csv", notify=False)
                 remembered = self.settings_path.read_bytes()
                 self.assertEqual(

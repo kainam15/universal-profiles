@@ -9,6 +9,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from acprof.host import docker_runtime, input_plan
 from acprof.cli import run
 from acprof.host import orchestrator
 from acprof.host.detect import TaskInfo
@@ -338,15 +339,15 @@ class RunNotificationLifecycleTests(unittest.TestCase):
         ) as from_env, patch(
             "acprof.host.detect.detect_task", return_value=task_info,
         ), patch(
-            "acprof.host.orchestrator.prepare_image",
-            return_value=orchestrator.ImageInfo(tag="acprof-nlp-org--resolved-model:latest"),
+            "acprof.host.docker_runtime.prepare_image",
+            return_value=docker_runtime.ImageInfo(tag="acprof-nlp-org--resolved-model:latest"),
         ), patch(
-            "acprof.host.orchestrator.collect_static_meta", return_value=SimpleNamespace(),
+            "acprof.host.static_metadata.collect_static_meta", return_value=SimpleNamespace(),
         ), patch(
-            "acprof.host.orchestrator.write_static_meta_json",
+            "acprof.host.static_metadata.write_static_meta_json",
         ), patch(
-            "acprof.host.orchestrator.plan_input_scales",
-            return_value=orchestrator.PlannedInputScales(
+            "acprof.host.input_plan.plan_input_scales",
+            return_value=input_plan.PlannedInputScales(
                 scales=[1.0], source="unit", plan_file=None,
             ),
         ), patch(

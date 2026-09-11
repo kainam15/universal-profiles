@@ -10,7 +10,7 @@ import sys
 import time
 from typing import Sequence
 
-from acprof.cli.run import (
+from acprof.host.preflight import (
     require_cgroup_prerequisites,
     require_native_docker,
     require_native_linux_host,
@@ -22,10 +22,8 @@ from acprof.host.largest_scale_probe import (
     run_largest_scale_probe,
     write_probe_summary,
 )
-from acprof.host.orchestrator import (
-    prepare_image,
-    plan_input_scales,
-)
+from acprof.host.docker_runtime import prepare_image
+from acprof.host.input_plan import plan_input_scales
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]

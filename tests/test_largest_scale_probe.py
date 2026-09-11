@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 
 import requests
 
+from acprof.host import docker_runtime
 from acprof.cli.probe import main as probe_main
 from acprof.host.detect import TaskInfo
 from acprof.host.largest_scale_probe import (
@@ -430,9 +431,9 @@ class LargestScaleProbeTests(unittest.TestCase):
 
         built_image = ImageInfo(tag="acprof-nlp-demo--model:latest")
         with tempfile.TemporaryDirectory() as temporary_dir, patch.object(
-            orchestrator, "_run", return_value=Mock(returncode=0, stdout="", stderr=""),
+            docker_runtime, "_run", return_value=Mock(returncode=0, stdout="", stderr=""),
         ), patch.object(
-            orchestrator, "build_image", return_value=built_image,
+            docker_runtime, "build_image", return_value=built_image,
         ) as build_image:
             plan_path = Path(temporary_dir) / "planned.json"
             plan_scales.return_value = PlannedInputScales(

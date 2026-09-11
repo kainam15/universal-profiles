@@ -29,6 +29,20 @@ REMOVED_LEGACY_COMPUTE_FIELDS = (
 
 
 class EffectiveEnergyWarningTests(unittest.TestCase):
+    def test_latency_metrics_use_the_current_client_slow_threshold(self) -> None:
+        latencies = [0.01, 0.06, 0.2, float("nan"), float("inf")]
+        for threshold, expected in ((0.05, 2 / 3), (0.1, 1 / 3)):
+            with self.subTest(threshold=threshold), patch.object(
+                client, "SLOW_LATENCY_THRESHOLD_S", threshold
+            ):
+                self.assertAlmostEqual(client._slow_ratio(latencies), expected)
+                self.assertAlmostEqual(
+                    client._latency_distribution_metrics("latency_app", latencies)[
+                        "latency_app_slow_ratio"
+                    ],
+                    expected,
+                )
+
     def test_default_idle_diag_path_uses_dedicated_debug_directory(self) -> None:
         with patch.object(client, "IDLE_DIAG_PATH", ""):
             self.assertEqual(

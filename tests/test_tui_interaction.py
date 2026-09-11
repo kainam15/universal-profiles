@@ -15,7 +15,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 class TuiInteractionTests(unittest.IsolatedAsyncioTestCase):
     async def test_pending_form_preview_is_safe_after_widgets_are_unmounted(self):
         class ClosingPreviewApp(AcprofTui):
-            CSS_PATH = PROJECT_DIR / "acprof/cli/tui.tcss"
+            CSS_PATH = AcprofTui.CSS_PATH
 
             async def _close_all(self):
                 await super()._close_all()

@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from acprof.host import docker_runtime
 from acprof.container import download_model
 from acprof.container.handlers import model_revision_kwargs, resolve_model_source
 from acprof.host import orchestrator
@@ -96,14 +97,14 @@ class ModelRevisionTests(unittest.TestCase):
             commands.append(cmd)
             return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
-        with patch("acprof.host.orchestrator.os.path.exists", return_value=True), patch(
-            "acprof.host.orchestrator._run",
+        with patch("acprof.host.docker_runtime.os.path.exists", return_value=True), patch(
+            "acprof.host.docker_runtime._run",
             side_effect=fake_run,
         ), patch(
-            "acprof.host.orchestrator._select_nlp_torch_index_url",
-            return_value=orchestrator.CUDA124_NLP_TORCH_INDEX_URL,
+            "acprof.host.docker_runtime._select_nlp_torch_index_url",
+            return_value=docker_runtime.CUDA124_NLP_TORCH_INDEX_URL,
         ):
-            orchestrator.build_image(task_info, ".")
+            docker_runtime.build_image(task_info, ".")
 
         self.assertIn("MODEL_REVISION=0123456789abcdef", commands[1])
 

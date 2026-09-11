@@ -8,14 +8,22 @@ import math
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from acprof.config import DEFAULT_COMPUTE_PROFILE_TOOL
 from acprof.host.detect import TaskInfo
-from acprof.host.env_utils import hf_offline_docker_env_args
+from acprof.host.profiler_common import (
+    CONTAINER_INPUT_SCALE_PLAN_FILE,
+    _base_docker_cmd,
+    _format_scale_value,
+    _load_input_scale_plan_entries,
+    _parse_last_json_line,
+    _run,
+    _runner_args,
+    _write_json_atomic,
+)
 from acprof.host.profiler_progress import (
     ProfilerProgressCallback,
     report_profiler_completion,
@@ -23,7 +31,6 @@ from acprof.host.profiler_progress import (
 
 
 COMPUTE_PROFILE_PLAN_NAME = "compute_profile_plan.json"
-CONTAINER_INPUT_SCALE_PLAN_FILE = "/payloads/input_scale_plan.json"
 TORCH_PROFILER_TOOL = "torch_profiler_eager"
 NCU_TOOL = "ncu"
 COMPUTE_PROFILE_TOOL_MODES = {"none", "auto", "both", "ncu", "torch", "vendor"}
@@ -64,26 +71,6 @@ DEFAULT_TOOL_SEARCH_ROOTS = (
     "/usr/local/cuda-*",
     "/usr/lib/nsight-compute",
 )
-
-
-def _run(cmd: Sequence[str], check: bool = False, **kwargs) -> subprocess.CompletedProcess:
-    print(f"  [cmd] {' '.join(str(part) for part in cmd)}")
-    return subprocess.run(
-        list(cmd),
-        capture_output=kwargs.pop("capture_output", True),
-        text=True,
-        check=check,
-        encoding="utf-8",
-        errors="replace",
-        **kwargs,
-    )
-
-
-def _format_scale_value(scale: float) -> str:
-    value = float(scale)
-    if value.is_integer():
-        return str(int(value))
-    return f"{value:g}"
 
 
 def _normal_gpu_mode(gpu: str) -> str:
@@ -200,20 +187,6 @@ def _to_float(value: Any) -> float:
 def _finite_or_none(value: Any) -> Optional[float]:
     number = _to_float(value)
     return number if math.isfinite(number) else None
-
-
-def _parse_last_json_line(text: str) -> Dict[str, Any]:
-    for line in reversed((text or "").splitlines()):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            parsed = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, dict):
-            return parsed
-    return {}
 
 
 def parse_advisor_self_gflop_csv(report_path: str) -> float:
@@ -673,113 +646,6 @@ def _tool_mount_roots(tool_path: str, requested_root: Optional[str]) -> List[str
         if real_root not in roots:
             roots.append(real_root)
     return roots
-
-
-def _load_input_scale_plan_entries(
-    input_scale_plan_file: str,
-) -> List[Dict[str, Any]]:
-    if not input_scale_plan_file:
-        raise ValueError("input_scale_plan_file is required for compute profiling")
-    if not os.path.isfile(input_scale_plan_file):
-        raise FileNotFoundError(
-            f"input scale plan not found: {input_scale_plan_file}"
-        )
-
-    with open(input_scale_plan_file, "r", encoding="utf-8") as f:
-        plan = json.load(f)
-    if not isinstance(plan, dict):
-        raise ValueError(
-            f"invalid input scale plan (expected object): {input_scale_plan_file}"
-        )
-
-    raw_entries = plan.get("entries")
-    if not isinstance(raw_entries, list) or not raw_entries:
-        raise ValueError(
-            f"invalid input scale plan (missing entries): {input_scale_plan_file}"
-        )
-
-    entries: List[Dict[str, Any]] = []
-    for idx, entry in enumerate(raw_entries):
-        if not isinstance(entry, dict):
-            raise ValueError(
-                f"invalid input scale plan entry at index {idx}: {entry!r}"
-            )
-        raw_scale = entry.get("input_scale")
-        payload = entry.get("payload")
-        if raw_scale is None or not isinstance(payload, dict):
-            raise ValueError(
-                f"input scale plan entry missing input_scale/payload "
-                f"at index {idx}"
-            )
-        scale = float(raw_scale)
-        entries.append({
-            "input_scale": scale,
-            "scale_label": str(
-                entry.get("scale_label") or _format_scale_value(scale)
-            ),
-            "payload": payload,
-        })
-    return entries
-
-
-def _base_docker_cmd(
-    *,
-    task_info: TaskInfo,
-    image_tag: str,
-    cpu: int,
-    mem: int,
-    use_gpu: bool,
-    payload_file: str,
-    profile_root: str,
-    tool_mount_roots: Sequence[str],
-) -> List[str]:
-    package_root = os.path.abspath(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir)
-    )
-    cmd = [
-        "docker", "run", "--rm",
-        f"--cpus={cpu}",
-        f"--memory={mem}g",
-        "-v", f"{os.path.abspath(payload_file)}:{CONTAINER_INPUT_SCALE_PLAN_FILE}:ro",
-        "-v", f"{os.path.abspath(profile_root)}:/profiles",
-        "-e", f"MODEL_ID={task_info.model_id}",
-        "-e", f"MODEL_REVISION={task_info.model_revision or 'main'}",
-        "-e", f"TASK_FAMILY={task_info.task_family}",
-        "-e", f"TASK_TYPE={task_info.pipeline_tag}",
-        "-e", f"RUNTIME_BACKEND={task_info.runtime_backend}",
-        "-e", f"USE_GPU={1 if use_gpu else 0}",
-        *hf_offline_docker_env_args(),
-        "-e", "HOME=/tmp",
-        "-e", f"OMP_NUM_THREADS={max(1, int(cpu))}",
-        "-e", f"MKL_NUM_THREADS={max(1, int(cpu))}",
-        "-e", f"OPENBLAS_NUM_THREADS={max(1, int(cpu))}",
-        "-e", f"NUMEXPR_NUM_THREADS={max(1, int(cpu))}",
-        "-e", f"TORCH_NUM_THREADS={max(1, int(cpu))}",
-    ]
-    if os.path.isdir(package_root):
-        cmd.extend(["-v", f"{package_root}:/app/acprof:ro"])
-    for tool_mount_root in tool_mount_roots:
-        abs_root = os.path.abspath(tool_mount_root)
-        cmd.extend(["-v", f"{abs_root}:{abs_root}:ro"])
-    if use_gpu:
-        cmd.extend([
-            "--gpus", "all",
-            "--cap-add=SYS_ADMIN",
-            "--cap-add=SYS_PTRACE",
-            "--security-opt=seccomp=unconfined",
-        ])
-    cmd.append(image_tag)
-    return cmd
-
-
-def _runner_args(entry: Dict[str, Any], repeat: int, mode: str) -> List[str]:
-    return [
-        "python", "-m", "acprof.container.compute_profile_runner",
-        "--payload-file", CONTAINER_INPUT_SCALE_PLAN_FILE,
-        "--input-scale", _format_scale_value(float(entry["input_scale"])),
-        "--repeat", str(max(1, int(repeat))),
-        "--profile-mode", mode,
-    ]
 
 
 def _run_advisor_for_entry(
@@ -1743,28 +1609,6 @@ def _strip_discarded_profile_paths(profiles: Dict[str, Any]) -> None:
                 continue
             if entry.get("tool") == NCU_TOOL:
                 entry["report"] = None
-
-
-def _write_json_atomic(path: str, payload: Dict[str, Any]) -> None:
-    directory = os.path.dirname(os.path.abspath(path))
-    os.makedirs(directory, exist_ok=True)
-    fd, temporary_path = tempfile.mkstemp(
-        prefix=f".{os.path.basename(path)}.",
-        suffix=".tmp",
-        dir=directory,
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=True, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(temporary_path, path)
-    except Exception:
-        try:
-            os.unlink(temporary_path)
-        except OSError:
-            pass
-        raise
 
 
 def collect_compute_profile_plan(

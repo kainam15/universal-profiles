@@ -693,7 +693,7 @@ Nsys 还需生成和解析 timeline；repeat 参数会进一步增加工作量�
 
 ## TUI 本地设置
 
-`acprof/cli/tui_settings.py` 管理项目隔离的 `tui.json`，当前版本为 v4；
+`acprof/tui/settings.py` 管理项目隔离的 `tui.json`，当前版本为 v4；
 路径与操作方式见 [README 的 TUI 说明](README.md#交互式终端界面)。
 `ui.language` 是字符串，仅接受 `zh`（简体中文，默认）和 `en`（English），不使用系统 locale 自动推断。
 兼容读取 v1、v2、v3 设置，缺少语言字段时使用中文；加载时不改写文件，下次保存时写入 v4。

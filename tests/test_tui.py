@@ -399,7 +399,7 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
             PreflightCheck("perf instructions", "fail", "Permission denied\n检查权限"),
         ]
         app = AcprofTui(RunConfig(model=""))
-        with patch("acprof.cli.tui.quick_preflight", return_value=checks):
+        with patch("acprof.tui.app.quick_preflight", return_value=checks):
             async with app.run_test(size=(80, 24)) as pilot:
                 await pilot.pause()
                 app.action_quick_check()
@@ -421,7 +421,7 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_quick_check_failure_is_visible_and_can_be_retried(self):
         app = AcprofTui(RunConfig.smoke("demo/model"))
-        with patch("acprof.cli.tui.quick_preflight", side_effect=[
+        with patch("acprof.tui.app.quick_preflight", side_effect=[
             OSError("diagnostic failed"),
             [PreflightCheck("本机 Docker", "ok", "local Docker available")],
         ]) as check:
@@ -448,7 +448,7 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
     async def test_quick_check_mouse_click_opens_and_stays_on_monitor(self):
         for size in ((80, 24), (120, 30), (150, 45)):
             with self.subTest(size=size), patch(
-                "acprof.cli.tui.quick_preflight",
+                "acprof.tui.app.quick_preflight",
                 return_value=[PreflightCheck("本机 Docker", "ok", "available")],
             ) as check:
                 app = AcprofTui(RunConfig(model=""))
@@ -474,7 +474,7 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
                     return [PreflightCheck("本机 Docker", "ok", "available")]
 
                 app = AcprofTui(RunConfig(model=""))
-                with patch("acprof.cli.tui.quick_preflight", side_effect=slow_check):
+                with patch("acprof.tui.app.quick_preflight", side_effect=slow_check):
                     async with app.run_test(size=(120, 30)) as pilot:
                         try:
                             app.query_one("#quick-check", Button).focus()
