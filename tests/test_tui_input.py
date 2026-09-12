@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 import re
+import tempfile
 import time
 import unittest
 from unittest.mock import patch
@@ -40,12 +41,56 @@ class RecordingDriver(Driver):
 
 class TuiInputTests(unittest.IsolatedAsyncioTestCase):
     def make_app(self):
-        # These tests never save settings or launch collection.
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
         return AcprofTui(
             RunConfig.smoke("demo/model"),
-            settings_path=Path(__file__).resolve().parents[1]
-            / "internal-testing" / "cursor-tests" / "tui.json",
+            settings_path=Path(temporary.name) / "tui.json",
         )
+
+    async def test_ctrl_a_selects_all_and_typing_replaces_entire_value(self):
+        for size in ((80, 24), (120, 30), (150, 45)):
+            with self.subTest(size=size):
+                app = self.make_app()
+                async with app.run_test(size=size) as pilot:
+                    field = app.query_one("#model", Input)
+                    for value, position in (
+                        ("OpenMOSS-Team/MOSS-Transcribe-Diarize", 0),
+                        ("模型/中文abc", 3),
+                        ("模型abc/" * 24, 144),
+                        ("", 0),
+                    ):
+                        with self.subTest(value=value):
+                            field.value = value
+                            field.cursor_position = position
+                            await pilot.pause()
+                            await pilot.press("ctrl+a")
+                            self.assertEqual(field.selected_text, value)
+                            self.assertEqual(field.selection, (0, len(value)))
+                            self.assertEqual(field.value, value)
+                            await pilot.press("X")
+                            self.assertEqual(field.value, "X")
+
+    async def test_ctrl_a_supports_delete_paste_and_home_navigation(self):
+        app = self.make_app()
+        async with app.run_test(size=(120, 30)) as pilot:
+            field = app.query_one("#model", Input)
+            for key in ("backspace", "delete"):
+                with self.subTest(key=key):
+                    field.value = "模型/abc"
+                    await pilot.press("end", "ctrl+a", key)
+                    self.assertEqual(field.value, "")
+
+            field.value = "old/model"
+            app.copy_to_clipboard("新的/model")
+            await pilot.press("ctrl+a", "ctrl+a", "ctrl+v")
+            self.assertEqual(field.value, "新的/model")
+            await pilot.press("home")
+            self.assertEqual(field.selection, (0, 0))
+            await pilot.press("end")
+            self.assertEqual(field.selection, (len(field.value), len(field.value)))
+            await pilot.press("ctrl+shift+a")
+            self.assertEqual(field.selected_text, field.value)
 
     async def test_caret_tracks_editing_wide_text_and_horizontal_scroll(self):
         for size in ((80, 24), (120, 30), (150, 45)):
@@ -91,7 +136,7 @@ class TuiInputTests(unittest.IsolatedAsyncioTestCase):
             field = app.query_one("#model", Input)
             for value in ("", "abc", "模型abc"):
                 field.value = value
-                await pilot.press("home", "shift+end")
+                await pilot.press("ctrl+a")
                 await pilot.pause()
                 field._cursor_visible = True
                 visible = list(Segment.simplify(field.render_line(0)))

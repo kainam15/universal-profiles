@@ -18,6 +18,7 @@ AC-Prof 的命令入口负责参数和调度，业务模块按输入规划、运
 | `acprof/monitors/` | 能耗、资源与 PMU 的原始测量 |
 | `acprof/packet/` | 抓包解析及 packet latency 合并 |
 | `acprof/config.py` | 共享配置、任务尺度及 CSV/静态元数据字段协议 |
+| `acprof/runtime_profiles.py` | 运行环境、依赖锁与模型适配器的声明和元数据路由 |
 
 ## 入口与依赖方向
 
@@ -48,6 +49,8 @@ flowchart TD
 | --- | --- |
 | `preflight` | 原生 Linux、本机 Docker、cgroup 与 CPU 能耗前置检查 |
 | `docker_runtime` | 镜像准备和构建、容器启停、ready 检查、冷启动分段及 OOM 状态读取 |
+| `runtime_images` | 依赖层／模型层／代码层构建、内容指纹、环境清单核验及不可变 image ID |
+| `runtime_validation` | 矩阵前的独立 CPU／GPU 完整推理验证及报告，不生成测量行 |
 | `input_plan` | 手动和自动尺度规划、规划用 probe、payload 物化与输入计划写入 |
 | `model_schema` | 任务输入输出描述与推理精度说明 |
 | `static_metadata` | 主机、镜像、模型和 profiler 计划的静态元数据 |
@@ -65,6 +68,17 @@ flowchart TD
 指标模块不读取环境、不创建 workload 或 monitor。慢请求阈值由 client 在调用时显式传入；
 冷启动状态仍由 client 管理。对照窗口、monitor 启停、正式请求和停止后的统计顺序保持一致。
 界面刷新、绘图、通知与额外文件操作继续位于正式测量窗口之外。
+
+`runtime_profiles` 仅依赖标准库，主机识别模型时只读 Hub/config 元数据。自定义模型通过
+`HandlerRegistry.register_adapter` 注册，复用 `load / preprocess / predict / postprocess`
+四阶段协议；server、输入规划和各 profiler 共用该路由。依赖安装在镜像构建阶段，正式容器
+不修改包版本。`container.runtime_manifest` 在构建时核对依赖锁和实际 snapshot；
+`container.runtime_validate` 执行独立接口验证。具体覆盖范围和扩展步骤见
+[模型运行环境与适配器](Runtime_Compatibility.md)。
+
+新结果保存静态 schema v7 的 `image_id / runtime_environment / runtime_validation`。
+补采优先读取原实验的不可变 image ID，并核对构建指纹；受管理镜像不再用主机工作区挂载
+替换 `/app/acprof`，使模型适配代码与原实验一致。历史结果继续按旧字段读取，不伪造环境。
 
 ## 结果分析与补采
 

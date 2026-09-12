@@ -26,7 +26,7 @@ def _task_info() -> TaskInfo:
         task_family="nlp",
         runtime_backend="transformers_pipeline",
         library_name="transformers",
-        model_revision="revision-1",
+        model_revision="1" * 40,
         detection_method="manual",
     )
 
@@ -431,7 +431,7 @@ class LargestScaleProbeTests(unittest.TestCase):
 
         built_image = ImageInfo(tag="acprof-nlp-demo--model:latest")
         with tempfile.TemporaryDirectory() as temporary_dir, patch.object(
-            docker_runtime, "_run", return_value=Mock(returncode=0, stdout="", stderr=""),
+            docker_runtime, "_run", return_value=Mock(returncode=1, stdout="", stderr="No such image"),
         ), patch.object(
             docker_runtime, "build_image", return_value=built_image,
         ) as build_image:
@@ -466,7 +466,9 @@ class LargestScaleProbeTests(unittest.TestCase):
 
         self.assertEqual(returncode, 0)
         build_image.assert_called_once()
-        self.assertEqual(build_image.call_args.args[0], _task_info())
+        expected_task = _task_info()
+        expected_task.runtime_profile_id = "legacy-nlp"
+        self.assertEqual(build_image.call_args.args[0], expected_task)
         self.assertIs(plan_scales.call_args.kwargs["image_info"], built_image)
         self.assertIs(run_probe.call_args.kwargs["image_info"], built_image)
         self.assertEqual(plan_scales.call_args.kwargs["cpu_list"], [1, 4])

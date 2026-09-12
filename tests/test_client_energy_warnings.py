@@ -139,7 +139,7 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(CSV_FIELDS[gpu_idle_index + 2], "gpu_idle_rel_range_so_far")
 
     def test_schema_v6_includes_cgroup_swap_and_request_shape_metrics(self) -> None:
-        self.assertEqual(STATIC_META_SCHEMA_VERSION, 6)
+        self.assertEqual(STATIC_META_SCHEMA_VERSION, 7)
         self.assertIn("parameter_bytes", STATIC_META_FIELDS)
         self.assertIn("model_cache_bytes", STATIC_META_FIELDS)
         self.assertNotIn("model_weight_bytes", STATIC_META_FIELDS)

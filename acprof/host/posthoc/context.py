@@ -378,7 +378,7 @@ def load_result_context(result_dir: str | os.PathLike[str]) -> ResultContext:
             f"result CSV scales are missing from input_scale_plan.json: {labels}"
         )
 
-    image_tag = str(static_meta.get("image_tag") or "").strip()
+    image_tag = str(static_meta.get("image_id") or static_meta.get("image_tag") or "").strip()
     if not image_tag:
         raise PosthocError("static_meta.json has no image_tag")
 
@@ -390,6 +390,8 @@ def load_result_context(result_dir: str | os.PathLike[str]) -> ResultContext:
         library_name="",
         model_revision=str(static_meta.get("model_revision") or "main").strip(),
         detection_method="posthoc_static_meta",
+        runtime_profile_id=(static_meta.get("runtime_environment") or {}).get("profile_id", ""),
+        model_adapter=(static_meta.get("runtime_environment") or {}).get("adapter", "family-default"),
     )
     if not all(
         (task_info.pipeline_tag, task_info.task_family, task_info.runtime_backend)

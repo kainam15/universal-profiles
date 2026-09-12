@@ -533,7 +533,7 @@ class NativeDockerGuardTests(unittest.TestCase):
             task_family="nlp",
             runtime_backend="transformers_pipeline",
             library_name="transformers",
-            model_revision="main",
+            model_revision="1" * 40,
             detection_method="unit",
         )
         stderr = io.StringIO()
@@ -582,7 +582,7 @@ class NativeDockerGuardTests(unittest.TestCase):
             return_value=task_info,
         ), patch(
             "acprof.host.docker_runtime._run",
-            return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+            return_value=SimpleNamespace(returncode=1, stdout="", stderr="No such image"),
         ), patch(
             "acprof.host.docker_runtime.build_image",
             return_value=built_image,

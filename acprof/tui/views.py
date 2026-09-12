@@ -459,15 +459,34 @@ def compose_monitor_tab(app: AcprofTui) -> ComposeResult:
                 )
 
 
-def compose_results_tab(app: AcprofTui) -> ComposeResult:
-    with TabPane("结果工具", id="results-tab"):
+def compose_plot_tab(app: AcprofTui) -> ComposeResult:
+    with TabPane("绘图工具", id="plot-tab"):
         with VerticalScroll(classes="pane-scroll"):
             yield app._localized_widget(Static("已有结果", classes="section-title"))
-            with Grid(classes="form-grid"):
-                yield app._localized_widget(Label("结果目录"))
-                yield app._localized_widget(Input(app._saved_settings.last_result_dir, id="result-dir"))
+            with Grid(classes="form-grid tool-form-grid"):
                 yield app._localized_widget(Label("结果 CSV"))
                 yield app._localized_widget(Input(app._saved_settings.last_result_csv, id="result-csv"))
+            with Horizontal(classes="button-row"):
+                yield app._localized_widget(Button("读取摘要", id="summarize-results"))
+                yield app._localized_widget(Button("生成图表", id="plot-results", variant="primary"))
+            yield app._localized_widget(Static(
+                "选择或完成一次实验后，这里会显示结果摘要。",
+                id="result-summary",
+                markup=False,
+            ))
+
+
+def compose_profile_tab(app: AcprofTui) -> ComposeResult:
+    with TabPane("补采工具", id="profile-tab"):
+        with VerticalScroll(classes="pane-scroll"):
+            yield app._localized_widget(Static("已有结果补采", classes="section-title"))
+            yield app._localized_widget(Static(
+                "补采计划与执行日志会显示在“运行监控”页。",
+                classes="page-hint", markup=False,
+            ))
+            with Grid(classes="form-grid tool-form-grid"):
+                yield app._localized_widget(Label("结果目录"))
+                yield app._localized_widget(Input(app._saved_settings.last_result_dir, id="result-dir"))
                 yield app._localized_widget(Label("补采工具"))
                 with Grid(id="profile-tools"):
                     for tool, label, tooltip in (
@@ -485,15 +504,8 @@ def compose_results_tab(app: AcprofTui) -> ComposeResult:
                             tooltip=tooltip,
                         ))
             with Horizontal(classes="button-row"):
-                yield app._localized_widget(Button("读取摘要", id="summarize-results"))
-                yield app._localized_widget(Button("生成图表", id="plot-results", variant="primary"))
                 yield app._localized_widget(Button("补采计划（dry-run）", id="profile-dry-run"))
                 yield app._localized_widget(Button("执行补采", id="profile-run", variant="warning"))
-            yield app._localized_widget(Static(
-                "选择或完成一次实验后，这里会显示结果摘要。",
-                id="result-summary",
-                markup=False,
-            ))
 
 
 def compose_settings_tab(app: AcprofTui) -> ComposeResult:

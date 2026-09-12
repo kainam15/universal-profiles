@@ -297,7 +297,7 @@ class MultimodalHandler(BaseHandler):
                     "resample before submitting"
                 )
             max_samples = getattr(getattr(processor, "feature_extractor", None), "n_samples", None)
-            if isinstance(max_samples, int) and audio.size > max_samples:
+            if not model_ctx.get("audio_chunking") and isinstance(max_samples, int) and audio.size > max_samples:
                 raise ValueError(f"audio exceeds processor limit ({max_samples / rate:g}s); truncation is not allowed")
             media_scales["duration_s"] = audio.size / rate
             content.append({"type": "audio"})
@@ -316,13 +316,7 @@ class MultimodalHandler(BaseHandler):
             media_kwargs.update(videos=[np.stack(decoded)], fps=float(fps))
             media_scales["frame_count"] = float(len(frames))
         content.append({"type": "text", "text": text})
-        messages = [{"role": "user", "content": content}]
-        if model_ctx.get("model_type") == "qwen2_5_omni":
-            messages.insert(0, {"role": "system", "content": [{"type": "text", "text": _OMNI_SYSTEM_PROMPT}]})
-        if not getattr(processor, "chat_template", None):
-            raise ValueError("this multimodal processor has no chat_template; a model-specific prompt adapter is required")
-        prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        inputs = processor(text=[prompt], return_tensors="pt", padding=True, add_special_tokens=False, **media_kwargs)
+        inputs = self._generation_inputs(model_ctx, content, media_kwargs)
         inputs = _to_device(inputs, model)
         if "input_ids" not in inputs:
             raise ValueError("multimodal processor did not return input_ids")
@@ -337,6 +331,16 @@ class MultimodalHandler(BaseHandler):
             "inputs": inputs, "prompt_length": int(inputs["input_ids"].shape[-1]),
             "params": params, **self._scale_metadata(raw_input, media_scales),
         }
+
+    def _generation_inputs(self, model_ctx, content, media_kwargs):
+        processor = model_ctx["processor"]
+        messages = [{"role": "user", "content": content}]
+        if model_ctx.get("model_type") == "qwen2_5_omni":
+            messages.insert(0, {"role": "system", "content": [{"type": "text", "text": _OMNI_SYSTEM_PROMPT}]})
+        if not getattr(processor, "chat_template", None):
+            raise ValueError("this multimodal processor has no chat_template; a model-specific prompt adapter is required")
+        prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        return processor(text=[prompt], return_tensors="pt", padding=True, add_special_tokens=False, **media_kwargs)
 
     @staticmethod
     def _scale_metadata(raw_input: Dict[str, Any], media_scales: Dict[str, float]) -> Dict[str, Any]:

@@ -31,6 +31,30 @@ def audio_payload(rate=16000):
 
 
 class MultimodalHandlerTests(unittest.TestCase):
+    def test_moss_uses_transcription_template_and_preserves_chunked_audio(self):
+        from acprof.container.handlers.moss import MossTranscribeDiarizeHandler
+
+        self.ctx.update(task_type='audio-text-to-text', model_type='moss_transcribe_diarize', audio_chunking=True)
+        self.processor.feature_extractor.sampling_rate = 16000
+        self.processor.feature_extractor.n_samples = 80
+        self.processor.return_value['input_features'] = np.ones((2, 80, 3000))
+        self.processor.return_value['audio_chunk_mapping'] = np.array([0, 0])
+        self.processor.return_value['audio_feature_lengths'] = np.array([1, 1])
+        request = {'samples': [{'text': 'Transcribe with speaker labels.', 'audio_base64': audio_payload(), 'sampling_rate': 16000}]}
+        handler = MossTranscribeDiarizeHandler()
+        processed = handler.preprocess(self.ctx, request)
+        messages = self.processor.apply_chat_template.call_args.args[0]
+        self.assertEqual([item['type'] for item in messages[0]['content']], ['text', 'audio'])
+        self.assertEqual(self.processor.call_args.kwargs['audio'][0].shape, (160,))
+        self.assertIn('audio_chunk_mapping', processed['inputs'])
+        self.assertEqual(processed['_effective_input_scale'], 0.01)
+        self.model.generate.assert_not_called()
+        handler.predict(self.ctx, processed)
+        self.assertIn('audio_feature_lengths', self.model.generate.call_args.kwargs)
+        self.ctx['audio_chunking'] = False
+        with self.assertRaisesRegex(ValueError, 'truncation'):
+            self.handler.preprocess(self.ctx, request)
+
     def setUp(self):
         self.handler = MultimodalHandler()
         self.torch = types.ModuleType('torch')

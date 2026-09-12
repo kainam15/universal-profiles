@@ -2,7 +2,7 @@
 
 Three-level fallback:
   Level 1: HF Hub API (pipeline_tag + library_name)
-  Level 2: config.json / AutoConfig architecture inference
+  Level 2: config.json architecture metadata (no model code on the host)
   Level 3: CLI manual override (always takes precedence)
 """
 
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -39,6 +40,15 @@ class TaskInfo:
     quantization_config: dict[str, Any] = field(default_factory=dict)
     model_license: Optional[str] = None
     model_metadata_source: Optional[str] = None
+    model_config: dict[str, Any] = field(default_factory=dict)
+    runtime_profile_id: str = ""
+    model_adapter: str = "family-default"
+
+
+def _architecture_metadata(config: Any) -> dict[str, Any]:
+    if not isinstance(config, dict):
+        return {}
+    return {key: config[key] for key in ("model_type", "architectures", "auto_map") if key in config}
 
 
 _HUB_DTYPE_NAMES = {
@@ -356,6 +366,7 @@ def _detect_from_hub(
         library_name=library_name,
         model_revision=sha,
         detection_method="hub_api",
+        model_config=_architecture_metadata(getattr(info, "config", None)),
         **_hub_model_metadata(info),
     )
 
@@ -366,12 +377,17 @@ def _detect_from_config(
 ) -> Optional[TaskInfo]:
     """Level 2: Infer task from model architecture name."""
     architectures = []
+    config_data = {}
+    revision = "main"
     try:
         from huggingface_hub import hf_hub_download
 
         config_path = hf_hub_download(repo_id=model_id, filename="config.json")
         with open(config_path, "r", encoding="utf-8") as f:
             config_data = json.load(f)
+        snapshot = Path(config_path).parent.name
+        if len(snapshot) == 40 and all(char in "0123456789abcdef" for char in snapshot):
+            revision = snapshot
         architectures = config_data.get("architectures") or []
         if not architectures:
             _record_failure(diagnostics, "config_json", "config.json has no architectures field")
@@ -379,21 +395,12 @@ def _detect_from_config(
         _record_failure(diagnostics, "config_json", _format_failure(exc))
 
     if not architectures:
-        try:
-            from transformers import AutoConfig
+        return None
 
-            config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
-            architectures = getattr(config, "architectures", None) or []
-        except Exception as exc:
-            _record_failure(diagnostics, "AutoConfig", _format_failure(exc))
-            return None
-
-        if not architectures:
-            _record_failure(diagnostics, "AutoConfig", "config has no architectures")
-            return None
-
-    pipeline_tag = None
+    pipeline_tag = "audio-text-to-text" if config_data.get("model_type") == "moss_transcribe_diarize" else None
     for arch in architectures:
+        if pipeline_tag:
+            break
         for suffix, task in ARCHITECTURE_TO_TASK.items():
             if arch.endswith(suffix):
                 pipeline_tag = task
@@ -424,8 +431,9 @@ def _detect_from_config(
         task_family=task_family,
         runtime_backend=DEFAULT_BACKEND,
         library_name="transformers",
-        model_revision="main",
+        model_revision=revision,
         detection_method="config_infer",
+        model_config=_architecture_metadata(config_data),
     )
 
 

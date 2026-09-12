@@ -282,11 +282,11 @@ class DiffusionMetadataTests(unittest.TestCase):
             "_select_nlp_torch_spec",
             return_value="torch>=2.6,<2.7",
         ):
-            image = docker_runtime.build_image(self._task_info(), project_dir)
+            image = docker_runtime._build_legacy_image(self._task_info(), project_dir)
 
         self.assertEqual(
             image.tag,
-            "acprof-diffusion-stable-diffusion-v1-5--stable-diffusion-v1-5:latest",
+            docker_runtime._model_image_tag(self._task_info(), project_dir),
         )
         self.assertEqual(len(commands), 2)
         family_command = commands[1]

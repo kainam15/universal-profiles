@@ -438,10 +438,12 @@ class TuiModelMemoryTests(unittest.IsolatedAsyncioTestCase):
         app = AcprofTui(RunConfig.smoke("demo/other"), settings_path=self.settings_path)
         with patch("acprof.tui.app.summarize_result_csv") as read_results:
             async with app.run_test(size=(80, 24)) as pilot:
-                app._activate_tab("results-tab")
+                app._activate_tab("plot-tab")
+                await pilot.pause()
+                self.assertEqual(app.query_one("#result-csv", Input).value, self.saved.last_result_csv)
+                app._activate_tab("profile-tab")
                 await pilot.pause()
                 self.assertEqual(app.query_one("#result-dir", Input).value, self.saved.last_result_dir)
-                self.assertEqual(app.query_one("#result-csv", Input).value, self.saved.last_result_csv)
                 read_results.assert_not_called()
         self.assertEqual(self.settings_path.read_bytes(), original)
 

@@ -451,6 +451,10 @@ STATIC_META_FIELDS = [
     "pipeline_tag",
     "runtime_backend",
     "image_tag",
+    "image_id",
+    "image_name",
+    "runtime_environment",
+    "runtime_validation",
     "batch_size",
     "input_scale_type",
     "workload",
@@ -513,7 +517,7 @@ STATIC_META_FIELDS = [
     "execution_profiles_retained",
     "execution_profile_provenance",
 ]
-STATIC_META_SCHEMA_VERSION = 6
+STATIC_META_SCHEMA_VERSION = 7
 
 # ─────────────────────────────────────────────
 # Docker 镜像命名

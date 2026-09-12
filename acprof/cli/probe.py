@@ -165,6 +165,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             input_scales=args.input_scales,
             workload_spec_path=args.workload_spec,
         )
+        if getattr(image_info, "runtime_environment", {}):
+            from acprof.host.runtime_validation import validate_runtime
+
+            validate_runtime(
+                task_info=task_info, image_info=image_info, planned=planned,
+                cpu_list=cpu_list, mem_list=mem_list, gpu_list=gpu_list, output_dir=str(output_dir),
+            )
         summary = run_largest_scale_probe(
             task_info=task_info,
             image_info=image_info,

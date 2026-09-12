@@ -83,6 +83,7 @@ class HandlerRegistry:
     """Registry mapping (task_family, runtime_backend) -> Handler instance."""
 
     _handlers: Dict[str, BaseHandler] = {}
+    _adapters: Dict[tuple[str, str, str], BaseHandler] = {}
 
     @classmethod
     def register(cls, task_family: str, backend: str, handler_cls: type):
@@ -90,7 +91,17 @@ class HandlerRegistry:
         cls._handlers[key] = handler_cls()
 
     @classmethod
+    def register_adapter(cls, adapter: str, task_family: str, backend: str, handler_cls: type):
+        cls._adapters[(adapter, task_family, backend)] = handler_cls()
+
+    @classmethod
     def get(cls, task_family: str, backend: str) -> BaseHandler:
+        adapter = os.getenv("ACPROF_MODEL_ADAPTER", "family-default")
+        if adapter != "family-default":
+            handler = cls._adapters.get((adapter, task_family, backend))
+            if handler is not None:
+                return handler
+            raise ValueError(f"Unsupported adapter {adapter!r} for {task_family}/{backend}")
         key = f"{task_family}:{backend}"
         handler = cls._handlers.get(key)
         if handler is None:
@@ -129,6 +140,10 @@ def _auto_register():
         pass
     try:
         from acprof.container.handlers import multimodal  # noqa: F401
+    except ImportError:
+        pass
+    try:
+        from acprof.container.handlers import moss  # noqa: F401
     except ImportError:
         pass
     try:

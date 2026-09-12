@@ -64,10 +64,13 @@ def get_generator(
     task_type: str,
     batch_size: int,
     workload_spec_path: Optional[str] = None,
+    model_adapter: Optional[str] = None,
 ) -> WorkloadGenerator:
     cls = _generators.get(task_family)
     if cls is None:
         raise ValueError(f"No workload generator for task_family='{task_family}'. Available: {list(_generators.keys())}")
+    if model_adapter is not None and task_family == "multimodal":
+        return cls(model_id, task_type, batch_size, workload_spec_path=workload_spec_path, model_adapter=model_adapter)
     if workload_spec_path is not None:
         return cls(
             model_id,

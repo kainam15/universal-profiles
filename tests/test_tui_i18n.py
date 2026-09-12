@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from rich.cells import cell_len
-from textual.widgets import Button, ContentSwitcher, DataTable, Input, Select, Static
+from textual.widgets import Button, ContentSwitcher, DataTable, Input, Select, Static, TabbedContent
 from textual.widgets.text_area import Selection
 
 from acprof.cli.tui import AcprofTui, PROJECT_DIR
@@ -248,13 +248,18 @@ class TuiLanguageTests(unittest.IsolatedAsyncioTestCase):
                             ("settings-tab", ("ui-language", "restore-ui-defaults", "save-ui-settings")),
                             ("run-tab", ("open-run-settings", "quick-check", "probe-largest", "start-run")),
                             ("monitor-tab", ("copy-log", "follow-log", "expand-log", "clear-log", "stop-run")),
-                            ("results-tab", ("summarize-results", "plot-results", "profile-dry-run", "profile-run")),
+                            ("plot-tab", ("result-csv", "summarize-results", "plot-results")),
+                            ("profile-tab", ("result-dir", "profile-dry-run", "profile-run")),
                         ):
-                            app._activate_tab(tab)
+                            tabs = app.query_one("#main-tabs", TabbedContent)
+                            tab_button = tabs.get_tab(tab)
+                            self.assertGreater(tab_button.region.width, 0, tab)
+                            self.assertGreaterEqual(tab_button.region.x, 0, tab)
+                            self.assertLessEqual(tab_button.region.right, size[0], tab)
+                            self.assertLessEqual(cell_len(tab_button.label.plain), tab_button.content_region.width, tab)
+                            self.assertTrue(await pilot.click(tab_button))
                             await pilot.pause()
-                            if tab == "results-tab":
-                                app.query_one("#results-tab VerticalScroll").scroll_end(animate=False, immediate=True)
-                                await pilot.pause()
+                            self.assertEqual(tabs.active, tab)
                             for widget_id in ids:
                                 widget = app.query_one(f"#{widget_id}")
                                 region = widget.region

@@ -63,6 +63,7 @@ Underline { color: $accent; }
     content-align: left middle;
     color: $text-muted;
 }
+.form-grid.tool-form-grid { grid-size: 2; grid-columns: 18 1fr; }
 Input, Select { width: 1fr; }
 Input {
     background: $surface;
@@ -151,7 +152,6 @@ Button:disabled, Button:disabled:hover, Button:disabled:focus, Button:disabled.-
 .option-checkbox.-on > .toggle--button { color: $background; background: $accent; }
 .option-checkbox:focus { border: tall $accent; }
 #profile-tools {
-    column-span: 3;
     grid-size: 2;
     grid-columns: 1fr 1fr;
     grid-rows: 3;
@@ -218,7 +218,6 @@ Button:disabled, Button:disabled:hover, Button:disabled:focus, Button:disabled.-
 
 /* Terminal cells, not pixels: stack fields when labels would squeeze inputs. */
 AcprofTui.narrow .form-grid { grid-size: 2; grid-columns: 18 1fr; }
-AcprofTui.narrow #profile-tools { column-span: 1; }
 AcprofTui.narrow #preset-hint, AcprofTui.narrow #preset-hint-label { display: none; }
 AcprofTui.narrow .checkbox-row { layout: vertical; }
 AcprofTui.narrow .button-row { layout: grid; grid-size: 2; grid-gutter: 0 1; }

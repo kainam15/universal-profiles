@@ -84,7 +84,7 @@ def _scene(*, document: bool = False, frame: int = 0) -> tuple[Any, list, list]:
 
 class MultimodalWorkloadGenerator(WorkloadGenerator):
     def __init__(self, model_id: str, task_type: str, batch_size: int,
-                 workload_spec_path: Optional[str] = None):
+                 workload_spec_path: Optional[str] = None, model_adapter: Optional[str] = None):
         super().__init__(model_id, task_type, batch_size)
         if task_type not in TASK_MODALITY:
             raise ValueError(f"unsupported multimodal task: {task_type}")
@@ -140,10 +140,15 @@ class MultimodalWorkloadGenerator(WorkloadGenerator):
         if active_fixed_field in spec and not (self._scale_modality == "image" and "video" in self._modalities):
             raise ValueError(f"{active_fixed_field} is not fixed on the active scale axis; use input_scales")
         self.input_scale_type = SCALE_TYPES[self._scale_modality]
-        self._text = spec.get("text", DEFAULT_TEXT[task_type])
+        from acprof.runtime_profiles import MOSS_ADAPTER, MOSS_PROMPT, default_model_adapter
+
+        is_moss = (model_adapter or default_model_adapter(model_id)) == MOSS_ADAPTER and task_type == "audio-text-to-text"
+        self._text = spec.get("text", MOSS_PROMPT if is_moss else DEFAULT_TEXT[task_type])
         if not isinstance(self._text, str) or not self._text.strip():
             raise ValueError("text must be a nonempty prompt or query")
         defaults = {} if task_type in {"visual-question-answering", "document-question-answering", "visual-document-retrieval"} else {"max_new_tokens": 64, "do_sample": False}
+        if is_moss:
+            defaults["max_new_tokens"] = 512
         if task_type == "any-to-any":
             defaults.update(return_audio=True, talker_max_new_tokens=256, speaker="Chelsie", seed=12345)
         params = spec.get("params", {})

@@ -772,6 +772,21 @@ def _run_main():
     )
     write_static_meta_json(static_meta, static_meta_json)
     compute_profile_plan_file = ""
+    if getattr(image_info, "runtime_environment", {}):
+        from acprof.host.runtime_validation import validate_runtime
+        from acprof.host.static_metadata import enrich_static_meta
+
+        try:
+            validation = validate_runtime(
+                task_info=task_info, image_info=image_info, planned=planned_input_scales,
+                cpu_list=cpu_list, mem_list=mem_list, gpu_list=gpu_list, output_dir=output_dir,
+                timeout_seconds=args.request_timeout_seconds,
+            )
+            static_meta = enrich_static_meta(static_meta, {"runtime_validation": validation})
+            write_static_meta_json(static_meta, static_meta_json)
+        except (RuntimeError, OSError, ValueError) as exc:
+            print(f"[runtime-check][ERROR] {exc}", file=sys.stderr)
+            sys.exit(1)
     total_cases = len(cpu_list) * len(mem_list) * len(gpu_list)
     _update_run_notification_plan(
         model_id=task_info.model_id,

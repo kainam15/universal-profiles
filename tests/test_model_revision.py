@@ -104,7 +104,7 @@ class ModelRevisionTests(unittest.TestCase):
             "acprof.host.docker_runtime._select_nlp_torch_index_url",
             return_value=docker_runtime.CUDA124_NLP_TORCH_INDEX_URL,
         ):
-            docker_runtime.build_image(task_info, ".")
+            docker_runtime._build_legacy_image(task_info, ".")
 
         self.assertIn("MODEL_REVISION=0123456789abcdef", commands[1])
 

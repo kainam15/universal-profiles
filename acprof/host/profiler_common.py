@@ -129,7 +129,7 @@ def _base_docker_cmd(
         "-e", f"NUMEXPR_NUM_THREADS={max(1, int(cpu))}",
         "-e", f"TORCH_NUM_THREADS={max(1, int(cpu))}",
     ]
-    if os.path.isdir(package_root):
+    if not task_info.runtime_profile_id and os.path.isdir(package_root):
         cmd.extend(["-v", f"{package_root}:/app/acprof:ro"])
     for tool_mount_root in tool_mount_roots:
         abs_root = os.path.abspath(tool_mount_root)

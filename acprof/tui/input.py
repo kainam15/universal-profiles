@@ -4,6 +4,7 @@ from __future__ import annotations
 from rich.control import Control
 from rich.style import Style
 from textual.app import App
+from textual.binding import Binding
 from textual.driver import Driver
 from textual.errors import NoWidget
 from textual.geometry import Offset
@@ -13,6 +14,8 @@ from textual.widgets import Input
 
 class BarCursorInput(Input):
     """Keep Input's editing/selection rendering without its simulated block."""
+
+    BINDINGS = [Binding("ctrl+a", "select_all", "全选文本", show=False)]
 
     def _restart_blink(self) -> None:
         super()._restart_blink()

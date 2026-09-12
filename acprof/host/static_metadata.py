@@ -48,6 +48,10 @@ class StaticMeta:
     vcpu_power_method: str
     cpu_governor: str
     cpu_boost: str
+    image_id: str = ""
+    image_name: str = ""
+    runtime_environment: Dict[str, Any] = field(default_factory=dict)
+    runtime_validation: Dict[str, Any] = field(default_factory=dict)
     cgroup_version: str = "unknown"
     cgroup_collection_mode: str = "unknown"
     host_mem_total_bytes: Optional[int] = None
@@ -706,6 +710,9 @@ def collect_static_meta(
         pipeline_tag=task_info.pipeline_tag,
         runtime_backend=task_info.runtime_backend,
         image_tag=image_info.tag,
+        image_id=image_info.tag if image_info.tag.startswith("sha256:") else "",
+        image_name=getattr(image_info, "name", ""),
+        runtime_environment=dict(getattr(image_info, "runtime_environment", {})),
         batch_size=batch_size,
         input_scale_type=input_scale_type,
         run_command=run_command,
@@ -774,6 +781,14 @@ def collect_static_meta(
             "execution_profiles_retained": False,
             "execution_profile_provenance": "disabled",
         })
+    if getattr(image_info, "runtime_environment", {}):
+        packages = image_info.runtime_environment.get("packages", {})
+        disabled_metadata.update({
+            "torch_version": packages.get("torch", "unknown"),
+            "transformers_version": packages.get("transformers", "unknown"),
+        })
+        if image_info.runtime_environment.get("adapter") == "moss-transcribe-diarize":
+            static_meta = replace(static_meta, inference_precision_by_device={"cpu": "FP32", "gpu": "BF16"})
     return (
         enrich_static_meta(static_meta, disabled_metadata)
         if disabled_metadata

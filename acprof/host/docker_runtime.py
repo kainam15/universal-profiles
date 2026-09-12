@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -29,6 +29,8 @@ from acprof.host.env_utils import hf_offline_docker_env_args
 @dataclass
 class ImageInfo:
     tag: str
+    name: str = ""
+    runtime_environment: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -320,9 +322,12 @@ def _select_nlp_torch_spec(torch_index_url: Optional[str] = None) -> str:
     return DEFAULT_NLP_TORCH_SPEC
 
 
-def _model_image_tag(task_info: TaskInfo) -> str:
+def _model_image_tag(task_info: TaskInfo, project_dir: Optional[str] = None) -> str:
+    from acprof.host.runtime_images import PROJECT_ROOT, build_fingerprint
+
     model_tag = _sanitize_model_id(task_info.model_id)
-    return f"{DOCKER_IMAGE_PREFIX}-{task_info.task_family}-{model_tag}:latest"
+    fingerprint = build_fingerprint(task_info, project_dir or PROJECT_ROOT)
+    return f"{DOCKER_IMAGE_PREFIX}-{task_info.task_family}-{model_tag}:{fingerprint[:20]}"
 
 
 def prepare_image(
@@ -331,33 +336,32 @@ def prepare_image(
     *,
     reuse_existing: bool = False,
 ) -> ImageInfo:
-    """Check requested local-image reuse before falling back to a normal build."""
-    if reuse_existing:
-        tag = _model_image_tag(task_info)
-        print(f"\n[build] 检查本地模型镜像：{tag}", flush=True)
-        # A successful empty listing means the image is missing; a failed
-        # Docker query must not be mistaken for a missing image.
-        result = _run(
-            ["docker", "image", "ls", "--quiet", "--filter", f"reference={tag}"],
-            check=False,
-        )
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout or "").strip()
-            raise RuntimeError(
-                f"无法检查本地模型镜像 {tag}（Docker 退出码 {result.returncode}）：{detail}"
-            )
-        if result.stdout.strip():
-            print(f"[build] 已找到本地模型镜像，跳过构建并复用：{tag}", flush=True)
-            return ImageInfo(tag=tag)
-        print(
-            f"[build][WARN] 未找到本地模型镜像：{tag}；将自动构建镜像，完成后继续任务。",
-            flush=True,
-        )
+    """Resolve a compatible runtime and verify exact image reuse."""
+    from acprof.host.runtime_images import prepare_runtime_image
 
-    return build_image(task_info, project_dir)
+    return prepare_runtime_image(task_info, project_dir, reuse_existing=reuse_existing)
 
 
 def build_image(task_info: TaskInfo, project_dir: str) -> ImageInfo:
+    from acprof.host.runtime_images import build_runtime_image
+
+    return build_runtime_image(task_info, project_dir)
+
+
+def require_image_identity(image: str, runtime_environment: Dict[str, Any]) -> None:
+    """Verify recorded image identity before post-hoc collection; never rebuild it."""
+    from acprof.host.runtime_images import FINGERPRINT_LABEL, inspect_identity
+
+    identity = inspect_identity(image)
+    if identity is None:
+        raise RuntimeError(f"原实验镜像 {image} 已不存在；请恢复该镜像后再补采")
+    if image.startswith("sha256:") and identity["image_id"] != image:
+        raise RuntimeError("补采镜像 ID 与原实验不一致")
+    if runtime_environment and (identity.get("labels") or {}).get(FINGERPRINT_LABEL) != runtime_environment.get("build_fingerprint"):
+        raise RuntimeError("补采镜像的运行环境与原实验不一致")
+
+
+def _build_legacy_image(task_info: TaskInfo, project_dir: str) -> ImageInfo:
     """Build the Docker image for this model's task family.
 
     Two-stage build:
@@ -366,7 +370,7 @@ def build_image(task_info: TaskInfo, project_dir: str) -> ImageInfo:
     """
     dockerfiles_dir = os.path.join(project_dir, "dockerfiles")
     base_tag = f"{DOCKER_IMAGE_PREFIX}-base:latest"
-    family_tag = _model_image_tag(task_info)
+    family_tag = _model_image_tag(task_info, project_dir)
 
     # Stage 1: Build base image
     print(f"\n[build] Stage 1: Building base image {base_tag} ...")
@@ -482,10 +486,11 @@ def _start_container_session(
 
     def fail_startup(reason: str) -> None:
         logs = _run(["docker", "logs", container_name, "--tail", "200"], check=False)
-        if logs.stdout:
-            print(logs.stdout[-500:])
+        diagnostic = ((logs.stdout or "") + "\n" + (logs.stderr or "")).strip()
+        if diagnostic:
+            print(diagnostic[-8000:], file=sys.stderr)
         _run(["docker", "rm", "-f", container_name], check=False)
-        raise RuntimeError(reason)
+        raise RuntimeError(reason + ("; container_log_tail=" + diagnostic[-4000:] if diagnostic else ""))
 
     while time.perf_counter() < deadline:
         try:

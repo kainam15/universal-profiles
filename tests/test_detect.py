@@ -158,7 +158,7 @@ class DetectTaskTests(unittest.TestCase):
         self.assertIn("[ERROR] Cannot auto-detect task for 'missing/model'.", message)
         self.assertIn("hub_api: RuntimeError: hub timeout", message)
         self.assertIn("config_json: OSError: config missing", message)
-        self.assertIn("AutoConfig: ModuleNotFoundError", message)
+        self.assertNotIn("AutoConfig:", message)
         self.assertIn("Please specify --task and/or --task-family manually.", message)
 
 

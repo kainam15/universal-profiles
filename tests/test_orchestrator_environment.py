@@ -270,7 +270,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             "acprof.host.docker_runtime._run",
             side_effect=fake_run,
         ):
-            docker_runtime.build_image(task_info, ".")
+            docker_runtime._build_legacy_image(task_info, ".")
 
         self.assertIn(
             f"TORCH_INDEX_URL={docker_runtime.CUDA124_NLP_TORCH_INDEX_URL}",
@@ -312,7 +312,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             "acprof.host.docker_runtime._select_nlp_torch_index_url",
             return_value=docker_runtime.CUDA124_NLP_TORCH_INDEX_URL,
         ):
-            docker_runtime.build_image(task_info, ".")
+            docker_runtime._build_legacy_image(task_info, ".")
 
         family_build = commands[1]
         self.assertIn("--secret", family_build)
@@ -593,7 +593,7 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(meta.execution_profile_provenance, "disabled")
 
     def test_static_meta_compute_profile_fields_follow_host_metadata(self) -> None:
-        self.assertEqual(STATIC_META_SCHEMA_VERSION, 6)
+        self.assertEqual(STATIC_META_SCHEMA_VERSION, 7)
         self.assertIn("parameter_bytes", STATIC_META_FIELDS)
         self.assertIn("model_cache_bytes", STATIC_META_FIELDS)
         self.assertNotIn("model_weight_bytes", STATIC_META_FIELDS)

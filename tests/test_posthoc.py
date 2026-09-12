@@ -13,6 +13,19 @@ from acprof.host.compute_profile_plan import TORCH_LOGICAL_MFLOP_FIELD
 
 
 class PosthocProfileTests(unittest.TestCase):
+    def test_load_context_uses_image_id_and_preserves_runtime_binding(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_fixture(root)
+            path = root / posthoc.STATIC_META_NAME
+            metadata = json.loads(path.read_text())
+            metadata["image_id"] = "sha256:" + "a" * 64
+            metadata["runtime_environment"] = {"profile_id": "legacy-nlp", "adapter": "family-default"}
+            path.write_text(json.dumps(metadata))
+            context = posthoc.load_result_context(root)
+            self.assertEqual(context.image_tag, metadata["image_id"])
+            self.assertEqual(context.task_info.runtime_profile_id, "legacy-nlp")
+
     def test_parser_defaults_to_reduced_execution_sampling(self):
         defaults = posthoc._build_parser().parse_args(["results/example"])
         explicit = posthoc._build_parser().parse_args(

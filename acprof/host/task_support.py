@@ -63,7 +63,15 @@ def require_task_support(task_info: TaskInfo, *, batch_size: int = 1) -> None:
         if task_info.runtime_backend not in {"transformers_model", "transformers_pipeline"}:
             reason = "此音频任务需要 Transformers 后端；请设置 --backend transformers_model。"
     if reason is None:
-        return
+        from acprof.runtime_profiles import select_runtime_profile
+
+        try:
+            profile = select_runtime_profile(task_info)
+            task_info.runtime_profile_id, task_info.model_adapter = profile.profile_id, profile.adapter
+        except ValueError as exc:
+            reason = str(exc)
+        else:
+            return
 
     lines = [
         f"[task-support][ERROR] Unsupported collection task: {task}",

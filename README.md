@@ -166,7 +166,7 @@ CV 可使用 `--workload-spec` 指定图片、视频帧、候选标签、姿态�
 
 | Hugging Face 任务 | 后端 / 任务族 | 适配范围与默认输入尺度 |
 | --- | --- | --- |
-| `audio-text-to-text` | Transformers / `multimodal` | Qwen2 Audio、Qwen2.5 Omni Thinker；真实语音＋文字；1、2、5、10 秒 |
+| `audio-text-to-text` | Transformers / `multimodal` | Qwen2 Audio、Qwen2.5 Omni Thinker、MOSS-Transcribe-Diarize；真实语音＋文字；1、2、5、10 秒 |
 | `image-text-to-text` | Transformers / `multimodal` | `AutoModelForImageTextToText` 支持且带 chat template 的原生模型；224、336、448 像素输入边长 |
 | `image-text-to-image` | Diffusers / `diffusion` | 原生同时接收 `image` 和 `prompt` 的图像编辑／Img2Img pipeline；128–512 像素输出边长 |
 | `image-text-to-video` | Diffusers / `diffusion` | 原生同时接收图像和文本的 CogVideoX、Wan 等 I2V pipeline；方形帧，默认固定 17 帧 |
@@ -224,7 +224,19 @@ Diffusers 清单示例（还可设置 `strength`、`image_guidance_scale`、`neg
 
 普通采集与 NCU／Nsys 复用完整 `predict()`。profiler 在推理计算捕获前的预热阶段验证一次输出协议，计算捕获只重复推理；Massif 按整个进程生命周期统计，包含加载、预热和这次验证。Omni 的 Token2Wav 不支持 eager 注意力，因此 `any-to-any` 的 `torch_profiler_eager` 会明确失败；Diffusers 的 Transformer 视频模型也会拒绝尚未验证的 eager 替换。这些失败按工具隔离，不能把未采集的 FLOP 当成 0。已有 UNet 文生图 eager 路径保留。
 
-适配复用官方 [Transformers 多模态接口](https://github.com/huggingface/transformers/blob/v4.57.6/docs/source/en/chat_templating_multimodal.md)、[检索接口](https://github.com/huggingface/transformers/blob/v4.57.6/docs/source/en/tasks/visual_document_retrieval.md)、[Omni 实现](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/models/qwen2_5_omni/modeling_qwen2_5_omni.py) 和 [Diffusers pipeline](https://github.com/huggingface/diffusers/tree/v0.39.0/src/diffusers/pipelines)，固定 Transformers 4.57.6 / Diffusers 0.39.0，沿用项目依赖，不引入评测框架。两库采用 Apache-2.0；具体模型权重的许可与访问条件以其模型页为准。
+适配复用官方 [Transformers 多模态接口](https://github.com/huggingface/transformers/blob/v4.57.6/docs/source/en/chat_templating_multimodal.md)、[检索接口](https://github.com/huggingface/transformers/blob/v4.57.6/docs/source/en/tasks/visual_document_retrieval.md)、[Omni 实现](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/models/qwen2_5_omni/modeling_qwen2_5_omni.py) 和 [Diffusers pipeline](https://github.com/huggingface/diffusers/tree/v0.39.0/src/diffusers/pipelines)。原生多模态路径固定 Transformers 4.57.6，Diffusers 保持 0.39.0；MOSS 使用独立的 Transformers 5.6.0 环境。两库采用 Apache-2.0；具体模型权重的许可与访问条件以其模型页为准。
+
+MOSS 自动选择专用 adapter 和依赖锁，不需要修改主机 `.venv`。默认提示词要求带时间戳和说话人编号的转写，`max_new_tokens=512`，CPU 使用 FP32，GPU 使用 BF16；processor 按官方方式分块处理音频，输出保留原始标记文本。可先运行：
+
+```bash
+.venv/bin/python run.py --model OpenMOSS-Team/MOSS-Transcribe-Diarize \
+  --cpus 1 --mems 8 --gpus off,on --input-scales 1 --batch-size 1 \
+  --warmup 0 --repeat 1 --repeat-in-window 1 \
+  --compute-profile-tool none --execution-profile-tool none \
+  --notify none --output-dir results/smoke-moss
+```
+
+8 GiB 是上述冒烟测试的容器内存配置，不是模型的最低内存保证。不同依赖版本的选择、验证与新模型接入方法见[模型运行环境与适配器](docs/Runtime_Compatibility.md)。
 
 ## 快速开始
 
@@ -433,7 +445,9 @@ python run.py --help
 
 启动 OOM 剪枝默认开启。程序先按内存从小到大完整采集最低 CPU；只有 Docker 明确报告 `OOMKilled` 且这些失败构成连续低内存前缀时，才在后续更高 CPU 中跳过同 GPU mode、同内存上限的 case。运行期 OOM、CUDA OOM、普通启动失败和请求超时不会触发剪枝。可运行 case 的 warmup、repeat、监控器和指标口径完全不变；跳过的 case 仍写入 `status=error` 占位行，并在 `startup_oom_pruning.json` 中记录推断依据，不能作为实测性能值使用。论文若要求每个资源格都独立启动验证，传入 `--no-prune-startup-oom`。
 
-传入 `--skip-build`，或在 TUI 勾选“复用现有镜像”后，采集与探测都会提前检查本机 Docker image store 中的目标模型镜像：存在就跳过构建并复用；不存在则在日志中提示，并自动构建后继续任务。Docker 查询失败（如连接或权限错误）会明确报错，不会被当作镜像缺失。未勾选时仍执行正常构建。
+传入 `--skip-build`，或在 TUI 勾选“复用现有镜像”后，采集与探测按模型 commit、运行环境、依赖锁和代码指纹查找镜像，并核对镜像内的环境清单。匹配才复用；不存在则提示并自动构建。旧的 `:latest` 标签不会被当作匹配镜像。镜像指纹／revision 不符或 Docker 查询失败会明确退出；取消复用可重新构建。正式采集始终使用已核验的不可变 image ID。
+
+进入资源矩阵前，每个请求的 CPU／GPU 模式会用独立容器完成最小计划输入的加载、推理和输出验证，结果保存在 `runtime_validation.json` 及对应日志中。依赖或接口失败会提前退出，不生成本次测量行；明确的 cgroup OOM 作为资源限制记录，仍允许矩阵测定 OOM 边界。模型环境和验证结果写入静态 schema v7，CSV 字段不变。补采固定使用原实验 image ID，原镜像丢失时需先恢复，不能以新环境代替。
 
 正式矩阵的每个 `/predict` 请求默认最多等待 300 秒。长耗时模型可显式调整，例如
 `--request-timeout-seconds 1800` 表示单个请求最多等待 30 分钟；它不限制整条命令或整个
@@ -453,10 +467,11 @@ python run.py --help
 ./acprof-tui --model google-bert/bert-base-uncased --preset smoke
 ```
 
-TUI 分为“实验配置”“运行监控”“结果工具”和“设置”四页。实验页集中填写模型、资源矩阵和
+TUI 分为“实验配置”“运行监控”“绘图工具”“补采工具”和“设置”五页。实验页集中填写模型、资源矩阵和
 输入规模，提供三种预设及自动命令预览；底部固定显示环境检查、最大输入探测和开始采集按钮。
-表单会随终端宽度切换排列。监控页显示 case 级进度和日志，结果页提供摘要、绘图和 profiler
-补采入口。开始探测、采集和执行补采前都会显示确认页。
+表单会随终端宽度切换排列。监控页显示 case 级进度和日志；绘图页通过结果 CSV 读取摘要、生成图表，
+补采页通过结果目录选择 profiler、查看补采计划或执行补采。绘图和补采任务启动后切换到监控页查看日志。
+`/results`、`/summary` 读取摘要后打开绘图页。开始探测、采集和执行补采前都会显示确认页。
 
 `F2` 或 `/settings` 打开设置，`F5` 开始采集，`F6` 执行环境检查，`Ctrl+X` 安全终止当前任务。
 点击界面右上角的“×”或按 `Ctrl+Q` 退出；任务运行中会提示先安全终止任务。
@@ -489,6 +504,8 @@ Remote-SSH 也由发起连接的客户端处理快捷键。在 VS Code 工作区
 才显示通过，并注明使用的方式。失败时日志保留各次尝试的错误。该检查不会修改系统权限设置，
 正式启动时仍会执行完整预检。
 
+所有输入框均支持 `Ctrl+A` 全选当前框内的文本；全选后键入或粘贴会替换全文，
+按 `Backspace` 或 `Delete` 清空。`Home` 仍移到行首，`Ctrl+Shift+A` 也可全选。
 输入框使用细竖线插入光标，停下输入后亮 0.5 秒、灭 0.5 秒；键入、移动或点击后立即显示。
 TUI 直接控制光标亮灭，不依赖终端的闪烁设置，也不为闪烁重绘界面。离开输入框后隐藏并停止
 计时，正式测量窗口内暂停闪烁。光标形状需要终端支持 DECSCUSR；退出或挂起 TUI 时重置样式。
@@ -514,7 +531,7 @@ TUI 直接控制光标亮灭，不依赖终端的闪烁设置，也不为闪烁�
 模型的填入顺序为：命令行 `--model` → 最近启动的模型 → 手动保存的实验配置。
 `--preset` 优先于保存的其他实验参数，并保留按上述顺序选出的模型。运行任务期间，配置控件暂时锁定。
 
-“结果工具”的“结果目录”和“结果 CSV”也会自动记忆，下次启动直接恢复。
+“绘图工具”的“结果 CSV”和“补采工具”的“结果目录”分别自动记忆，下次启动直接恢复。
 确认采集时保存本次输出路径，结束后按实际合并 CSV 更新；失败或终止仍保留本次路径，便于续跑。
 成功读取摘要或启动绘图时记住使用的 CSV，确认启动补采或补采计划时记住使用的目录，
 按钮和快捷命令都适用。仅编辑输入框、无效路径或取消确认不会覆盖记录；最大输入探测不改动这两个结果路径。
@@ -642,7 +659,7 @@ CUDA API、kernel 和 memcpy 时间各自是活动时长之和，活动可能重
 - Nsys 也支持 `--nsys-sampling per-scale`：只采一个代表 CPU/内存 × 每个 input scale，结果复用到其他 GPU 资源配置。
 - 两者均支持 `full`：在各自适用的 GPU 模式下，逐 CPU × 内存 × input scale 采集。
 
-新构建的模型共享 `acprof-base` 中预装的 Valgrind 和 Nsys 运行库；启用分析时直接使用模型镜像，无需为每个新模型再构建 Massif / Nsys 镜像。Nsys 主程序仍从宿主机挂载，可用 `--nsys-root` 指定；host 无需安装 Valgrind。两个工具只在独立分析探针中运行。已有旧模型镜像无需重新下载权重：首次使用时按需构建兼容镜像，以后实际模型镜像 ID 和分析 Dockerfile 均未改变时直接复用，跳过 `docker build`。
+新构建的模型使用 `acprof-base` 或运行环境依赖层中预装的 Valgrind 和 Nsys 运行库；启用分析时直接使用模型镜像，无需为每个新模型再构建 Massif / Nsys 镜像。Nsys 主程序仍从宿主机挂载，可用 `--nsys-root` 指定；host 无需安装 Valgrind。两个工具只在独立分析探针中运行。已有旧模型镜像无需重新下载权重：首次使用时按需构建兼容镜像，以后实际模型镜像 ID 和分析 Dockerfile 均未改变时直接复用，跳过 `docker build`。
 
 需要严格采完整资源矩阵时显式传入：
 
@@ -669,7 +686,7 @@ python profile.py results/google-bert--bert-base-uncased --tools torch,ncu
 ```
 
 不传 `--tools` 时，默认补齐适用且尚未成功的 `torch,ncu,nsys,massif`。
-TUI 的“结果工具 → 补采工具”提供这四项独立复选框，默认勾选 `torch`、`ncu`；
+TUI 的“补采工具”页提供这四项独立复选框，默认勾选 `torch`、`ncu`；
 鼠标点击或聚焦后按空格切换，可同时勾选四项。至少选择一项后再查看补采计划或执行补采。
 未显式指定工具的 `/profile`、`/profile-run` 使用当前勾选项；命令中指定工具时以命令为准。
 Torch 匹配已有 CPU/GPU 数据，NCU/Nsys 只用于 GPU 行，Massif 只用于 CPU-only 行。

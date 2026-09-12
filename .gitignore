@@ -10,4 +10,5 @@ results/
 
 *.csv
 
-
+# Keep the runtime extension guide visible even with a local docs exclusion.
+!/docs/Runtime_Compatibility.md

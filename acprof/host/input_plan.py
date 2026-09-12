@@ -101,12 +101,8 @@ def _materialize_scale_plan(
     model_constraints: Optional[Dict[str, Any]] = None,
 ) -> PlannedInputScales:
     """Generate one reusable payload plan for non-NLP task families."""
-    from acprof.workloads import get_generator
 
-    workload_gen = get_generator(
-        task_info.task_family,
-        task_info.model_id,
-        task_info.pipeline_tag,
+    workload_gen = _get_task_generator(task_info,
         batch_size,
         workload_spec_path=workload_spec_path,
     )
@@ -439,9 +435,8 @@ def _assert_manual_timeseries_scales_legal(
     scales: List[float],
     batch_size: int,
 ) -> List[float]:
-    from acprof.workloads import get_generator
 
-    workload_gen = get_generator(task_info.task_family, task_info.model_id, task_info.pipeline_tag, batch_size)
+    workload_gen = _get_task_generator(task_info, batch_size)
     invalid: Dict[float, str] = {}
 
     for scale in scales:
@@ -473,15 +468,11 @@ def _assert_manual_nlp_scales_legal(
     scales: List[float],
     batch_size: int,
 ) -> List[float]:
-    from acprof.workloads import get_generator
 
     session: Optional[RunningContainer] = None
     try:
         session = _start_probe_session(task_info, image_info, cpu_list, mem_list, gpu_list)
-        workload_gen = get_generator(
-            task_info.task_family,
-            task_info.model_id,
-            task_info.pipeline_tag,
+        workload_gen = _get_task_generator(task_info,
             batch_size,
         )
         invalid: Dict[float, str] = {}
@@ -522,15 +513,11 @@ def _plan_manual_nlp_scales(
     output_dir: str,
     workload_spec_path: Optional[str] = None,
 ) -> PlannedInputScales:
-    from acprof.workloads import get_generator
 
     session: Optional[RunningContainer] = None
     try:
         session = _start_probe_session(task_info, image_info, cpu_list, mem_list, gpu_list)
-        workload_gen = get_generator(
-            task_info.task_family,
-            task_info.model_id,
-            task_info.pipeline_tag,
+        workload_gen = _get_task_generator(task_info,
             batch_size,
             workload_spec_path=workload_spec_path,
         )
@@ -598,15 +585,11 @@ def _plan_nlp_auto_scales(
     output_dir: str,
     workload_spec_path: Optional[str] = None,
 ) -> PlannedInputScales:
-    from acprof.workloads import get_generator
 
     session: Optional[RunningContainer] = None
     try:
         session = _start_probe_session(task_info, image_info, cpu_list, mem_list, gpu_list)
-        workload_gen = get_generator(
-            task_info.task_family,
-            task_info.model_id,
-            task_info.pipeline_tag,
+        workload_gen = _get_task_generator(task_info,
             batch_size,
             workload_spec_path=workload_spec_path,
         )
@@ -728,9 +711,8 @@ def _plan_nlp_auto_scales(
 
 def _default_family_max_scale(task_info: TaskInfo, batch_size: int) -> float:
     if task_info.task_family == "timeseries":
-        from acprof.workloads import get_generator
 
-        workload_gen = get_generator(task_info.task_family, task_info.model_id, task_info.pipeline_tag, batch_size)
+        workload_gen = _get_task_generator(task_info, batch_size)
         if hasattr(workload_gen, "max_input_scale"):
             max_scale = workload_gen.max_input_scale()
             if max_scale is not None:
@@ -757,12 +739,8 @@ def _plan_audio_scales(
     workload_spec_path: Optional[str],
 ) -> PlannedInputScales:
     """Validate real audio payloads against the loaded model before a sweep."""
-    from acprof.workloads import get_generator
 
-    workload_gen = get_generator(
-        task_info.task_family,
-        task_info.model_id,
-        task_info.pipeline_tag,
+    workload_gen = _get_task_generator(task_info,
         batch_size,
         workload_spec_path=workload_spec_path,
     )
@@ -862,9 +840,8 @@ def _plan_timeseries_scales(
     batch_size: int, output_dir: str, input_scales: Optional[str],
 ) -> PlannedInputScales:
     """Use the loaded forecasting model's context limit before materialization."""
-    from acprof.workloads import get_generator
 
-    generator = get_generator(task_info.task_family, task_info.model_id, task_info.pipeline_tag, batch_size)
+    generator = _get_task_generator(task_info, batch_size)
     session = _start_probe_session(task_info, image_info, cpu_list, mem_list, gpu_list)
     try:
         constraints = _request_scale_meta(session, generator.generate(1))
@@ -971,12 +948,8 @@ def plan_input_scales(
         )
 
     if task_info.task_family == "audio":
-        from acprof.workloads import get_generator
 
-        workload_gen = get_generator(
-            task_info.task_family,
-            task_info.model_id,
-            task_info.pipeline_tag,
+        workload_gen = _get_task_generator(task_info,
             batch_size,
             workload_spec_path=workload_spec_path,
         )
@@ -1001,12 +974,8 @@ def plan_input_scales(
     if table_qa or task_info.task_family in {"diffusion", "multimodal", "structured"} or (
         task_info.task_family == "cv" and workload_spec_path
     ):
-        from acprof.workloads import get_generator
 
-        workload_gen = get_generator(
-            task_info.task_family,
-            task_info.model_id,
-            task_info.pipeline_tag,
+        workload_gen = _get_task_generator(task_info,
             batch_size,
             workload_spec_path=workload_spec_path,
         )
@@ -1051,3 +1020,12 @@ def plan_input_scales(
         source="auto",
         workload_spec_path=workload_spec_path,
     )
+
+
+def _get_task_generator(task_info: TaskInfo, batch_size: int, **kwargs: Any):
+    """Carry the selected adapter into workload defaults, including model aliases."""
+    from acprof.workloads import get_generator
+
+    if task_info.model_adapter != "family-default":
+        kwargs["model_adapter"] = task_info.model_adapter
+    return get_generator(task_info.task_family, task_info.model_id, task_info.pipeline_tag, batch_size, **kwargs)

@@ -85,7 +85,8 @@ from acprof.tui.views import (
     ConfirmActionScreen,
     LogPanel,
     compose_monitor_tab,
-    compose_results_tab,
+    compose_plot_tab,
+    compose_profile_tab,
     compose_run_tab,
     compose_settings_tab,
 )
@@ -174,7 +175,8 @@ class AcprofTui(BarCursorApp):
         with TabbedContent(initial="run-tab", id="main-tabs"):
             yield from compose_run_tab(self)
             yield from compose_monitor_tab(self)
-            yield from compose_results_tab(self)
+            yield from compose_plot_tab(self)
+            yield from compose_profile_tab(self)
             yield from compose_settings_tab(self)
 
         with Vertical(id="bottom-panel"):
@@ -1665,7 +1667,7 @@ class AcprofTui(BarCursorApp):
             if args:
                 self.query_one("#result-csv", Input).value = path
             self._update_result_summary(path)
-            self._activate_tab("results-tab")
+            self._activate_tab("plot-tab")
         elif command in {"log", "logs"}:
             self.action_toggle_log_view()
         elif command == "clear":

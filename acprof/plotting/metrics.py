@@ -5,6 +5,8 @@ import math
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+from matplotlib.legend import Legend
 from matplotlib.lines import Line2D
 
 from acprof.plotting.config import (
@@ -110,6 +112,66 @@ def plot_metric(
     if show_plots:
         plt.show()
     plt.close()
+
+
+def _overview_config_legend(
+    fig: Figure,
+    configs: list[tuple[int, int, bool]],
+    config_colors: dict[tuple[int, int, bool], tuple[float, float, float]],
+    *,
+    column_limit: int,
+) -> Legend:
+    """按运行模式和 CPU 分列，保留各列缺失的内存档位。"""
+    groups = list(dict.fromkeys((cpu, gpu_on) for cpu, _, gpu_on in configs))
+    memories = sorted({mem for _, mem, _ in configs})
+    columns = min(column_limit, len(groups))
+    bands = math.ceil(len(groups) / columns)
+    handles = []
+    labels = []
+    heading_indices = []
+
+    # Matplotlib 按列填充；每个分组占相同的行数，避免把配置组拆开。
+    for column in range(columns):
+        for band in range(bands):
+            if band:
+                handles.append(Line2D([], [], linestyle="none"))
+                labels.append("")
+            group_index = band * columns + column
+            group = groups[group_index] if group_index < len(groups) else None
+            heading_indices.append(len(labels))
+            handles.append(Line2D([], [], linestyle="none"))
+            labels.append(
+                f"{'GPU+' if group[1] else ''}CPU{group[0]}" if group else ""
+            )
+            for mem in memories:
+                config = (group[0], mem, group[1]) if group else None
+                if config in config_colors:
+                    handles.append(Line2D(
+                        [], [], color=config_colors[config], linestyle="-", linewidth=2,
+                    ))
+                    labels.append(f"Mem{mem}")
+                else:
+                    handles.append(Line2D([], [], linestyle="none"))
+                    labels.append("")
+
+    legend = fig.legend(
+        handles=handles,
+        labels=labels,
+        title="Configuration",
+        fontsize=8,
+        ncol=columns,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.965),
+        borderaxespad=0,
+        borderpad=0.65,
+        labelspacing=0.45,
+        handlelength=1.6,
+        handletextpad=0.5,
+        columnspacing=1.6,
+    )
+    for index in heading_indices:
+        legend.get_texts()[index].set_fontweight("bold")
+    return legend
 
 
 def plot_metric_overview(
@@ -245,50 +307,32 @@ def plot_metric_overview(
             axis.tick_params(axis="x", labelbottom=True)
             break
 
-    config_handles = [
-        Line2D(
-            [0],
-            [0],
-            color=config_colors[config],
-            linestyle="-",
-            linewidth=2,
-        )
-        for config in configs
-    ]
-    config_labels = [
-        f"{'GPU' if gpu_on else 'CPU'}+CPU{cpu}+Mem{mem}"
-        for cpu, mem, gpu_on in configs
-    ]
-    legend_column_limit = 6 if columns > 1 else 4
-    legend_columns = min(
-        legend_column_limit,
-        max(1, len(config_handles)),
+    legend = _overview_config_legend(
+        fig,
+        configs,
+        config_colors,
+        column_limit=8 if columns > 1 else 4,
     )
-    legend_rows = math.ceil(len(config_handles) / legend_columns)
+    fig.canvas.draw()
+    legend_height_inches = legend.get_window_extent(
+        fig.canvas.get_renderer()
+    ).height / fig.dpi
     note_lines = figure_note.count("\n") + 1 if figure_note else 0
     note_height_inches = 0.12 + 0.22 * note_lines if figure_note else 0.0
-    top_margin_inches = 0.8 + 0.23 * legend_rows + note_height_inches
-    layout_top = max(
-        0.68,
-        min(0.9, 1.0 - top_margin_inches / figure_height),
-    )
-    fig.suptitle(title, y=0.995)
-    fig.legend(
-        handles=config_handles,
-        labels=config_labels,
-        title="Configuration",
-        fontsize=8,
-        ncol=legend_columns,
-        loc="upper center",
-        bbox_to_anchor=(0.5, 0.965),
+    top_margin_inches = 0.82 + legend_height_inches + note_height_inches
+    # 配置多时增加画布高度，为图例和说明留出空间，同时保留子图高度。
+    figure_height += max(0.0, top_margin_inches - 1.8)
+    fig.set_size_inches(figure_width, figure_height)
+    layout_top = 1.0 - top_margin_inches / figure_height
+    fig.suptitle(title, y=1.0 - 0.08 / figure_height)
+    legend.set_bbox_to_anchor(
+        (0.5, 1.0 - 0.45 / figure_height),
+        transform=fig.transFigure,
     )
     if figure_note:
-        note_y = min(
-            0.9,
-            layout_top
-            + note_height_inches / (2.0 * figure_height)
-            + 0.012,
-        )
+        note_y = 1.0 - (
+            0.61 + legend_height_inches + note_height_inches / 2.0
+        ) / figure_height
         fig.text(
             0.5,
             note_y,

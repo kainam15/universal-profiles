@@ -31,7 +31,7 @@ class TuiProfileToolsTests(unittest.IsolatedAsyncioTestCase):
         app = self.make_app()
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause()
-            app._activate_tab("results-tab")
+            app._activate_tab("profile-tab")
             app.query_one("#result-dir", Input).value = str(self.result_dir)
             await pilot.pause()
             checkboxes = list(app.query("#profile-tools Checkbox"))
@@ -71,7 +71,7 @@ class TuiProfileToolsTests(unittest.IsolatedAsyncioTestCase):
         app = self.make_app()
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause()
-            app._activate_tab("results-tab")
+            app._activate_tab("profile-tab")
             app.query_one("#result-dir", Input).value = str(self.result_dir)
             await pilot.pause()
             self.assertEqual(len(app.query("#profile-tools Checkbox")), 4)
@@ -104,7 +104,7 @@ class TuiProfileToolsTests(unittest.IsolatedAsyncioTestCase):
                         app.action_show_settings()
                         app.query_one("#ui-language", Select).value = language
                         await pilot.pause()
-                        app._activate_tab("results-tab")
+                        app._activate_tab("profile-tab")
                         await pilot.pause()
                         for tool in ("torch", "ncu", "nsys", "massif"):
                             box = app.query_one(f"#profile-tool-{tool}", Checkbox)
