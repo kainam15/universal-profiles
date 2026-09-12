@@ -70,7 +70,7 @@
 | `image_tag` | 本次传给 Docker 的镜像引用；v7 新采集使用不可变 `sha256:` image ID，历史文件可能为可变 tag。 |
 | `image_id` | 经 Docker inspect 核验的不可变镜像 ID；补采优先使用该字段。历史文件无法确认时不补造。 |
 | `image_name` | 便于查看的构建标签，含模型名和构建指纹前缀；执行仍使用 `image_id`。 |
-| `runtime_environment` | 镜像内生成的环境清单：profile、adapter、构建指纹、模型及实际 snapshot revision、Python 和已安装包版本、依赖锁与包清单 SHA256、自定义 Python 源码 SHA256。普通包版本是实测清单；`dependency_lock_sha256` 为空表示任务族尚未迁移至完整依赖锁。 |
+| `runtime_environment` | 镜像内生成的环境清单：profile、adapter、构建指纹、模型及实际 snapshot revision、Python 和已安装包版本、依赖锁与包清单 SHA256、自定义 Python 源码 SHA256，以及可选的 `model_download` 文件选择与完整性清单。普通包版本是实测清单；`dependency_lock_sha256` 为空表示任务族尚未迁移至完整依赖锁。 |
 | `runtime_validation` | 独立容器验证报告。保存实际 image ID、输入尺度／payload SHA256、每个设备的状态、dtype、attention 实现及输出摘要。验证推理接口，不替代 profiler 兼容性检查，也不计入请求或性能测量。失败的完整报告另见 `runtime_validation.json`。 |
 | `batch_size` | 本次 profiling 的 batch size。 |
 | `input_scale_type` | `result_all.csv/input_scale` 的语义名，例如 `seq_length`。 |
@@ -133,6 +133,8 @@
 | `execution_profile_provenance` | execution profile 的来源；默认关闭时为 `disabled`。 |
 
 `schema_version=3` 的历史文件使用 `model_weight_bytes` 表示上述完整 cache artifacts 大小；v4 以 `model_cache_bytes` 替代该旧字段；v5 新增 host swap 字段；v6 新增 cgroup 版本与采集模式；v7 新增运行环境和验证记录。历史文件不会自动伪造当时的 swap、cgroup 或依赖环境；无法回溯的值应保持未知，补录时在 `collection_history.json` 记录来源。
+
+`runtime_environment.model_download` 是可选的独立 schema v1 清单，历史结果可缺失。`requested_policy` 保存 `auto/full`，`effective_policy` 保存实际 `selected/full`，`reason` 说明筛选或回退原因；`weights` 记录组件、格式、variant 和索引／分片文件。`files` 保存路径、实际逻辑大小和构建时计算的 SHA256，另保留 Hub 提供的 Git blob／LFS 标识；`excluded_files` 是未下载文件的远端元数据。`verification=sha256` 表示构建阶段已完成完整性检查，`plan_sha256` 校验规范化 JSON（不含自身字段）。`selected_bytes` 按清单路径求和，不对相同内容的多个路径去重，因此不等同于 `model_cache_bytes`、镜像大小或释放的磁盘空间。新增清单不改变 CSV 字段和历史指标定义。
 
 `runtime_validation.json` 使用独立 schema v1：`devices.off/on` 分别保存 CPU／GPU 的 `ok`、`error` 或明确 cgroup OOM 的 `resource_limit`；总状态为 `ok`、`error` 或 `resource_limited`。每个模式只执行一次最小计划输入，资源上限为本次配置的最大 CPU／内存。错误会在矩阵之前退出；资源限制允许正式矩阵继续测定 OOM 边界。stdout/stderr 保存在 `runtime_validation_off/on.log`，超时也清理验证容器。它们不是 warmup、测量行或 profiler 结果。验证前已有的结果不因此变为本次成功结果。
 
@@ -202,7 +204,7 @@
 - `latency_energy_pareto.png`
 - `cold_start_breakdown.png`
 
-13 张通用总览图统一使用 input scale 横轴、配置颜色和共享图例；每张最多 6 个子图。只有单位、语义和数值尺度都适合直接比较的子图才共享纵轴，例如 packet/application latency、NCU application/packet MFLOPS 以及 cache/dTLB 的同类比率。cache miss 和 dTLB miss 的单 request 计数可能相差多个数量级，因此使用独立纵轴。某个指标没有数据时，对应位置显示 `No data`；整张总览图的全部指标都没有数据时才跳过该 PNG。延迟总览使用 `3×2` 布局，同时展示 packet/application 的原始延迟、每 input unit 延迟和 CV；service efficiency 总览集中展示吞吐、每 CPU core 吞吐、container-attributed energy、每 input unit 能耗和 samples/J。
+13 张通用总览图统一使用 input scale 横轴、配置颜色和共享图例；每张最多 6 个子图。只有单位、语义和数值尺度都适合直接比较的子图才共享纵轴，例如 packet/application latency、NCU application/packet MFLOPS 以及 cache/dTLB 的同类比率。cache miss 和 dTLB miss 的单 request 计数可能相差多个数量级，因此使用独立纵轴。某个指标没有数据时，对应位置显示 `No data`；整张总览图的全部指标都没有数据时才跳过该 PNG。延迟总览使用 `3×2` 布局，同时展示 packet/application 的原始延迟、归一化延迟和 CV；service efficiency 总览集中展示吞吐、每 CPU core 吞吐、container-attributed energy、归一化能耗和 samples/J。分辨率类型的归一化子图使用每百万像素指标（Diffusion 为输出像素，CV/多模态为输入像素），其他尺度仍使用原来的每 input unit 指标。分辨率图缺少可靠像素数时显示 `No data`，不退回边长分母。
 
 通用总览图和 energy/power 总览图的 `Configuration` 图例按运行模式、CPU 核数分列：`GPU+CPU1` 表示启用 GPU、CPU 配额为 1 核，`CPU1` 表示仅使用 CPU、配额为 1 核；列内的 `Mem2`、`Mem4` 等对应 `mem_cap_gb`，按数值从小到大排列并对齐。GPU 组在前，CPU-only 组在后，各组 CPU 核数递增；本图没有有效数据的配置留空，不生成额外曲线。宽图最多并排 8 组，单列子图最多并排 4 组，更多配置整组换行；画布按实际图例高度预留空间，避免遮挡标题、idle 说明或子图。曲线颜色和聚合口径保持原有规则。
 
@@ -278,8 +280,10 @@ CPU 模型除共同的二次 log input-scale 项外，还使用二次 log CPU �
 | `mem_cap_gb` | 当前 Docker container 的 memory cap，单位 GB，来自 `--mems`。 |
 | `gpu_mode` | `on` 或 `off`。`on` 表示容器使用 Docker `--gpus all`。 |
 | `input_scale` | 本行实际执行的主输入尺度。语义见 `static_meta.json/input_scale_type`。 |
-| `input_units_per_request` | `effective input_scale × batch_size`。input unit 沿用任务族尺度：NLP/时序通常是 token/context step，Audio 是秒，CV 是缩放倍率而不是像素数。 |
+| `input_units_per_request` | `effective input_scale × batch_size`。保留历史尺度语义：NLP/时序通常是 token/context step，Audio 是秒，CV 是缩放倍率，分辨率型 Diffusion/多模态是边长。这些图像尺度都不是像素总数。 |
 | `input_num_samples` | 音频 payload 的实际采样点数；其他任务或旧计划无法推导时为 `nan`。它是诊断字段，音频主尺度仍为 `duration_s`。 |
+| `input_pixels_per_request` | CV/多模态每请求输入像素总数，单位 pixel/request。由物化计划中的宽高计算；相同尺寸视频为 `batch_size × width × height × frame_count`，多模态中同时存在的图像与视频像素相加。不乘颜色通道数，指 processor 处理前的素材尺寸。 |
+| `output_pixels_per_request` | Diffusion 每请求输出像素总数，单位 pixel/request。单张方形图像为 `batch_size × resolution_px²`；视频为 `batch_size × output_pixel_count_per_video`，帧数只计一次。来自输入计划中受 handler 尺寸协议约束的输出几何，不新增采样。不适用或不能确认几何时为 `nan`。 |
 | `request_payload_bytes` | `requests` 实际发送的 prepared HTTP JSON body 字节数，在同一 workload window 内取平均。 |
 | `packet_request_wire_bytes_per_request` / `packet_response_wire_bytes_per_request` | 从同一 PCAP 中属于该 `/predict` TCP stream 的 client→server / server→client captured `frame.len` 总和，再对本行请求求平均。客户端使用 `Connection: close`，因此每个 stream 对应一个请求；握手、ACK、关闭包和重传都保留。 |
 | `packet_total_wire_bytes_per_request` | 上述请求与响应 captured frame bytes 之和。它不含 capture 未保留的 Ethernet FCS，也不包含物理层 preamble / inter-frame gap，不能直接当作插座侧链路能耗输入。 |
@@ -299,12 +303,14 @@ CPU 模型除共同的二次 log input-scale 项外，还使用二次 log CPU �
 | --- | --- |
 | `latency_s` | packet-level latency，来自 `tcpdump` PCAP + `tshark` 解析 + `acprof.packet.merge_packet_latency` merge。当前默认要求该字段完整；抓包不可用、PCAP 为空、解析为空或 merge 后仍有缺失时，程序会退出并给出恢复提示。 |
 | `latency_s_per_input_unit` | `latency_s / input_units_per_request`，在 packet merge 阶段更新。 |
+| `latency_s_per_input_megapixel` / `latency_s_per_output_megapixel` | `latency_s × 1,000,000 / 对应的 pixels_per_request`，单位 s/Mpixel；沿用 packet 请求响应窗口，在 packet merge 后更新。 |
 | `latency_request_count` | 本行实际合并到 packet-level latency 分布中的有效 request 数。可与 `repeat_in_window` 对照检查抓包完整性。 |
 | `latency_p50_s` / `latency_p90_s` / `latency_p95_s` | packet-level latency 在本行 request window 内的 empirical nearest-rank 分位数，由 merge 阶段从同一组 packet latency 明细计算。 |
 | `latency_std_s` / `latency_cv` / `latency_iqr_s` / `latency_max_s` | 同一 packet-level request window 的总体标准差、变异系数 `std / mean`、nearest-rank `P75 - P25` 和最大值。少于 2 个有效 request 时，std、CV 和 IQR 为 `nan`；max 仍保留。 |
 | `latency_slow_ratio` | packet-level latency 中超过 `SLOW_LATENCY_THRESHOLD_S` 的 request 比例，默认阈值为 `0.06` 秒，用于观察尾延迟或双峰分布。 |
 | `latency_app_s` | host-side application latency。`acprof.host.client` 用 `requests.post()` 外层 `time.perf_counter()` 测得，通常比 `latency_s` 更容易稳定产出。 |
 | `latency_app_s_per_input_unit` | `latency_app_s / input_units_per_request`。 |
+| `latency_app_s_per_input_megapixel` / `latency_app_s_per_output_megapixel` | `latency_app_s × 1,000,000 / 对应的 pixels_per_request`，单位 s/Mpixel；包含原 application 请求的预处理、推理、后处理和传输，不是仅模型算子的耗时。 |
 | `latency_app_request_count` | 本行 application latency 分布中的有效 request 数；正常成功窗口通常等于 `repeat_in_window`。 |
 | `latency_app_p50_s` / `latency_app_p90_s` / `latency_app_p95_s` | host-side application latency 在本行 request window 内的 empirical nearest-rank 分位数。 |
 | `latency_app_std_s` / `latency_app_cv` / `latency_app_iqr_s` / `latency_app_max_s` | application latency 的总体标准差、变异系数、nearest-rank IQR 和最大值；少于 2 个有效 request 时 std、CV 和 IQR 为 `nan`。 |
@@ -405,6 +411,38 @@ Torch eager 记录模型逻辑计算量，NCU 记录 GPU 实际执行量；两�
 | `output_tokens_per_s_app` | `output_token_count_avg / latency_app_s`。只在 handler 能可靠返回正数 output token count 时有值，适用于 ASR 和图像描述；分母包含完整请求的图像/音频预处理、推理、后处理和传输，不是纯解码速度。 |
 | `container_attributed_j_per_output_token` | `container_attributed_energy_eff_j / output_token_count_avg`；没有可靠 output token count 时为 `nan`。 |
 | `container_attributed_j_per_input_unit` | `container_attributed_energy_eff_j / input_units_per_request`；沿用上述任务族 input unit 语义，不增加能耗采集窗口。 |
+| `container_attributed_j_per_input_megapixel` / `container_attributed_j_per_output_megapixel` | `container_attributed_energy_eff_j × 1,000,000 / 对应的 pixels_per_request`，单位 J/Mpixel；能量归因和 idle 扣除口径与分子完全一致。原始能量缺失、为负或像素数无效时为 `nan`；有效零能量仍为 `0`。 |
+
+### 像素归一化口径
+
+`Mpixel` 表示一百万像素。新字段使用每百万像素单位，避免 CSV 六位小数把很小的
+每像素延迟舍入为零。所有分子已经平均到单 request；分母计入该 request 的完整 batch，
+不再乘除 `repeat_in_window`。绘图先对每行计算比值，再沿用同一资源配置和尺度内的
+mean/median 聚合，默认仅纳入 `status=ok` 且 `warmup=0` 的行。
+
+例如 batch=2、输出为 128×128 时，每请求有 32768 像素；若能耗为 327.68 J，
+则为 10000 J/Mpixel。输出改为 256×256、能耗增为 1310.72 J 时，仍为
+10000 J/Mpixel。旧字段 `E / (batch_size × resolution_px)` 会从 1.28 升至 2.56，
+因此它的上升不能用于判断每像素能效变差。
+
+新增 2 个像素计数和 6 个比值字段，不重新定义已有 CSV 列；旧 partial case 缺少这些
+可选列时仍可保留原测量行并补写失败记录，新列填 `nan`。静态 schema 保持 v7，
+输入计划保持兼容的 v2，多模态视频计划另行记录 `video_frame_width / video_frame_height`。
+实时采集在 monitor 停止后从物化计划计算像素数；若服务返回的有效尺度与计划不一致，
+像素计数保持 `nan`。packet 回填只更新 packet 像素延迟，不改变 application 延迟或能耗。
+
+历史文件读取时优先使用 CSV 已有的显式像素计数；没有计数列或列为空/`nan` 时，可按同目录输入计划的
+精确尺度匹配宽高/像素数，并结合 batch 元数据派生。旧多模态视频也可使用该计划对应的
+`workload.fixed_media.image_resolution` 与已记录帧数。有 `input_scale_plan_sha256`
+时必须匹配，同时核对计划中的模型和任务族；不匹配或损坏时警告并跳过计划派生。
+旧 schema 未记录 hash 时仅使用同目录、模型/任务族未冲突的计划，不补造 hash。
+缺少计划、对应尺度、batch 或尺寸时保持未知；不根据模型名、边长或默认 224 像素猜测。
+读取时从原始能耗/延迟和有效像素数重新计算比值，避免使用回填前的过期派生值。
+整个过程不改写历史 CSV、静态元数据、输入计划及其 hash。
+
+输入像素数不等同于模型实际处理的 patch/token 数或 FLOP：processor 可能缩放、切块或
+固定尺寸。像素指标描述给定工作负载的成本，比较时仍需核对模型、推理步数、精度和
+输出质量；token、音频秒数、context step、去噪步数等尺度不因本次变更被平方。
 
 ### CPU 资源、频率与 PMU
 
@@ -801,6 +839,7 @@ TUI 保存实际使用的绝对路径，相对输入以项目根目录为基准�
 | `--sniff-iface` | `docker0` | 本机 Docker 默认 bridge 对应的 `tcpdump` 抓包网卡。只有 daemon 改过 bridge 名时才覆盖。 |
 | `--output-dir` | `results` | 输出根目录。最终还会追加 model name 子目录。 |
 | `--skip-build` | false | 核验构建指纹和环境清单后复用镜像；不存在时自动构建，不匹配时退出。 |
+| `--model-download-policy` | `auto` | `auto` 按已覆盖的加载器规则筛选文件，未知结构保留完整快照并记录原因；`full` 下载固定 commit 的完整仓库。策略进入镜像指纹，不能相互误复用。采集和探测入口均支持。 |
 | `--notify` | `auto` | `auto` 在配置 Webhook 后启用企业微信；`none` 关闭，`wecom` 显式选择企业微信。配置见 [README](README.md#企业微信通知)。 |
 | `--help` | — | 显示此入口的全部公开参数后退出。 |
 | `--allow-cgroup-v1` | false | 仅用于旧主机诊断的兼容开关。默认正式模式要求 cgroup v2；启用后允许 v1，但会记录 `legacy_compatible`，且 memory peak/stat、I/O 操作数、PID、memory events 与 per-cgroup PSI 不具备同等口径。 |

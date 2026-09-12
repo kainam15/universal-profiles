@@ -8,6 +8,7 @@ from unittest.mock import patch
 from acprof.host import docker_runtime
 from acprof.host.detect import TaskInfo
 from acprof.host.runtime_images import FINGERPRINT_LABEL, build_fingerprint
+from acprof.container.model_files import seal_plan
 
 
 class PrepareImageTests(unittest.TestCase):
@@ -25,6 +26,13 @@ class PrepareImageTests(unittest.TestCase):
             'adapter': 'family-default', 'model_id': self.task.model_id,
             'model_revision': self.task.model_revision,
             'model_snapshot_revision': self.task.model_revision,
+            'model_download': seal_plan({
+                'schema_version': 1, 'model_id': self.task.model_id,
+                'model_revision': self.task.model_revision, 'requested_policy': 'auto',
+                'task_family': self.task.task_family, 'backend': self.task.runtime_backend,
+                'adapter': 'family-default', 'verification': 'sha256',
+                'files': [{'path': 'model.safetensors', 'size': 1, 'sha256': 'c' * 64}],
+            }),
         }
 
     def existing_image(self, command, **kwargs):
@@ -87,6 +95,13 @@ class PrepareImageTests(unittest.TestCase):
         self.manifest['model_snapshot_revision'] = '2' * 40
         with patch.object(docker_runtime, '_run', side_effect=self.existing_image), self.assertRaisesRegex(RuntimeError, 'revision'):
             docker_runtime.prepare_image(self.task, '/project', reuse_existing=True)
+
+    def test_missing_or_changed_download_plan_is_rejected(self):
+        for plan in (None, {'schema_version': 1, 'plan_sha256': 'wrong'}):
+            with self.subTest(plan=plan):
+                self.manifest['model_download'] = plan
+                with patch.object(docker_runtime, '_run', side_effect=self.existing_image), self.assertRaisesRegex(RuntimeError, '文件清单'):
+                    docker_runtime.prepare_image(self.task, '/project', reuse_existing=True)
 
     def test_mutable_revision_is_resolved_before_choosing_image(self):
         self.task.model_revision = 'main'

@@ -43,7 +43,6 @@ RUN pip install --no-cache-dir -i ${PYPI_INDEX_URL} \
     'huggingface_hub>=0.23.0' \
     'numpy>=1.26'
 
-# Copy shared code package
-COPY acprof/ acprof/
+# Application code is copied only after dependency and model layers.
 
 EXPOSE 8002

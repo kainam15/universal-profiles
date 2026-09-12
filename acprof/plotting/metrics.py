@@ -19,6 +19,7 @@ from acprof.plotting.data import (
     aggregate_metric,
     is_gpu_off,
     is_gpu_on,
+    normalized_metric_spec,
 )
 
 from acprof.plotting.styles import (
@@ -43,6 +44,7 @@ def plot_metric(
     show_plots: bool = False,
     agg_func: str = "mean",
 ):
+    metric, title, ylabel = normalized_metric_spec(df, metric, title, ylabel, xlabel)
     if metric not in df.columns:
         print(f"[skip] Column {metric} not in CSV")
         return
@@ -191,6 +193,12 @@ def plot_metric_overview(
     """Plot several related metrics with shared configuration colors."""
     if rows < 1 or columns < 1 or len(panels) != rows * columns:
         raise ValueError("Overview panel count must match rows * columns")
+
+    panels = tuple(
+        (*normalized_metric_spec(df, *panel[:3], xlabel), *panel[3:])
+        if panel is not None else None
+        for panel in panels
+    )
 
     aggregated_metrics = {}
     for panel in panels:

@@ -1,11 +1,21 @@
 """结果 CSV 整理、分组和基础聚合。"""
 
 import csv
+import hashlib
 import json
+import math
 import os
+import warnings
 
 import numpy as np
 import pandas as pd
+
+from acprof.pixel_metrics import (
+    PIXEL_COUNT_FIELDS,
+    PIXEL_RATE_SOURCES,
+    pixel_counts_from_metadata,
+    pixel_rate_metrics,
+)
 
 from acprof.analysis.latency_model import (
     GPU_MODE_OFF_VALUES,
@@ -52,6 +62,118 @@ def build_plot_groups(df: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
         else df.iloc[0:0].copy()
     )
     return list(zip(PLOT_OUTPUT_DIRS, (cpu_df, gpu_df, combined_df)))
+
+
+def _metadata_object(value: object) -> dict:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (ValueError, TypeError):
+            return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _read_pixel_plan(csv_path: str, static_meta: dict) -> dict:
+    """只读取与当前结果关联的计划；不使用相邻 probe 或其他实验的尺寸。"""
+    path = os.path.join(os.path.dirname(csv_path), "input_scale_plan.json")
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "rb") as source:
+            content = source.read()
+        expected = static_meta.get("input_scale_plan_sha256")
+        if expected and hashlib.sha256(content).hexdigest() != str(expected).strip():
+            raise ValueError("input_scale_plan SHA256 does not match static_meta")
+        plan = json.loads(content)
+        if not isinstance(plan, dict) or plan.get("schema_version", 1) not in (1, 2):
+            raise ValueError("unsupported input_scale_plan schema")
+        if not isinstance(plan.get("entries"), list):
+            raise ValueError("input_scale_plan entries must be an array")
+        for metadata_key, plan_key in (("task_family", "task_family"), ("model_name", "model_id")):
+            if static_meta.get(metadata_key) and plan.get(plan_key) and static_meta[metadata_key] != plan[plan_key]:
+                raise ValueError(f"input_scale_plan {plan_key} does not match static_meta")
+        return plan
+    except (OSError, ValueError, TypeError) as exc:
+        warnings.warn(f"Pixel normalization: ignoring {path}: {exc}", RuntimeWarning, stacklevel=2)
+        return {}
+
+
+def _with_pixel_metrics(df: pd.DataFrame, csv_path: str, static_meta: dict) -> pd.DataFrame:
+    plan = _read_pixel_plan(csv_path, static_meta)
+    family = str(static_meta.get("task_family") or plan.get("task_family") or "")
+    workload = _metadata_object(static_meta.get("workload") or plan.get("workload"))
+    pipeline_tag = str(static_meta.get("pipeline_tag") or plan.get("pipeline_tag") or "")
+    entries = {}
+    duplicates = set()
+    for entry in plan.get("entries", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            scale = float(entry["input_scale"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        if not math.isfinite(scale) or scale <= 0:
+            continue
+        if scale in entries:
+            duplicates.add(scale)
+        entries[scale] = entry
+    for scale in duplicates:
+        entries.pop(scale)
+
+    derived_rows = []
+    for row in df.to_dict("records"):
+        entry = entries.get(row.get("input_scale"), {})
+        counts = pixel_counts_from_metadata(
+            entry.get("input_metadata"), row.get("batch_size", static_meta.get("batch_size")),
+            task_family=family, pipeline_tag=pipeline_tag, workload=workload,
+        )
+        for field in PIXEL_COUNT_FIELDS:
+            # 显式计数无需 sidecar；兼容合并旧 CSV 时补入的空列，但不替换零/负数。
+            value = row.get(field, counts[field])
+            if pd.isna(value) or (isinstance(value, str) and value.strip().lower() in {"", "nan"}):
+                value = counts[field]
+            try:
+                number = float(value)
+            except (TypeError, ValueError, OverflowError):
+                number = float("nan")
+            counts[field] = number if math.isfinite(number) and number > 0 and number.is_integer() else float("nan")
+        derived_rows.append({**counts, **pixel_rate_metrics({**row, **counts})})
+
+    derived = pd.DataFrame(derived_rows, index=df.index,
+                           columns=[*PIXEL_COUNT_FIELDS, *PIXEL_RATE_SOURCES])
+    result = df.drop(columns=derived.columns, errors="ignore").join(derived)
+    result.attrs["pixel_scale_kind"] = {"diffusion": "output", "cv": "input", "multimodal": "input"}.get(family, "")
+    result.attrs["input_scale_type"] = str(static_meta.get("input_scale_type") or workload.get("input_scale_type") or "")
+    return result
+
+
+def normalized_metric_spec(
+    df: pd.DataFrame, metric: str, title: str, ylabel: str, xlabel: str,
+) -> tuple[str, str, str]:
+    """分辨率图使用像素指标；缺少几何信息时显示 No data，不退回边长分母。"""
+    sources = {
+        "container_attributed_j_per_input_unit": ("container_attributed_j", "Estimated energy (J/Mpixel)"),
+        "latency_s_per_input_unit": ("latency_s", "Latency (s/Mpixel)"),
+        "latency_app_s_per_input_unit": ("latency_app_s", "Latency (s/Mpixel)"),
+    }
+    scale_type = df.attrs.get("input_scale_type") or xlabel
+    if metric not in sources or scale_type not in {"resolution_px", "resolution_scale"}:
+        return metric, title, ylabel
+    direction = df.attrs.get("pixel_scale_kind")
+    if direction not in {"input", "output"}:
+        available = [
+            kind for kind in ("input", "output")
+            if f"{kind}_pixels_per_request" in df
+            and pd.to_numeric(df[f"{kind}_pixels_per_request"], errors="coerce").gt(0).any()
+        ]
+        direction = available[0] if len(available) == 1 else "unknown"
+    prefix, pixel_ylabel = sources[metric]
+    unit_title = f"{direction.title()} Megapixel" if direction != "unknown" else "Megapixel (geometry unavailable)"
+    return (
+        f"{prefix}_per_{direction}_megapixel",
+        title.replace("Input Unit", unit_title),
+        pixel_ylabel if ylabel else "",
+    )
 
 
 def prepare_df(
@@ -271,6 +393,8 @@ def prepare_df(
         df.loc[valid_edp, "container_attributed_edp_app_js"] = (
             energy.loc[valid_edp] * latency.loc[valid_edp]
         )
+
+    df = _with_pixel_metrics(df, csv_path, static_meta)
 
     if only_ok and "status" in df.columns:
         normalized_status = df["status"].astype(str).str.strip().str.lower()

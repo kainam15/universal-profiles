@@ -64,6 +64,7 @@ from acprof.host.execution_profile_plan import (
 )
 
 from acprof.host import client_metrics as _client_metrics
+from acprof.pixel_metrics import pixel_counts_from_metadata, pixel_rate_metrics
 from acprof.host.client_metrics import (
     CPU_METRIC_FIELDS,
     EFFICIENCY_METRIC_FIELDS,
@@ -553,6 +554,7 @@ def _load_input_scale_entries() -> List[Dict[str, Any]]:
                 "scale_label": scale_label,
                 "payload": payload,
                 "input_metadata": input_metadata,
+                "workload": plan.get("workload", {}),
             })
 
         return loaded_entries
@@ -1472,6 +1474,15 @@ def main() -> None:
                     "status": status,
                     "error": err_msg,
                 }
+                pixel_counts = pixel_counts_from_metadata(
+                    scale_entry.get("input_metadata") if resolved_input_scale == scale_val else None,
+                    BATCH_SIZE,
+                    task_family=TASK_FAMILY,
+                    pipeline_tag=PIPELINE_TAG,
+                    workload=scale_entry.get("workload"),
+                )
+                row.update({field: _fmt_float(value) for field, value in pixel_counts.items()})
+                row.update({field: _fmt_float(value) for field, value in pixel_rate_metrics(row).items()})
                 row_scale = _to_float_or_nan(row["input_scale"])
                 compute_profile = _find_compute_profile_entry(
                     compute_profile_plan,

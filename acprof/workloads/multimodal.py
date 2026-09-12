@@ -306,6 +306,9 @@ class MultimodalWorkloadGenerator(WorkloadGenerator):
                 result.update(audio_num_samples=audio.getnframes(), sampling_rate=audio.getframerate(), audio_duration_s=audio.getnframes() / audio.getframerate())
         if "video_frames_base64" in sample:
             result.update(video_num_frames=len(sample["video_frames_base64"]), fps=sample["fps"])
+            from PIL import Image
+            with Image.open(io.BytesIO(base64.b64decode(sample["video_frames_base64"][0]))) as frame:
+                result.update(video_frame_width=frame.width, video_frame_height=frame.height)
         return result
 
 

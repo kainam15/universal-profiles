@@ -157,6 +157,8 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
             "input_scale",
             "input_units_per_request",
             "input_num_samples",
+            "input_pixels_per_request",
+            "output_pixels_per_request",
             "request_payload_bytes",
             "packet_request_wire_bytes_per_request",
             "packet_response_wire_bytes_per_request",

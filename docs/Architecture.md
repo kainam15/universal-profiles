@@ -18,6 +18,7 @@ AC-Prof 的命令入口负责参数和调度，业务模块按输入规划、运
 | `acprof/monitors/` | 能耗、资源与 PMU 的原始测量 |
 | `acprof/packet/` | 抓包解析及 packet latency 合并 |
 | `acprof/config.py` | 共享配置、任务尺度及 CSV/静态元数据字段协议 |
+| `acprof/pixel_metrics.py` | 像素计数和能耗/延迟归一化的纯计算，由 client、packet 和 plotting 共用 |
 | `acprof/runtime_profiles.py` | 运行环境、依赖锁与模型适配器的声明和元数据路由 |
 
 ## 入口与依赖方向
@@ -77,6 +78,13 @@ flowchart TD
 [模型运行环境与适配器](Runtime_Compatibility.md)。
 
 新结果保存静态 schema v7 的 `image_id / runtime_environment / runtime_validation`。
+`host.runtime_images` 为依赖、模型文件和最终代码分别计算构建标识；所有任务族使用共享
+runtime → `runtime-model.Dockerfile` → `runtime-final.Dockerfile` 路径。没有完整依赖锁的
+任务族通过各自 Dockerfile 的 `runtime` target 构建环境；`base.Dockerfile` 不复制业务代码。
+`container.model_files` 是标准库文件规划器，`container.download_model` 复用 Hub 下载、
+验证实际字节并保存 `/models/model_download_plan.json`。下载器和规划器单独复制到模型层，
+不会因无关 handler／TUI 改动重新下载。清单作为 `runtime_environment.model_download`
+记录在静态元数据中；历史文件可缺失该字段。完整性扫描只在构建阶段执行。
 补采优先读取原实验的不可变 image ID，并核对构建指纹；受管理镜像不再用主机工作区挂载
 替换 `/app/acprof`，使模型适配代码与原实验一致。历史结果继续按旧字段读取，不伪造环境。
 

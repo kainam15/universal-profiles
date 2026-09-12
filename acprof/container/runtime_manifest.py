@@ -39,6 +39,21 @@ def collect_manifest() -> dict:
     snapshot_revision = source.resolve().name if source.is_symlink() else ""
     if snapshot_revision != os.environ.get("MODEL_REVISION"):
         raise RuntimeError("baked model snapshot differs from declared model revision")
+    from acprof.container.model_files import PLAN_FILENAME, validate_plan
+
+    download = json.loads((source.parent / PLAN_FILENAME).read_text())
+    validate_plan(download)
+    if download.get("verification") != "sha256":
+        raise RuntimeError("model download plan has not been verified during build")
+    for key, value in {
+        "model_id": os.environ.get("MODEL_ID"), "model_revision": snapshot_revision,
+        "requested_policy": os.environ.get("MODEL_DOWNLOAD_POLICY", "auto"),
+        "adapter": os.environ.get("ACPROF_MODEL_ADAPTER"),
+    }.items():
+        if download.get(key) != value:
+            raise RuntimeError(f"model download plan differs from runtime: {key}")
+    if any(not (source / item["path"]).is_file() for item in download["files"]):
+        raise RuntimeError("model snapshot is missing files from its download plan")
     return {
         "schema_version": 1,
         "profile_id": os.environ["ACPROF_RUNTIME_PROFILE"],
@@ -47,6 +62,7 @@ def collect_manifest() -> dict:
         "model_id": os.environ.get("MODEL_ID", ""),
         "model_revision": os.environ.get("MODEL_REVISION", ""),
         "model_snapshot_revision": snapshot_revision,
+        "model_download": download,
         "python_version": platform.python_version(),
         "packages": packages,
         "dependency_lock_sha256": lock_hash,

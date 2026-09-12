@@ -24,6 +24,13 @@ def moss_task():
 
 
 class RuntimeProfileRegressionTests(unittest.TestCase):
+    def test_download_policy_changes_image_identity(self):
+        task = moss_task()
+        task.model_download_policy = "auto"
+        original = build_fingerprint(task)
+        task.model_download_policy = "full"
+        self.assertNotEqual(original, build_fingerprint(task))
+
     def test_moss_architecture_reuses_adapter_for_another_checkpoint(self):
         task = dataclasses.replace(moss_task(), model_id="Example/Moss", model_config={"model_type": "moss_transcribe_diarize"})
         self.assertEqual(select_runtime_profile(task).adapter, "moss-transcribe-diarize")

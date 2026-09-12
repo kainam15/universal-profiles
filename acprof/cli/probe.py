@@ -88,6 +88,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output-dir", default="results", help="Output root")
     parser.add_argument(
+        "--model-download-policy", choices=("auto", "full"), default="auto",
+        help="Model files: auto selects verified loader formats; full keeps the complete repository",
+    )
+    parser.add_argument(
         "--skip-build",
         action="store_true",
         help="Reuse the local model image if present; automatically build it if missing",
@@ -150,6 +154,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"  Cgroup:   {cgroup_version}")
     print(f"  Output:   {output_dir}")
 
+    task_info.model_download_policy = args.model_download_policy
     try:
         image_info = prepare_image(
             task_info, str(PROJECT_DIR), reuse_existing=args.skip_build,

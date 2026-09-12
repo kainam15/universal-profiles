@@ -43,6 +43,7 @@ class TaskInfo:
     model_config: dict[str, Any] = field(default_factory=dict)
     runtime_profile_id: str = ""
     model_adapter: str = "family-default"
+    model_download_policy: str = "auto"
 
 
 def _architecture_metadata(config: Any) -> dict[str, Any]:

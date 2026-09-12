@@ -49,7 +49,14 @@ CPU 使用 FP32，GPU 使用 BF16；常规推理使用 SDPA，Torch FLOPs 的独
 
 `prepare_image` 先将模型分支解析为完整 commit，再选择运行环境。镜像名称包含构建指纹，
 指纹覆盖模型／任务／后端／环境声明、依赖锁、Dockerfile、AC-Prof Python 代码，以及旧任务族
-显式指定的 Torch 构建参数。依赖、权重和代码分层构建，相同内容由 Docker 复用。
+显式指定的 Torch 构建参数和 `model_download_policy`。依赖、权重和代码分层构建，相同内容由 Docker 复用。
+
+其它任务族 Dockerfile 的 `runtime` target 仅安装依赖，随后与锁定环境共用模型和最终代码
+阶段。模型层标识只依赖实际 runtime image ID、模型 commit／backend／adapter、下载策略、
+下载器和文件规划器，不含整个业务源码；最终源码改动不产生新模型层。当前 `auto` 选择器
+只精简已识别的原生文件布局，自定义 adapter／量化配置／未知布局使用完整快照。
+模型缺少已选索引引用的分片时直接失败，不能转而选择另一精度或格式。完整清单及原因见
+`runtime_environment.model_download`；历史清单缺失时保持缺失，补采仍固定原实验 image ID。
 
 `--skip-build` 仅复用指纹和内部清单均匹配的镜像，执行引用固定为 Docker image ID。
 查不到目标指纹则自动构建；已有标签内容不符会报错。构建期间代码变动会使构建失败，避免

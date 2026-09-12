@@ -52,6 +52,8 @@ class MultimodalWorkloadTests(unittest.TestCase):
         self.assertEqual(len(large["samples"][0]["video_frames_base64"]), 4)
         self.assertEqual(large["input_scale_type"], "frame_count")
         self.assertEqual(gen.input_metadata(4, large)["video_num_frames"], 4)
+        self.assertEqual(gen.input_metadata(4, large)["video_frame_width"], 224)
+        self.assertEqual(gen.input_metadata(4, large)["video_frame_height"], 224)
 
     def test_custom_manifest_resolves_relative_assets_and_freezes_payload(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -26,6 +26,7 @@ from acprof.config import (
 )
 from acprof.host.detect import TaskInfo
 from acprof.host.compute_profile_plan import NCU_ERROR_FIELD, TORCH_ERROR_FIELD
+from acprof.pixel_metrics import PIXEL_COUNT_FIELDS, PIXEL_RATE_SOURCES
 from acprof.monitors.perf_mips import MIPS_EXIT_CODE
 from acprof.host.docker_runtime import (
     ImageInfo,
@@ -767,7 +768,8 @@ def _write_case_error_csv(
     if preserve_existing and os.path.exists(out_csv) and os.path.getsize(out_csv) > 0:
         with open(out_csv, "r", encoding="utf-8", newline="") as f:
             reader = csv.DictReader(f)
-            missing_fields = set(CSV_FIELDS) - set(reader.fieldnames or [])
+            optional_pixel_fields = {*PIXEL_COUNT_FIELDS, *PIXEL_RATE_SOURCES}
+            missing_fields = set(CSV_FIELDS) - set(reader.fieldnames or []) - optional_pixel_fields
             if missing_fields:
                 raise RuntimeError(
                     "partial case CSV is missing required fields: "
@@ -785,7 +787,7 @@ def _write_case_error_csv(
                     )
                 existing_keys.add(key)
                 normalized_row = {
-                    field: row.get(field, "")
+                    field: row.get(field, "nan")
                     for field in CSV_FIELDS
                 }
                 if (

@@ -670,6 +670,7 @@ def _run_main():
         write_static_meta_json,
     )
 
+    task_info.model_download_policy = args.model_download_policy
     try:
         image_info = prepare_image(
             task_info, PROJECT_DIR, reuse_existing=args.skip_build,

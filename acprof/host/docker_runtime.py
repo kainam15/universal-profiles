@@ -402,6 +402,10 @@ def _build_legacy_image(task_info: TaskInfo, project_dir: str) -> ImageInfo:
         "--build-arg", f"BASE_IMAGE={base_tag}",
         "--build-arg", f"MODEL_ID={task_info.model_id}",
         "--build-arg", f"MODEL_REVISION={task_info.model_revision or 'main'}",
+        "--build-arg", f"TASK_FAMILY={task_info.task_family}",
+        "--build-arg", f"RUNTIME_BACKEND={task_info.runtime_backend}",
+        "--build-arg", f"MODEL_ADAPTER={task_info.model_adapter}",
+        "--build-arg", f"MODEL_DOWNLOAD_POLICY={task_info.model_download_policy}",
     ]
     if (os.environ.get("HF_TOKEN") or "").strip():
         family_build_args.extend([

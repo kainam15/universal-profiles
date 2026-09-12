@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 ARG BASE_IMAGE=acprof-base:latest
-FROM ${BASE_IMAGE}
+FROM ${BASE_IMAGE} AS runtime
 
 # Install a host-driver-compatible CUDA wheel. The orchestrator selects the
 # same tested wheel index used by the NLP image.
@@ -29,18 +29,20 @@ RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple \
 # T5/UMT5 tokenizers used by native image/video pipelines need SentencePiece
 # and protobuf. Outputs remain decoded PIL frames; no video encoder is needed.
 
-# Download the complete Diffusers repository snapshot into the image.
+FROM runtime AS model
 ARG MODEL_ID
 ARG MODEL_REVISION=main
-ENV MODEL_ID=${MODEL_ID}
-ENV MODEL_REVISION=${MODEL_REVISION}
+ARG TASK_FAMILY=diffusion
+ARG RUNTIME_BACKEND=diffusers
+ARG MODEL_ADAPTER=family-default
+ARG MODEL_DOWNLOAD_POLICY=auto
+ENV MODEL_ID=${MODEL_ID} MODEL_REVISION=${MODEL_REVISION}
+ENV TASK_FAMILY=${TASK_FAMILY} RUNTIME_BACKEND=${RUNTIME_BACKEND} MODEL_ADAPTER=${MODEL_ADAPTER}
+ENV MODEL_DOWNLOAD_POLICY=${MODEL_DOWNLOAD_POLICY}
+COPY acprof/container/download_model.py acprof/container/model_files.py /opt/acprof/
 RUN --mount=type=secret,id=hf_token \
-    if [ -s /run/secrets/hf_token ]; then \
-        export HF_TOKEN="$(cat /run/secrets/hf_token)"; \
-    fi; \
-    python -m acprof.container.download_model
+    if [ -s /run/secrets/hf_token ]; then export HF_TOKEN="$(cat /run/secrets/hf_token)"; fi; \
+    python /opt/acprof/download_model.py
 
-# Keep handler changes in a cheap layer above model weights.
-COPY acprof/ acprof/
-
+COPY acprof/ /app/acprof/
 CMD ["python", "-m", "acprof.container.server"]

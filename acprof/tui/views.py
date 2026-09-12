@@ -46,6 +46,9 @@ class StatusCheckbox(Checkbox):
 class ConfirmActionScreen(ModalScreen[bool]):
     """Small confirmation screen for long-running or mutating actions."""
 
+    # 打开时不预选按钮；鼠标悬停与主动使用 Tab 聚焦仍保留高亮。
+    AUTO_FOCUS = ""
+
     BINDINGS = [("escape", "cancel", "取消")]
 
     CSS = """

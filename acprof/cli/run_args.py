@@ -249,6 +249,10 @@ Examples:
     parser.set_defaults(keep_execution_profiles=True)
 
     # Infrastructure
+    parser.add_argument(
+        "--model-download-policy", choices=("auto", "full"), default="auto",
+        help="Model files: auto selects verified loader formats; full keeps the complete repository",
+    )
     parser.add_argument("--sniff-iface", default="docker0", help="Network interface for tcpdump")
     parser.add_argument("--output-dir", default="results", help="Output directory")
     parser.add_argument(

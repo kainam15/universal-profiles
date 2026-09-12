@@ -14,8 +14,8 @@ AC-Prof 是一个面向 Hugging Face 推理服务的零侵入运行时分析工�
 
 ## AC-Prof 会采集什么
 
-- 性能：application / packet-level latency、P50/P90/P95、标准差/CV/IQR/最大值、吞吐量、每 input unit 延迟、每 CPU core 吞吐，以及容器启动、server setup、CUDA 初始化、模型加载、ready wait 和首次推理的冷启动分解。
-- 能耗：CPU package、估算 vCPU 和 GPU 的 idle、平均/峰值功率与能量，以及不增加采集轮次的 container-attributed 能效派生值（包括 J/input unit）。
+- 性能：application / packet-level latency、P50/P90/P95、标准差/CV/IQR/最大值、吞吐量、每任务尺度单位及每百万像素延迟、每 CPU core 吞吐，以及容器启动、server setup、CUDA 初始化、模型加载、ready wait 和首次推理的冷启动分解。
+- 能耗：CPU package、估算 vCPU 和 GPU 的 idle、平均/峰值功率与能量，以及不增加采集轮次的 container-attributed 能效派生值（包括 J/input unit，以及图像任务的 J/Mpixel）。
 - 资源：容器 CPU / 内存、cgroup CPU throttling、memory events、CPU/内存/I/O PSI、`memory.peak`、anon/file/slab、page fault/refault、块 I/O 字节与操作数、PID 当前值/峰值/上限事件、CPU 频率与估算 cycles，以及 GPU utilization、VRAM、SM/显存时钟、P-state 和温度。
 - 网络：从同一份 PCAP 派生每请求的请求/响应 frame bytes、TCP payload 和 L2–L4 协议开销，不增加抓包轮次。
 - PMU：retired-instruction MIPS、cache miss 和 dTLB miss。
@@ -348,6 +348,17 @@ python plot.py \
 
 图表会写回模型结果目录下的 `cpu/`、`gpu/`、`gpu+cpu/` 和 `latency_model/`；没有适用数据的分组会自动跳过。除原有指标总览外，还会按可用字段生成资源失败边界、P50/P90/P95 尾延迟、延迟–能耗 Pareto 前沿和冷启动阶段分解图。历史 CSV 缺少新字段时只跳过对应图，不影响其余图表。
 
+分辨率横轴（`resolution_px` / `resolution_scale`）下的能耗和延迟归一化子图使用
+`J/Mpixel` / `s/Mpixel`，分母为每请求像素总数除以一百万。Diffusion 使用输出像素，
+CV 和图像多模态使用 processor 处理前的输入像素；视频计入全部帧。横轴仍表示原来的
+边长或缩放倍率。文本 token、音频秒数、去噪步数等尺度继续使用各自的 input unit。
+
+旧的 `input_units_per_request` 和 `*_per_input_unit` 字段保留原义。
+读取历史结果时，`plot.py` 可从同目录、hash 匹配的 `input_scale_plan.json` 尺寸记录和
+batch 元数据派生像素指标，无需重新采集，也不改写 CSV、输入计划或静态元数据。
+缺少可靠像素数时，对应子图显示 `No data`，不以边长代替面积。
+公式和兼容规则见 [像素归一化口径](REFERENCE.md#像素归一化口径)。
+
 ## 运行正式实验
 
 建议先逐步扩大规模：最小 smoke test → 单个资源配置的全部 input scale → 不带 profiler 的目标资源矩阵 → 最后补采高开销 profiler。
@@ -443,6 +454,16 @@ python run.py --help
 
 ### 镜像复用、超时与失败处理
 
+模型文件默认采用 `--model-download-policy auto`。程序在构建环境中读取固定 commit 的文件清单、配置和分片索引，按照当前加载器选择权重：标准 Transformers 优先默认 safetensors（含分片），否则保留默认 PyTorch `.bin`；Sentence Transformers 保留模块结构；已覆盖的 Stable Diffusion／SDXL／DDPM／DDIM pipeline 按组件选择；TorchScript／skops 遵循现有 artifact 清单。配置、tokenizer、processor 和其它未确认可省略的附属文件会保留。分片缺失直接报错，不静默换一套权重。
+
+自定义 adapter、`auto_map`、量化配置、未知模型类型或未覆盖的 pipeline 使用完整快照，并打印回退原因。GPU 推理 dtype 不用于选择文件名中的 FP16／FP32 variant；不会自动转换、量化权重或切换 EMA checkpoint。需要完整仓库时，`run.py` 和 `probe.py` 均可传入 `--model-download-policy full`。TUI 使用默认 `auto`；两种策略具有不同的镜像指纹。
+
+共享环境层不包含 AC-Prof 业务代码或模型。其它任务族 Dockerfile 的 `runtime` target 与带依赖锁的 runtime 镜像共用后续的模型／最终代码构建流程。模型层的指纹包含真实环境 image ID、模型 commit、backend、adapter、下载策略和筛选器内容；最终层再复制 AC-Prof 代码。修改界面或 handler 可以复用依赖与模型层，修改筛选规则只重建模型及最终层。尚未采用完整依赖锁的任务族仍记录实际安装版本，不能据此承诺删掉环境镜像后可重建出完全相同的环境。
+
+镜像内 `/models/model_download_plan.json` 保存所选文件、排除文件、选择原因、框架版本、文件 SHA256 和清单 SHA256。文件大小／内容检查在构建阶段执行，清单写入 `static_meta.json/runtime_environment/model_download`；正式 server 启动不会再次扫描、下载或校验全部权重。`model_cache_bytes` 统计实际缓存 artifacts，`docker_image_bytes` 包含该镜像继承的共享层；判断磁盘节省应查看 `docker system df -v` 的共享／独占占用。保留旧镜像时，它引用的大层仍会占用空间。
+
+实现参考 [Hugging Face Hub 0.36.2 文件筛选](https://github.com/huggingface/huggingface_hub/blob/v0.36.2/src/huggingface_hub/_snapshot_download.py)、[Transformers 4.57.6 权重解析](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/modeling_utils.py)、[Diffusers 0.39.0 组件下载](https://github.com/huggingface/diffusers/blob/v0.39.0/src/diffusers/pipelines/pipeline_utils.py)（Apache-2.0）和 [Docker 分层缓存](https://docs.docker.com/build/cache/optimize/)。复用现有 Hub 下载和重试机制，以标准库实现有边界的文件规划；不绑定框架私有下载入口，不在主机新增推理框架依赖。
+
 启动 OOM 剪枝默认开启。程序先按内存从小到大完整采集最低 CPU；只有 Docker 明确报告 `OOMKilled` 且这些失败构成连续低内存前缀时，才在后续更高 CPU 中跳过同 GPU mode、同内存上限的 case。运行期 OOM、CUDA OOM、普通启动失败和请求超时不会触发剪枝。可运行 case 的 warmup、repeat、监控器和指标口径完全不变；跳过的 case 仍写入 `status=error` 占位行，并在 `startup_oom_pruning.json` 中记录推断依据，不能作为实测性能值使用。论文若要求每个资源格都独立启动验证，传入 `--no-prune-startup-oom`。
 
 传入 `--skip-build`，或在 TUI 勾选“复用现有镜像”后，采集与探测按模型 commit、运行环境、依赖锁和代码指纹查找镜像，并核对镜像内的环境清单。匹配才复用；不存在则提示并自动构建。旧的 `:latest` 标签不会被当作匹配镜像。镜像指纹／revision 不符或 Docker 查询失败会明确退出；取消复用可重新构建。正式采集始终使用已核验的不可变 image ID。
@@ -512,6 +533,8 @@ TUI 直接控制光标亮灭，不依赖终端的闪烁设置，也不为闪烁�
 
 操作按钮统一使用透明底色和细线圆角边框，配色随主题切换；主操作、警告和终止操作用不同颜色区分。
 悬停或键盘聚焦时突出文字与边框，禁用时淡化显示；日志工具栏和确认弹窗也使用同一风格。
+确认弹窗打开时不预选按钮；使用鼠标时，移入按钮才高亮，移出后恢复。
+键盘操作使用 `Tab` / `Shift+Tab` 选择按钮，`Enter` 执行所选操作，`Esc` 取消；未选择时直接按 `Enter` 不执行操作。
 
 设置页只放界面偏好：界面语言（简体中文 / English）、八种主题（深海蓝、纸白、石墨灰、松林绿、暮紫、琥珀、暖砂、雾蓝）、
 日志保留行数（500 / 1000 / 3000 / 10000）、日志自动换行，以及是否显示底部快捷命令框。

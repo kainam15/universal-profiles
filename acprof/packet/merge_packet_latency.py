@@ -6,6 +6,8 @@ import sys
 from collections import defaultdict
 from typing import Sequence
 
+from acprof.pixel_metrics import per_megapixel
+
 SNIFF_GROUP_FIELD = "sniff_group_id"
 SLOW_LATENCY_THRESHOLD_S = float(os.getenv("SLOW_LATENCY_THRESHOLD_S", "0.06"))
 NETWORK_RECORD_TO_CSV_FIELD = {
@@ -311,6 +313,12 @@ def main(argv: Sequence[str] | None = None) -> None:
             records = group_records[gid]
             latencies = [record.get("latency_s", float("nan")) for record in records]
             r["latency_s"] = _fmt_float(_mean(latencies))
+            for direction in ("input", "output"):
+                field = f"latency_s_per_{direction}_megapixel"
+                if field in r:
+                    r[field] = _fmt_float(per_megapixel(
+                        r["latency_s"], r.get(f"{direction}_pixels_per_request")
+                    ))
             for field, value in _distribution_metrics(latencies).items():
                 r[field] = _fmt_float(value)
             try:
