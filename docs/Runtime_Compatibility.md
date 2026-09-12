@@ -3,6 +3,15 @@
 AC-Prof 按模型选择运行环境和 adapter。不同 Transformers 版本安装在独立 Docker 依赖层，
 主机只负责检测、规划和测量；新模型可以增加配置与 adapter，沿用已有采集协议。
 
+新增模型适配或调整镜像依赖时查阅本文。现有[任务支持范围](../README.md#ac-prof-会采集什么)由 README 维护，
+环境元数据的字段定义见 [REFERENCE](../REFERENCE.md#static_metajson-字段)，模块依赖见[代码架构](Architecture.md#主机编排与测量)。
+
+- [当前配置](#当前配置)：选择运行环境，核对支持边界。
+- [MOSS 的执行约定](#moss-的执行约定)：仅在处理该 adapter 时读取。
+- [构建、复用和验证](#构建复用和验证)：检查镜像、依赖清单与独立推理验证。
+- [新增一个模型适配](#新增一个模型适配)：按已有协议扩展 adapter。
+- [参考实现与取舍](#参考实现与取舍)：查阅复用来源和依赖选择理由。
+
 ```mermaid
 flowchart LR
     model[模型 ID 和 config 元数据] --> route[运行环境及 adapter 注册表]

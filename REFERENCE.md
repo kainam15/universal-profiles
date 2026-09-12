@@ -2,12 +2,17 @@
 
 本文用于查阅实验产物、CSV 字段、时间预算、结果判断和命令行参数。
 安装、运行、TUI、通知与补采操作见 [README](README.md)。
+本文维护指标与产物契约；模块职责见[代码架构](docs/Architecture.md)，环境选择、依赖锁和 adapter 扩展见[运行兼容说明](docs/Runtime_Compatibility.md)。先按下表定位章节，再搜索具体字段；无需一次读取整份字段字典。
 
-- [输出文件](#输出文件)
-- [result_all.csv 字段解释](#result_allcsv-字段解释)
-- [结果行数和时间成本估算](#结果行数和时间成本估算)
-- [常见判断](#常见判断)
-- [CLI 参数](#cli-参数)
+| 要查的内容 | 章节入口 |
+| --- | --- |
+| 文件用途、静态描述与采集来源 | [输出文件](#输出文件)、[静态元数据](#static_metajson-字段)、[采集历史](#collection_historyjson-字段) |
+| 探测、图表和延迟模型 | [探测结果](#最大输入探测结果)、[图表与拟合产物](#图表与延迟拟合产物) |
+| 指标的来源、单位、公式与窗口 | [CSV 字段分组](#result_allcsv-字段解释) |
+| 行数、请求数和时间预算 | [结果行数和时间成本估算](#结果行数和时间成本估算) |
+| 空值、失败与适用范围 | [常见判断](#常见判断)、[运行状态与错误](#运行状态与错误) |
+| 设置持久化与旧版本兼容 | [TUI 本地设置](#tui-本地设置) |
+| 参数、输入规模与音频清单 | [CLI 参数](#cli-参数)、[输入规模与音频清单](#输入规模与音频清单) |
 
 ## 输出文件
 
@@ -271,6 +276,14 @@ CPU 模型除共同的二次 log input-scale 项外，还使用二次 log CPU �
 
 字段按用途分组，实际列顺序以 [acprof/config.py](acprof/config.py) 的 `CSV_FIELDS` 为准。
 `*_per_request` 和能量列按窗口内请求数归一化；`*_delta` 若未注明归一化，则表示整个窗口的增量。
+
+| 查阅方向 | 字段组 |
+| --- | --- |
+| 配置、输入与请求 | [资源配置、输入与网络](#资源配置输入与网络)、[延迟与吞吐](#延迟与吞吐)、[两种延迟的区别](#latency_s-和-latency_app_s-的区别) |
+| Profiler | [Torch 与 NCU](#torch-与-ncu-计算指标)、[Massif 与 Nsight Systems](#massif-与-nsight-systems-执行指标) |
+| 能耗与归一化 | [GPU](#gpu-功率与能耗)、[CPU package](#cpu-package-功率与能耗)、[估算 vCPU](#估算-vcpu-能耗与派生能效)、[像素口径](#像素归一化口径) |
+| 资源与 PMU | [CPU](#cpu-资源频率与-pmu)、[容器内存、swap、I/O 与 PID](#容器内存swapio-与-pid)、[GPU 资源](#gpu-资源与运行状态) |
+| 生命周期与失败 | [冷启动](#冷启动)、[运行状态与错误](#运行状态与错误) |
 
 ### 资源配置、输入与网络
 
@@ -644,6 +657,15 @@ Nsys 还需生成和解析 timeline；repeat 参数会进一步增加工作量�
 本节解释结果值、失败边界与采样限制。安装、主机权限、抓包和旧镜像的操作排查见
 [README 常见问题](README.md#常见问题)。
 
+| 当前现象 | 优先查阅 |
+| --- | --- |
+| 空值或统计量不可用 | [预期空值与失败](#先区分预期空值与失败) |
+| 模型或任务不支持 | [预检退出](#任务尚未适配的预检退出)、[图像描述兼容范围](#图像描述输出与兼容范围) |
+| 内存不足或跳过 case | [启动 OOM 与剪枝](#启动-oom-与剪枝占位)、[运行期 OOM](#运行期-oom) |
+| 能耗、基线或功率异常 | [GPU 空值](#gpu-energy-字段全是-nan)、[CPU 空值](#cpu--vcpu-energy-字段全是-nan)、[CPU 基线](#cpu-idle-baseline-波动-warning)、[GPU 基线](#gpu-idle-baseline-波动-warning)、[峰值功率](#cpu--vcpu-peak-power-看起来异常) |
+| 资源或 PMU 指标异常 | [资源占用率](#资源占用率字段全是-nan)、[MIPS、cache 与 dTLB](#mipscache-miss-与-dtlb-miss) |
+| Profiler 字段缺失 | [计算分析器](#mflops--compute-profiling-字段全是-nan)、[执行分析器](#massif--nsight-systems-execution-profiling-字段全是-nan) |
+
 ### 先区分预期空值与失败
 
 - 常规性能分析筛选 `status=ok` 且 `warmup=0`；`status=error` 行中的部分数值不视为完整测量。
@@ -764,6 +786,8 @@ TUI 保存实际使用的绝对路径，相对输入以项目根目录为基准�
 
 以下参数表对应 `run.py`。示例命令见 [README](README.md#运行正式实验)，
 默认值与实际选项以当前入口的 `--help` 和 [acprof/config.py](acprof/config.py) 为准。
+
+[run.py](#runpy) · [probe.py](#probepy) · [profile.py](#profilepy) · [其他入口](#其他入口) · [输入规模与音频清单](#输入规模与音频清单)
 
 ### `run.py`
 
