@@ -1,0 +1,4 @@
+interface:
+  display_name: "AC-Prof 结果审计"
+  short_description: "从 CSV、元数据、计划与运行日志取证，解释实验异常和结果可信度"
+  default_prompt: "请使用 $acprof-result-audit 审计这个实验目录，说明正式测量范围、异常原因和证据缺口。"

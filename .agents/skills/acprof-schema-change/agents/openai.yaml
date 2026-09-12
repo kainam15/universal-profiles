@@ -1,0 +1,4 @@
+interface:
+  display_name: "AC-Prof 指标变更"
+  short_description: "修改采集指标和产物协议时，联动核对来源、口径、历史兼容、文档与测试"
+  default_prompt: "请使用 $acprof-schema-change 完成这次指标变更，检查生产者、消费者、历史兼容和验证范围。"

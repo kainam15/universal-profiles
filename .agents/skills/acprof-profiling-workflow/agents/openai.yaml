@@ -1,0 +1,4 @@
+interface:
+  display_name: "AC-Prof 实验流程"
+  short_description: "规划 profiling 矩阵，核对实时环境并完成采集与产物验收"
+  default_prompt: "请使用 $acprof-profiling-workflow 运行这次 profiling 实验，并核对计划覆盖、结果来源和正式完成状态。"

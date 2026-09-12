@@ -4,7 +4,7 @@ AC-Prof 的命令入口负责参数和调度，业务模块按输入规划、运
 根目录脚本及旧 Python 导入路径保持兼容；新增调用应直接引用职责所属模块。
 
 修改模块边界、依赖方向或兼容入口时查阅本文。操作说明见 [README](../README.md#项目结构与开发)，
-字段与测量口径见 [REFERENCE](../REFERENCE.md#result_allcsv-字段解释)，运行环境扩展见[模型运行环境与适配器](Runtime_Compatibility.md)。
+字段与测量口径见 [指标与结果分析](Metrics.md#result_allcsv-字段解释)，运行环境扩展见[模型运行环境与适配器](Runtime_Compatibility.md)。
 
 - [目录与职责](#目录与职责)：先定位实现模块。
 - [入口与依赖方向](#入口与依赖方向)：检查导入关系和兼容边界。
@@ -79,23 +79,11 @@ flowchart TD
 冷启动状态仍由 client 管理。对照窗口、monitor 启停、正式请求和停止后的统计顺序保持一致。
 界面刷新、绘图、通知与额外文件操作继续位于正式测量窗口之外。
 
-`runtime_profiles` 仅依赖标准库，主机识别模型时只读 Hub/config 元数据。自定义模型通过
-`HandlerRegistry.register_adapter` 注册，复用 `load / preprocess / predict / postprocess`
-四阶段协议；server、输入规划和各 profiler 共用该路由。依赖安装在镜像构建阶段，正式容器
-不修改包版本。`container.runtime_manifest` 在构建时核对依赖锁和实际 snapshot；
-`container.runtime_validate` 执行独立接口验证。具体覆盖范围和扩展步骤见
-[模型运行环境与适配器](Runtime_Compatibility.md)。
-
-新结果保存静态 schema v7 的 `image_id / runtime_environment / runtime_validation`。
-`host.runtime_images` 为依赖、模型文件和最终代码分别计算构建标识；所有任务族使用共享
-runtime → `runtime-model.Dockerfile` → `runtime-final.Dockerfile` 路径。没有完整依赖锁的
-任务族通过各自 Dockerfile 的 `runtime` target 构建环境；`base.Dockerfile` 不复制业务代码。
-`container.model_files` 是标准库文件规划器，`container.download_model` 复用 Hub 下载、
-验证实际字节并保存 `/models/model_download_plan.json`。下载器和规划器单独复制到模型层，
-不会因无关 handler／TUI 改动重新下载。清单作为 `runtime_environment.model_download`
-记录在静态元数据中；历史文件可缺失该字段。完整性扫描只在构建阶段执行。
-补采优先读取原实验的不可变 image ID，并核对构建指纹；受管理镜像不再用主机工作区挂载
-替换 `/app/acprof`，使模型适配代码与原实验一致。历史结果继续按旧字段读取，不伪造环境。
+`runtime_profiles` 是标准库声明层，主机检测只读元数据；handler 注册表供 server、输入规划和 profiler 共用。
+`host.runtime_images` 负责环境、模型与最终代码的构建标识；`container.model_files` 是标准库文件规划器，
+`download_model` 负责下载与构建期完整性检查，`runtime_manifest` 与 `runtime_validate` 分别负责环境清单和独立接口验证。
+分层设计将权重下载与业务代码变更解耦；加载、镜像复用与验证契约见[运行兼容](Runtime_Compatibility.md#构建复用和验证)，
+字段与历史兼容见[采集协议](Profiling_Protocol.md#static_metajson-字段)。
 
 ## 结果分析与补采
 
@@ -132,9 +120,5 @@ settings、i18n、themes、input、log、scrollbar 各自管理设置、语言�
 CSS 路径相对 App 文件明确定位；设置文件位置、版本、项目隔离算法和恢复优先级保持一致。
 旧 `acprof.cli.tui*` 模块显式导出同一实现对象。
 
-兼容层不代理任意全局赋值。维护测试时，mock 应放在函数实际查找依赖的模块；
-入口兼容检查继续使用旧路径。布局检查覆盖 `80×24`、`120×30`、`150×45`，
-并使用临时设置文件和模拟采集边界。Headless 与 tmux 验证需注明环境，不能替代用户终端验证。
-
-运行相关 unittest 后，再完成全套测试、编译及 `git diff --check`。
-模型运行依赖缺失时的跳过项，以及尚未进行的真实 Docker/GPU 采集应单独说明。
+兼容层显式导出对象，不代理任意全局赋值；因此依赖 mock 的查找位置会随实现模块迁移，
+旧路径仍用于入口兼容验证。测试选择、终端证据与验证范围统一见[测试指南](Testing.md)。

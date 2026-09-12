@@ -1,0 +1,4 @@
+interface:
+  display_name: "AC-Prof 模型适配"
+  short_description: "联动模型路由、容器依赖、输入输出协议与设备和分析器验证"
+  default_prompt: "请使用 $acprof-model-adaptation 完成这个模型的适配，并说明实际验证的设备、工具和支持边界。"

@@ -4,31 +4,23 @@ AC-Prof 是一个面向 Hugging Face 推理服务的零侵入运行时分析工�
 
 `Hugging Face 模型 → Docker 镜像 → 资源矩阵实验 → 延迟 / 能耗 / 资源 / FLOP 指标 → CSV 与图表`
 
-[快速开始](#快速开始) · [任务支持](#ac-prof-会采集什么) · [正式实验](#运行正式实验) · [终端界面](#交互式终端界面) · [企业通知](#企业微信通知) · [查看结果](#查看结果) · [性能分析](#选择性能分析器) · [排查问题](#常见问题) · [文档导航](#文档导航)
+[快速开始](#快速开始) · [任务支持](#ac-prof-会采集什么) · [正式实验](#运行正式实验) · [终端界面](#交互式终端界面) · [企业通知](#企业微信通知) · [查看结果](#查看结果) · [性能分析](docs/Profilers.md#选择性能分析器) · [排查问题](docs/Troubleshooting.md#常见问题) · [文档导航](#文档导航)
 
 ## 先看这两点
 
 > **运行环境：** AC-Prof 只支持原生 Linux 主机和本机 Docker Engine，正式采集默认强制使用统一 cgroup v2。WSL、Docker Desktop、远程 Docker daemon、Windows 和 macOS 不能作为实验采集环境。当前推荐并验证的是 Ubuntu 24.04。
 
-> **时间成本：** 默认 6 档 input scale 时，完整矩阵计划生成 1,344 行主实验（含 warmup）。按默认每行约 10 秒 workload、20 秒 Idle 基线和 5 秒前置冷却估算，仅主测量窗口就约 13 小时，且还不包含模型下载、镜像构建、case 切换，以及显式启用各类分析器时的额外耗时。第一次使用请先跑下面的最小 smoke test；具体公式见[时间成本估算](REFERENCE.md#结果行数和时间成本估算)。
+> **时间成本：** 默认 6 档 input scale 时，完整矩阵计划生成 1,344 行主实验（含 warmup）。按默认每行约 10 秒 workload、20 秒 Idle 基线和 5 秒前置冷却估算，仅主测量窗口就约 13 小时，且还不包含模型下载、镜像构建、case 切换，以及显式启用各类分析器时的额外耗时。第一次使用请先跑下面的最小 smoke test；具体公式见[时间成本估算](docs/Profiling_Protocol.md#结果行数和时间成本估算)。
 
 ## 文档导航
 
-根据当前问题选择章节，无需从头通读全部文档。
-
-| 文档 | 阅读时机与维护范围 |
-| --- | --- |
-| 本文 | 安装、任务支持范围、运行示例、TUI 操作、通知、补采和操作性排查 |
-| [实验与指标参考](REFERENCE.md) | 查阅产物结构、字段来源、单位、公式、测量窗口、适用条件、历史兼容、结果判断及 CLI 参数 |
-| [代码架构](docs/Architecture.md) | 定位模块职责、检查依赖方向、重构和维护兼容入口 |
-| [模型运行环境与适配器](docs/Runtime_Compatibility.md) | 新增模型适配，调整依赖锁、镜像构建或独立推理验证 |
-
-每个主题的完整约定在对应文档维护；其他位置保留使用必需的摘要、示例与链接。
-变更时先更新对应文档，再同步受影响的引用。参数默认值和字段顺序应核对当前 CLI `--help` 与代码；历史实验条件以该次运行产物为准。
+[docs/README.md](docs/README.md) 是长期项目知识的导航入口；按问题读取对应专题。
+本文维护安装与操作示例；[REFERENCE.md](REFERENCE.md) 仅保留旧链接导航，不再维护第二份字段或参数说明。
+Agent 从 [AGENTS.md](AGENTS.md) 读取全局约束，再按目录和任务读取局部规则、文档及 Skills。
 
 ## AC-Prof 会采集什么
 
-[NLP、音频、表格和策略](#nlp音频表格和策略任务) · [视觉](#视觉任务) · [多模态](#多模态任务)
+[NLP、音频、表格和策略](docs/Runtime_Compatibility.md#nlp音频表格和策略任务) · [视觉](docs/Runtime_Compatibility.md#视觉任务) · [多模态](docs/Runtime_Compatibility.md#多模态任务)
 
 - 性能：application / packet-level latency、P50/P90/P95、标准差/CV/IQR/最大值、吞吐量、每任务尺度单位及每百万像素延迟、每 CPU core 吞吐，以及容器启动、server setup、CUDA 初始化、模型加载、ready wait 和首次推理的冷启动分解。
 - 能耗：CPU package、估算 vCPU 和 GPU 的 idle、平均/峰值功率与能量，以及不增加采集轮次的 container-attributed 能效派生值（包括 J/input unit，以及图像任务的 J/Mpixel）。
@@ -38,221 +30,20 @@ AC-Prof 是一个面向 Hugging Face 推理服务的零侵入运行时分析工�
 - 计算：PyTorch eager 逻辑 FLOP，以及 NVIDIA Nsight Compute 实际 GPU FLOP。
 - 可选 execution profile：Valgrind Massif 内存峰值、Nsight Systems CUDA timeline。
 
-目前支持的任务族：
-
-| 任务族 | `input_scale` 的含义 | 示例 |
-| --- | --- | --- |
-| NLP | token 序列长度；表格问答为行数 | BERT、文本生成、问答、句子相似度、文本排序 |
-| CV | 基础图像／视频帧尺寸的缩放倍率 | 图像分类、目标检测、图像描述、关键点、视频分类 |
-| Audio | 输入音频秒数；文本生成音频为输入 token 数 | ASR、分类、语音／音频生成、codec 重建、VAD |
-| Time series | context length | Chronos 时间序列预测 |
-| Diffusion | 图像／视频帧边长；无条件图像和 3D 为去噪步数 | 文生图、图像编辑、视频生成、Shap-E 网格生成 |
-| Multimodal | 依任务为输入图像边长、音频秒数或视频帧数 | 多模态问答、文档检索、文字＋音频输出 |
-| Structured | 表格行数、独立观测数或每图节点数 | 表格分类／回归、离线策略推理、图模型 |
-
-大多数 Hugging Face 模型会自动识别任务族和后端；识别失败时再使用 `--task`、`--task-family` 或 `--backend` 覆盖。没有任务标签的 Diffusers 模型可根据固定 revision 的 `model_index.json` 中已登记的原生 pipeline 类名识别。CV 每个请求使用一张图或一个视频，要求 `--batch-size 1`。未登记的任务类型、任务族／后端不匹配及不支持的 batch 会被提前拦截；通过预检仍需模型架构和容器依赖兼容。
-
-图像描述响应包含 `output_type="caption"`、`captions` 文本列表、`n_results`、`output_length` 和 `output_token_count`；后两项进入现有 CSV 的窗口平均值与输出 token 能效指标。token 数按每条生成文本重新分词统计，排除额外特殊 token，不等于解码器实际生成步数。内置输入是固定种子的合成图片，`input_scale=1` 表示传入 224×224 图片；模型的 image processor 可能再次缩放到固定尺寸，不能把传入分辨率直接当作视觉编码器的计算规模。生成采用固定模型 revision 与 pipeline 的默认配置；HTTP `params` 可传入 `max_new_tokens`、`generate_kwargs` 等官方 pipeline 参数，原样写入输入计划和 CSV `task_param`。
-
-CV 镜像同时安装 `build-essential`，供 PyTorch/Triton 在首次 GPU 推理时编译所需模块，以及 VitPose 图像变换需要的 SciPy。首次验证 BLIP 可运行以下命令。升级前构建的 CV 镜像需要重建，首次不要添加 `--skip-build`；后续可在 TUI 中复用新镜像。
-
-```bash
-.venv/bin/python run.py --model Salesforce/blip-image-captioning-base \
-  --cpus 2 --mems 8 --gpus off,on --input-scales 1 --batch-size 1 \
-  --warmup 0 --repeat 1 --repeat-in-window 1 \
-  --compute-profile-tool none --execution-profile-tool none \
-  --notify none --output-dir results/smoke-blip
-```
-
-`text-to-image` 模型会自动选择 `diffusion` 任务族和 `diffusers` 后端。内置 workload 固定提示词、随机种子、guidance scale 和 20 个去噪步，只改变输出分辨率；服务端仅返回生成图像的数量与尺寸元数据，避免图片响应体影响网络和应用延迟测量。
+任务族、支持接口、尺度与示例统一见[运行兼容说明](docs/Runtime_Compatibility.md#任务支持范围)。
+支持某个任务标签不代表所有 checkpoint 都兼容；实际运行还需通过镜像与推理验证。
 
 ### NLP、音频、表格和策略任务
 
-以下 24 个任务类别接入统一输入计划与采集流程。适配范围以表中模型接口／文件格式为准，同一个 Hub 标签可能包含多种不兼容的框架。新增适配需要重建对应模型镜像，首次使用不要加 `--skip-build`。
-
-| Hugging Face 任务 | 适配接口／格式 | 输入尺度 |
-| --- | --- | --- |
-| `text-classification` | Transformers 分类 pipeline | 文本 token 数 |
-| `token-classification` | Transformers token 分类 pipeline | 文本 token 数 |
-| `table-question-answering` | Transformers 表格问答 pipeline；列数组表格＋query | 表格行数，默认 1、2、4、8、16、32 |
-| `question-answering` | Transformers 问答 pipeline；question＋context | context token 数，问题固定 |
-| `zero-shot-classification` | Transformers NLI pipeline；固定候选标签和假设模板 | 输入文本 token 数 |
-| `translation` | Transformers 翻译 pipeline | 输入 token 数 |
-| `summarization` | Transformers 摘要 pipeline | 输入 token 数 |
-| `feature-extraction` | Transformers 特征提取 pipeline | 输入 token 数 |
-| `text-generation` | Transformers 生成 pipeline | 输入 token 数 |
-| `fill-mask` | Transformers 掩码填充 pipeline，自动使用 tokenizer 的 mask token | 输入 token 数 |
-| `sentence-similarity` | SentenceTransformer 编码并计算相似度；后端 `sentence_transformers` | 候选文本 token 数的最大值，query 和候选数量固定 |
-| `text-ranking` | CrossEncoder 成对评分；后端 `cross_encoder` | 候选文本 token 数的最大值，query 和候选数量固定 |
-| `text-to-speech` | Transformers TextToAudioPipeline 的自包含波形模型，如 VITS／Bark | 输入文本 token 数 |
-| `text-to-audio` | 同一官方 pipeline 的自包含文本条件模型，如 MusicGen | 输入文本 token 数 |
-| `automatic-speech-recognition` | Transformers ASR pipeline | 输入音频秒数 |
-| `audio-to-audio` | Transformers Encodec／DAC 音频编码后重建 | 输入音频秒数 |
-| `audio-classification` | Transformers 音频分类 pipeline | 输入音频秒数 |
-| `voice-activity-detection` | Silero `silero_vad.jit`；后端 `torchscript`，仅 CPU | 输入音频秒数 |
-| `tabular-classification` | skops 保存的 sklearn 分类器，或约定格式的 TorchScript | 每个 batch 项的表格行数 |
-| `tabular-regression` | skops 保存的 sklearn 回归器，或约定格式的 TorchScript | 每个 batch 项的表格行数 |
-| `time-series-forecasting` | Chronos／Chronos-Bolt | 历史时间步数 |
-| `reinforcement-learning` | TorchScript 向量观测策略 | 每个 batch 项的独立观测数 |
-| `robotics` | TorchScript 向量观测策略 | 每个 batch 项的独立观测数 |
-| `graph-ml` | TorchScript `forward(x, edge_index, batch)` | 每张图的节点数 |
-
-NLP 的输入计划保存真实 payload，句子相似度／排序每次重新编码 query 和文档，零样本分类完整运行候选标签对应的 NLI 推理。表格问答固定列结构并改变行数，超出模型容量时失败，不通过删行伪装成原尺度。音频任务要求 `--batch-size 1`；读取音频的任务默认复用有来源与 SHA256 的内置 LibriSpeech 前缀，文本到音频使用确定性文本。生成音频仅返回形状、采样率、样本数和时长摘要。需要额外声码器／说话人资产的 SpeechT5、FastSpeech2Conformer 暂未适配，会在加载时明确拒绝。
-
-例如运行一个表格问答尺度，或将 `--task` 换为表中任务并选择对应模型：
-
-```bash
-.venv/bin/python run.py --model google/tapas-base-finetuned-wtq \
-  --task table-question-answering --cpus 2 --mems 8 --gpus off \
-  --input-scales 4 --batch-size 1 --warmup 0 --repeat 1 --repeat-in-window 1 \
-  --compute-profile-tool none --execution-profile-tool none --notify none \
-  --output-dir results/smoke-table-qa
-```
-
-表格分类／回归、强化学习、机器人和图任务使用 `structured` 任务族。TorchScript 模型仓库需同时提供模型文件和以下 `acprof_model.json`；`task` 必须匹配，`feature_dim` 必须等于输入宽度。表格／策略的模型签名为 `forward(features)`／`forward(observations)`，输入为 FP32 `[batch_size × input_scale, feature_dim]`；图模型接收 FP32 节点特征、INT64 COO 边与 INT64 图编号，按不相连图合批。输出要求一个至少一维的 tensor／array。
-
-```json
-{"schema_version": 1, "task": "robotics", "format": "torchscript", "model_file": "model.pt", "feature_dim": 7}
-```
-
-`--workload-spec` 指定结构化输入宽度、尺度和种子，例如：
-
-```json
-{"schema_version": 1, "task": "robotics", "feature_dim": 7, "input_scales": [1, 8, 32, 128], "seed": 12345}
-```
-
-默认表格宽度 8、强化学习 4、机器人 7、图节点特征 16；应按模型更改。非图默认尺度 1、8、32、128，图为 8、32、128、512；固定特征宽度，图结构为双向环。skops 使用 `--backend skops --gpus off`，仓库内唯一 `.skops` 可自动发现，也可由模型清单指定；仅加载 sklearn 已知类型，模型版本须与镜像的 sklearn 版本兼容。
-
-策略任务测量独立向量观测的前向推理，不包含环境交互、训练、回报评估、传感器采集和机器人执行；图像／多模态策略需要另行适配输入，不能通过展平图像宣称等价兼容。结构化合成输入用于性能流程，不能据此报告模型准确率或策略效果。TorchScript 是已被上游标记 deprecated 的导出兼容接口，兼容性取决于导出版本及算子；不能在加载时更换注意力实现，`torch_profiler_eager` 因此会明确拒绝。其它 profiler 仍按各自适用条件隔离执行。可运行的五类导出示例见 [export_models.py](examples/structured/export_models.py)，对应真实四阶段检查见 [smoke.py](examples/structured/smoke.py)。
-
-实现复用 [Transformers 4.57.6 pipeline](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/pipelines/__init__.py)、[Sentence Transformers 5.1.2](https://github.com/huggingface/sentence-transformers/tree/v5.1.2)、[PyTorch 模型加载](https://github.com/pytorch/pytorch/blob/v2.5.1/torch/jit/_serialization.py) 和 [skops](https://github.com/skops-dev/skops)。Transformers／Sentence Transformers 为 Apache-2.0，PyTorch 为 BSD 风格许可，skops 为 MIT；模型权重另按其许可。NLP 镜像补齐 pandas 与编码器依赖，结构化镜像隔离安装 sklearn／skops，主机不安装推理框架。LeRobot 的运行时依赖与本项目 Python 3.10 镜像不同，旧 Graphormer 位于 Transformers 的 deprecated 目录，因此策略／图任务采用显式导出接口；没有引入模拟器或旧框架。素材生成、哈希与输入规划在正式测量窗口之外执行。
-
-运行接口验证可使用 [NLP 十二任务示例](examples/nlp/smoke.py)、[音频原生模型测试](tests/test_audio_runtime_optional.py) 和 [Chronos 小模型示例](examples/structured/chronos_smoke.py)。这些脚本需要对应容器的依赖，使用随机小模型／确定性导出样例验证输入和推理接口，不提供真实模型准确率或性能结论。文本到音频目前使用内置文本，不能传 WAV 清单作为 `--workload-spec`。
+见[任务接口与 workload](docs/Runtime_Compatibility.md#nlp音频表格和策略任务)。
 
 ### 视觉任务
 
-以下 19 类任务接入同一输入计划、最大输入探测、采集和后置 profiler 流程。适配以镜像中 Transformers 4.57.6／Diffusers 0.39.0 的原生接口为边界，不表示 Hub 上同标签的任意模型或自定义代码均可运行。
-
-| Hugging Face 任务 | 任务族 | 适配范围 |
-| --- | --- | --- |
-| `depth-estimation` | CV | 原生深度估计 pipeline，返回深度图摘要 |
-| `image-classification` | CV | 原生图像分类 pipeline |
-| `object-detection` | CV | 原生目标检测 pipeline |
-| `image-segmentation` | CV | 原生语义／实例／全景分割 pipeline |
-| `text-to-image` | Diffusion | 原生文本条件图像生成 |
-| `image-to-text` | CV | 原生图像描述 pipeline，返回文字及 token 数 |
-| `image-to-image` | Diffusion | 原生 Img2Img／图像编辑／图像变体；须满足当前方形输出尺度约定 |
-| `image-to-video` | Diffusion | 原生图生视频，包括无文本条件的 Stable Video Diffusion |
-| `unconditional-image-generation` | Diffusion | DDPM／DDIM 等原生无条件生成；模型固定输出尺寸，扫描去噪步数 |
-| `video-classification` | CV | `AutoModelForVideoClassification` 与图像处理器；固定帧数，扫描帧分辨率 |
-| `text-to-video` | Diffusion | 原生文本条件视频生成 |
-| `zero-shot-image-classification` | CV | 原生 pipeline，同时传入候选标签 |
-| `mask-generation` | CV | 原生 SAM 自动掩码 pipeline |
-| `zero-shot-object-detection` | CV | 原生零样本检测 pipeline，同时传入候选标签 |
-| `text-to-3d` | Diffusion | Shap-E 文本条件网格生成，扫描去噪步数 |
-| `image-to-3d` | Diffusion | Shap-E 图像条件网格生成，扫描去噪步数 |
-| `image-feature-extraction` | CV | 原生图像特征 pipeline，返回特征形状摘要 |
-| `keypoint-detection` | CV | SuperPoint 关键点、VitPose／VitPose++ 姿态估计 |
-| `video-to-video` | Diffusion | 原生视频条件生成，消费有序输入帧 |
-
-除 `text-to-image` 外，上表任务均要求 `--batch-size 1`。CV 的 `input_scale=1` 仍表示 224×224 输入图像或帧，视频默认 16 帧。模型要求的帧数必须与清单一致，不静默丢帧或补帧；图像 processor 可能缩放输入，输入像素大小不能直接视为模型内部计算规模。
-
-CV 可使用 `--workload-spec` 指定图片、视频帧、候选标签、姿态框和推理参数。图片字段为 `image_path`，视频为有序的 `video_frames` 路径列表；路径相对清单文件解析。未提供素材时使用确定性合成图／帧，零样本默认标签为 `cat,dog,car,person`。例如：
-
-```json
-{
-  "schema_version": 1,
-  "input_scales": [0.5, 1.0, 2.0],
-  "candidate_labels": ["cat", "person"],
-  "params": {"threshold": 0.2}
-}
-```
-
-该示例用于 `zero-shot-object-detection`；视频可用 `num_frames` 设置合成帧数，也可由 `video_frames` 数量确定。VitPose 清单的 `boxes` 是归一化到 0–1 的 COCO `[x,y,width,height]`，默认全图框；主机按输入尺寸转换为像素坐标，不额外运行人物检测器。VitPose++ 可在 `params` 中指定 `dataset_index`。这些合成输入用于性能流程验证，不是准确率评测集。
-
-无条件图像与 3D 使用 `input_scale_type="denoising_steps"`，默认尺度 `1,2,4,8,16,20`；通过 `--input-scales` 或清单 `input_scales` 修改，不再同时用 `params.num_inference_steps` 指定。DDPM 分辨率来自模型，Shap-E 直接解码网格，不用渲染图像的 `frame_size` 冒充 3D 工作量。网格仅返回数量、顶点和面数摘要，不传输网格文件。其它生成任务继续扫描方形输出边长，默认视频 17 帧；模型必须满足对应分辨率、帧数与条件参数约束。
-
-`image-to-image`／`image-to-video` 的合成默认提示词仅在原生接口接受 `prompt` 时使用；显式写入清单的提示词必须被消费，不接受文字条件的模型会拒绝该清单。Diffusers 图像到图像可通过官方 `AutoPipelineForImage2Image.from_pipe` 复用已有组件；视频到视频仅转换已适配的 CogVideoX 文生视频、单 denoiser Wan 和旧版 TextToVideoSD pipeline，无法保留双 denoiser 等组件时明确失败。固定倍率的 Stable Diffusion Upscale／LatentUpscale 暂不符合当前方形输出边长约定，会明确拒绝。旧版 TextToVideoSD／VideoToVideoSD 上游已停止更新，保留固定版本兼容；现代视频模型另按原生参数检查。
-
-实现复用 [Transformers 原生 pipeline](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/pipelines/__init__.py)、[VitPose 接口](https://github.com/huggingface/transformers/blob/v4.57.6/docs/source/en/model_doc/vitpose.md)、[Diffusers DDPM](https://github.com/huggingface/diffusers/blob/v0.39.0/src/diffusers/pipelines/ddpm/pipeline_ddpm.py) 与 [Shap-E](https://github.com/huggingface/diffusers/blob/v0.39.0/src/diffusers/pipelines/shap_e/pipeline_shap_e.py)。两个上游采用 Apache-2.0、仍持续维护；沿用已固定版本，仅为姿态处理新增 SciPy。视频采用主机预先准备的 PNG 帧，不引入视频编解码库，素材生成和哈希计算均在测量窗口之前完成。
+见[视觉任务与清单](docs/Runtime_Compatibility.md#视觉任务)。
 
 ### 多模态任务
 
-下列 9 类任务已接入任务识别、输入计划、容器处理器、最大输入探测、正式采集与后置 profiler。新任务统一要求 `--batch-size 1`。它们使用已安装版本中的原生模型接口；支持任务类型不表示任意同标签 checkpoint 都兼容。
-
-| Hugging Face 任务 | 后端 / 任务族 | 适配范围与默认输入尺度 |
-| --- | --- | --- |
-| `audio-text-to-text` | Transformers / `multimodal` | Qwen2 Audio、Qwen2.5 Omni Thinker、MOSS-Transcribe-Diarize；真实语音＋文字；1、2、5、10 秒 |
-| `image-text-to-text` | Transformers / `multimodal` | `AutoModelForImageTextToText` 支持且带 chat template 的原生模型；224、336、448 像素输入边长 |
-| `image-text-to-image` | Diffusers / `diffusion` | 原生同时接收 `image` 和 `prompt` 的图像编辑／Img2Img pipeline；128–512 像素输出边长 |
-| `image-text-to-video` | Diffusers / `diffusion` | 原生同时接收图像和文本的 CogVideoX、Wan 等 I2V pipeline；方形帧，默认固定 17 帧 |
-| `visual-question-answering` | Transformers / `multimodal` | 原生 VQA pipeline，区分分类式与生成式回答；224、336、448 像素 |
-| `document-question-answering` | Transformers / `multimodal` | 原生 DocQA pipeline；内置可读票据与词框；外部文档须给出 OCR 词和坐标 |
-| `video-text-to-text` | Transformers / `multimodal` | 同时支持视频 processor 和图文生成 Auto 类的模型；2、4、8 帧，固定 2 FPS |
-| `visual-document-retrieval` | Transformers / `multimodal` | ColPali、ColQwen2；每次编码一个 query 和一页文档，再计算 MaxSim 分数 |
-| `any-to-any` | Transformers / `multimodal` | Qwen2.5 Omni 的文字／图像／音频／视频输入 → 文字＋音频输出；默认输入为语音＋文字 |
-
-实际 Hub 标签 `image-to-image`、`image-to-video` 也会接入 Diffusers 适配。显式的 `image-text-to-image`／`image-text-to-video` 任务要求模型同时接收文字和图像条件；`image-to-video` 也可使用无文本的原生 pipeline。模型如需要非方形输出、更大的分辨率、不同帧数或额外组件，需要满足其自身约束；仅采用上述官方原生 pipeline 转换，不执行 Diffusers 自定义远程代码。
-
-TUI 的高级配置可选 `Multimodal`，也可使用 CLI。首次运行应重建模型镜像，后续再用 `--skip-build` 复用。以下例子只运行一个 VQA 输入尺度：
-
-```bash
-.venv/bin/python run.py --model dandelin/vilt-b32-finetuned-vqa \
-  --task visual-question-answering --task-family multimodal \
-  --backend transformers_model --cpus 2 --mems 8 --gpus off \
-  --input-scales 224 --batch-size 1 --warmup 0 --repeat 1 \
-  --repeat-in-window 1 --compute-profile-tool none \
-  --execution-profile-tool none --notify none --output-dir results/smoke-vqa
-```
-
-图像和视频默认使用确定性的合成场景；DocQA 使用带词框的合成票据，音频复用仓库内带来源与 SHA256 的真实语音。它们适合验证采集与性能流程，不是准确率评测集。图像 processor 可能缩放或切块，因此输入像素边长不等于模型实际视觉 token 数。
-
-`--workload-spec` 可为新任务指定本地 JSON。多模态清单使用 `text`，Diffusers 清单使用 `prompt`；文件路径相对清单所在目录。图片示例：
-
-```json
-{
-  "schema_version": 1,
-  "task": "image-text-to-text",
-  "image_path": "scene.png",
-  "text": "Describe this image briefly.",
-  "input_scales": [224, 448],
-  "params": {"max_new_tokens": 32, "do_sample": false}
-}
-```
-
-多模态清单还支持 `audio_path`（单声道 PCM16 WAV，采样率须符合模型）、`video_frames`（有序本地图片路径列表）、`fps`、`image_resolution`（视频帧／固定条件图边长）。视频在主机侧准备成 PNG 帧，音频使用同一波形的前缀，主采集与 profiler 复用计划内的 Base64 素材，不在容器运行时下载。自定义文档需同时提供 `words` 和归一化到 0–1000 的 `boxes`，避免运行 OCR；仍需模型所需的图像后端依赖，依赖 detectron2 等额外组件的模型不包含在镜像默认支持范围内。
-
-Any-to-Any 可用 `"modalities": ["image", "audio"]` 和 `"scale_modality": "audio"` 组合输入；一次只改变一个维度，其余由 `image_resolution`、`audio_duration_s`、`video_num_frames` 固定。音频生成保持开启（`return_audio=true`），默认文本最多 64 token、talker 最多 256 token、`speaker="Chelsie"`、关闭 token 采样，并用 `seed=12345` 固定声码器噪声。固定种子不保证跨硬件／软件版本逐位一致。这里的 Any-to-Any 明确为 Omni 的文字＋音频输出，未实现任意图像／视频输出协议。
-
-Diffusers 清单示例（还可设置 `strength`、`image_guidance_scale`、`negative_prompt`，目标 pipeline 必须支持所传参数）：
-
-```json
-{
-  "schema_version": 1,
-  "image_path": "scene.png",
-  "prompt": "The camera slowly moves to the left.",
-  "input_scales": [256, 512],
-  "params": {"num_inference_steps": 20, "num_frames": 17, "guidance_scale": 7.5, "seed": 12345}
-}
-```
-
-清单及素材摘要、实际 payload、参数和尺度单位保存在 `input_scale_plan.json` / `static_meta.json`。检索请求包含 query 编码、文档编码和评分，不缓存文档向量。生成图像、视频、音频只返回尺寸／数量摘要，不编码为响应媒体；文字输出按既有 CSV 字段统计，检索分数不会冒充输出 token。详细单位见 [REFERENCE](REFERENCE.md#输入规模与音频清单)。
-
-普通采集与 NCU／Nsys 复用完整 `predict()`。profiler 在推理计算捕获前的预热阶段验证一次输出协议，计算捕获只重复推理；Massif 按整个进程生命周期统计，包含加载、预热和这次验证。Omni 的 Token2Wav 不支持 eager 注意力，因此 `any-to-any` 的 `torch_profiler_eager` 会明确失败；Diffusers 的 Transformer 视频模型也会拒绝尚未验证的 eager 替换。这些失败按工具隔离，不能把未采集的 FLOP 当成 0。已有 UNet 文生图 eager 路径保留。
-
-适配复用官方 [Transformers 多模态接口](https://github.com/huggingface/transformers/blob/v4.57.6/docs/source/en/chat_templating_multimodal.md)、[检索接口](https://github.com/huggingface/transformers/blob/v4.57.6/docs/source/en/tasks/visual_document_retrieval.md)、[Omni 实现](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/models/qwen2_5_omni/modeling_qwen2_5_omni.py) 和 [Diffusers pipeline](https://github.com/huggingface/diffusers/tree/v0.39.0/src/diffusers/pipelines)。原生多模态路径固定 Transformers 4.57.6，Diffusers 保持 0.39.0；MOSS 使用独立的 Transformers 5.6.0 环境。两库采用 Apache-2.0；具体模型权重的许可与访问条件以其模型页为准。
-
-MOSS 自动选择专用 adapter 和依赖锁，不需要修改主机 `.venv`。默认提示词要求带时间戳和说话人编号的转写，`max_new_tokens=512`，CPU 使用 FP32，GPU 使用 BF16；processor 按官方方式分块处理音频，输出保留原始标记文本。可先运行：
-
-```bash
-.venv/bin/python run.py --model OpenMOSS-Team/MOSS-Transcribe-Diarize \
-  --cpus 1 --mems 8 --gpus off,on --input-scales 1 --batch-size 1 \
-  --warmup 0 --repeat 1 --repeat-in-window 1 \
-  --compute-profile-tool none --execution-profile-tool none \
-  --notify none --output-dir results/smoke-moss
-```
-
-8 GiB 是上述冒烟测试的容器内存配置，不是模型的最低内存保证。不同依赖版本的选择、验证与新模型接入方法见[模型运行环境与适配器](docs/Runtime_Compatibility.md)。
+见[多模态支持边界](docs/Runtime_Compatibility.md#多模态任务)。
 
 ## 快速开始
 
@@ -373,7 +164,7 @@ CV 和图像多模态使用 processor 处理前的输入像素；视频计入全
 读取历史结果时，`plot.py` 可从同目录、hash 匹配的 `input_scale_plan.json` 尺寸记录和
 batch 元数据派生像素指标，无需重新采集，也不改写 CSV、输入计划或静态元数据。
 缺少可靠像素数时，对应子图显示 `No data`，不以边长代替面积。
-公式和兼容规则见 [像素归一化口径](REFERENCE.md#像素归一化口径)。
+公式和兼容规则见 [像素归一化口径](docs/Metrics.md#像素归一化口径)。
 
 ## 运行正式实验
 
@@ -397,7 +188,7 @@ python probe.py --model google-bert/bert-base-uncased \
 探测请求默认不设超时，需要限制时传入 `--timeout-seconds <正数>`。
 这与正式矩阵默认 `--request-timeout-seconds 300` 相互独立。结果同时报告成功档的
 容器冷启动、单次请求及两者合计耗时，写入独立的 `probes/` 目录；该流程不采集能耗、
-PMU 或网络指标，也不写正式 CSV。字段见[探测输出](REFERENCE.md#最大输入探测结果)。
+PMU 或网络指标，也不写正式 CSV。字段见[探测输出](docs/Profiling_Protocol.md#最大输入探测结果)。
 TUI 的“探测最大输入”调用同一入口。
 
 ### CPU-only 矩阵
@@ -443,7 +234,7 @@ python run.py --model google-bert/bert-base-uncased
 | 企业微信通知 | 配置 Webhook 后自动启用；`--notify none` 可关闭 |
 
 若实际规划出 6 档输入，完整矩阵包含 384 行 warmup 和 960 行正式测量。
-行数、请求数与端到端耗时的区别见[时间成本估算](REFERENCE.md#结果行数和时间成本估算)。
+行数、请求数与端到端耗时的区别见[时间成本估算](docs/Profiling_Protocol.md#结果行数和时间成本估算)。
 大矩阵开始前也应检查 profiler artifacts 的磁盘占用。
 
 ### 常用变体
@@ -470,25 +261,10 @@ python run.py --help
 
 ### 镜像复用、超时与失败处理
 
-模型文件默认采用 `--model-download-policy auto`。程序在构建环境中读取固定 commit 的文件清单、配置和分片索引，按照当前加载器选择权重：标准 Transformers 优先默认 safetensors（含分片），否则保留默认 PyTorch `.bin`；Sentence Transformers 保留模块结构；已覆盖的 Stable Diffusion／SDXL／DDPM／DDIM pipeline 按组件选择；TorchScript／skops 遵循现有 artifact 清单。配置、tokenizer、processor 和其它未确认可省略的附属文件会保留。分片缺失直接报错，不静默换一套权重。
-
-自定义 adapter、`auto_map`、量化配置、未知模型类型或未覆盖的 pipeline 使用完整快照，并打印回退原因。GPU 推理 dtype 不用于选择文件名中的 FP16／FP32 variant；不会自动转换、量化权重或切换 EMA checkpoint。需要完整仓库时，`run.py` 和 `probe.py` 均可传入 `--model-download-policy full`。TUI 使用默认 `auto`；两种策略具有不同的镜像指纹。
-
-共享环境层不包含 AC-Prof 业务代码或模型。其它任务族 Dockerfile 的 `runtime` target 与带依赖锁的 runtime 镜像共用后续的模型／最终代码构建流程。模型层的指纹包含真实环境 image ID、模型 commit、backend、adapter、下载策略和筛选器内容；最终层再复制 AC-Prof 代码。修改界面或 handler 可以复用依赖与模型层，修改筛选规则只重建模型及最终层。尚未采用完整依赖锁的任务族仍记录实际安装版本，不能据此承诺删掉环境镜像后可重建出完全相同的环境。
-
-镜像内 `/models/model_download_plan.json` 保存所选文件、排除文件、选择原因、框架版本、文件 SHA256 和清单 SHA256。文件大小／内容检查在构建阶段执行，清单写入 `static_meta.json/runtime_environment/model_download`；正式 server 启动不会再次扫描、下载或校验全部权重。`model_cache_bytes` 统计实际缓存 artifacts，`docker_image_bytes` 包含该镜像继承的共享层；判断磁盘节省应查看 `docker system df -v` 的共享／独占占用。保留旧镜像时，它引用的大层仍会占用空间。
-
-实现参考 [Hugging Face Hub 0.36.2 文件筛选](https://github.com/huggingface/huggingface_hub/blob/v0.36.2/src/huggingface_hub/_snapshot_download.py)、[Transformers 4.57.6 权重解析](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/modeling_utils.py)、[Diffusers 0.39.0 组件下载](https://github.com/huggingface/diffusers/blob/v0.39.0/src/diffusers/pipelines/pipeline_utils.py)（Apache-2.0）和 [Docker 分层缓存](https://docs.docker.com/build/cache/optimize/)。复用现有 Hub 下载和重试机制，以标准库实现有边界的文件规划；不绑定框架私有下载入口，不在主机新增推理框架依赖。
-
-启动 OOM 剪枝默认开启。程序先按内存从小到大完整采集最低 CPU；只有 Docker 明确报告 `OOMKilled` 且这些失败构成连续低内存前缀时，才在后续更高 CPU 中跳过同 GPU mode、同内存上限的 case。运行期 OOM、CUDA OOM、普通启动失败和请求超时不会触发剪枝。可运行 case 的 warmup、repeat、监控器和指标口径完全不变；跳过的 case 仍写入 `status=error` 占位行，并在 `startup_oom_pruning.json` 中记录推断依据，不能作为实测性能值使用。论文若要求每个资源格都独立启动验证，传入 `--no-prune-startup-oom`。
-
-传入 `--skip-build`，或在 TUI 勾选“复用现有镜像”后，采集与探测按模型 commit、运行环境、依赖锁和代码指纹查找镜像，并核对镜像内的环境清单。匹配才复用；不存在则提示并自动构建。旧的 `:latest` 标签不会被当作匹配镜像。镜像指纹／revision 不符或 Docker 查询失败会明确退出；取消复用可重新构建。正式采集始终使用已核验的不可变 image ID。
-
-进入资源矩阵前，每个请求的 CPU／GPU 模式会用独立容器完成最小计划输入的加载、推理和输出验证，结果保存在 `runtime_validation.json` 及对应日志中。依赖或接口失败会提前退出，不生成本次测量行；明确的 cgroup OOM 作为资源限制记录，仍允许矩阵测定 OOM 边界。模型环境和验证结果写入静态 schema v7，CSV 字段不变。补采固定使用原实验 image ID，原镜像丢失时需先恢复，不能以新环境代替。
-
-正式矩阵的每个 `/predict` 请求默认最多等待 300 秒。长耗时模型可显式调整，例如
-`--request-timeout-seconds 1800` 表示单个请求最多等待 30 分钟；它不限制整条命令或整个
-资源矩阵的总运行时间。TUI 的“单请求超时秒”会同步写入完整命令。
+- 模型文件筛选、依赖/模型/代码分层及缓存含义见[运行兼容说明](docs/Runtime_Compatibility.md#模型文件选择规则)。
+- `--skip-build` 核验匹配后复用，不存在则构建；镜像与独立推理验证的失败边界见[构建、复用和验证](docs/Runtime_Compatibility.md#构建复用和验证)。
+- 启动 OOM、剪枝推断及部分结果处理见[排障说明](docs/Troubleshooting.md#启动-oom-与剪枝占位)。
+- 长请求可设置 `--request-timeout-seconds 1800`；它限制单次请求，不限制整个矩阵。默认值与适用阶段见[CLI 参数](docs/CLI_Reference.md#请求窗口与采样)。
 
 ## 交互式终端界面
 
@@ -648,73 +424,20 @@ CPU Torch、GPU Torch、NCU、Massif、Nsys 各自汇总实际采样项、失败
 关闭 GPU 或未启用某个 profiler 时，对应字段为 `nan` 属于预期结果。
 运行中先写 `result_case_*.csv`，矩阵完成后才合并为 `result_all.csv`。
 
-完整说明集中在[输出文件](REFERENCE.md#输出文件)、[CSV 字段字典](REFERENCE.md#result_allcsv-字段解释)
-和[常见判断](REFERENCE.md#常见判断)。
+完整说明集中在[输出文件](docs/Profiling_Protocol.md#输出文件)、[CSV 字段字典](docs/Metrics.md#result_allcsv-字段解释)
+和[常见判断](docs/Troubleshooting.md#常见判断)。
 
 ## 选择性能分析器
 
-[计算分析器](#计算分析器--compute-profile-tool) · [执行分析器](#执行分析器--execution-profile-tool) · [补采已有结果](#补采已有结果) · [从计划生成派生 CSV](#从已有计划生成派生-csv)
+工具选择、测量边界与成本统一见 [Profiler 说明](docs/Profilers.md)。
 
 ### 计算分析器：`--compute-profile-tool`
 
-FLOP profiling 和主 latency / energy workload 相互独立：
-
-| 选项 | 采集内容 | 适合场景 |
-| --- | --- | --- |
-| `--compute-profile-tool none` | 不运行 compute probe | 默认；smoke test、先完成主矩阵 |
-| `torch` | Torch eager 逻辑 FLOP | 只关心模型算子形状对应的理论工作量 |
-| `ncu` | GPU 实际执行的 Tensor / Scalar FLOP | 单独诊断 NVIDIA GPU |
-| `both` | Torch eager；GPU 行再运行 NCU | 显式启用完整采集 |
-
-Torch probe 会强制并验证 eager attention，正式请求仍使用正常运行时的 attention 实现。
-NCU 需要主机上的 `ncu` 和可用的 GPU 性能计数器，可用 `--ncu-root` 指定工具位置。
+选项与使用场景见[计算分析器](docs/Profilers.md#计算分析器--compute-profile-tool)。
 
 ### 执行分析器：`--execution-profile-tool`
 
-Execution profiling 用于分析内存峰值与执行时间线，默认关闭，与 FLOP profiling 独立选择。
-显式启用后，在主 latency / energy 矩阵开始前运行独立分析探针：
-
-| 选项 | 采集内容 | 适合场景 |
-| --- | --- | --- |
-| `--execution-profile-tool none` | 不运行 execution probe | 默认；smoke test、先完成主矩阵 |
-| `massif` | Valgrind Massif 的 heap、heap extra、stack 峰值，以及三者总量峰值和出现时间 | 分析 CPU-only 模型进程的内存占用 |
-| `nsys` | Nsight Systems 的推理窗口 host wall time，以及 CUDA API、GPU kernel、memcpy 时间线与汇总 | 分析 NVIDIA GPU 推理耗时、调用次数和数据搬运 |
-| `both` | CPU-only 行采 Massif，GPU 行采 Nsys | 同时分析 CPU 内存与 GPU 执行行为 |
-
-工具按本次 `--gpus` 选择的模式生效：Massif 只用于 `off`，Nsys 只用于 `on`；
-`both` 在 `--gpus off,on` 时才会运行两种工具。
-
-Massif 的内存峰值覆盖模型加载、预热和推理的整个进程生命周期。
-`--massif-repeat` 默认 `1`，只控制探针内的推理次数，峰值不按次数平均；
-解读时应与正式测量窗口的容器内存指标区分。
-
-Nsys 在预热后的推理窗口采集，时间、调用次数及 memcpy 字节数按
-`--nsys-repeat`（默认 `1`）归一化为单 request。
-CUDA API、kernel 和 memcpy 时间各自是活动时长之和，活动可能重叠，不能相加当作请求总延迟。
-完整字段口径见 [Massif 与 Nsight Systems 执行指标](REFERENCE.md#massif-与-nsight-systems-执行指标)。
-
-显式启用后默认采用缩减采样，并把来源资源与复用策略记录到 plan 与静态元数据：
-
-- Massif 默认 `--massif-sampling per-scale`：最大 CPU × 最大内存 × 每个 input scale，结果复用到其他 CPU-only 资源配置。
-- Nsys 默认 `--nsys-sampling per-cpu-scale`：全部 CPU × 最大内存 × 每个 input scale，结果复用到相同 CPU、不同内存上限的其他 GPU 结果行。
-- Nsys 也支持 `--nsys-sampling per-scale`：只采一个代表 CPU/内存 × 每个 input scale，结果复用到其他 GPU 资源配置。
-- 两者均支持 `full`：在各自适用的 GPU 模式下，逐 CPU × 内存 × input scale 采集。
-
-新构建的模型使用 `acprof-base` 或运行环境依赖层中预装的 Valgrind 和 Nsys 运行库；启用分析时直接使用模型镜像，无需为每个新模型再构建 Massif / Nsys 镜像。Nsys 主程序仍从宿主机挂载，可用 `--nsys-root` 指定；host 无需安装 Valgrind。两个工具只在独立分析探针中运行。已有旧模型镜像无需重新下载权重：首次使用时按需构建兼容镜像，以后实际模型镜像 ID 和分析 Dockerfile 均未改变时直接复用，跳过 `docker build`。
-
-需要严格采完整资源矩阵时显式传入：
-
-```bash
-python run.py --model google-bert/bert-base-uncased \
-  --gpus off,on \
-  --execution-profile-tool both \
-  --massif-sampling full --nsys-sampling full
-```
-
-代表资源默认取本次 `--cpus` / `--mems` 中的最大值，也可用
-`--massif-reference-cpu`、`--massif-reference-mem`、
-`--nsys-reference-cpu`、`--nsys-reference-mem` 显式选择，取值必须在本次资源矩阵中；
-Nsys 的 `per-cpu-scale` 只使用代表内存，`per-scale` 同时使用代表 CPU 和内存。
+选项、代表资源与完整矩阵见[执行分析器](docs/Profilers.md#执行分析器--execution-profile-tool)。
 
 ### 补采已有结果
 
@@ -759,127 +482,54 @@ python -m acprof.cli.backfill_compute \
 
 工具按 GPU mode 和 input scale 匹配已有计划，生成带 Torch/NCU 字段的派生 CSV。
 输出采用原子写入，默认拒绝覆盖已有文件；确需替换显式输出路径时追加 `--overwrite`。
-FLOP/MFLOPS 的单位、延迟分母和缺失值规则见[计算指标字典](REFERENCE.md#torch-与-ncu-计算指标)。
+FLOP/MFLOPS 的单位、延迟分母和缺失值规则见[计算指标字典](docs/Profilers.md#torch-与-ncu-计算指标)。
 
 ## 常见问题
 
+主机与运行排查、结果判断统一见[排障文档](docs/Troubleshooting.md)。
+
 ### `[infra][ERROR]`
 
-确认当前环境不是 WSL，并且 Docker 使用 `unix:///var/run/docker.sock`：
-
-```bash
-unset DOCKER_HOST DOCKER_CONTEXT
-docker context use default
-docker info
-```
+见[对应诊断](docs/Troubleshooting.md#infraerror)。
 
 ### `[sniff][ERROR]` 或 `latency_s` 无法合并
 
-检查 `tcpdump`、`tshark`、capability 和 bridge：
-
-```bash
-command -v tcpdump tshark
-getcap "$(command -v tcpdump)"
-ip link show docker0
-```
-
-如果 Docker daemon 修改过默认 bridge，传入 `--sniff-iface <实际网卡>`。
+见[对应诊断](docs/Troubleshooting.md#snifferror-或-latency_s-无法合并)。
 
 ### `[cpu-energy][ERROR]`
 
-AC-Prof 要求 RAPL energy counter 可读。按错误信息检查 `/sys/class/powercap/*/energy_uj` 的存在性和权限；不要用 TDP 或 CPU utilization 伪造缺失功耗。
+见[对应诊断](docs/Troubleshooting.md#cpu-energyerror)。
 
 ### `[cgroup][ERROR]`
 
-正式实验要求统一 cgroup v2。检查 `test -f /sys/fs/cgroup/cgroup.controllers` 和 `cat /proc/self/cgroup`；修复主机启动/systemd 配置并重启后再采集。`--allow-cgroup-v1` 只用于旧环境诊断，运行会标记为 `legacy_compatible`，不要与正式 v2 数据合并分析。如果结果目录留有不同版本或版本未知的 `result_case_*.csv`，程序会拒绝续写；请换用新的 `--output-dir` 或先归档旧部分结果。
+见[对应诊断](docs/Troubleshooting.md#cgrouperror)。
 
 ### `[mips][ERROR]`
 
-先运行：
-
-```bash
-perf stat -e instructions -- true
-cat /proc/sys/kernel/perf_event_paranoid
-```
-
-若权限不足，`run.py` 会输出适合当前主机的修复步骤。修好权限后用普通用户运行 AC-Prof，不要使用 `sudo python run.py`，以免结果文件归 root 所有。
+见[对应诊断](docs/Troubleshooting.md#mipserror)。
 
 ### `container_oom_killed during startup`
 
-模型加载时超过了 `--mems` 指定的 cgroup 限制。增大内存上限，或使用更小/量化模型。失败 case 会保留 `status=error` 占位行，不会进入性能图和延迟模型，但会进入资源可行性热力图。
-
-默认启用的启动 OOM 剪枝只把最低 CPU 上连续实测的启动 OOM 前缀外推到更高 CPU，并保留 `startup_oom_pruning.json`；论文中应将 `P-OOM` 表述为基于资源单调性假设的不可行配置推断，而不是独立实测样本。需要逐格验证完整矩阵时传入 `--no-prune-startup-oom`。
+见[对应诊断](docs/Troubleshooting.md#container_oom_killed-during-startup)。
 
 ### `container_runtime_oom`
 
-容器已通过 `/ready`，但在 workload 期间触达 memory cgroup 上限并被 Docker 标记为 `OOMKilled`。程序会保留 OOM 前已经完成的测量行，为未完成的计划行写入 `status=error` 和 Docker 退出诊断，然后继续下一个资源 case。运行期 OOM 不参与启动 OOM 剪枝；已有成功行仍是实测值，错误占位行不会进入性能图或延迟模型。
+见[对应诊断](docs/Troubleshooting.md#container_runtime_oom)。
 
 ### 运行中还没有 `result_all.csv`
 
-这是正常的：矩阵执行期间先写 `result_case_*.csv`，全部 case 完成后才合并为 `result_all.csv`。如果在 tmux 中运行，采集期间查看对应终端；`tmux_all.log` 在命令结束或报错退出时落盘。
+见[对应诊断](docs/Troubleshooting.md#运行中还没有-result_allcsv)。
 
 ### `--skip-build` 后接口报错
 
-本机可能仍是旧镜像。去掉 `--skip-build` 重新构建一次。
+见[对应诊断](docs/Troubleshooting.md#--skip-build-后接口报错)。
 
 ### `[task-support][ERROR]` / TUI 显示“任务不支持”
 
-项目已经识别任务，但当前采集实现尚未适配该类型，或手动选择了不匹配的任务族。采集与最大输入探测都会在模型镜像准备、输入规划及推理测量前退出（退出码 `2`），日志显示模型、任务、具体原因与解决办法。TUI 保留“任务不支持”状态并提示查看日志，不把原因覆盖成普通退出码，也不把旧 CSV 当成本次结果。此次不会生成测量 CSV 或资源失败占位行，已有测量结果保留。
-
-- **想立即采集：** 换用上方任务族示例中的模型，例如图像分类、目标检测或 ASR 模型。
-- **必须采集此类型：** 等待支持该类型的项目版本，或按下方扩展说明补齐输入、推理、输出与指标口径，再验证后采集。
-- **确实是识别错误：** 核对模型页的 `pipeline_tag`，通过 `--task`、`--task-family`、`--backend`（TUI 高级配置中的“识别覆盖”）纠正。仅在模型实际支持目标任务时使用；把图像描述模型改填成图像分类不会获得分类能力。
-
-`image-to-text` 已有图像描述输出适配，要求 `--batch-size 1`。如果启动时报 `Unknown task image-to-text`，说明复用了不兼容的容器依赖：[Transformers v5 迁移说明](https://github.com/huggingface/transformers/blob/main/MIGRATION_GUIDE_V5.md#vision-pipelines-that-should-just-be-vlms)确认旧 pipeline 已移除。当前 CV Dockerfile 固定 `transformers==4.57.6`，请取消 `--skip-build` / “复用现有镜像”并重建；只修改主机 `.venv` 不会改变镜像内依赖。该版本的[官方实现](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/pipelines/image_to_text.py)采用 Apache-2.0 许可，项目直接调用其图像预处理和生成流程，未另引入推理框架。此兼容路径不包含多模态对话任务，也不保证所有图像描述模型架构都能运行。
-
-Hub 已明确给出的未知任务标签会保留并提示，不再被通用架构后缀猜成另一类任务。Hub 无法访问、缺少元数据等识别失败仍保留独立诊断，不统一归为“不支持”。
-
-更多诊断，包括 idle baseline 波动、Profiler `nan`、GPU energy 和 PMU event 问题，见[常见判断](REFERENCE.md#常见判断)。
+见[对应诊断](docs/Troubleshooting.md#task-supporterror--tui-显示任务不支持)。
 
 ## 项目结构与开发
 
-```text
-acprof/
-├── cli/          # 命令参数、入口调度及旧导入路径的兼容层
-├── tui/          # Textual 应用、页面、命令、进度、设置与控件
-├── analysis/     # 延迟模型拟合、验证与报告
-├── plotting/     # CSV 整理、图表配置与渲染
-├── host/         # 预检、输入计划、镜像与容器、采集编排、profiler
-│   └── posthoc/  # 补采计划、指标回填、备份与事务式写入
-├── container/    # 容器内 server、模型下载与 task handlers
-├── workloads/    # 各任务族 workload generator
-├── monitors/     # GPU / CPU / resource / perf side-channel monitors
-└── packet/       # packet latency 解析与合并
-
-dockerfiles/      # 各任务族及 profiler 镜像
-run.py            # 主实验入口
-probe.py          # 最大输入与最低候选内存探测
-plot.py           # 绘图入口
-profile.py        # 已有结果的 profiler 补采入口
-tui.py            # Textual 交互式终端界面入口
-acprof-tui         # 自动使用项目 .venv 的便捷启动器
-```
-
-终端界面的交互与进程生命周期位于 `acprof/tui/app.py`，页面构建位于 `views.py`，
-样式位于同包的 `tui.tcss`；`commands.py`、`progress.py`、`diagnostics.py` 分别管理
-命令配置、进度解析、预检与结果摘要，`settings.py` 管理本地设置，`i18n.py` 管理界面文案。
-原来的 `acprof.cli.tui*` 模块保留兼容导出。
-
-主机公共预检位于 `acprof/host/preflight.py`；`orchestrator.py` 负责 case/matrix 流程，
-镜像和容器实现、输入计划、静态元数据分别归 `docker_runtime.py`、`input_plan.py`、
-`static_metadata.py`。模块职责、依赖方向和兼容约定见 [代码架构](docs/Architecture.md)。
-
-运行测试：
-
-```bash
-.venv/bin/python -m unittest discover -s tests -v
-.venv/bin/python -m compileall -q acprof run.py probe.py plot.py profile.py tui.py
-```
-
-同一任务族中的新模型通常由 `acprof/host/detect.py` 自动识别；确需新增任务族时，要同步
-补齐 `acprof/config.py` 的检测映射与尺度定义、`acprof/container/handlers/` 的模型处理、
-`acprof/workloads/` 的确定性输入、`dockerfiles/` 的离线镜像构建，并覆盖检测、尺度、
-离线加载和编排测试。任务支持预检在 `acprof/host/task_support.py` 中维护；只有完成相应
-输入、输出、指标及实际采集验证后，才移除该任务的已知限制。检测映射本身不作为完成适配的证明。
-
-修改输出或指标时，同步维护 [REFERENCE.md](REFERENCE.md) 的字段来源、单位、适用条件与历史兼容说明。
+模块职责与依赖见[代码架构](docs/Architecture.md)，测试选择与证据要求见[测试指南](docs/Testing.md)。
+新增模型或 backend 参见[适配契约](docs/Runtime_Compatibility.md#新增一个模型适配)及[适配流程](.agents/skills/acprof-model-adaptation/SKILL.md)。
+修改指标时更新对应的 [docs 专题](docs/README.md)，并同步受影响的示例和链接。

@@ -1,0 +1,4 @@
+interface:
+  display_name: "AC-Prof TUI 回归"
+  short_description: "检查终端尺寸、输入焦点、日志交互与设置恢复，并保护正式测量窗口"
+  default_prompt: "请使用 $acprof-textual-regression 检查本次 TUI 改动，验证交互、实际终端表现和测量期间的行为。"
