@@ -12,9 +12,11 @@ import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Sequence
+from uuid import uuid4
 
 try:
     from textual import events, on, work
+    from rich.text import Text
     from textual.app import ComposeResult
     from textual.binding import Binding
     from textual.widget import Widget
@@ -51,6 +53,7 @@ from acprof.tui.commands import (
     build_probe_command,
     build_profile_command,
     build_run_command,
+    build_stats_command,
     format_command,
     parse_slash_command,
 )
@@ -69,6 +72,7 @@ from acprof.tui.input import BarCursorApp, BarCursorInput as Input
 from acprof.tui.log import SelectableLog
 
 from acprof.tui.progress import ProgressSnapshot, RunProgressTracker
+from acprof.tui.reports import ReportView, read_report
 
 from acprof.tui.scrollbar import SolidScrollBarRender
 
@@ -87,6 +91,7 @@ from acprof.tui.views import (
     compose_monitor_tab,
     compose_plot_tab,
     compose_profile_tab,
+    compose_reports_tab,
     compose_run_tab,
     compose_settings_tab,
 )
@@ -165,6 +170,9 @@ class AcprofTui(BarCursorApp):
         self._initial_preset = self._infer_preset(self.initial_config)
         self._elapsed_timer = None
         self._matrix_rows: dict[int, object] = {}
+        self._report_view: ReportView | None = None
+        self._report_loading = False
+        self._stats_report_path: Path | None = None
 
     def compose(self) -> ComposeResult:
         # A ticking clock would force periodic redraws during RAPL windows.
@@ -176,6 +184,7 @@ class AcprofTui(BarCursorApp):
             yield from compose_run_tab(self)
             yield from compose_monitor_tab(self)
             yield from compose_plot_tab(self)
+            yield from compose_reports_tab(self)
             yield from compose_profile_tab(self)
             yield from compose_settings_tab(self)
 
@@ -295,6 +304,8 @@ class AcprofTui(BarCursorApp):
                 table.add_column(self.tr("状态"), key="status")
                 for row, source in self._matrix_status_text.items():
                     table.update_cell(row, "status", self.tr(source))
+            if self._report_view is not None:
+                self._render_report_view()
 
     def _apply_ui_preferences(self) -> None:
         self._apply_language()
@@ -690,7 +701,7 @@ class AcprofTui(BarCursorApp):
 
     def _is_busy(self) -> bool:
         with self._process_lock:
-            return self._process is not None or bool(self._process_kind)
+            return self._process is not None or bool(self._process_kind) or self._report_loading
 
     def _set_busy(self, busy: bool) -> None:
         # Configuration changes during a run can queue preview redraws and
@@ -698,7 +709,7 @@ class AcprofTui(BarCursorApp):
         if busy:
             self._cancel_preview_timer()
         for widget in self.query(
-            ".config-control, #run-preset, .ui-preference, .profile-tool, "
+            ".config-control, #run-preset, .ui-preference, .profile-tool, .report-control, "
             "#save-run-default, #restore-ui-defaults, #save-ui-settings"
         ):
             widget.disabled = busy
@@ -712,7 +723,7 @@ class AcprofTui(BarCursorApp):
             "#profile-run",
         ):
             self.query_one(selector, Button).disabled = busy
-        self.query_one("#stop-run", Button).disabled = not busy
+        self.query_one("#stop-run", Button).disabled = not busy or self._report_loading
         if not busy:
             self.set_input_cursor_blink_enabled(True)
 
@@ -843,6 +854,9 @@ class AcprofTui(BarCursorApp):
     ) -> None:
         """Remember confirmed inputs, preserving explicitly saved preferences."""
         updates = {}
+        report_source = self.query_one("#report-source", Input)
+        if result_csv and report_source.value in {"", self._saved_settings.last_result_csv}:
+            report_source.value = result_csv
         if model.strip():
             updates["last_model"] = model.strip()
         for widget_id, value in (("result-dir", result_dir), ("result-csv", result_csv)):
@@ -1202,6 +1216,10 @@ class AcprofTui(BarCursorApp):
                 time.monotonic() - self._started_monotonic
             )
             self._set_text(self.query_one('#status-elapsed', Static), final_elapsed)
+        if kind == "stats":
+            # Move focus before disabling the monitor page's focused Stop button;
+            # its queued focus event could otherwise reactivate that old page.
+            self._activate_tab("reports-tab")
         self._set_busy(False)
         log = self.query_one("#run-log", SelectableLog)
         unsupported_task = (
@@ -1310,6 +1328,13 @@ class AcprofTui(BarCursorApp):
         self._active_command = ()
         self._process_kind = ""
         self._stop_requested = False
+        if kind == "stats":
+            report_path, self._stats_report_path = self._stats_report_path, None
+            if returncode == 0 and not launch_error and report_path is not None:
+                self._open_report(str(report_path))
+            else:
+                self._activate_tab("reports-tab")
+                self._clear_report(message("统计未完成，请查看“运行监控”中的错误或终止日志。"))
 
     @on(Button.Pressed, "#stop-run")
     def stop_button(self) -> None:
@@ -1512,6 +1537,122 @@ class AcprofTui(BarCursorApp):
         )
         self._launch(PendingLaunch(tuple(command), "plot", result_csv=str(csv_path)))
 
+    def _clear_report(self, status: str) -> None:
+        self._report_view = None
+        self.query_one("#report-table", DataTable).clear(columns=True)
+        self._set_text(self.query_one("#report-status", Static), status)
+        self._set_text(self.query_one("#report-detail", Static), "表格可滚动；选择一行查看口径与数据来源。")
+
+    @on(Input.Changed, "#report-source")
+    def report_source_changed(self) -> None:
+        if self._form_ready and not self._is_busy():
+            self._clear_report("CSV / 目录：计算统计；JSON：查看报告。采集结束后操作。")
+
+    @on(Button.Pressed, "#report-current")
+    def use_current_report_result(self) -> None:
+        if self._is_busy() or self._check_running:
+            return
+        self.query_one("#report-source", Input).value = self._input("result-csv")
+
+    @on(Button.Pressed, "#report-open")
+    def open_report_button(self) -> None:
+        self._open_report()
+
+    def _open_report(self, path: str | None = None) -> None:
+        if self._is_busy() or self._check_running or self._latest_snapshot.measurement_active:
+            self.notify("请等待当前任务完成", severity="warning")
+            return
+        self._activate_tab("reports-tab")
+        source = path if path is not None else self._input("report-source")
+        if not source.strip():
+            self._clear_report("请填写报告 JSON 路径，或使用当前结果计算统计。")
+            return
+        report_path = Path(source).expanduser()
+        if not report_path.is_absolute():
+            report_path = PROJECT_DIR / report_path
+        if report_path.suffix.lower() != ".json":
+            self._clear_report("请选择 JSON 报告；实验目录或 CSV 请点击“计算统计”。")
+            return
+        with self.prevent(Input.Changed):
+            self.query_one("#report-source", Input).value = str(report_path)
+        self._clear_report("正在读取报告……")
+        self.screen.set_focus(self.query_one("#report-table"), scroll_visible=False)
+        self._report_loading = True
+        self._set_busy(True)
+        self._execute_report_read(report_path)
+
+    @work(thread=True, group="report", exclusive=True, exit_on_error=False)
+    def _execute_report_read(self, path: Path) -> None:
+        try:
+            view, error = read_report(path), ""
+        except Exception as exc:
+            view, error = None, error_message(exc)
+        self.call_from_thread(self._show_report, view, error)
+
+    def _show_report(self, view: ReportView | None, error: str) -> None:
+        self._report_loading = False
+        self._set_busy(self._is_busy())
+        if view is None:
+            self._clear_report(message("报告读取失败：{0}", error))
+            return
+        self._report_view = view
+        self._render_report_view()
+
+    def _render_report_view(self) -> None:
+        view = self._report_view
+        if view is None:
+            return
+        table = self.query_one("#report-table", DataTable)
+        cursor, scroll = table.cursor_coordinate, table.scroll_offset
+        table.clear(columns=True)
+        table.add_columns(*(Text(self.tr(column)) for column in view.columns))
+        for index, row in enumerate(view.rows):
+            table.add_row(*(Text(self.tr(cell)) for cell in row.cells), key=str(index))
+        table.move_cursor(row=min(cursor.row, max(0, len(view.rows) - 1)), column=cursor.column, scroll=False)
+        table.scroll_to(scroll.x, scroll.y, animate=False, force=True)
+        self._set_text(self.query_one("#report-status", Static), view.title)
+        self._show_report_row(table.cursor_row)
+
+    @on(DataTable.RowHighlighted, "#report-table")
+    def report_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        self._show_report_row(event.cursor_row)
+
+    def _show_report_row(self, index: int) -> None:
+        view = self._report_view
+        if view is None:
+            return
+        detail = view.rows[index].detail if 0 <= index < len(view.rows) else message("没有可统计的正式成功窗口。")
+        self._set_text(self.query_one("#report-detail", Static), join_messages("\n", (detail, view.note)))
+
+    @on(Button.Pressed, "#report-calculate")
+    def calculate_report_button(self) -> None:
+        self._launch_stats()
+
+    def _launch_stats(self, path: str | None = None) -> None:
+        if self._is_busy() or self._check_running or self._latest_snapshot.measurement_active:
+            self.notify("请等待当前任务完成", severity="warning")
+            return
+        self._activate_tab("reports-tab")
+        source = path if path is not None else self._input("report-source")
+        if not source.strip():
+            self._clear_report("请填写实验目录或结果 CSV 路径。")
+            return
+        csv_path = Path(source).expanduser()
+        if not csv_path.is_absolute():
+            csv_path = PROJECT_DIR / csv_path
+        if csv_path.is_dir():
+            csv_path /= "result_all.csv"
+        if csv_path.suffix.lower() != ".csv" or not csv_path.is_file():
+            self._clear_report("请选择已有结果 CSV 或包含 result_all.csv 的实验目录。")
+            return
+        # A fresh sidecar for each explicit request; source CSV and old reports remain intact.
+        output = csv_path.parent / "analysis" / f"window-statistics-{uuid4().hex}.json"
+        command = build_stats_command(csv_path, output, project_dir=PROJECT_DIR,
+                                      python_executable=PYTHON_EXECUTABLE)
+        self._stats_report_path = output
+        self._clear_report("正在计算窗口统计，完成后自动显示报告……")
+        self._launch(PendingLaunch(tuple(command), "stats", result_csv=str(csv_path)))
+
     @on(Button.Pressed, "#profile-dry-run")
     def profile_dry_run_button(self) -> None:
         self._launch_profile(dry_run=True)
@@ -1650,6 +1791,10 @@ class AcprofTui(BarCursorApp):
             self._activate_tab("run-tab")
         elif command == "plot":
             self._launch_plot(args[0] if args else None)
+        elif command == "stats":
+            self._launch_stats(args[0] if args else None)
+        elif command == "report":
+            self._open_report(args[0] if args else None)
         elif command == "profile":
             self._launch_profile(
                 dry_run=True,
@@ -1683,6 +1828,7 @@ class AcprofTui(BarCursorApp):
                 "/smoke 最小预设 · /main 主矩阵 · /defaults 默认 · /preview 命令预览 · "
                 "/matrix 切换矩阵看板 · /plot [csv] 绘图 · /profile [dir] [tools] 补采计划 · "
                 "/profile-run [dir] [tools] 执行补采 · /results [csv] 摘要 · "
+                "/stats [csv/dir] 统计 · /report [json] 报告 · "
                 "/settings 设置 · /log 放大日志 · /clear 清日志 · /quit 退出")
             )
             self._activate_tab("monitor-tab")

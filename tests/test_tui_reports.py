@@ -21,7 +21,7 @@ class TuiReportsTests(unittest.IsolatedAsyncioTestCase):
         self.directory = Path(temporary.name)
         self.csv_path = self.directory / "模型结果.csv"
         fields = ["cpu_cores", "mem_cap_gb", "gpu_mode", "input_scale", "warmup", "repeat_idx",
-                  "status", "repeat_in_window", "latency_app_s", "latency_s",
+                  "status", "error", "repeat_in_window", "latency_app_s", "latency_s",
                   "container_attributed_energy_eff_j"]
         with self.csv_path.open("w", newline="") as stream:
             writer = csv.DictWriter(stream, fieldnames=fields)
@@ -30,6 +30,7 @@ class TuiReportsTests(unittest.IsolatedAsyncioTestCase):
                 writer.writerow(dict(cpu_cores=2, mem_cap_gb=8, gpu_mode="off", input_scale=64,
                                      warmup=int(index == 3), repeat_idx=index,
                                      status="error" if index == 4 else "ok",
+                                     error="deliberate failed request" if index == 4 else "",
                                      repeat_in_window=1000 if index == 0 else 1,
                                      latency_app_s=latency, latency_s=latency,
                                      container_attributed_energy_eff_j=0.1))
@@ -176,6 +177,20 @@ class TuiReportsTests(unittest.IsolatedAsyncioTestCase):
             await pilot.click("#report-current")
             await pilot.pause()
             self.assertEqual(source.value, str(self.directory / "another.csv"))
+
+    async def test_failed_statistics_returns_to_reports_and_reenables_controls(self):
+        self.csv_path.write_text("bad,csv\n1,2\n")
+        app = self.make_app()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.open_tab(app, pilot)
+            app.query_one("#report-source", Input).value = str(self.csv_path)
+            await pilot.click("#report-calculate")
+            await self.finish_workers(app, pilot)
+            self.assertEqual(app.query_one("#main-tabs", TabbedContent).active, "reports-tab")
+            self.assertIn("统计未完成", str(app.query_one("#report-status", Static).content))
+            self.assertEqual(app.query_one("#report-table", DataTable).row_count, 0)
+            self.assertFalse(app._is_busy())
+            self.assertFalse(app.query_one("#report-calculate", Button).disabled)
 
 
 if __name__ == "__main__":

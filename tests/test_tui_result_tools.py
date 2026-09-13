@@ -28,7 +28,7 @@ class TuiResultToolsTests(unittest.IsolatedAsyncioTestCase):
             tabs = app.query_one("#main-tabs", TabbedContent)
             self.assertEqual(
                 [tabs.get_tab(pane).label.plain for pane in tabs.query(TabPane)],
-                ["实验配置", "运行监控", "绘图工具", "补采工具", "设置"],
+                ["实验配置", "运行监控", "绘图工具", "统计报告", "补采工具", "设置"],
             )
 
             self.assertTrue(await pilot.click(tabs.get_tab("profile-tab")))

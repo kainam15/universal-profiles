@@ -226,6 +226,9 @@ TUI 使用四项复选框选择补采工具（初始勾选 `torch`、`ncu`），
 `audit.py <目录或 CSV>` 只读校验结果；`--json` 输出报告，`--require-complete --require-ok`
 用于验收新实验。`stats.py <目录或 CSV>` 按测量窗口计算置信区间，支持重复 `--metric`、
 `--confidence`、`--resamples`、`--seed`、`--block-size` 和新的 `--output` 文件；定义见[结果分析](Metrics.md)。
+TUI“统计报告”页的“计算统计”使用 `stats.py` 默认参数，并在源 CSV 旁的 `analysis/` 保存唯一命名的 JSON。
+`/stats [csv/dir]` 与按钮等价；`/report [json]` 或“查看报告”读取已有窗口统计、监测开销或 CLI/TUI 对照报告。
+这些操作需要 TUI 空闲；开销实验仍通过独立脚本显式运行。报告展示与路径带入方式见 [TUI 说明](../README.md#交互式终端界面)。
 各入口的完整帮助可直接运行：
 
 ```bash

@@ -417,6 +417,17 @@ def build_plot_command(
     ]
 
 
+def build_stats_command(
+    result_csv: str | Path,
+    output: str | Path,
+    *,
+    project_dir: Path,
+    python_executable: str | Path = sys.executable,
+) -> list[str]:
+    return [str(python_executable), "-u", str(project_dir / "stats.py"),
+            str(Path(result_csv).expanduser()), "--output", str(output)]
+
+
 def build_profile_command(
     result_dir: str | Path,
     *,
@@ -450,7 +461,7 @@ def format_command(command: Sequence[str], *, project_dir: Path | None = None) -
             # Only entry-point names can be shortened. Resolving every flag,
             # numeric value and model ID needlessly touches the filesystem on
             # each form edit (and may be slow for paths on remote storage).
-            if Path(item).name not in {"run.py", "probe.py", "plot.py", "profile.py"}:
+            if Path(item).name not in {"run.py", "probe.py", "plot.py", "profile.py", "stats.py"}:
                 continue
             try:
                 item_path = Path(item).resolve()
@@ -461,6 +472,7 @@ def format_command(command: Sequence[str], *, project_dir: Path | None = None) -
                 "probe.py",
                 "plot.py",
                 "profile.py",
+                "stats.py",
             }:
                 display[index] = item_path.name
     return shlex.join(display)

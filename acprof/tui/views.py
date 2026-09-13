@@ -487,6 +487,28 @@ def compose_plot_tab(app: AcprofTui) -> ComposeResult:
             ))
 
 
+def compose_reports_tab(app: AcprofTui) -> ComposeResult:
+    with TabPane("统计报告", id="reports-tab"):
+        with Vertical(id="report-panel"):
+            yield app._localized_widget(Input(
+                app._saved_settings.last_result_csv, id="report-source", classes="report-control",
+                placeholder="实验目录、结果 CSV 或报告 JSON 路径",
+            ))
+            with Horizontal(id="report-actions"):
+                yield app._localized_widget(Button("当前结果", id="report-current", classes="report-control"))
+                yield app._localized_widget(Button("计算统计", id="report-calculate", classes="report-control", variant="primary"))
+                yield app._localized_widget(Button("查看报告", id="report-open", classes="report-control"))
+            yield app._localized_widget(Static(
+                "CSV / 目录：计算统计；JSON：查看报告。采集结束后操作。",
+                id="report-status", markup=False,
+            ))
+            yield DataTable(id="report-table", cursor_type="row", zebra_stripes=True, fixed_columns=1)
+            yield app._localized_widget(Static(
+                "表格可滚动；选择一行查看口径与数据来源。",
+                id="report-detail", markup=False,
+            ))
+
+
 def compose_profile_tab(app: AcprofTui) -> ComposeResult:
     with TabPane("补采工具", id="profile-tab"):
         with VerticalScroll(classes="pane-scroll"):
