@@ -10,7 +10,8 @@
 常规性能分析只取 `status=ok` 且 `warmup=0`；错误行中的部分数值不作为正式测量。
 不可用或不适用的数值为 `nan`，历史 CSV 缺少新字段时不能补成 `0`。
 
-字段按用途分组，实际列顺序以 [acprof/config.py](../acprof/config.py) 的 `CSV_FIELDS` 为准。
+字段按用途分组，列顺序、类型、单位、来源和窗口由 [metric_registry.py](../acprof/metric_registry.py) 统一登记；
+`config.CSV_FIELDS` 保持兼容引用。完整元数据见[字段速查](Metric_Reference.md)，绘图数值转换和补采完成条件复用登记表。
 `*_per_request` 和能量列按窗口内请求数归一化；`*_delta` 若未注明归一化，则表示整个窗口的增量。
 
 | 查阅方向 | 字段组 |
@@ -179,6 +180,57 @@ mean/median 聚合，默认仅纳入 `status=ok` 且 `warmup=0` 的行。
 - 当前默认行为是严格模式：如果无法保证 `latency_s` 有值，`run.py` 会退出，不继续 merge 最终结果。
 
 ## 图表与延迟拟合产物
+
+### 只读审计
+
+```bash
+.venv/bin/python audit.py results/<model>/
+.venv/bin/python audit.py results/<model>/ --json
+.venv/bin/python audit.py results/<model>/ --require-complete --require-ok
+.venv/bin/python audit.py --metrics
+```
+
+审计检查 CSV 结构、唯一测量键、状态枚举、非法数值、输入计划 hash 和新实验的计划覆盖，
+另核对可由同一行确定的能耗分量之和及 packet 字节关系。它不重建底层 RAPL 归因或证明全部测量准确。
+`valid` 表示已执行的检查通过；`completion` 单独报告主实验是否正式完成。旧实验没有 `run_state.json`
+时为 `unknown`，不会根据存在 `result_all.csv` 就宣布完成。
+
+报告分别统计所有行、warmup、正式 `ok`、`warn` 和 `error`。正式 `ok` 行的数值缺失按证据分为
+`not_recorded`（旧文件未记录）、`not_applicable`、`tool_not_enabled`、`profiler_reported_error`
+或 `unavailable_unspecified`；后者表示现有产物无法确定原因。数值 `0` 保留为有效观测，
+不会被算作缺失，合法的负 effective 能耗也不会自动被判错。审计不会修改结果、计划或元数据。
+
+`--require-complete` 要求正式完成状态及完整计划；`--require-ok` 要求所有非 warmup 行为 `ok`
+且至少有一行。默认允许审计历史或失败实验，但结构/一致性错误仍以退出码 1 表示。
+
+### 窗口置信区间与开销对照
+
+```bash
+.venv/bin/python stats.py results/<model>/ --metric latency_app_s --metric latency_s \
+  --confidence 0.95 --resamples 5000 --seed 0 --output internal-testing/window-statistics.json
+```
+
+每个资源配置和尺度分别汇总正式 `ok` 窗口，窗口均值等权；`repeat_in_window=1000` 的一行
+仍只贡献一个统计单位。报告包含有效/缺失窗口数、均值、样本标准差和 percentile bootstrap 区间。
+少于 3 个有效窗口时保留均值，区间为 `null`；少量窗口的区间本身也不稳定。
+默认假设窗口之间可视为独立。存在连续时间相关性时可设置 `--block-size` 使用循环移动块，
+至少需要 3 倍块长的窗口，缺失或不连续的 repeat 不组成块。它不能排除温度、主机负载等系统性偏差，
+也不是跨机器或跨实验的一般置信保证。冷启动、cgroup 生命周期峰值及独立 profiler 的复用值会被拒绝。
+
+采集开销验证使用两个独立入口：
+
+- `scripts/measure_overhead.py <完成的实验目录> --gpu off --output-dir <新目录>`：复用原 image ID、
+  输入计划和资源，随机化每轮未启用 monitors 与 5/20/100 Hz 监测线程的顺序，按同轮请求均值计算相对变化。
+  它记录 RAPL/NVML/cgroup monitor 的采样成功状态；不运行 PCAP、perf 或 TUI，也不生成正式能耗 CSV。
+- `scripts/compare_ui.py <check_hardware 的 command.json> --output-dir <新目录>`：单 case 下随机化
+  CLI/TUI 的配对顺序，每次运行完整正式协议并通过审计，镜像/revision/输入 hash 必须一致。
+  默认 `--ui headless` 只测试 TUI 调度与日志路径；`--ui terminal` 用于实际终端绘制对照。
+
+两者默认 5 轮监测器对照 / 3 对 UI 实验，输出所有原始轮次和配对均值变化的 95% 区间。
+负值表示该次对照中更快，不能直接解释成监测器提升了推理性能；区间跨零时没有检测到稳定方向。
+所有报告均在窗口结束后写出，新目录保护失败和中断证据。正式采集的 monitor 生命周期保持原协议。
+
+### 绘图入口
 
 `plot.py` 默认读取同目录下的 `static_meta.json`，用其中的 `input_scale_type` 作为横轴语义名；读取历史结果时仍兼容旧的 `static_meta.csv`。图片会写入结果目录下的三个子目录：
 

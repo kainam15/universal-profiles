@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from acprof.host import execution_profile as profile
+from acprof.host.profilers import execution_environment as environment
 
 
 BASE_ID = "sha256:" + "a" * 64
@@ -77,7 +78,7 @@ class ExecutionProfileImageTests(unittest.TestCase):
         # Ready model images need no legacy recipe or separate profiler image.
         for recipe in (self.project / "dockerfiles").iterdir():
             recipe.unlink()
-        with patch.object(profile, "_run", return_value=image_result(labels=labels)) as run:
+        with patch.object(environment, "_run", return_value=image_result(labels=labels)) as run:
             for tool in ("massif", "nsys"):
                 self.assertEqual(self.prepare(tool), BASE_ID)
         self.assertEqual(run.call_count, 2)
@@ -85,7 +86,7 @@ class ExecutionProfileImageTests(unittest.TestCase):
 
     def test_legacy_image_builds_once_and_next_analysis_skips_build(self):
         for tool in ("massif", "nsys"):
-            with self.subTest(tool=tool), patch.object(profile, "_run", side_effect=[
+            with self.subTest(tool=tool), patch.object(environment, "_run", side_effect=[
                 image_result(), missing_image(), build_success(), build_success(),
                 image_result(), build_success(),
                 image_result(PROFILE_ID, self.labels(tool)),
@@ -113,7 +114,7 @@ class ExecutionProfileImageTests(unittest.TestCase):
 
     def test_existing_compatible_image_needs_no_build_cache(self):
         for tool in ("massif", "nsys"):
-            with self.subTest(tool=tool), patch.object(profile, "_run", side_effect=[
+            with self.subTest(tool=tool), patch.object(environment, "_run", side_effect=[
                 image_result(), image_result(PROFILE_ID, self.labels(tool)),
             ]) as run:
                 self.assertEqual(self.prepare(tool), PROFILE_ID)
@@ -132,7 +133,7 @@ class ExecutionProfileImageTests(unittest.TestCase):
                 ("old unlabeled profiler image", {}),
             ):
                 with self.subTest(tool=tool, reason=reason), patch.object(
-                    profile, "_run", side_effect=[
+                    environment, "_run", side_effect=[
                         image_result(), image_result(PROFILE_ID, labels),
                         build_success(), build_success(), image_result(), build_success(),
                         image_result(PROFILE_ID, self.labels(tool)),
@@ -149,7 +150,7 @@ class ExecutionProfileImageTests(unittest.TestCase):
 
     def test_capability_is_checked_for_the_requested_tool(self):
         labels = {profile.EXECUTION_RUNTIME_LABEL_PREFIX + "nsys": "1"}
-        with patch.object(profile, "_run", side_effect=[
+        with patch.object(environment, "_run", side_effect=[
             image_result(labels=labels), missing_image(),
             build_success(), build_success(), image_result(), build_success(),
             image_result(PROFILE_ID, self.labels("massif")),
@@ -160,7 +161,7 @@ class ExecutionProfileImageTests(unittest.TestCase):
     def test_failed_legacy_build_is_reported_for_the_requested_tool(self):
         failed = SimpleNamespace(returncode=1, stdout="", stderr="apt failed")
         for tool in ("massif", "nsys"):
-            with self.subTest(tool=tool), patch.object(profile, "_run", side_effect=[
+            with self.subTest(tool=tool), patch.object(environment, "_run", side_effect=[
                 image_result(), missing_image(), build_success(), failed,
                 image_result(), build_success(),
             ]) as run:
@@ -170,7 +171,7 @@ class ExecutionProfileImageTests(unittest.TestCase):
                              ["docker", "image", "rm", "--no-prune"])
 
     def test_build_must_publish_matching_metadata_before_use(self):
-        with patch.object(profile, "_run", side_effect=[
+        with patch.object(environment, "_run", side_effect=[
             image_result(), missing_image(), build_success(), build_success(),
             image_result(), build_success(), image_result(PROFILE_ID),
         ]), self.assertRaisesRegex(RuntimeError, "built_image_metadata_mismatch"):
@@ -178,13 +179,13 @@ class ExecutionProfileImageTests(unittest.TestCase):
 
     def test_daemon_failure_is_not_treated_as_a_missing_cached_image(self):
         failed = SimpleNamespace(returncode=1, stdout="", stderr="Cannot connect to Docker daemon")
-        with patch.object(profile, "_run", side_effect=[image_result(), failed]) as run:
+        with patch.object(environment, "_run", side_effect=[image_result(), failed]) as run:
             with self.assertRaisesRegex(RuntimeError, "execution_image_inspect_failed"):
                 self.prepare("nsys")
         self.assertEqual(self.builds(run), [])
 
     def test_source_image_is_preserved_if_original_tag_moves_during_build(self):
-        with patch.object(profile, "_run", side_effect=[
+        with patch.object(environment, "_run", side_effect=[
             image_result(), missing_image(), build_success(), build_success(),
             image_result(references=[]), image_result(PROFILE_ID, self.labels("massif")),
         ]) as run:
@@ -195,7 +196,7 @@ class ExecutionProfileImageTests(unittest.TestCase):
 
     def test_temporary_tag_failure_does_not_start_build(self):
         failed = SimpleNamespace(returncode=1, stdout="", stderr="tag failed")
-        with patch.object(profile, "_run", side_effect=[
+        with patch.object(environment, "_run", side_effect=[
             image_result(), missing_image(), failed,
         ]) as run:
             with self.assertRaisesRegex(RuntimeError, "massif_image_build_failed:tag failed"):
@@ -203,7 +204,7 @@ class ExecutionProfileImageTests(unittest.TestCase):
         self.assertEqual(self.builds(run), [])
 
     def test_missing_model_does_not_trigger_a_pull_or_build(self):
-        with patch.object(profile, "_run", return_value=missing_image()) as run:
+        with patch.object(environment, "_run", return_value=missing_image()) as run:
             with self.assertRaisesRegex(RuntimeError, "base_image_not_found"):
                 self.prepare("massif")
         self.assertEqual(run.call_count, 1)
@@ -215,7 +216,7 @@ class ExecutionProfileImageTests(unittest.TestCase):
             json.dumps({"Id": BASE_ID, "Config": {"Labels": ["invalid"]}}),
         ):
             result = SimpleNamespace(returncode=0, stdout=payload, stderr="")
-            with self.subTest(payload=payload), patch.object(profile, "_run", return_value=result) as run:
+            with self.subTest(payload=payload), patch.object(environment, "_run", return_value=result) as run:
                 with self.assertRaisesRegex(RuntimeError, "invalid_metadata"):
                     self.prepare("nsys")
             self.assertEqual(self.builds(run), [])

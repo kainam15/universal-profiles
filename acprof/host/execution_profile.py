@@ -8,10 +8,6 @@ diagnostic entry rather than aborting the other profiler.
 from __future__ import annotations
 
 import copy
-import csv
-import glob
-import hashlib
-import io
 import json
 import math
 import os
@@ -37,6 +33,47 @@ from acprof.host.profiler_progress import (
 )
 
 
+from acprof.host.profilers.execution_parsers import (
+    NSYS_REPORTS,
+    _finite_float,
+    parse_massif_output,
+    parse_massif_snapshots,
+    _header_base,
+    _duration_factor_to_ms,
+    _memory_factor_to_bytes,
+    _csv_table,
+    _field_for_base,
+    _sum_numeric_column,
+    _nsys_memory_report_has_no_data,
+    parse_nsys_stats_csv,
+    parse_nsys_stats_reports,
+)
+
+from acprof.host.profilers.tool_discovery import (
+    NSYS_DEFAULT_SEARCH_ROOTS,
+    _candidate_nsys_paths,
+    _nsys_path_rank,
+    _find_nsys_executable,
+    _nsys_mount_root,
+    _find_nsys_importer,
+)
+
+from acprof.host.profilers.execution_environment import (
+    EXECUTION_RUNTIME_LABEL_PREFIX,
+    EXECUTION_RUNTIME_VERSION,
+    EXECUTION_BASE_IMAGE_LABEL,
+    EXECUTION_DOCKERFILE_LABEL,
+    _command_detail,
+    _inspect_execution_image,
+    _ensure_execution_image,
+    _build_massif_image,
+    _build_nsys_image,
+    _massif_version,
+    _nsys_version,
+    _validate_nsys_container_runtime,
+)
+
+
 EXECUTION_PROFILE_PLAN_NAME = "execution_profile_plan.json"
 EXECUTION_PROFILE_DIRNAME = "execution_profiles"
 EXECUTION_PROFILE_SCHEMA_VERSION = 1
@@ -44,10 +81,6 @@ MASSIF_CHECKPOINT_SCHEMA_VERSION = 1
 EXECUTION_PROFILE_TOOL_MODES = {"none", "both", "massif", "nsys"}
 MASSIF_TOOL = "massif"
 NSYS_TOOL = "nsys"
-EXECUTION_RUNTIME_LABEL_PREFIX = "org.acprof.execution-profile."
-EXECUTION_RUNTIME_VERSION = "1"
-EXECUTION_BASE_IMAGE_LABEL = EXECUTION_RUNTIME_LABEL_PREFIX + "base-image-id"
-EXECUTION_DOCKERFILE_LABEL = EXECUTION_RUNTIME_LABEL_PREFIX + "dockerfile-sha256"
 MASSIF_SAMPLING_MODES = {"per-scale", "full"}
 NSYS_SAMPLING_MODES = {"per-cpu-scale", "per-scale", "full"}
 SAMPLING_STRATEGY_METADATA = {
@@ -56,12 +89,6 @@ SAMPLING_STRATEGY_METADATA = {
     "per-cpu-scale": "representative_per_cpu_scale",
 }
 NSYS_NVTX_RANGE = "acprof_compute"
-NSYS_REPORTS = (
-    "cuda_api_sum",
-    "cuda_gpu_kern_sum",
-    "cuda_gpu_mem_time_sum",
-    "cuda_gpu_mem_size_sum",
-)
 NSYS_TRACE_DOMAINS = "cuda,nvtx"
 NSYS_RAW_STREAM_SUFFIX = ".qdstrm"
 COMPUTE_THREAD_ENV_NAMES = {
@@ -71,14 +98,6 @@ COMPUTE_THREAD_ENV_NAMES = {
     "NUMEXPR_NUM_THREADS",
     "TORCH_NUM_THREADS",
 }
-NSYS_DEFAULT_SEARCH_ROOTS = (
-    "/opt/nvidia/nsight-systems",
-    "/opt/nvidia/nsight-compute",
-    "/usr/local/NVIDIA-Nsight-Systems",
-    "/usr/local/cuda",
-    "/usr/local/cuda-*",
-    "/usr/lib/nsight-systems",
-)
 
 MASSIF_FIELDS = (
     "cpu_heap_peak_bytes_massif",
@@ -97,28 +116,6 @@ NSYS_FIELDS = (
     "gpu_memcpy_count_per_request_nsys",
     "gpu_memcpy_bytes_per_request_nsys",
 )
-
-def _finite_float(value: Any) -> Optional[float]:
-    try:
-        if value is None:
-            return None
-        if isinstance(value, str):
-            value = value.strip().replace(",", "")
-            if not value:
-                return None
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if math.isfinite(number) else None
-
-
-def _command_detail(result: Any, limit: int = 2000) -> str:
-    detail = str(
-        getattr(result, "stderr", "")
-        or getattr(result, "stdout", "")
-        or f"exit_code={getattr(result, 'returncode', 'unknown')}"
-    ).strip()
-    return detail[:limit]
 
 
 def _safe_filename_token(value: Any) -> str:
@@ -287,663 +284,6 @@ def _nsys_error_entry(
     if report is not None:
         result["report"] = report
     return result
-
-
-def parse_massif_output(report_path: str) -> Dict[str, Any]:
-    """Parse native Massif snapshots and return the execution-plan fields.
-
-    Component peaks are independent maxima.  The total peak and its timestamp
-    come from the single snapshot maximizing heap + heap-extra + stack.
-    """
-    snapshots: List[Dict[str, float]] = []
-    current: Optional[Dict[str, float]] = None
-    time_unit = ""
-
-    with open(report_path, "r", encoding="utf-8", errors="replace") as report:
-        for raw_line in report:
-            line = raw_line.strip()
-            if not line:
-                continue
-            if line.startswith("time_unit:"):
-                time_unit = line.split(":", 1)[1].strip().lower()
-                continue
-            if "=" not in line:
-                continue
-            key, raw_value = line.split("=", 1)
-            key = key.strip()
-            raw_value = raw_value.strip()
-            if key == "snapshot":
-                if current is not None:
-                    snapshots.append(current)
-                current = {}
-                continue
-            if current is None or key not in {
-                "time",
-                "mem_heap_B",
-                "mem_heap_extra_B",
-                "mem_stacks_B",
-            }:
-                continue
-            value = _finite_float(raw_value)
-            if value is not None:
-                current[key] = value
-
-    if current is not None:
-        snapshots.append(current)
-    if time_unit != "ms":
-        raise ValueError(
-            f"massif_parse_failed:expected_time_unit_ms,got={time_unit or 'missing'}"
-        )
-
-    required = {"time", "mem_heap_B", "mem_heap_extra_B", "mem_stacks_B"}
-    complete = [snapshot for snapshot in snapshots if required <= snapshot.keys()]
-    if not complete:
-        raise ValueError("massif_parse_failed:no_complete_snapshots")
-
-    heap_peak = max(snapshot["mem_heap_B"] for snapshot in complete)
-    extra_peak = max(snapshot["mem_heap_extra_B"] for snapshot in complete)
-    stack_peak = max(snapshot["mem_stacks_B"] for snapshot in complete)
-    total_snapshot = max(
-        complete,
-        key=lambda snapshot: (
-            snapshot["mem_heap_B"]
-            + snapshot["mem_heap_extra_B"]
-            + snapshot["mem_stacks_B"]
-        ),
-    )
-    total_peak = (
-        total_snapshot["mem_heap_B"]
-        + total_snapshot["mem_heap_extra_B"]
-        + total_snapshot["mem_stacks_B"]
-    )
-
-    def _integer_if_exact(number: float) -> Any:
-        return int(number) if float(number).is_integer() else number
-
-    return {
-        "cpu_heap_peak_bytes_massif": _integer_if_exact(heap_peak),
-        "cpu_heap_extra_peak_bytes_massif": _integer_if_exact(extra_peak),
-        "cpu_stack_peak_bytes_massif": _integer_if_exact(stack_peak),
-        "cpu_heap_peak_total_bytes_massif": _integer_if_exact(total_peak),
-        "cpu_heap_peak_at_ms_massif": _integer_if_exact(total_snapshot["time"]),
-    }
-
-
-def parse_massif_snapshots(report_path: str) -> Dict[str, Any]:
-    """Compatibility alias with an explicit parser-oriented name."""
-    return parse_massif_output(report_path)
-
-
-def _header_base(header: str) -> str:
-    value = re.sub(r"\([^)]*\)|\[[^]]*\]", "", str(header))
-    value = value.split(":", 1)[0]
-    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
-
-
-def _duration_factor_to_ms(header: str) -> float:
-    value = str(header).lower().replace("μ", "u").replace("µ", "u")
-    tokens = re.findall(r"[a-z]+", value)
-    for token in reversed(tokens):
-        if token in {"ns", "nsec", "nsecs", "nanosecond", "nanoseconds"}:
-            return 1e-6
-        if token in {"us", "usec", "usecs", "microsecond", "microseconds"}:
-            return 1e-3
-        if token in {"ms", "msec", "msecs", "millisecond", "milliseconds"}:
-            return 1.0
-        if token in {"s", "sec", "secs", "second", "seconds"}:
-            return 1000.0
-    # Nsys report scripts use native nanoseconds when no formatter unit is
-    # visible in the header.
-    return 1e-6
-
-
-def _memory_factor_to_bytes(header: str) -> float:
-    value = str(header)
-    candidates = re.findall(
-        r"(?<![A-Za-z])(KiB|MiB|GiB|KB|MB|GB|B)(?![A-Za-z])",
-        value,
-        flags=re.IGNORECASE,
-    )
-    if not candidates:
-        return 1.0
-    unit = candidates[-1]
-    binary = unit.lower().endswith("ib")
-    prefix = unit[0].upper() if len(unit) > 1 else ""
-    exponent = {"": 0, "K": 1, "M": 2, "G": 3}.get(prefix)
-    if exponent is None:
-        raise ValueError(f"nsys_parse_failed:unsupported_memory_unit:{unit}")
-    return float((1024 if binary else 1000) ** exponent)
-
-
-def _csv_table(
-    csv_text: str,
-    *,
-    required_header_bases: Sequence[str],
-) -> Tuple[List[str], List[Dict[str, str]]]:
-    lines = (csv_text or "").splitlines()
-    for index, line in enumerate(lines):
-        try:
-            candidate = next(csv.reader([line]))
-        except (csv.Error, StopIteration):
-            continue
-        bases = {_header_base(header) for header in candidate}
-        if not all(required in bases for required in required_header_bases):
-            continue
-        reader = csv.DictReader(io.StringIO("\n".join(lines[index:])))
-        fieldnames = [str(field) for field in (reader.fieldnames or [])]
-        return fieldnames, [
-            {str(key): str(value or "") for key, value in row.items() if key is not None}
-            for row in reader
-        ]
-    raise ValueError(
-        "nsys_parse_failed:csv_header_missing:"
-        + ",".join(required_header_bases)
-    )
-
-
-def _field_for_base(fieldnames: Sequence[str], bases: Sequence[str]) -> str:
-    for expected in bases:
-        for field in fieldnames:
-            if _header_base(field) == expected:
-                return field
-    raise ValueError(
-        "nsys_parse_failed:field_missing:" + ",".join(bases)
-    )
-
-
-def _sum_numeric_column(
-    rows: Sequence[Mapping[str, str]],
-    field: str,
-    *,
-    include_row: Optional[Any] = None,
-) -> float:
-    total = 0.0
-    found = False
-    eligible = False
-    for row in rows:
-        if include_row is not None and not include_row(row):
-            continue
-        eligible = True
-        value = _finite_float(row.get(field))
-        if value is None:
-            continue
-        total += value
-        found = True
-    if eligible and not found:
-        raise ValueError(f"nsys_parse_failed:no_numeric_values:{field}")
-    return total
-
-
-def _nsys_memory_report_has_no_data(csv_text: str) -> bool:
-    """Recognize Nsys' successful no-MemOps report without hiding real errors."""
-    normalized = " ".join(str(csv_text or "").lower().split())
-    return (
-        "skipped" in normalized
-        and "does not contain" in normalized
-        and "memory data" in normalized
-    )
-
-
-def parse_nsys_stats_csv(
-    csv_text: str,
-    report_name: str,
-    *,
-    repeat: int = 1,
-) -> Dict[str, float]:
-    """Parse one Nsys stats CSV report, normalizing units and repetitions."""
-    normalized_repeat = max(1, int(repeat))
-    report_name = str(report_name).strip()
-    if report_name not in NSYS_REPORTS:
-        raise ValueError(f"unsupported nsys report: {report_name}")
-
-    if (
-        report_name.startswith("cuda_gpu_mem_")
-        and _nsys_memory_report_has_no_data(csv_text)
-    ):
-        if report_name == "cuda_gpu_mem_size_sum":
-            return {
-                "total_bytes_per_request": 0.0,
-                "count_per_request": 0.0,
-            }
-        return {
-            "total_time_ms_per_request": 0.0,
-            "count_per_request": 0.0,
-        }
-
-    if report_name == "cuda_api_sum":
-        count_bases = ("num calls", "calls", "count")
-        required = ("total time",)
-    elif report_name == "cuda_gpu_kern_sum":
-        count_bases = ("instances", "count", "num calls")
-        required = ("total time",)
-    elif report_name == "cuda_gpu_mem_time_sum":
-        count_bases = ("operations", "count", "instances", "num calls")
-        required = ("total time",)
-    else:
-        count_bases = ("operations", "count", "instances", "num calls")
-        required = ("total",)
-
-    fieldnames, rows = _csv_table(
-        csv_text,
-        required_header_bases=required,
-    )
-    count_field = _field_for_base(fieldnames, count_bases)
-
-    include_row = None
-    if report_name.startswith("cuda_gpu_mem_"):
-        operation_fields = [
-            field
-            for field in fieldnames
-            if _header_base(field) in {"operation", "name"}
-        ]
-        if operation_fields:
-            operation_field = operation_fields[0]
-
-            def include_row(row: Mapping[str, str]) -> bool:
-                return "memcpy" in str(row.get(operation_field, "")).lower()
-
-    count = _sum_numeric_column(
-        rows,
-        count_field,
-        include_row=include_row,
-    ) / normalized_repeat
-
-    if report_name == "cuda_gpu_mem_size_sum":
-        total_field = _field_for_base(fieldnames, ("total",))
-        total = _sum_numeric_column(
-            rows,
-            total_field,
-            include_row=include_row,
-        )
-        return {
-            "total_bytes_per_request": (
-                total * _memory_factor_to_bytes(total_field) / normalized_repeat
-            ),
-            "count_per_request": count,
-        }
-
-    total_field = _field_for_base(fieldnames, ("total time",))
-    total = _sum_numeric_column(
-        rows,
-        total_field,
-        include_row=include_row,
-    )
-    return {
-        "total_time_ms_per_request": (
-            total * _duration_factor_to_ms(total_field) / normalized_repeat
-        ),
-        "count_per_request": count,
-    }
-
-
-def parse_nsys_stats_reports(
-    report_outputs: Mapping[str, str],
-    *,
-    repeat: int = 1,
-) -> Dict[str, float]:
-    """Combine the four Nsys summary reports into execution-plan fields."""
-    missing = [report for report in NSYS_REPORTS if report not in report_outputs]
-    if missing:
-        raise ValueError("nsys_parse_failed:missing_reports:" + ",".join(missing))
-
-    api = parse_nsys_stats_csv(
-        report_outputs["cuda_api_sum"],
-        "cuda_api_sum",
-        repeat=repeat,
-    )
-    kernel = parse_nsys_stats_csv(
-        report_outputs["cuda_gpu_kern_sum"],
-        "cuda_gpu_kern_sum",
-        repeat=repeat,
-    )
-    memcpy_time = parse_nsys_stats_csv(
-        report_outputs["cuda_gpu_mem_time_sum"],
-        "cuda_gpu_mem_time_sum",
-        repeat=repeat,
-    )
-    memcpy_size = parse_nsys_stats_csv(
-        report_outputs["cuda_gpu_mem_size_sum"],
-        "cuda_gpu_mem_size_sum",
-        repeat=repeat,
-    )
-    return {
-        "cuda_api_time_sum_ms_per_request_nsys": api[
-            "total_time_ms_per_request"
-        ],
-        "cuda_api_call_count_per_request_nsys": api["count_per_request"],
-        "gpu_kernel_time_sum_ms_per_request_nsys": kernel[
-            "total_time_ms_per_request"
-        ],
-        "gpu_kernel_launch_count_per_request_nsys": kernel[
-            "count_per_request"
-        ],
-        "gpu_memcpy_time_sum_ms_per_request_nsys": memcpy_time[
-            "total_time_ms_per_request"
-        ],
-        "gpu_memcpy_count_per_request_nsys": memcpy_time["count_per_request"],
-        "gpu_memcpy_bytes_per_request_nsys": memcpy_size[
-            "total_bytes_per_request"
-        ],
-    }
-
-
-def _inspect_execution_image(image_ref: str) -> Optional[Dict[str, Any]]:
-    result = _run(
-        ["docker", "image", "inspect", image_ref, "--format", "{{json .}}"],
-        check=False,
-    )
-    if result.returncode != 0:
-        detail = _command_detail(result)
-        if "no such image" in detail.lower() or "no such object" in detail.lower():
-            return None
-        raise RuntimeError(f"execution_image_inspect_failed:{detail}")
-    try:
-        image = json.loads(result.stdout)
-        if not isinstance(image, dict) or not re.fullmatch(
-            r"sha256:[0-9a-f]{64}", str(image.get("Id", ""))
-        ):
-            raise ValueError("missing immutable image ID")
-        config = image.get("Config") or {}
-        labels = config.get("Labels") or {}
-        if not isinstance(labels, dict):
-            raise ValueError("invalid image labels")
-    except (AttributeError, TypeError, ValueError) as exc:
-        raise RuntimeError(
-            f"execution_image_inspect_failed:invalid_metadata:{image_ref}"
-        ) from exc
-    return {
-        "id": image["Id"],
-        "labels": labels,
-        "references": [*(image.get("RepoTags") or []), *(image.get("RepoDigests") or [])],
-    }
-
-
-def _ensure_execution_image(image_tag: str, project_dir: str, tool: str) -> str:
-    """Reuse the model's shared runtime, or cache an old-image compatibility build.
-
-    Always return an immutable image ID: a moved :latest tag must neither
-    change the image between probes nor match a checkpoint from an older build.
-    """
-    runtime_label = EXECUTION_RUNTIME_LABEL_PREFIX + tool
-    base = _inspect_execution_image(image_tag)
-    if base is None:
-        raise RuntimeError(f"{tool}_image_build_failed:base_image_not_found:{image_tag}")
-    if base["labels"].get(runtime_label) == EXECUTION_RUNTIME_VERSION:
-        print(
-            f"[execution-profile][{tool}] Using runtime from model image "
-            f"{image_tag}; no profiler image build needed"
-        )
-        return base["id"]
-
-    dockerfile = os.path.join(
-        os.path.abspath(os.fspath(project_dir)), "dockerfiles", f"{tool}.Dockerfile"
-    )
-    if not os.path.isfile(dockerfile):
-        raise FileNotFoundError(
-            f"{tool}_image_build_failed:dockerfile_not_found:{dockerfile}"
-        )
-    with open(dockerfile, "rb") as dockerfile_handle:
-        recipe_hash = hashlib.sha256(dockerfile_handle.read()).hexdigest()
-    expected_labels = {
-        EXECUTION_BASE_IMAGE_LABEL: base["id"],
-        EXECUTION_DOCKERFILE_LABEL: recipe_hash,
-        runtime_label: EXECUTION_RUNTIME_VERSION,
-    }
-    digest = hashlib.sha256(str(image_tag).encode("utf-8")).hexdigest()[:12]
-    derived_tag = f"acprof-{tool}-{digest}:latest"
-    cached = _inspect_execution_image(derived_tag)
-    if cached is not None and all(
-        cached["labels"].get(key) == value for key, value in expected_labels.items()
-    ):
-        print(
-            f"[execution-profile][{tool}] Reusing compatible image {derived_tag}; "
-            "no build needed"
-        )
-        return cached["id"]
-
-    print(f"[execution-profile][{tool}] Preparing legacy image runtime {derived_tag}")
-    # BuildKit treats a bare sha256 image ID in FROM as a registry name. Give
-    # the resolved local image a private temporary tag so a concurrent change
-    # to the model's :latest cannot change this build's base.
-    pinned_tag = f"acprof-execution-base:{uuid4().hex}"
-    tagged = _run(
-        ["docker", "image", "tag", base["id"], pinned_tag],
-        check=False,
-    )
-    if tagged.returncode != 0:
-        raise RuntimeError(f"{tool}_image_build_failed:{_command_detail(tagged)}")
-    try:
-        result = _run(
-            [
-                "docker",
-                "build",
-                "--file",
-                dockerfile,
-                "--build-arg",
-                f"BASE_IMAGE={pinned_tag}",
-                "--label",
-                f"{EXECUTION_BASE_IMAGE_LABEL}={base['id']}",
-                "--label",
-                f"{EXECUTION_DOCKERFILE_LABEL}={recipe_hash}",
-                "--tag",
-                derived_tag,
-                os.path.abspath(os.fspath(project_dir)),
-            ],
-            check=False,
-        )
-    finally:
-        try:
-            pinned_base = _inspect_execution_image(base["id"])
-            if pinned_base is not None and any(
-                reference != pinned_tag for reference in pinned_base["references"]
-            ):
-                removed = _run(
-                    ["docker", "image", "rm", "--no-prune", pinned_tag], check=False
-                )
-                if removed.returncode != 0:
-                    print(
-                        f"[execution-profile][{tool}][WARN] Temporary base tag "
-                        f"cleanup failed: {pinned_tag}: {_command_detail(removed)}"
-                    )
-            elif pinned_base is not None:
-                # Removing the last reference would delete the original image
-                # record too. Keep it if the caller used an untagged ID or the
-                # original tag moved during the build.
-                print(
-                    f"[execution-profile][{tool}] Keeping {pinned_tag} to preserve "
-                    f"the now-untagged source image {base['id']}"
-                )
-        except (OSError, RuntimeError) as exc:
-            print(
-                f"[execution-profile][{tool}][WARN] Temporary base tag cleanup "
-                f"failed: {pinned_tag}: {exc}"
-            )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"{tool}_image_build_failed:{_command_detail(result)}"
-        )
-    built = _inspect_execution_image(derived_tag)
-    if built is None or any(
-        built["labels"].get(key) != value for key, value in expected_labels.items()
-    ):
-        raise RuntimeError(f"{tool}_image_build_failed:built_image_metadata_mismatch")
-    return built["id"]
-
-
-def _build_massif_image(image_tag: str, project_dir: str) -> str:
-    return _ensure_execution_image(image_tag, project_dir, MASSIF_TOOL)
-
-
-def _build_nsys_image(image_tag: str, project_dir: str) -> str:
-    """Select a model image with the runtime libraries required by Nsys.
-
-    The host Nsys installation is mounted into the profiler container.  Its
-    QdstrmImporter still links against the container's elfutils runtime
-    (notably libdw.so.1), which is absent from python:*slim images.
-    """
-    return _ensure_execution_image(image_tag, project_dir, NSYS_TOOL)
-
-
-def _massif_version(derived_image: Optional[str]) -> str:
-    if not derived_image:
-        return "unknown"
-    try:
-        result = _run(
-            ["docker", "run", "--rm", derived_image, "valgrind", "--version"],
-            check=False,
-        )
-    except Exception:
-        return "unknown"
-    if result.returncode != 0:
-        return "unknown"
-    output = str(result.stdout or result.stderr or "").strip()
-    return output.splitlines()[-1].strip() if output else "unknown"
-
-
-def _candidate_nsys_paths(root: str) -> Iterable[str]:
-    for expanded in glob.glob(os.path.abspath(os.fspath(root))):
-        if os.path.isfile(expanded) and os.path.basename(expanded) == "nsys":
-            yield expanded
-            continue
-        if not os.path.isdir(expanded):
-            continue
-        for suffix in (
-            "nsys",
-            os.path.join("bin", "nsys"),
-            os.path.join("bin64", "nsys"),
-            os.path.join("target-linux-x64", "nsys"),
-            os.path.join("*", "target-linux-x64", "nsys"),
-            os.path.join("*", "host", "target-linux-x64", "nsys"),
-        ):
-            yield from glob.glob(os.path.join(expanded, suffix))
-        yield from glob.iglob(
-            os.path.join(expanded, "**", "nsys"),
-            recursive=True,
-        )
-
-
-def _nsys_path_rank(path: str) -> Tuple[Tuple[int, ...], str]:
-    return tuple(int(part) for part in re.findall(r"\d+", path)), path
-
-
-def _find_nsys_executable(nsys_root: Optional[str]) -> Optional[str]:
-    roots = [nsys_root] if nsys_root else list(NSYS_DEFAULT_SEARCH_ROOTS)
-    candidates: List[str] = []
-    seen = set()
-    for root in roots:
-        if not root:
-            continue
-        for candidate in _candidate_nsys_paths(root):
-            real = os.path.realpath(candidate)
-            if real in seen or not os.path.isfile(real):
-                continue
-            if not os.access(real, os.X_OK):
-                continue
-            seen.add(real)
-            candidates.append(real)
-    if candidates:
-        return max(candidates, key=_nsys_path_rank)
-    found = shutil.which("nsys")
-    return os.path.realpath(found) if found else None
-
-
-def _nsys_mount_root(nsys_bin: str) -> str:
-    """Return an install root containing Nsys reports, Python, and libraries."""
-    path = os.path.realpath(nsys_bin)
-    parts = path.split(os.sep)
-    target_index = next(
-        (
-            index
-            for index, part in enumerate(parts)
-            if part.startswith("target-")
-        ),
-        None,
-    )
-    if target_index is not None and target_index > 0:
-        root = os.sep + os.path.join(*parts[1:target_index])
-        if os.path.basename(root) == "host":
-            root = os.path.dirname(root)
-        return root
-
-    parent = os.path.dirname(path)
-    if os.path.basename(parent) in {"bin", "bin64"} and any(
-        marker in parent.lower()
-        for marker in ("nsight", "nvidia", "cuda")
-    ):
-        return os.path.dirname(parent)
-    return parent
-
-
-def _nsys_version(nsys_bin: Optional[str]) -> str:
-    if not nsys_bin:
-        return "unknown"
-    try:
-        result = _run([nsys_bin, "--version"], check=False)
-    except Exception:
-        return "unknown"
-    if result.returncode != 0:
-        return "unknown"
-    output = str(result.stdout or result.stderr or "").strip()
-    return output.splitlines()[-1].strip() if output else "unknown"
-
-
-def _find_nsys_importer(nsys_mount_root: str) -> Optional[str]:
-    """Find the QDSTRM importer shipped beside the selected Nsys CLI."""
-    root = os.path.realpath(os.path.abspath(os.fspath(nsys_mount_root)))
-    candidates: List[str] = []
-    for candidate in glob.iglob(
-        os.path.join(root, "**", "QdstrmImporter"),
-        recursive=True,
-    ):
-        real = os.path.realpath(candidate)
-        try:
-            inside_root = os.path.commonpath((root, real)) == root
-        except ValueError:
-            inside_root = False
-        if (
-            inside_root
-            and os.path.isfile(real)
-            and os.access(real, os.X_OK)
-        ):
-            candidates.append(real)
-    return max(candidates, key=_nsys_path_rank) if candidates else None
-
-
-def _validate_nsys_container_runtime(
-    image_tag: str,
-    nsys_mount_root: str,
-) -> str:
-    """Fail before the resource sweep if QdstrmImporter cannot run.
-
-    Without this preflight, Nsys can leave a multi-gigabyte .qdstrm for every
-    resource/scale pair while never producing the required .nsys-rep.
-    """
-    importer = _find_nsys_importer(nsys_mount_root)
-    if not importer:
-        raise RuntimeError(
-            "nsys_importer_not_found:"
-            f"root={os.path.abspath(os.fspath(nsys_mount_root))}"
-        )
-    result = _run(
-        [
-            "docker",
-            "run",
-            "--rm",
-            "-v",
-            f"{nsys_mount_root}:{nsys_mount_root}:ro",
-            image_tag,
-            importer,
-            "--version",
-        ],
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            "nsys_importer_unavailable:"
-            f"{_command_detail(result)}"
-        )
-    output = str(result.stdout or result.stderr or "").strip()
-    return output.splitlines()[-1].strip() if output else "unknown"
 
 
 def _docker_env(cmd: Sequence[str], name: str, value: str) -> List[str]:

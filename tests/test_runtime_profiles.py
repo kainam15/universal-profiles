@@ -74,6 +74,7 @@ class RuntimeProfileRegressionTests(unittest.TestCase):
             lock = root / "dockerfiles/locks/moss-transformers560.txt"
             source.write_text("adapter = 1\n")
             lock.write_text("transformers==5.6.0\n")
+            (root / "dockerfiles/locks/common-cu128.txt").write_text("torch==2.11.0+cu128\n")
             original = build_fingerprint(moss_task(), root)
             source.write_text("adapter = 2\n")
             changed = build_fingerprint(moss_task(), root)

@@ -519,7 +519,7 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(slash_command.region.y - command_bar.region.y, 1)
             self.assertEqual(command_bar.region.bottom - slash_command.region.bottom, 1)
             preview = str(app.query_one("#command-preview", Static).render())
-            self.assertIn("/.venv/bin/python", preview)
+            self.assertIn(sys.executable, preview)
             self.assertIn("--warmup 0", preview)
             self.assertIn("--idle-seconds 20", preview)
             self.assertIn("--idle-cooldown-seconds 5", preview)

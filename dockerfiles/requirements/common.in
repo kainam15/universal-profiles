@@ -1,0 +1,7 @@
+# 共享框架层；CUDA 版本由 compile_locks.py 的明确约束选择。
+Flask==3.0.2
+numpy==2.2.6
+Pillow==12.3.0
+torch
+torchvision
+torchaudio

@@ -41,6 +41,27 @@ git diff --check
 
 以上是定位入口，不是每次必须运行的清单。先用 `rg --files tests` 查实际受影响的测试；新改动、失败或未解决问题才需要扩大或重复验证。
 
+## CI 与环境测试
+
+`.github/workflows/ci.yml` 在 Python 3.10 / 3.12 上安装哈希锁并执行主机回归；
+七个任务族另构建 Python 3.10 CPU 镜像，以随机小模型或明确导出的样例验证真实加载与推理。
+网络在容器测试期间关闭。CI Actions 固定为已核验的 commit SHA，作业只授予仓库读取权限。
+
+本地入口：
+
+```bash
+.venv/bin/python scripts/run_tests.py --report internal-testing/host-tests.json
+.venv/bin/python scripts/check_runtime.py --family audio --variant cpu --output-dir internal-testing/audio-runtime
+.venv/bin/python scripts/render_metric_reference.py --check
+```
+
+`run_tests.py` 保留 unittest 输出，并将每项测试的结果、失败/跳过原因、版本及耗时写入 JSON。
+空测试集必定失败；容器作业带 `--require-no-skips`，跳过或 expected failure 都不算环境验证通过。
+普通主机测试允许缺少推理依赖时跳过，报告明确列出范围。`check_runtime.py` 的目录必须为空；
+`runtime.json` 另记录锁定 profile、实际 image ID 和退出结果，不覆盖旧验证。
+
+源代码、模型权重和依赖层保持分离，CPU 容器测试不下载 Hub 模型，不代替真实 GPU/PMU/抓包实验。
+
 ## TUI 与终端证据
 
 使用 `unittest.IsolatedAsyncioTestCase`、Textual `run_test()` / `Pilot` 和临时 `settings_path`。
@@ -53,12 +74,44 @@ Headless 能检查布局、键盘路径和输出状态；SVG、tmux 与真实 VS
 
 ## 真实采集与实验隔离
 
+`.github/workflows/hardware.yml` 只支持手动触发，在带 `acprof` 标签的专用 Linux x86_64 runner
+上使用预先准备的 `.venv`、本机 Docker/cgroup v2、RAPL、perf 和抓包权限。不会由 PR 自动触发。
+本地同一入口为：
+
+```bash
+.venv/bin/python scripts/check_hardware.py --model hf-internal-testing/tiny-random-bert \
+  --task fill-mask --gpus off,on --output-dir internal-testing/hardware-smoke
+```
+
+默认每个设备 1 个 case、warmup=1、repeat=3、2 秒请求窗口及 2 秒 idle，属于短 smoke。
+`command.json`、`run.log`、原始结果及 `audit.json` 一同保留；验收要求正式行为 `ok`、计划完整，
+且两种延迟、CPU 能量、PMU instructions 和 GPU 模式下的 GPU 能量均为有效数值。
+未通过不自动更改原参数或覆盖产物。`--compute-profile-tool` / `--execution-profile-tool`
+可另测指定工具，工具字段仍需根据其计划和错误列验收，不能用主采集成功代替工具成功。
+
+采样线程及 CLI/TUI 开销的独立对照入口和统计假设见[指标分析](Metrics.md#窗口置信区间与开销对照)。
+`compare_ui.py --ui terminal` 继承当前终端，要求 stdout 为 TTY；自动化可用 `script` 分配 PTY
+并保存会话。PTY、headless 和用户的 VS Code/SSH 终端须分别标明，不能互相替代。
+
 镜像依赖变化后，主机 `.venv` 测试不能证明容器已更新；构建与复用契约见[运行兼容](Runtime_Compatibility.md#构建复用和验证)。
 最小采集示例见 [README](../README.md#3-跑一个最小-smoke-test)。用独立输出目录运行验证，保留模型 revision、输入计划与日志。
 `examples/` 下脚本是手动接口示例，不会自动运行，也不产生与正式 `run.py` 等价的测量证据。
 
 `internal-testing/` 用于本地临时验证和截图；原始实验结果留在对应结果目录。
 普通推理成功不能证明 Torch/NCU/Massif/Nsys 都支持；每种设备、dtype 和工具分别报告实际覆盖范围。
+
+## 参考实现与复用取舍
+
+结果原子发布采用 [CPython 的 tempfile](https://github.com/python/cpython/blob/main/Lib/tempfile.py)
+和标准库文件同步、替换机制；实验身份参考 [ASV 的结果管理](https://github.com/airspeed-velocity/asv/blob/main/asv/results.py)。
+两者的通用做法与现有 CSV/目录协议兼容，恢复仍按 AC-Prof 的 case 与测量窗口实现。
+依赖解析复用持续维护的 [uv](https://github.com/astral-sh/uv)（MIT / Apache-2.0），只在更新锁时使用。
+指标元数据参考 [Prometheus Python client](https://github.com/prometheus/client_python)（Apache-2.0）的类型与单位声明，
+窗口区间参考 [SciPy bootstrap](https://github.com/scipy/scipy/blob/main/scipy/stats/_resampling.py)（BSD-3-Clause）的重采样方法。
+本项目只需离线登记表和均值区间，使用标准库实现，无需在采集服务加入 exporter 或 SciPy 依赖。
+profiler 调研了 [NVIDIA nsight-python](https://github.com/NVIDIA/nsight-python)（Apache-2.0）；其 kernel profiling 接口
+不替代现有完整请求和旁路 probe 契约，因此保留 CLI/CSV 集成，提取纯解析与环境发现模块。
+这些选择不增加正式测量窗口内的服务或网络调用，工具和环境验证均在采集前后进行。
 
 ## 文档与 Skill 检查
 

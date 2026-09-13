@@ -17,7 +17,7 @@ class RuntimeValidationTests(unittest.TestCase):
     def task(self):
         return TaskInfo('Example/model', 'audio-text-to-text', 'multimodal',
                         'transformers_model', 'transformers', 'a' * 40, 'unit',
-                        runtime_profile_id='moss-transformers560')
+                        runtime_profile_id='moss-transformers560', model_config={'model_type': 'moss_transcribe_diarize'})
 
     def fixture(self, root):
         plan = root / 'input_scale_plan.json'

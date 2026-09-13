@@ -16,7 +16,7 @@ class ImageLayerIdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "acprof/container").mkdir(parents=True)
-            (root / "dockerfiles").mkdir()
+            (root / "dockerfiles/locks").mkdir(parents=True)
             for relative, content in {
                 "acprof/container/download_model.py": "downloader = 1\n",
                 "acprof/container/model_files.py": "selector = 1\n",
@@ -24,6 +24,9 @@ class ImageLayerIdentityTests(unittest.TestCase):
                 "dockerfiles/base.Dockerfile": "FROM python:3.10-slim\n",
                 "dockerfiles/nlp.Dockerfile": "FROM base AS runtime\nRUN install-deps\n\nFROM runtime AS model\nCOPY models /models\n",
                 "dockerfiles/runtime-model.Dockerfile": "FROM runtime\nCOPY downloader /opt\n",
+                "dockerfiles/runtime.Dockerfile": "FROM python\nRUN install-locked-deps\n",
+                "dockerfiles/locks/nlp-cu128.txt": "torch==2.11.0+cu128\n",
+                "dockerfiles/locks/common-cu128.txt": "torch==2.11.0+cu128\n",
             }.items():
                 (root / relative).write_text(content)
             profile = select_runtime_profile(task)

@@ -314,10 +314,23 @@ def find_active_processes(
 
 class PosthocLock:
     def __init__(self, result_dir: Path):
+        from acprof.host.run_state import MeasurementLock, ResultDirectoryLock
+        self._result_lock = ResultDirectoryLock(result_dir)
+        self._measurement_lock = MeasurementLock()
         self.path = result_dir / LOCK_FILENAME
         self._owned = False
 
     def __enter__(self) -> "PosthocLock":
+        try:
+            self._measurement_lock.__enter__()
+            self._result_lock.__enter__()
+            return self._acquire_legacy_lock()
+        except BaseException:
+            self._result_lock.__exit__(None, None, None)
+            self._measurement_lock.__exit__(None, None, None)
+            raise
+
+    def _acquire_legacy_lock(self) -> "PosthocLock":
         payload = json.dumps({"pid": os.getpid(), "created_at": _timestamp_token()})
         for _attempt in range(2):
             try:
@@ -350,9 +363,13 @@ class PosthocLock:
         raise PosthocError(f"cannot acquire profile lock: {self.path}")
 
     def __exit__(self, _exc_type, _exc, _traceback) -> None:
-        if self._owned:
-            try:
-                self.path.unlink()
-            except FileNotFoundError:
-                pass
-            self._owned = False
+        try:
+            if self._owned:
+                try:
+                    self.path.unlink()
+                except FileNotFoundError:
+                    pass
+                self._owned = False
+        finally:
+            self._result_lock.__exit__(_exc_type, _exc, _traceback)
+            self._measurement_lock.__exit__(_exc_type, _exc, _traceback)

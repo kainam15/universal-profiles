@@ -27,6 +27,7 @@ AC-Prof 的命令入口负责参数和调度，业务模块按输入规划、运
 | `acprof/monitors/` | 能耗、资源与 PMU 的原始测量 |
 | `acprof/packet/` | 抓包解析及 packet latency 合并 |
 | `acprof/config.py` | 共享配置、任务尺度及 CSV/静态元数据字段协议 |
+| `acprof/artifacts.py`、`acprof/result_csv.py` | 原子产物发布、CSV 结构与测量唯一键校验；不初始化采集依赖 |
 | `acprof/pixel_metrics.py` | 像素计数和能耗/延迟归一化的纯计算，由 client、packet 和 plotting 共用 |
 | `acprof/runtime_profiles.py` | 运行环境、依赖锁与模型适配器的声明和元数据路由 |
 
@@ -66,14 +67,24 @@ flowchart TD
 | `static_metadata` | 主机、镜像、模型和 profiler 计划的静态元数据 |
 | `packet_capture` | tcpdump 前置检查及 capture/parser 命令构造 |
 | `orchestrator` | case/matrix 调度、idle 稳定性、失败与超时处理、OOM pruning 和 CSV 合并 |
+| `run_state` | 目录锁、实验身份、已完成 case 校验、中断备份和恢复；仅在测量窗口外运行 |
 | `client` | 环境与 workload 初始化、请求、对照窗口和正式窗口控制、结果写入 |
 | `client_metrics` | 已完成采样结果到指标字段的纯计算与格式化 |
-| `compute_profile` / `execution_profile` | 各 profiler 自己的计划执行、采集与解析 |
+| `compute_profile` / `execution_profile` | profiler 计划、采集、断点与汇总；显式保留旧解析/查找入口 |
+| `profilers/compute_parsers` / `profilers/execution_parsers` | Advisor/NCU CSV、Massif snapshot 和 Nsys stats 的纯标准库解析 |
+| `profilers/tool_discovery` | 可执行文件、版本目录优先级和完整工具挂载路径 |
+| `profilers/execution_environment` | 独立镜像与运行库核验、旧镜像兼容构建、工具版本查询 |
 | `profiler_common` | 两类 profiler 共享的命令、容器参数、输入计划读取及原子 JSON 写入 |
 
 `docker_runtime` 是输入规划的下层；`static_metadata` 引用 runtime、输入计划类型和
 任务 schema；这些模块均不反向引用 `orchestrator`。它们的已有入口仍从
 `orchestrator` 显式导出。两个 profiler 单向依赖 `profiler_common`，各自保留本地执行边界。
+解析器不导入 Docker、模型检测或采集编排，单独读取报告无需安装推理框架。兼容导出直接引用
+新模块中的函数；测试在函数实际查找依赖的位置 mock，不使用运行时 `globals` 转发。
+
+`metric_registry` 统一 CSV 字段、单位、来源、窗口和 profiler 完成条件；`config.CSV_FIELDS`
+保留同一列表对象。`analysis/audit` 和 `analysis/uncertainty` 负责只读审计与窗口统计，
+根 `audit.py` / `stats.py` 仅处理参数和报告输出。生成的 `docs/Metric_Reference.md` 可在 CI 检查漂移。
 
 指标模块不读取环境、不创建 workload 或 monitor。慢请求阈值由 client 在调用时显式传入；
 冷启动状态仍由 client 管理。对照窗口、monitor 启停、正式请求和停止后的统计顺序保持一致。

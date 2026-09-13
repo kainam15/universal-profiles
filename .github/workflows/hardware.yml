@@ -1,0 +1,42 @@
+name: 专用主机采集验证
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Hugging Face 模型 ID
+        required: true
+        default: hf-internal-testing/tiny-random-bert
+      task:
+        description: 已支持任务覆盖
+        required: true
+        default: fill-mask
+      gpus:
+        description: off / on / off,on
+        type: choice
+        options: ['off', 'on', 'off,on']
+        default: off,on
+permissions:
+  contents: read
+concurrency:
+  group: acprof-dedicated-hardware
+  cancel-in-progress: false
+jobs:
+  profile:
+    runs-on: [self-hosted, linux, x64, acprof]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          clean: false # 专用主机复用已准备的 .venv 和本地验证产物。
+      - name: 使用主机现有环境采集并验收
+        env:
+          VALIDATION_MODEL: ${{ inputs.model }}
+          VALIDATION_TASK: ${{ inputs.task }}
+          VALIDATION_GPUS: ${{ inputs.gpus }}
+          ACPROF_WECOM_WEBHOOK_URL: ''
+        run: .venv/bin/python scripts/check_hardware.py --model "$VALIDATION_MODEL" --task "$VALIDATION_TASK" --gpus "$VALIDATION_GPUS" --output-dir "internal-testing/hardware-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: hardware
+          path: internal-testing/hardware-${{ github.run_id }}-${{ github.run_attempt }}/

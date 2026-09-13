@@ -206,7 +206,9 @@ class PerfMIPSTests(unittest.TestCase):
                 )
             raise AssertionError(f"unexpected command: {cmd}")
 
-        with patch.dict("acprof.monitors.perf_mips.os.environ", {"ACPROF_SUDO_PASSWORD": "secret"}), patch(
+        with patch("acprof.monitors.perf_mips.shutil.which", return_value="perf"), patch.dict(
+            "acprof.monitors.perf_mips.os.environ", {"ACPROF_SUDO_PASSWORD": "secret"}
+        ), patch(
             "acprof.monitors.perf_mips.subprocess.run",
             side_effect=fake_run,
         ), patch(

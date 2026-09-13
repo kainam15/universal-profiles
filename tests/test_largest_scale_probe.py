@@ -467,7 +467,7 @@ class LargestScaleProbeTests(unittest.TestCase):
         self.assertEqual(returncode, 0)
         build_image.assert_called_once()
         expected_task = _task_info()
-        expected_task.runtime_profile_id = "legacy-nlp"
+        expected_task.runtime_profile_id = "nlp-cu128"
         self.assertEqual(build_image.call_args.args[0], expected_task)
         self.assertIs(plan_scales.call_args.kwargs["image_info"], built_image)
         self.assertIs(run_probe.call_args.kwargs["image_info"], built_image)

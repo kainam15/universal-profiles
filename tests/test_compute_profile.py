@@ -9,6 +9,7 @@ from unittest.mock import patch
 from acprof.container.handlers import transformers_pipeline_load_kwargs
 from acprof.host.detect import TaskInfo
 
+from acprof.host.profilers import tool_discovery
 from acprof.host import compute_profile
 
 
@@ -1434,7 +1435,7 @@ class ComputeProfileTests(unittest.TestCase):
 
     def test_find_executable_searches_default_roots(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch.object(
-            compute_profile,
+            tool_discovery,
             "DEFAULT_TOOL_SEARCH_ROOTS",
             (tmp,),
         ):

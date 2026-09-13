@@ -1147,6 +1147,7 @@ def run_matrix(
     execution_profile_plan_file: Optional[str] = None,
     progress_callback: Optional[Callable[[MatrixProgress], None]] = None,
     prune_startup_oom: bool = False,
+    run_state=None,
 ) -> List[str]:
     """Sweep all resource combinations, optionally pruning proven startup OOMs.
 
@@ -1231,6 +1232,8 @@ def run_matrix(
                     and cpu != reference_cpu
                     and mem in prunable_mem_caps
                 )
+                filename = f"result_case_{_sanitize_model_id(task_info.model_id)}_{cpu}c_{mem}g_{gpu}.csv"
+                cached_case = run_state.prepare_case(filename, cpu, mem, normalized_gpu) if run_state else None
 
                 if should_prune:
                     print(
@@ -1238,7 +1241,7 @@ def run_matrix(
                         f"CPU={cpu}, MEM={mem}GB, GPU={normalized_gpu}; "
                         f"evidence CPU={reference_cpu}, MEM={mem}GB"
                     )
-                    csv_path = _write_startup_oom_pruned_case_csv(
+                    csv_path = cached_case or _write_startup_oom_pruned_case_csv(
                         task_info=task_info,
                         output_dir=output_dir,
                         cpu=cpu,
@@ -1261,7 +1264,7 @@ def run_matrix(
                     })
                     persist_pruning_plan()
                 else:
-                    csv_path = run_single_case(
+                    csv_path = cached_case or run_single_case(
                         task_info=task_info,
                         cpu=cpu,
                         mem=mem,
@@ -1314,6 +1317,11 @@ def run_matrix(
                                     ] = mem
                         persist_pruning_plan()
 
+                if run_state is not None and csv_path:
+                    if cached_case:
+                        print(f"[resume] 已完成，复用 case：{filename}")
+                    else:
+                        run_state.finish_case(csv_path, cpu, mem, normalized_gpu)
                 if csv_path:
                     result_csvs.append(csv_path)
                 if progress_callback is not None:
@@ -1352,37 +1360,9 @@ def run_matrix(
     return result_csvs
 
 
-def merge_all_csvs(csv_paths: List[str], output_path: str) -> None:
-    """Merge all per-case CSVs into one final CSV."""
-    import csv
-    from acprof.config import CSV_FIELDS
+def merge_all_csvs(csv_paths: List[str], output_path: str, *, expected=None) -> None:
+    """Validate all cases before atomically publishing the final result CSV."""
+    from acprof.result_csv import merge_result_csvs
 
-    if not csv_paths:
-        print("[merge] No CSV files to merge.")
-        return
-
-    all_rows = []
-    for path in csv_paths:
-        if not os.path.exists(path):
-            continue
-        with open(path, "r", encoding="utf-8", newline="") as f:
-            reader = csv.DictReader(f)
-            for row_number, row in enumerate(reader, start=2):
-                if _row_has_error_status(row) and not str(row.get("error") or "").strip():
-                    raise RuntimeError(
-                        "refusing to merge status=error without an error diagnostic: "
-                        f"{path}:{row_number}"
-                    )
-                all_rows.append(row)
-
-    with open(output_path, "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=CSV_FIELDS,
-            quoting=csv.QUOTE_MINIMAL,
-            extrasaction="ignore",
-        )
-        writer.writeheader()
-        writer.writerows(all_rows)
-
-    print(f"[merge] Final CSV: {output_path} ({len(all_rows)} rows)")
+    row_count = merge_result_csvs(csv_paths, output_path, expected=expected)
+    print(f"[merge] Final CSV: {output_path} ({row_count} rows)")

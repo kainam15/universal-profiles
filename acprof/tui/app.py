@@ -563,6 +563,7 @@ class AcprofTui(BarCursorApp):
             notify=self._select("notify"),
             prune_startup_oom=self._checked("prune-startup-oom"),
             skip_build=self._checked("skip-build"),
+            resume=self._checked("resume-run"),
             idle_debug=self._checked("idle-debug"),
             allow_cgroup_v1=self._checked("allow-cgroup-v1"),
         )
@@ -613,6 +614,7 @@ class AcprofTui(BarCursorApp):
                     for widget_id, value in {
                         "prune-startup-oom": config.prune_startup_oom,
                         "skip-build": config.skip_build,
+                        "resume-run": config.resume,
                         "idle-debug": config.idle_debug,
                         "allow-cgroup-v1": config.allow_cgroup_v1,
                     }.items():

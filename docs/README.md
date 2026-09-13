@@ -9,6 +9,7 @@ AC-Prof 的长期知识在本目录按主题维护。先按任务选择一篇，
 | 定位代码、重构模块、维护兼容入口 | [代码架构](Architecture.md)：职责、依赖方向与兼容设计 |
 | 修改采集窗口、产物或冷启动 | [采集协议](Profiling_Protocol.md)：生命周期、文件与 schema、请求数、时间预算、冷启动边界 |
 | 查字段、历史数据、绘图或延迟拟合 | [指标与结果分析](Metrics.md)：分析范围、单位、公式、归一化、图表与模型 |
+| 查完整列协议、审计和置信区间 | [指标登记表](Metric_Reference.md)：由代码生成的单位、来源与窗口；[分析入口](Metrics.md#窗口置信区间与开销对照) |
 | 解释功率、能耗、idle 或归因误差 | [能耗测量](Energy_Measurement.md)：RAPL、NVML、估算 vCPU 与适用限制 |
 | 选择或排查 GPU/CPU profiler | [分析器](Profilers.md)：Torch、NCU、Massif、Nsys 的窗口、采样、成本与失败 |
 | 排查 OOM、cgroup、抓包、空值或部分结果 | [运行排障](Troubleshooting.md)：证据分类、恢复入口与实时状态检查 |

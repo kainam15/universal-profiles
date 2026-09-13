@@ -1,0 +1,7 @@
+-r common.in
+transformers==4.57.6
+sentence-transformers==5.1.2
+pandas==2.3.3
+sentencepiece==0.2.2
+accelerate==1.15.0
+protobuf==7.36.1

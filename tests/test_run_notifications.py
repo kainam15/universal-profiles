@@ -143,7 +143,6 @@ class RunNotificationLifecycleTests(unittest.TestCase):
             order,
             [
                 ("activate", expected_command),
-                ("tmux", None),
                 ("started", None),
                 ("preflight", None),
             ],

@@ -688,7 +688,7 @@ class NativeDockerGuardTests(unittest.TestCase):
             ),
         ), patch(
             "acprof.host.compute_profile.collect_compute_profile_plan",
-            return_value=f"{tmp_dir}/compute_profile_plan.json",
+            return_value=f"{tmp_dir}/dummy-model/compute_profile_plan.json",
         ) as collect_compute_profile_plan, patch(
             "acprof.host.orchestrator.run_matrix",
             return_value=[],

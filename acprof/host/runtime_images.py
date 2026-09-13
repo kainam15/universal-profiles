@@ -17,6 +17,28 @@ FINGERPRINT_LABEL = "org.acprof.build-fingerprint"
 MODEL_KEY_LABEL = "org.acprof.model-files-key"
 
 
+def configure_runtime_profile(task_info: Any) -> RuntimeProfile:
+    """只在主机构建预检选择驱动分支；静态路由模块不探测硬件。"""
+    from acprof.host.docker_runtime import _select_nlp_torch_index_url
+    from acprof.runtime_profiles import PROFILES
+
+    profile = select_runtime_profile(task_info)
+    if profile.adapter == "family-default":
+        index = _select_nlp_torch_index_url().rstrip("/")
+        variant = index.rsplit("/", 1)[-1]
+        if index != f"https://download.pytorch.org/whl/{variant}" or variant not in {"cu128", "cu124", "cpu"}:
+            raise ValueError("自定义 Torch 索引需要注册完整依赖锁；支持 cu128、cu124、cpu")
+        override = os.environ.get("ACPROF_NLP_TORCH_SPEC", "").strip()
+        version = "2.6.0" if variant == "cu124" else "2.11.0"
+        if override and override not in {f"torch=={version}", f"torch=={version}+{variant}"}:
+            raise ValueError(f"Torch 版本与依赖锁不符；{variant} 要求 torch=={version}+{variant}")
+        stem = "multimodal-transformers4576" if profile.family == "multimodal" else profile.family
+        name = stem if profile.family == "multimodal" and variant == "cu128" else f"{stem}-{variant}"
+        profile = PROFILES[name]
+    task_info.runtime_profile_id, task_info.model_adapter = profile.profile_id, profile.adapter
+    return profile
+
+
 def download_policy(task_info: Any) -> str:
     policy = getattr(task_info, "model_download_policy", "auto")
     if policy not in {"auto", "full"}:
@@ -30,7 +52,7 @@ def build_fingerprint(task_info: Any, project_dir: str | Path = PROJECT_ROOT) ->
     overrides = {
         key: os.environ.get(key, "").strip()
         for key in ("ACPROF_NLP_TORCH_INDEX_URL", "ACPROF_NLP_TORCH_SPEC")
-    } if not profile.requirements_lock else {}
+    } if profile.adapter == "family-default" else {}
     digest = hashlib.sha256(json.dumps({
         "schema_version": 1, "model_id": task_info.model_id,
         "model_revision": task_info.model_revision,
@@ -43,6 +65,7 @@ def build_fingerprint(task_info: Any, project_dir: str | Path = PROJECT_ROOT) ->
     paths += sorted((root / "dockerfiles").glob("*.Dockerfile"))
     if profile.requirements_lock:
         paths.append(root / profile.requirements_lock)
+        paths.append(root / profile.common_requirements_lock)
     for path in paths:
         digest.update(str(path.relative_to(root)).encode())
         digest.update(path.read_bytes())
@@ -60,6 +83,7 @@ def runtime_fingerprint(
     }, sort_keys=True).encode())
     if profile.requirements_lock:
         digest.update((root / profile.requirements_lock).read_bytes())
+        digest.update((root / profile.common_requirements_lock).read_bytes())
         digest.update((root / "dockerfiles/runtime.Dockerfile").read_bytes())
     else:
         digest.update((root / "dockerfiles/base.Dockerfile").read_bytes())
@@ -151,7 +175,7 @@ def verified_image(task_info: Any, name: str, fingerprint: str):
 def prepare_runtime_image(task_info: Any, project_dir: str, *, reuse_existing: bool = False):
     from acprof.host.docker_runtime import _model_image_tag, build_image
 
-    profile = select_runtime_profile(task_info)
+    profile = configure_runtime_profile(task_info)
     task_info.runtime_profile_id, task_info.model_adapter = profile.profile_id, profile.adapter
     if not re.fullmatch(r"[0-9a-f]{40}", task_info.model_revision or ""):
         from huggingface_hub import model_info
@@ -209,6 +233,7 @@ def build_runtime_image(task_info: Any, project_dir: str):
             build("runtime.Dockerfile", runtime_tag, {
                 "PYTHON_BASE_IMAGE": profile.python_base_image,
                 "REQUIREMENTS_LOCK": profile.requirements_lock,
+                "COMMON_REQUIREMENTS_LOCK": profile.common_requirements_lock,
                 "TORCH_INDEX_URL": profile.torch_index_url,
             })
     else:

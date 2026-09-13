@@ -32,6 +32,8 @@
 | --- | --- |
 | `result_case_*.csv` | 采集期间逐资源配置写入的可恢复中间结果；成功合并后清理。 |
 | `result_all.csv` | 动态测量结果。每一行对应一个 resource config、一个 input scale、一次 warmup/repeat iteration，并记录归一化指标、PCAP 网络字节、cold-start phases，以及该窗口的 cgroup memory/stat/PID、swap、块 I/O 与压力/事件。 |
+| `run_state.json` | 主实验状态 schema v1，记录实验 ID、参数、主机与源码/依赖指纹、绑定的镜像和输入计划、case 完成状态与 CSV SHA256、启动/恢复记录、最终完成状态。 |
+| `interrupted_cases/` | 恢复时保存中断 case 的原始 CSV、PCAP 与关联 sidecar；备份完成后才开始该 case 的新测量。 |
 | `static_meta.json` | 单个 JSON object 的静态元数据。记录模型版本、参数/精度/量化/许可证、输入输出格式、per-scale 静态逻辑 FLOPs、推理后端、镜像、GPU/主机 RAM、主机 swap、Docker 存储和环境信息。 |
 | `collection_history.json` | schema v1 的采集/修复 provenance。分别记录 post-hoc profiler 补采、timeout retry、quality retry 和静态元数据回填历史；最新一次状态由对应 history 的最后一项得到。 |
 | `input_scale_plan.json` | 所有任务族共用的 input scale/payload 计划。schema v2 额外记录 workload provenance、per-scale 输入元数据和模型约束；读取端继续兼容无版本字段的 v1 计划。主采集和 compute profiler 复用同一份 payload。 |
@@ -54,6 +56,37 @@
 | `gpu+cpu/*.png` | `plot.py` 生成的 GPU/CPU 对比图表。 |
 
 中间文件 `result_case_*.csv`、`result_case_*.csv.sniff_groups.jsonl`、`lat_case_*.json`、`sniff_case_*.pcap` 会在 `result_all.csv` 成功 merge 后自动清理。若运行被中断，这些中间文件可能保留。
+
+### 结果完整性与断点续跑
+
+主实验默认拒绝已有实验产物的目录，避免重写静态元数据或追加上次遗留的测量行。
+重新执行原命令并加 `--resume`，或在 TUI 高级参数勾选“恢复未完成实验”，可以恢复由当前
+状态协议创建的实验。参数与输出根目录保持一致；`--notify`、`--skip-build` 不影响测量身份。
+只有 probe 产物的目录仍可用于首次正式采集。旧实验没有 `run_state.json` 时继续支持读取、
+绘图及补采，但不能仅凭残留 CSV 推断恢复状态；新的主实验须使用另一输出目录。
+
+恢复检查主机、Python/依赖、AC-Prof 源码及继承的测量环境参数。已经完成准备的实验直接
+使用保存的模型 revision、不可变 image ID、输入计划与 profiler 汇总，不重新查询 Hub、构建
+镜像或生成另一组输入。原镜像必须存在。输入计划、静态元数据及 profiler 计划的 hash
+不匹配时退出；准备阶段尚未完成、尚无 case 时可重新准备。
+
+case 只有在抓包回填和原有校验结束，且其测量唯一键完整匹配计划后才记为完成。唯一键为
+`CPU × memory × GPU mode × input scale × warmup × repeat_idx`。恢复会复用校验通过的完整
+case；中断 case 先备份，再创建新容器，重新执行该 case 的原 warmup/repeat 协议。已记录完整
+错误占位的 OOM/timeout case 也属于已完成的尝试，不在恢复时自动改变超时或重测条件。
+OOM pruning 继续按原有参考 CPU/内存顺序重建证据，复用与推断不会增加正式请求。
+
+合并拒绝缺失/空 case、重复文件、重复测量、截断行和与计划不符的行；保留历史扩展列，
+历史缺失的可选指标保持 `nan`。全部校验通过后，在同一目录写临时文件并 flush/fsync，
+再用原子替换发布 `result_all.csv`。发布前发生写入错误时保留已有最终文件和 case 产物。
+完成状态先持久化，再清理中间文件。`status=complete` 表示计划已执行并完成合并，
+`outcome=partial` 表示其中包含错误行，两者不能等同于全部测量成功。
+
+`.acprof-result.lock` 是采集和补采共享的目录锁；进程退出自动释放锁，锁文件本身可以保留。
+系统临时目录中的 `acprof-measurement-<uid>.lock` 还会串行化本机同一用户发起的实验，
+防止不同输出目录争用固定端口、容器名称和主机计数器；它不协调其它用户或外部负载。
+`--resume` 对已完成实验只检查结果结构并报告完成，不重新测量或覆盖后续补采的指标。
+所有状态、备份与校验操作均在准备阶段、case 边界或最终发布阶段执行。
 
 ### `static_meta.json` 字段
 
@@ -84,7 +117,7 @@
 | `image_tag` | 本次传给 Docker 的镜像引用；v7 新采集使用不可变 `sha256:` image ID，历史文件可能为可变 tag。 |
 | `image_id` | 经 Docker inspect 核验的不可变镜像 ID；补采优先使用该字段。历史文件无法确认时不补造。 |
 | `image_name` | 便于查看的构建标签，含模型名和构建指纹前缀；执行仍使用 `image_id`。 |
-| `runtime_environment` | 镜像内生成的环境清单：profile、adapter、构建指纹、模型及实际 snapshot revision、Python 和已安装包版本、依赖锁与包清单 SHA256、自定义 Python 源码 SHA256，以及可选的 `model_download` 文件选择与完整性清单。普通包版本是实测清单；`dependency_lock_sha256` 为空表示任务族尚未迁移至完整依赖锁。 |
+| `runtime_environment` | 镜像内生成的环境清单：profile、adapter、构建指纹、模型及实际 snapshot revision、Python 和已安装包版本、依赖锁与包清单 SHA256、自定义 Python 源码 SHA256，以及可选的 `model_download` 文件选择与完整性清单。普通包版本是实测清单；当前默认 profile 均记录完整依赖锁，历史或自定义未锁定环境的 `dependency_lock_sha256` 可以为空。 |
 | `runtime_validation` | 独立容器验证报告。保存实际 image ID、输入尺度／payload SHA256、每个设备的状态、dtype、attention 实现及输出摘要。验证推理接口，不替代 profiler 兼容性检查，也不计入请求或性能测量。失败的完整报告另见 `runtime_validation.json`。 |
 | `batch_size` | 本次 profiling 的 batch size。 |
 | `input_scale_type` | `result_all.csv/input_scale` 的语义名，例如 `seq_length`。 |

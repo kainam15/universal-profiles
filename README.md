@@ -97,7 +97,7 @@ cd universal-profiles
 # 仅在 .venv 不存在时执行下一行
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements.txt
+python -m pip install --require-hashes -r requirements.lock
 ```
 
 私有或 gated 模型可在项目根目录创建 `.env.local`：
@@ -169,6 +169,11 @@ batch 元数据派生像素指标，无需重新采集，也不改写 CSV、输�
 ## 运行正式实验
 
 建议先逐步扩大规模：最小 smoke test → 单个资源配置的全部 input scale → 不带 profiler 的目标资源矩阵 → 最后补采高开销 profiler。
+
+中断后使用原命令加 `--resume`，或在 TUI 高级参数勾选“恢复未完成实验”。系统会核对原参数、
+镜像和输入计划，保留完成的 case，并备份后重新测量中断的 case。新实验应选择新的输出目录；
+已有产物不会被默认覆盖。旧实验没有恢复状态文件时仍可绘图、补采，主实验恢复约定见
+[结果完整性与断点续跑](docs/Profiling_Protocol.md#结果完整性与断点续跑)。
 
 ### 先探测最大输入
 
@@ -423,6 +428,16 @@ CPU Torch、GPU Torch、NCU、Massif、Nsys 各自汇总实际采样项、失败
 `latency_app_s` 是客户端应用层计时，`latency_s` 是抓包解析得到的 packet-level 计时。
 关闭 GPU 或未启用某个 profiler 时，对应字段为 `nan` 属于预期结果。
 运行中先写 `result_case_*.csv`，矩阵完成后才合并为 `result_all.csv`。
+
+可只读检查结果完整性，并按独立测量窗口估计均值区间：
+
+```bash
+.venv/bin/python audit.py results/<model-dir>/ --require-complete --require-ok
+.venv/bin/python stats.py results/<model-dir>/ --metric latency_app_s
+```
+
+历史实验可能缺少完成状态，先省略 `--require-complete` 查看审计说明。区间的样本单位、
+连续窗口相关性与开销对照方法见[统计说明](docs/Metrics.md#窗口置信区间与开销对照)。
 
 完整说明集中在[输出文件](docs/Profiling_Protocol.md#输出文件)、[CSV 字段字典](docs/Metrics.md#result_allcsv-字段解释)
 和[常见判断](docs/Troubleshooting.md#常见判断)。

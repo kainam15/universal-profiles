@@ -1,0 +1,10 @@
+# 已验证主依赖；Python 3.10 使用其仍支持的 NumPy / pandas 分支。
+-r requirements.txt
+textual==8.2.8
+huggingface-hub==1.12.0
+requests==2.33.1
+matplotlib==3.10.9
+numpy==2.2.6 ; python_version < '3.11'
+numpy==2.4.4 ; python_version >= '3.11'
+pandas==2.3.3 ; python_version < '3.11'
+pandas==3.0.2 ; python_version >= '3.11'

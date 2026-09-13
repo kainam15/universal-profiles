@@ -8,6 +8,10 @@ from typing import Any
 
 MOSS_MODEL_ID = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
 MOSS_ADAPTER = "moss-transcribe-diarize"
+PYTHON_BASE_IMAGE = (
+    "docker.m.daocloud.io/library/python:3.10-slim@sha256:"
+    "fd76ade0c607f27677bc04be3c60749f400eedc941d9e72967e19a4cedff80c2"
+)
 # OpenMOSS official inference_utils.DEFAULT_PROMPT (Apache-2.0).
 MOSS_PROMPT = (
     "请将音频转写为文本，每一段需以起始时间戳和说话人编号"
@@ -22,7 +26,7 @@ class RuntimeProfile:
     family: str
     adapter: str = "family-default"
     requirements_lock: str = ""
-    python_base_image: str = "docker.m.daocloud.io/library/python:3.10-slim"
+    python_base_image: str = PYTHON_BASE_IMAGE
     torch_index_url: str = "https://download.pytorch.org/whl/cu128"
     gpu_dtype: str = "FP16"
     trust_remote_code: bool = False
@@ -32,6 +36,11 @@ class RuntimeProfile:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @property
+    def common_requirements_lock(self) -> str:
+        variant = self.torch_index_url.rstrip("/").rsplit("/", 1)[-1]
+        return f"dockerfiles/locks/common-{variant}.txt" if self.requirements_lock else ""
 
 
 PROFILES = {
@@ -46,6 +55,15 @@ PROFILES = {
         task_types=("audio-text-to-text",), model_types=("moss_transcribe_diarize",),
     ),
 }
+for _family in ("nlp", "cv", "audio", "diffusion", "structured", "timeseries", "multimodal"):
+    for _variant in ("cu128", "cu124", "cpu"):
+        _stem = "multimodal-transformers4576" if _family == "multimodal" else _family
+        _name = _stem if _family == "multimodal" and _variant == "cu128" else f"{_stem}-{_variant}"
+        if _name not in PROFILES:
+            PROFILES[_name] = RuntimeProfile(
+                _name, _family, requirements_lock=f"dockerfiles/locks/{_name}.txt",
+                torch_index_url=f"https://download.pytorch.org/whl/{_variant}",
+            )
 # 同架构 checkpoint 可复用适配器；任务标签本身不授予架构兼容性。
 ARCHITECTURE_PROFILES = {"moss_transcribe_diarize": "moss-transformers560"}
 MODEL_PROFILES = {MOSS_MODEL_ID.lower(): "moss-transformers560"}
@@ -84,8 +102,13 @@ def select_runtime_profile(task_info: Any) -> RuntimeProfile:
             )
         if (config.get("auto_map") or {}).get("AutoConfig") and not supported:
             raise ValueError("Custom multimodal architecture requires a registered runtime/adapter")
-        return PROFILES["multimodal-transformers4576"]
-    return RuntimeProfile(f"legacy-{task_info.task_family}", task_info.task_family)
+    family = task_info.task_family
+    default = "multimodal-transformers4576" if family == "multimodal" else f"{family}-cu128"
+    selected = getattr(task_info, "runtime_profile_id", "") or default
+    profile = PROFILES.get(selected)
+    if profile is None or profile.family != family or profile.adapter != "family-default":
+        raise ValueError(f"No registered runtime for {family}/{selected}")
+    return profile
 
 
 def default_model_adapter(model_id: str) -> str:

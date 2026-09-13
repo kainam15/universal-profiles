@@ -1,0 +1,2 @@
+-r audio.in
+huggingface-hub==0.36.2

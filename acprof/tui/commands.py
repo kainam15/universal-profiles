@@ -112,6 +112,7 @@ class RunConfig:
     notify: str = "auto"
     prune_startup_oom: bool = True
     skip_build: bool = False
+    resume: bool = False
     idle_debug: bool = False
     allow_cgroup_v1: bool = False
 
@@ -352,6 +353,8 @@ def build_run_command(
         command.append("--no-prune-startup-oom")
     if config.skip_build:
         command.append("--skip-build")
+    if config.resume:
+        command.append("--resume")
     if config.idle_debug:
         command.append("--idle-debug")
     if config.allow_cgroup_v1:

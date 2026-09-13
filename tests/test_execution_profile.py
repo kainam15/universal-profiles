@@ -365,7 +365,7 @@ heap_tree=peak
                 )
 
             with patch(
-                "acprof.host.execution_profile._run",
+                "acprof.host.profilers.execution_environment._run",
                 side_effect=fake_run,
             ):
                 version = (

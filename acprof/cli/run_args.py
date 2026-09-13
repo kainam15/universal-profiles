@@ -26,6 +26,8 @@ Examples:
 
     # Required
     parser.add_argument("--model", required=True, help="HuggingFace model ID")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume the same experiment using its recorded image, input plan and completed cases")
 
     # Detection overrides
     parser.add_argument("--task", default=None, help="Override pipeline_tag (e.g., text-generation)")

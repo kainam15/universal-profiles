@@ -19,6 +19,7 @@ from typing import (
     Tuple,
 )
 
+from acprof.metric_registry import tool_fields
 from acprof.host.collection_history import COLLECTION_HISTORY_NAME, migrate_legacy_static_meta_history
 from acprof.host.compute_profile_plan import (
     INPUT_SCALE_ABS_TOLERANCE,
@@ -65,7 +66,7 @@ LOCK_FILENAME = ".posthoc.lock"
 SUPPORTED_TOOLS = ("torch", "ncu", "nsys", "massif")
 
 
-TORCH_FIELDS = (TORCH_LOGICAL_MFLOP_FIELD, TORCH_ERROR_FIELD)
+TORCH_FIELDS = tool_fields('torch')
 
 
 NCU_DERIVED_APP_FIELD = "gpu_executed_mflops_app_ncu"
@@ -74,39 +75,19 @@ NCU_DERIVED_APP_FIELD = "gpu_executed_mflops_app_ncu"
 NCU_DERIVED_PACKET_FIELD = "gpu_executed_mflops_packet_ncu"
 
 
-NCU_FIELDS = (
-    NCU_TOTAL_MFLOP_FIELD,
-    NCU_TENSOR_MFLOP_FIELD,
-    NCU_SCALAR_MFLOP_FIELD,
-    NCU_TENSOR_SHARE_FIELD,
-    NCU_DERIVED_APP_FIELD,
-    NCU_DERIVED_PACKET_FIELD,
-    NCU_KERNEL_COUNT_FIELD,
-    NCU_KERNEL_TIME_FIELD,
-    NCU_ERROR_FIELD,
-)
+NCU_FIELDS = tool_fields('ncu')
 
 
-MASSIF_FIELDS = (*MASSIF_METRIC_FIELDS, MASSIF_ERROR_FIELD)
+MASSIF_FIELDS = tool_fields('massif')
 
 
-NSYS_FIELDS = (*NSYS_METRIC_FIELDS, NSYS_ERROR_FIELD)
+NSYS_FIELDS = tool_fields('nsys')
 
 
-TOOL_FIELDS = {
-    "torch": TORCH_FIELDS,
-    "ncu": NCU_FIELDS,
-    "massif": MASSIF_FIELDS,
-    "nsys": NSYS_FIELDS,
-}
+TOOL_FIELDS = {tool: tool_fields(tool) for tool in SUPPORTED_TOOLS}
 
 
-TOOL_METRIC_FIELDS = {
-    "torch": (TORCH_LOGICAL_MFLOP_FIELD,),
-    "ncu": NCU_FIELDS[:-1],
-    "massif": MASSIF_METRIC_FIELDS,
-    "nsys": NSYS_METRIC_FIELDS,
-}
+TOOL_METRIC_FIELDS = {tool: tool_fields(tool, numeric_only=True) for tool in SUPPORTED_TOOLS}
 
 
 TOOL_ERROR_FIELD = {

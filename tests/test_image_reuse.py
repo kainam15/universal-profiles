@@ -1,4 +1,5 @@
 import io
+from pathlib import Path
 import json
 import subprocess
 import unittest
@@ -13,16 +14,21 @@ from acprof.container.model_files import seal_plan
 
 class PrepareImageTests(unittest.TestCase):
     def setUp(self):
+        self.project_dir = str(Path(__file__).resolve().parents[1])
+        driver = patch('acprof.host.docker_runtime._select_nlp_torch_index_url',
+                       return_value='https://download.pytorch.org/whl/cu128')
+        driver.start()
+        self.addCleanup(driver.stop)
         self.task = TaskInfo(
             model_id='Org/Model.v1', pipeline_tag='fill-mask', task_family='nlp',
             runtime_backend='transformers_pipeline', library_name='transformers',
             model_revision='1' * 40, detection_method='unit',
         )
-        self.tag = docker_runtime._model_image_tag(self.task, '/project')
+        self.tag = docker_runtime._model_image_tag(self.task, self.project_dir)
         self.image_id = 'sha256:' + 'a' * 64
-        self.fingerprint = build_fingerprint(self.task, '/project')
+        self.fingerprint = build_fingerprint(self.task, self.project_dir)
         self.manifest = {
-            'build_fingerprint': self.fingerprint, 'profile_id': 'legacy-nlp',
+            'build_fingerprint': self.fingerprint, 'profile_id': 'nlp-cu128',
             'adapter': 'family-default', 'model_id': self.task.model_id,
             'model_revision': self.task.model_revision,
             'model_snapshot_revision': self.task.model_revision,
@@ -48,7 +54,7 @@ class PrepareImageTests(unittest.TestCase):
         with patch.object(docker_runtime, '_run', side_effect=self.existing_image), patch.object(
             docker_runtime, 'build_image',
         ) as build, redirect_stdout(stdout):
-            image = docker_runtime.prepare_image(self.task, '/project', reuse_existing=True)
+            image = docker_runtime.prepare_image(self.task, self.project_dir, reuse_existing=True)
         self.assertEqual(image.tag, self.image_id)
         self.assertEqual(image.name, self.tag)
         self.assertEqual(image.runtime_environment, self.manifest)
@@ -62,7 +68,7 @@ class PrepareImageTests(unittest.TestCase):
 
         def build_image(task, project_dir):
             self.assertIs(task, self.task)
-            self.assertEqual(project_dir, '/project')
+            self.assertEqual(project_dir, self.project_dir)
             self.assertIn(self.tag, stdout.getvalue())
             self.assertIn('自动构建', stdout.getvalue())
             return built
@@ -70,7 +76,7 @@ class PrepareImageTests(unittest.TestCase):
         with patch.object(docker_runtime, '_run', return_value=query), patch.object(
             docker_runtime, 'build_image', side_effect=build_image,
         ), redirect_stdout(stdout):
-            image = docker_runtime.prepare_image(self.task, '/project', reuse_existing=True)
+            image = docker_runtime.prepare_image(self.task, self.project_dir, reuse_existing=True)
         self.assertIs(image, built)
 
     def test_docker_query_errors_stop_without_building(self):
@@ -80,7 +86,7 @@ class PrepareImageTests(unittest.TestCase):
                 with patch.object(docker_runtime, '_run', return_value=query), patch.object(
                     docker_runtime, 'build_image',
                 ) as build, self.assertRaisesRegex(RuntimeError, error):
-                    docker_runtime.prepare_image(self.task, '/project', reuse_existing=True)
+                    docker_runtime.prepare_image(self.task, self.project_dir, reuse_existing=True)
                 build.assert_not_called()
 
     def test_retagged_or_wrong_revision_image_is_rejected(self):
@@ -88,20 +94,20 @@ class PrepareImageTests(unittest.TestCase):
         with patch.object(docker_runtime, '_run', side_effect=self.existing_image), patch.object(
             docker_runtime, 'build_image',
         ) as build, self.assertRaisesRegex(RuntimeError, 'revision'):
-            docker_runtime.prepare_image(self.task, '/project', reuse_existing=True)
+            docker_runtime.prepare_image(self.task, self.project_dir, reuse_existing=True)
         build.assert_not_called()
 
     def test_actual_snapshot_must_match_declared_revision(self):
         self.manifest['model_snapshot_revision'] = '2' * 40
         with patch.object(docker_runtime, '_run', side_effect=self.existing_image), self.assertRaisesRegex(RuntimeError, 'revision'):
-            docker_runtime.prepare_image(self.task, '/project', reuse_existing=True)
+            docker_runtime.prepare_image(self.task, self.project_dir, reuse_existing=True)
 
     def test_missing_or_changed_download_plan_is_rejected(self):
         for plan in (None, {'schema_version': 1, 'plan_sha256': 'wrong'}):
             with self.subTest(plan=plan):
                 self.manifest['model_download'] = plan
                 with patch.object(docker_runtime, '_run', side_effect=self.existing_image), self.assertRaisesRegex(RuntimeError, '文件清单'):
-                    docker_runtime.prepare_image(self.task, '/project', reuse_existing=True)
+                    docker_runtime.prepare_image(self.task, self.project_dir, reuse_existing=True)
 
     def test_mutable_revision_is_resolved_before_choosing_image(self):
         self.task.model_revision = 'main'
@@ -110,24 +116,24 @@ class PrepareImageTests(unittest.TestCase):
         with patch('huggingface_hub.model_info', return_value=SimpleNamespace(sha='3' * 40)) as lookup, patch.object(
             docker_runtime, 'build_image', return_value=docker_runtime.ImageInfo(tag=self.image_id),
         ):
-            docker_runtime.prepare_image(self.task, '/project')
+            docker_runtime.prepare_image(self.task, self.project_dir)
         lookup.assert_called_once_with(self.task.model_id, revision='main')
         self.assertEqual(self.task.model_revision, '3' * 40)
 
     def test_unlabelled_legacy_image_cannot_be_reused_as_managed_image(self):
         query = subprocess.CompletedProcess([], 0, stdout=json.dumps({'image_id': self.image_id, 'labels': {}}), stderr='')
         with patch.object(docker_runtime, '_run', return_value=query), self.assertRaisesRegex(RuntimeError, '指纹'):
-            docker_runtime.prepare_image(self.task, '/project', reuse_existing=True)
+            docker_runtime.prepare_image(self.task, self.project_dir, reuse_existing=True)
 
     def test_without_reuse_builds_without_querying_image_store(self):
         built = docker_runtime.ImageInfo(tag=self.image_id)
         with patch.object(docker_runtime, '_run') as docker, patch.object(
             docker_runtime, 'build_image', return_value=built,
         ) as build:
-            image = docker_runtime.prepare_image(self.task, '/project')
+            image = docker_runtime.prepare_image(self.task, self.project_dir)
         self.assertIs(image, built)
         docker.assert_not_called()
-        build.assert_called_once_with(self.task, '/project')
+        build.assert_called_once_with(self.task, self.project_dir)
 
 
 if __name__ == '__main__':

@@ -30,6 +30,7 @@ from acprof.config import (
     SCALING_DIMENSIONS,
 )
 from acprof.host.env_utils import bootstrap_project_env
+from acprof.host.run_state import RunState, RunStateError, load_run_state, run_options
 from acprof.host.preflight import (
     NATIVE_DOCKER_SOCKET,
     _docker_info_is_docker_desktop,
@@ -75,6 +76,7 @@ PROJECT_DIR = str(Path(__file__).resolve().parents[2])
 TMUX_TERMINAL_LOG_FILENAME = "tmux_all.log"
 DEFAULT_NOTIFY_PROVIDER = "auto"
 _ACTIVE_TMUX_TERMINAL_LOG: tuple[str, str, str] | None = None
+_ACTIVE_RUN_STATE: RunState | None = None
 
 
 @dataclass
@@ -548,7 +550,7 @@ def _cleanup_intermediate_results(csv_paths: list[str], output_dir: str, final_c
 
 
 def _run_main():
-    global _ACTIVE_TMUX_TERMINAL_LOG
+    global _ACTIVE_TMUX_TERMINAL_LOG, _ACTIVE_RUN_STATE
 
     start_time = time.perf_counter()
     bootstrap_project_env(PROJECT_DIR)
@@ -598,10 +600,6 @@ def _run_main():
         started_at=start_time,
         run_command=run_command,
     )
-    _ACTIVE_TMUX_TERMINAL_LOG = _start_tmux_terminal_log(
-        terminal_output_dir,
-        sys.argv,
-    )
     _notify_run_started()
 
     require_native_linux_host()
@@ -632,12 +630,17 @@ def _run_main():
 
     from acprof.host.detect import detect_task
 
-    task_info = detect_task(
-        model_id=args.model,
-        override_tag=args.task,
-        override_family=args.task_family,
-        override_backend=args.backend,
-    )
+    saved_run = load_run_state(terminal_output_dir) if args.resume else {}
+    if saved_run.get("runtime"):
+        from acprof.host.detect import TaskInfo
+        task_info = TaskInfo(**saved_run["runtime"]["task"])
+    else:
+        task_info = detect_task(
+            model_id=args.model,
+            override_tag=args.task,
+            override_family=args.task_family,
+            override_backend=args.backend,
+        )
     require_task_support(task_info, batch_size=args.batch_size)
 
     print(f"\n  Model:    {task_info.model_id}")
@@ -657,6 +660,12 @@ def _run_main():
         output_dir,
         cgroup_version=cgroup_version,
     )
+    _ACTIVE_RUN_STATE = RunState(output_dir, run_options(args), resume=args.resume, project_dir=PROJECT_DIR)
+    run_state = _ACTIVE_RUN_STATE
+    if run_state.complete:
+        print(f"[resume] 实验已经完成：{os.path.join(output_dir, 'result_all.csv')}")
+        return
+    _ACTIVE_TMUX_TERMINAL_LOG = _start_tmux_terminal_log(output_dir, sys.argv)
 
     # ── Step 2: Build Docker image ──
     from acprof.host.docker_runtime import prepare_image
@@ -670,19 +679,18 @@ def _run_main():
         write_static_meta_json,
     )
 
-    task_info.model_download_policy = args.model_download_policy
-    try:
-        image_info = prepare_image(
-            task_info, PROJECT_DIR, reuse_existing=args.skip_build,
-        )
-    except (RuntimeError, OSError) as exc:
-        print(f"\n[build][ERROR] {exc}", file=sys.stderr)
-        sys.exit(1)
-
     # ── Step 3: Collect static metadata ──
     cpu_list = _parse_int_list(args.cpus)
     mem_list = _parse_int_list(args.mems)
-    gpu_list = _parse_str_list(args.gpus)
+    gpu_list = [mode.lower() for mode in _parse_str_list(args.gpus)]
+    if args.warmup < 0 or args.repeat <= 0:
+        parser.error("--warmup must be >= 0 and --repeat must be > 0")
+    if (not cpu_list or not mem_list or not gpu_list
+            or any(value <= 0 for value in cpu_list + mem_list)
+            or any(mode not in ("off", "on") for mode in gpu_list)):
+        parser.error("resource lists must be non-empty, CPUs/memory positive, and GPUs off/on")
+    if any(len(values) != len(set(values)) for values in (cpu_list, mem_list, gpu_list)):
+        parser.error("resource lists must not contain duplicate cases")
     if args.prune_startup_oom:
         if not cpu_list or not mem_list or not gpu_list:
             parser.error("--prune-startup-oom requires non-empty resource lists")
@@ -725,165 +733,188 @@ def _run_main():
                 f"matrix {resources}"
             )
 
-    os.makedirs(output_dir, exist_ok=True)
-
+    total_cases = len(cpu_list) * len(mem_list) * len(gpu_list)
     static_meta_json = os.path.join(output_dir, "static_meta.json")
     collection_history_json = os.path.join(output_dir, COLLECTION_HISTORY_NAME)
-    scaling_cfg = SCALING_DIMENSIONS.get(task_info.task_family)
-    input_scale_type = scaling_cfg.param_name if scaling_cfg else ""
+    if run_state.ready:
+        (task_info, image_info, planned_input_scales, compute_profile_plan_file,
+         execution_profile_plan_file) = run_state.restore_runtime()
+        input_scales_arg = serialize_input_scales(planned_input_scales.scales)
+        _update_run_notification_plan(model_id=task_info.model_id, output_dir=output_dir,
+                                      total_cases=total_cases)
+        print(f"[resume] 恢复实验 {run_state.data['run_id']}，复用原镜像和输入计划")
+    else:
+        task_info.model_download_policy = args.model_download_policy
+        try:
+            image_info = prepare_image(
+                task_info, PROJECT_DIR, reuse_existing=args.skip_build,
+            )
+        except (RuntimeError, OSError) as exc:
+            print(f"\n[build][ERROR] {exc}", file=sys.stderr)
+            sys.exit(1)
 
-    static_meta = collect_static_meta(
-        task_info=task_info,
-        image_info=image_info,
-        batch_size=args.batch_size,
-        input_scale_type=input_scale_type,
-        run_command=run_command,
-        cgroup_version=cgroup_version,
-        cgroup_collection_mode=cgroup_collection_mode,
-        compute_profile_enabled=not compute_profile_disabled,
-        execution_profile_enabled=args.execution_profile_tool != "none",
-    )
-    write_static_meta_json(static_meta, static_meta_json)
-    write_collection_history_json(
-        empty_collection_history(),
-        collection_history_json,
-    )
+        os.makedirs(output_dir, exist_ok=True)
 
-    # ── Step 4: Run profiling matrix ──
-    try:
-        planned_input_scales = plan_input_scales(
+        static_meta_json = os.path.join(output_dir, "static_meta.json")
+        collection_history_json = os.path.join(output_dir, COLLECTION_HISTORY_NAME)
+        scaling_cfg = SCALING_DIMENSIONS.get(task_info.task_family)
+        input_scale_type = scaling_cfg.param_name if scaling_cfg else ""
+
+        static_meta = collect_static_meta(
             task_info=task_info,
             image_info=image_info,
-            cpu_list=cpu_list,
-            mem_list=mem_list,
-            gpu_list=gpu_list,
             batch_size=args.batch_size,
-            output_dir=output_dir,
-            input_scales=args.input_scales,
-            workload_spec_path=args.workload_spec,
+            input_scale_type=input_scale_type,
+            run_command=run_command,
+            cgroup_version=cgroup_version,
+            cgroup_collection_mode=cgroup_collection_mode,
+            compute_profile_enabled=not compute_profile_disabled,
+            execution_profile_enabled=args.execution_profile_tool != "none",
         )
-    except Exception as exc:
-        print(f"\n[scale][ERROR] {exc}", file=sys.stderr)
-        sys.exit(1)
+        write_static_meta_json(static_meta, static_meta_json)
+        write_collection_history_json(
+            empty_collection_history(),
+            collection_history_json,
+        )
 
-    input_scales_arg = serialize_input_scales(planned_input_scales.scales)
-    static_meta = enrich_static_meta_from_input_plan(
-        static_meta,
-        planned_input_scales,
-    )
-    write_static_meta_json(static_meta, static_meta_json)
-    compute_profile_plan_file = ""
-    if getattr(image_info, "runtime_environment", {}):
-        from acprof.host.runtime_validation import validate_runtime
-        from acprof.host.static_metadata import enrich_static_meta
-
+        # ── Step 4: Run profiling matrix ──
         try:
-            validation = validate_runtime(
-                task_info=task_info, image_info=image_info, planned=planned_input_scales,
-                cpu_list=cpu_list, mem_list=mem_list, gpu_list=gpu_list, output_dir=output_dir,
-                timeout_seconds=args.request_timeout_seconds,
+            planned_input_scales = plan_input_scales(
+                task_info=task_info,
+                image_info=image_info,
+                cpu_list=cpu_list,
+                mem_list=mem_list,
+                gpu_list=gpu_list,
+                batch_size=args.batch_size,
+                output_dir=output_dir,
+                input_scales=args.input_scales,
+                workload_spec_path=args.workload_spec,
             )
-            static_meta = enrich_static_meta(static_meta, {"runtime_validation": validation})
-            write_static_meta_json(static_meta, static_meta_json)
-        except (RuntimeError, OSError, ValueError) as exc:
-            print(f"[runtime-check][ERROR] {exc}", file=sys.stderr)
+        except Exception as exc:
+            print(f"\n[scale][ERROR] {exc}", file=sys.stderr)
             sys.exit(1)
-    total_cases = len(cpu_list) * len(mem_list) * len(gpu_list)
-    _update_run_notification_plan(
-        model_id=task_info.model_id,
-        output_dir=output_dir,
-        total_cases=total_cases,
-    )
-    if compute_profile_disabled:
-        reason = (
-            "--no-compute-profile (compatibility alias)"
-            if args.no_compute_profile
-            else "--compute-profile-tool none"
+
+        input_scales_arg = serialize_input_scales(planned_input_scales.scales)
+        static_meta = enrich_static_meta_from_input_plan(
+            static_meta,
+            planned_input_scales,
         )
-        print(f"[compute] Compute profiling disabled by {reason}")
-    else:
-        try:
-            from acprof.host.compute_profile import collect_compute_profile_plan
+        write_static_meta_json(static_meta, static_meta_json)
+        compute_profile_plan_file = ""
+        if getattr(image_info, "runtime_environment", {}):
+            from acprof.host.runtime_validation import validate_runtime
+            from acprof.host.static_metadata import enrich_static_meta
 
-            compute_profile_plan_file = collect_compute_profile_plan(
-                task_info=task_info,
-                image_tag=image_info.tag,
-                cpu_list=cpu_list,
-                mem_list=mem_list,
-                gpu_list=gpu_list,
-                output_dir=output_dir,
-                input_scale_plan_file=planned_input_scales.plan_file,
-                advisor_root=args.advisor_root,
-                ncu_root=args.ncu_root,
-                advisor_repeat=args.advisor_repeat,
-                torch_profiler_repeat=args.torch_profiler_repeat,
-                ncu_repeat=args.ncu_repeat,
-                keep_profiles=args.keep_compute_profiles,
-                compute_profile_cpus=args.compute_profile_cpus,
-                compute_profile_mem=args.compute_profile_mem,
-                compute_profile_tool=args.compute_profile_tool,
-                progress_callback=(
-                    _notify_profiler_completion
-                    if _ACTIVE_RUN_NOTIFICATION is not None
-                    else None
-                ),
-            )
-            static_meta = enrich_static_meta_from_compute_plan(
-                static_meta,
-                compute_profile_plan_file,
-            )
-            write_static_meta_json(static_meta, static_meta_json)
-        except Exception as exc:
-            print(f"[compute][WARN] Compute profiling unavailable: {exc}")
-
-    execution_profile_plan_file = ""
-    if args.execution_profile_tool == "none":
-        print(
-            "[execution-profile] Massif/Nsight Systems profiling disabled "
-            "(enable with --execution-profile-tool)"
+            try:
+                validation = validate_runtime(
+                    task_info=task_info, image_info=image_info, planned=planned_input_scales,
+                    cpu_list=cpu_list, mem_list=mem_list, gpu_list=gpu_list, output_dir=output_dir,
+                    timeout_seconds=args.request_timeout_seconds,
+                )
+                static_meta = enrich_static_meta(static_meta, {"runtime_validation": validation})
+                write_static_meta_json(static_meta, static_meta_json)
+            except (RuntimeError, OSError, ValueError) as exc:
+                print(f"[runtime-check][ERROR] {exc}", file=sys.stderr)
+                sys.exit(1)
+        total_cases = len(cpu_list) * len(mem_list) * len(gpu_list)
+        _update_run_notification_plan(
+            model_id=task_info.model_id,
+            output_dir=output_dir,
+            total_cases=total_cases,
         )
-    else:
-        try:
-            from acprof.host.execution_profile import (
-                collect_execution_profile_plan,
+        if compute_profile_disabled:
+            reason = (
+                "--no-compute-profile (compatibility alias)"
+                if args.no_compute_profile
+                else "--compute-profile-tool none"
             )
+            print(f"[compute] Compute profiling disabled by {reason}")
+        else:
+            try:
+                from acprof.host.compute_profile import collect_compute_profile_plan
 
-            execution_profile_plan_file = collect_execution_profile_plan(
-                task_info=task_info,
-                image_tag=image_info.tag,
-                cpu_list=cpu_list,
-                mem_list=mem_list,
-                gpu_list=gpu_list,
-                output_dir=output_dir,
-                input_scale_plan_file=planned_input_scales.plan_file,
-                project_dir=PROJECT_DIR,
-                tool_mode=args.execution_profile_tool,
-                massif_sampling=args.massif_sampling,
-                massif_reference_cpu=args.massif_reference_cpu,
-                massif_reference_mem=args.massif_reference_mem,
-                massif_repeat=args.massif_repeat,
-                nsys_sampling=args.nsys_sampling,
-                nsys_reference_cpu=args.nsys_reference_cpu,
-                nsys_reference_mem=args.nsys_reference_mem,
-                nsys_repeat=args.nsys_repeat,
-                nsys_root=args.nsys_root,
-                keep_profiles=args.keep_execution_profiles,
-                progress_callback=(
-                    _notify_profiler_completion
-                    if _ACTIVE_RUN_NOTIFICATION is not None
-                    else None
-                ),
-            )
-            static_meta = enrich_static_meta_from_execution_plan(
-                static_meta,
-                execution_profile_plan_file,
-            )
-            write_static_meta_json(static_meta, static_meta_json)
-        except Exception as exc:
+                compute_profile_plan_file = collect_compute_profile_plan(
+                    task_info=task_info,
+                    image_tag=image_info.tag,
+                    cpu_list=cpu_list,
+                    mem_list=mem_list,
+                    gpu_list=gpu_list,
+                    output_dir=output_dir,
+                    input_scale_plan_file=planned_input_scales.plan_file,
+                    advisor_root=args.advisor_root,
+                    ncu_root=args.ncu_root,
+                    advisor_repeat=args.advisor_repeat,
+                    torch_profiler_repeat=args.torch_profiler_repeat,
+                    ncu_repeat=args.ncu_repeat,
+                    keep_profiles=args.keep_compute_profiles,
+                    compute_profile_cpus=args.compute_profile_cpus,
+                    compute_profile_mem=args.compute_profile_mem,
+                    compute_profile_tool=args.compute_profile_tool,
+                    progress_callback=(
+                        _notify_profiler_completion
+                        if _ACTIVE_RUN_NOTIFICATION is not None
+                        else None
+                    ),
+                )
+                static_meta = enrich_static_meta_from_compute_plan(
+                    static_meta,
+                    compute_profile_plan_file,
+                )
+                write_static_meta_json(static_meta, static_meta_json)
+            except Exception as exc:
+                print(f"[compute][WARN] Compute profiling unavailable: {exc}")
+
+        execution_profile_plan_file = ""
+        if args.execution_profile_tool == "none":
             print(
-                "[execution-profile][WARN] Execution profiling unavailable: "
-                f"{exc}"
+                "[execution-profile] Massif/Nsight Systems profiling disabled "
+                "(enable with --execution-profile-tool)"
             )
+        else:
+            try:
+                from acprof.host.execution_profile import (
+                    collect_execution_profile_plan,
+                )
+
+                execution_profile_plan_file = collect_execution_profile_plan(
+                    task_info=task_info,
+                    image_tag=image_info.tag,
+                    cpu_list=cpu_list,
+                    mem_list=mem_list,
+                    gpu_list=gpu_list,
+                    output_dir=output_dir,
+                    input_scale_plan_file=planned_input_scales.plan_file,
+                    project_dir=PROJECT_DIR,
+                    tool_mode=args.execution_profile_tool,
+                    massif_sampling=args.massif_sampling,
+                    massif_reference_cpu=args.massif_reference_cpu,
+                    massif_reference_mem=args.massif_reference_mem,
+                    massif_repeat=args.massif_repeat,
+                    nsys_sampling=args.nsys_sampling,
+                    nsys_reference_cpu=args.nsys_reference_cpu,
+                    nsys_reference_mem=args.nsys_reference_mem,
+                    nsys_repeat=args.nsys_repeat,
+                    nsys_root=args.nsys_root,
+                    keep_profiles=args.keep_execution_profiles,
+                    progress_callback=(
+                        _notify_profiler_completion
+                        if _ACTIVE_RUN_NOTIFICATION is not None
+                        else None
+                    ),
+                )
+                static_meta = enrich_static_meta_from_execution_plan(
+                    static_meta,
+                    execution_profile_plan_file,
+                )
+                write_static_meta_json(static_meta, static_meta_json)
+            except Exception as exc:
+                print(
+                    "[execution-profile][WARN] Execution profiling unavailable: "
+                    f"{exc}"
+                )
+
+        run_state.bind_runtime(task_info, image_info, planned_input_scales,
+                               compute_profile_plan_file, execution_profile_plan_file)
 
     n_scales = len(planned_input_scales.scales)
     total_iters = total_cases * n_scales * (args.warmup + args.repeat)
@@ -941,6 +972,7 @@ def _run_main():
                 else None
             ),
             prune_startup_oom=args.prune_startup_oom,
+            run_state=run_state,
         )
     except PacketLatencyError as exc:
         print(f"\n[sniff][ERROR] {exc}", file=sys.stderr)
@@ -955,7 +987,8 @@ def _run_main():
     # ── Step 5: Merge all CSVs ──
     if csv_paths:
         final_csv = os.path.join(output_dir, "result_all.csv")
-        merge_all_csvs(csv_paths, final_csv)
+        merge_all_csvs(csv_paths, final_csv, expected=run_state.expected())
+        run_state.finish(final_csv)
         _cleanup_intermediate_results(csv_paths, output_dir, final_csv)
         elapsed = _format_elapsed(time.perf_counter() - start_time)
         print(f"\n{'='*60}")
@@ -983,13 +1016,14 @@ def _run_main():
 
 def main():
     """Run profiling, finalize terminal logging, then notify best-effort."""
-    global _ACTIVE_TMUX_TERMINAL_LOG, _ACTIVE_RUN_NOTIFICATION
+    global _ACTIVE_TMUX_TERMINAL_LOG, _ACTIVE_RUN_NOTIFICATION, _ACTIVE_RUN_STATE
 
     _ACTIVE_TMUX_TERMINAL_LOG = None
     _ACTIVE_RUN_NOTIFICATION = None
+    _ACTIVE_RUN_STATE = None
     try:
         return _run_main()
-    except TaskSupportError as exc:
+    except (TaskSupportError, RunStateError) as exc:
         print(str(exc), file=sys.stderr)
         _record_run_termination("failed", str(exc))
         raise SystemExit(2) from None
@@ -1018,6 +1052,13 @@ def main():
         if terminal_log is not None:
             if _stop_tmux_terminal_log(terminal_log):
                 finalized_log_path = terminal_log[2]
+        state = _ACTIVE_RUN_STATE
+        _ACTIVE_RUN_STATE = None
+        if state is not None:
+            try:
+                state.close("failed" if sys.exc_info()[0] else "interrupted")
+            except OSError as exc:
+                print(f"[resume][ERROR] 无法保存退出状态：{exc}", file=sys.stderr)
         _deliver_run_notification(finalized_log_path)
         _ACTIVE_RUN_NOTIFICATION = None
 

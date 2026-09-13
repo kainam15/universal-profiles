@@ -32,14 +32,27 @@ flowchart LR
 | --- | --- | --- |
 | `multimodal-transformers4576` | 已支持的原生 `multimodal` 模型 | Transformers 4.57.6；`family-default` handler |
 | `moss-transformers560` | MOSS 官方模型 ID，或 `model_type=moss_transcribe_diarize` | Transformers 5.6.0；`moss-transcribe-diarize` adapter |
-| `legacy-<family>` | 其它现有任务族 | 沿用原任务族 Dockerfile；新增实际包版本清单与镜像绑定 |
+| `<family>-cu128` / `<family>-cu124` | NLP、CV、Audio、Diffusion、Structured、Timeseries | 完整依赖锁；Torch 2.11.0 / 2.6.0，保留对应任务族接口 |
+| `<family>-cpu` | 显式 CPU 索引或容器 CI | CPU wheel；同样使用完整依赖锁 |
 
-两个完整依赖锁位于 [`dockerfiles/locks`](../dockerfiles/locks)，包含传递依赖的精确版本，
-使用 Python 3.10、PyTorch 2.11.0 和 CUDA 12.8 wheel；构建执行 `pip check` 并核验实际版本。
-这两份锁在原生 Linux x86_64 环境验证，其它平台或 CUDA 组合需要相应的运行环境配置。
-其它任务族尚未全部迁移为完整依赖锁，不能把它们的版本清单称为安装锁。
-新结果均记录实际 Python／包版本及不可变 image ID。系统 apt 包和基础镜像 tag 尚未全部按
-内容锁定，因此需要复现同一环境或补采时应保留原镜像，不能依赖重新构建得到字节相同的镜像。
+所有任务族的完整锁位于 [`dockerfiles/locks`](../dockerfiles/locks)，源依赖位于
+[`dockerfiles/requirements`](../dockerfiles/requirements)。uv 为 Linux x86_64、Python 3.10
+解析传递依赖；共享 `common-<variant>.txt` 固定框架层，各族完整锁受共享锁约束。
+构建按锁执行 `pip install --no-deps`、`pip check`，最终清单逐项核对已安装版本。
+多模态另有 `multimodal-transformers4576-cu124` / `-cpu`；MOSS 继续使用专用 CUDA 12.8 环境。
+
+主机使用 [`requirements.lock`](../requirements.lock)，支持 Python 3.10+ 的环境标记和 wheel 哈希；
+其主依赖约束在 `requirements-host.in`。更新命令为 `python scripts/compile_locks.py`（uv 0.12.13），
+可用 `--host-only`、`--runtime-only --variant cu128` 缩小范围。解析成功后仍需运行目标环境验证。
+
+默认 Python 3.10 slim 基础镜像已固定 OCI digest，定义在 `runtime_profiles.py`。
+系统 apt 仓库仍随时间更新，重新构建不能保证镜像字节完全相同；复现实验和补采仍引用原始 image ID。
+旧任务族 Dockerfile 保留作兼容入口，主采集统一通过 `runtime.Dockerfile` 构建锁定环境。
+
+主机构建预检沿用驱动兼容分支，CUDA 12.4 选择固定的 Torch 2.6.0 wheel，CUDA 12.8+ 选择 2.11.0。
+`ACPROF_NLP_TORCH_INDEX_URL` 接受官方 `cu124`、`cu128` 和 `cpu` 索引；显式
+`ACPROF_NLP_TORCH_SPEC` 必须与该分支的精确版本一致。其它组合需登记并验证自己的完整锁，
+不再用无上界范围绕过锁。CPU 容器 CI 不证明 CUDA wheel 或所有模型的 GPU 兼容性。
 
 支持任务标签不等于支持所有 checkpoint。已知不兼容的架构在任务预检退出；未登记的自定义
 架构不会自动安装其 requirements 或执行主机端模型代码。通过静态检查的模型仍须完成实际
@@ -60,7 +73,7 @@ CPU 使用 FP32，GPU 使用 BF16；常规推理使用 SDPA，Torch FLOPs 的独
 ## 构建、复用和验证
 
 `prepare_image` 先将模型分支解析为完整 commit，再选择运行环境。镜像名称包含构建指纹，
-指纹覆盖模型／任务／后端／环境声明、依赖锁、Dockerfile、AC-Prof Python 代码，以及旧任务族
+指纹覆盖模型／任务／后端／环境声明、基础镜像 digest、共享与任务族依赖锁、Dockerfile、AC-Prof Python 代码，以及
 显式指定的 Torch 构建参数和 `model_download_policy`。依赖、权重和代码分层构建，相同内容由 Docker 复用。
 
 分层构建与文件选择细节见[模型文件选择规则](#模型文件选择规则)。
@@ -88,7 +101,7 @@ CPU 使用 FP32，GPU 使用 BF16；常规推理使用 SDPA，Torch FLOPs 的独
 
 自定义 adapter、`auto_map`、量化配置、未知模型类型或未覆盖的 pipeline 使用完整快照，并打印回退原因。GPU 推理 dtype 不用于选择文件名中的 FP16／FP32 variant；不会自动转换、量化权重或切换 EMA checkpoint。需要完整仓库时，`run.py` 和 `probe.py` 均可传入 `--model-download-policy full`。TUI 使用默认 `auto`；两种策略具有不同的镜像指纹。
 
-共享环境层不包含 AC-Prof 业务代码或模型。其它任务族 Dockerfile 的 `runtime` target 与带依赖锁的 runtime 镜像共用后续的模型／最终代码构建流程。模型层的指纹包含真实环境 image ID、模型 commit、backend、adapter、下载策略和筛选器内容；最终层再复制 AC-Prof 代码。修改界面或 handler 可以复用依赖与模型层，修改筛选规则只重建模型及最终层。尚未采用完整依赖锁的任务族仍记录实际安装版本，不能据此承诺删掉环境镜像后可重建出完全相同的环境。
+共享环境层不包含 AC-Prof 业务代码或模型。其它任务族 Dockerfile 的 `runtime` target 作为历史兼容入口，默认构建使用带完整依赖锁的 runtime 镜像，再共用模型／最终代码构建流程。模型层的指纹包含真实环境 image ID、模型 commit、backend、adapter、下载策略和筛选器内容；最终层再复制 AC-Prof 代码。修改界面或 handler 可以复用依赖与模型层，修改筛选规则只重建模型及最终层。历史或自定义未锁定环境仍记录实际安装版本；完整 Python 锁也不固定 apt 仓库的包版本，不能据此承诺删掉环境镜像后可重建出逐字节相同的环境。
 
 镜像内 `/models/model_download_plan.json` 保存所选文件、排除文件、选择原因、框架版本、文件 SHA256 和清单 SHA256。文件大小／内容检查在构建阶段执行，清单写入 `static_meta.json/runtime_environment/model_download`；正式 server 启动不会再次扫描、下载或校验全部权重。`model_cache_bytes` 统计实际缓存 artifacts，`docker_image_bytes` 包含该镜像继承的共享层；判断磁盘节省应查看 `docker system df -v` 的共享／独占占用。保留旧镜像时，它引用的大层仍会占用空间。
 
@@ -336,7 +349,7 @@ MOSS 自动选择专用 adapter 和依赖锁，不需要修改主机 `.venv`。�
   --notify none --output-dir results/smoke-moss
 ```
 
-8 GiB 是上述冒烟测试的容器内存配置，不是模型的最低内存保证。不同依赖版本的选择、验证与新模型接入方法见[模型运行环境与适配器]()。
+8 GiB 是上述冒烟测试的容器内存配置，不是模型的最低内存保证。不同依赖版本的选择、验证与新模型接入方法见本页的[构建复用和验证](#构建复用和验证)。
 
 ### 图像描述输出与兼容范围
 

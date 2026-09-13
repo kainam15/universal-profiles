@@ -61,6 +61,11 @@ def _write_cpu_case_csv(path: str, idle_power_values: list[float], gpu_mode: str
 
 
 class DetectEnvironmentTests(unittest.TestCase):
+    def setUp(self):
+        output = tempfile.TemporaryDirectory()
+        self.addCleanup(output.cleanup)
+        self.output_dir = output.name
+
     def test_host_mem_total_bytes_uses_physical_page_count(self) -> None:
         values = {
             "SC_PAGE_SIZE": 4096,
@@ -1279,7 +1284,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 mem=4,
                 gpu="off",
                 image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
-                output_dir="results/test-unit",
+                output_dir=self.output_dir,
                 project_dir=".",
                 warmup=0,
                 repeat=1,
@@ -1337,7 +1342,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 mem=4,
                 gpu="off",
                 image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
-                output_dir="results/test-unit",
+                output_dir=self.output_dir,
                 project_dir=".",
                 warmup=0,
                 repeat=1,
@@ -1393,7 +1398,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 mem=4,
                 gpu="off",
                 image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
-                output_dir="results/test-unit",
+                output_dir=self.output_dir,
                 project_dir=".",
                 warmup=0,
                 repeat=1,
@@ -1445,7 +1450,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 mem=4,
                 gpu="off",
                 image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
-                output_dir="results/test-unit",
+                output_dir=self.output_dir,
                 project_dir=".",
                 warmup=0,
                 repeat=1,
@@ -1502,7 +1507,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 mem=4,
                 gpu="on",
                 image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
-                output_dir="results/test-unit",
+                output_dir=self.output_dir,
                 project_dir=".",
                 warmup=0,
                 repeat=1,
@@ -1552,7 +1557,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 mem=4,
                 gpu="on",
                 image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
-                output_dir="results/test-unit",
+                output_dir=self.output_dir,
                 project_dir=".",
                 warmup=0,
                 repeat=1,
@@ -1602,7 +1607,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                     mem=4,
                     gpu="on",
                     image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
-                    output_dir="results/test-unit",
+                    output_dir=self.output_dir,
                     project_dir=".",
                     warmup=0,
                     repeat=1,
@@ -1773,7 +1778,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                     mem=4,
                     gpu="off",
                     image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
-                    output_dir="results/test-unit",
+                    output_dir=self.output_dir,
                     project_dir=".",
                     warmup=0,
                     repeat=1,
@@ -2318,7 +2323,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                     mem=4,
                     gpu="off",
                     image_info=docker_runtime.ImageInfo(tag="acprof-test:latest"),
-                    output_dir="results/test-unit",
+                    output_dir=self.output_dir,
                     project_dir=".",
                     warmup=0,
                     repeat=1,

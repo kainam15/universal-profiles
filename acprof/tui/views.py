@@ -385,6 +385,14 @@ def compose_run_tab(app: AcprofTui) -> ComposeResult:
                         id="allow-cgroup-v1",
                         classes="config-control option-checkbox",
                     ))
+                with Horizontal(classes="checkbox-row"):
+                    yield app._localized_widget(StatusCheckbox(
+                        "恢复未完成实验",
+                        value=app.initial_config.resume,
+                        id="resume-run",
+                        classes="config-control option-checkbox",
+                        tooltip="使用相同参数与输出目录，保留已完成 case，重新测量中断的 case。",
+                    ))
 
 
                 yield app._localized_widget(Static("下次启动使用的实验配置", classes="section-title"))

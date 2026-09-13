@@ -107,6 +107,7 @@ TUI 保存实际使用的绝对路径，相对输入以项目根目录为基准�
 | --- | --- | --- |
 | `--sniff-iface` | `docker0` | 本机 Docker 默认 bridge 对应的 `tcpdump` 抓包网卡。只有 daemon 改过 bridge 名时才覆盖。 |
 | `--output-dir` | `results` | 输出根目录。最终还会追加 model name 子目录。 |
+| `--resume` | false | 使用原参数和目录恢复实验；核对运行身份、保留完成 case，并备份后重测中断 case。已完成实验不重测。 |
 | `--skip-build` | false | 核验构建指纹和环境清单后复用镜像；不存在时自动构建，不匹配时退出。 |
 | `--model-download-policy` | `auto` | `auto` 按已覆盖的加载器规则筛选文件，未知结构保留完整快照并记录原因；`full` 下载固定 commit 的完整仓库。策略进入镜像指纹，不能相互误复用。采集和探测入口均支持。 |
 | `--notify` | `auto` | `auto` 在配置 Webhook 后启用企业微信；`none` 关闭，`wecom` 显式选择企业微信。配置见 [README](../README.md#企业微信通知)。 |
@@ -222,6 +223,9 @@ TUI 使用四项复选框选择补采工具（初始勾选 `torch`、`ncu`），
 ### 其他入口
 
 `plot.py` 接收结果 CSV 路径，`tui.py` 可用 `--model` 预填模型、用 `--preset` 选择预设。
+`audit.py <目录或 CSV>` 只读校验结果；`--json` 输出报告，`--require-complete --require-ok`
+用于验收新实验。`stats.py <目录或 CSV>` 按测量窗口计算置信区间，支持重复 `--metric`、
+`--confidence`、`--resamples`、`--seed`、`--block-size` 和新的 `--output` 文件；定义见[结果分析](Metrics.md)。
 各入口的完整帮助可直接运行：
 
 ```bash
@@ -229,5 +233,7 @@ TUI 使用四项复选框选择补采工具（初始勾选 `torch`、`ncu`），
 .venv/bin/python probe.py --help
 .venv/bin/python profile.py --help
 .venv/bin/python plot.py --help
+.venv/bin/python audit.py --help
+.venv/bin/python stats.py --help
 .venv/bin/python tui.py --help
 ```
