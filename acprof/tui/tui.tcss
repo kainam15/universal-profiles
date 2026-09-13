@@ -206,6 +206,17 @@ Button:disabled, Button:disabled:hover, Button:disabled:focus, Button:disabled.-
 #report-status { height: auto; max-height: 3; margin: 1 0; color: $text-muted; }
 #report-table { height: 1fr; min-height: 3; }
 #report-detail { height: auto; max-height: 4; margin-top: 1; color: $text-muted; overflow-y: auto; }
+
+#image-panel { padding: 0 1; height: 1fr; }
+#image-filters, #image-actions { height: 3; }
+#image-scope { width: 22; margin-left: 1; }
+#image-actions Button { min-width: 10; width: auto; margin-right: 1; }
+#image-status { height: auto; max-height: 3; color: $text-muted; overflow-y: auto; }
+#image-table { height: 1fr; min-height: 3; }
+#image-detail-scroll { height: 6; border-top: solid $panel; }
+#image-detail { height: auto; color: $text-muted; }
+AcprofTui.short #image-detail-scroll { height: 4; }
+AcprofTui.narrow #image-actions Button { min-width: 8; padding: 0 1; }
 #matrix-board { margin-top: 1; border: none; padding: 0; }
 #matrix-board > Contents { padding: 0 1; }
 #matrix-table { height: auto; max-height: 12; }

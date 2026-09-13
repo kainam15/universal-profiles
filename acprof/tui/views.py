@@ -583,3 +583,35 @@ def compose_settings_tab(app: AcprofTui) -> ComposeResult:
         with Horizontal(id="settings-actions", classes="action-bar"):
             yield app._localized_widget(Button("恢复界面默认", id="restore-ui-defaults"))
             yield app._localized_widget(Button("保存设置", id="save-ui-settings", variant="primary"))
+
+
+def compose_images_tab(app: AcprofTui) -> ComposeResult:
+    from acprof.tui.images import IMAGE_HINT, ImageTable
+
+    with TabPane("镜像管理", id="images-tab"):
+        with Vertical(id="image-panel"):
+            with Horizontal(id="image-filters"):
+                yield app._localized_widget(Input(
+                    placeholder="搜索模型、标签或镜像 ID", id="image-search", classes="image-control",
+                ))
+                yield app._localized_select(
+                    (("AC-Prof 镜像", "acprof"), ("全部镜像", "all"), ("模型相关", "models"),
+                     ("公共依赖", "runtime"), ("无标签", "untagged")),
+                    value="acprof", allow_blank=False, id="image-scope", classes="image-control",
+                )
+            with Horizontal(id="image-actions"):
+                for label, widget_id in (("刷新", "image-refresh"), ("勾选/取消", "image-toggle"),
+                                         ("选择同模型", "image-model"), ("清空选择", "image-clear"),
+                                         ("删除所选", "image-delete")):
+                    yield app._localized_widget(Button(
+                        label, id=widget_id, classes="image-control",
+                        variant="error" if widget_id == "image-delete" else "default",
+                        disabled=widget_id != "image-refresh",
+                    ))
+            yield app._localized_widget(Static(IMAGE_HINT, id="image-status", markup=False))
+            yield ImageTable(id="image-table", classes="image-control", cursor_type="row",
+                             zebra_stripes=True, fixed_columns=1)
+            with VerticalScroll(id="image-detail-scroll"):
+                yield app._localized_widget(Static(
+                    "选择一行查看全部标签、模型与容器引用。", id="image-detail", markup=False,
+                ))

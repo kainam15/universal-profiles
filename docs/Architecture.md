@@ -61,6 +61,7 @@ flowchart TD
 | `preflight` | 原生 Linux、本机 Docker、cgroup 与 CPU 能耗前置检查 |
 | `docker_runtime` | 镜像准备和构建、容器启停、ready 检查、冷启动分段及 OOM 状态读取 |
 | `runtime_images` | 依赖层／模型层／代码层构建、内容指纹、环境清单核验及不可变 image ID |
+| `image_management` | 用户触发的 Docker 镜像清单、标签合并、容器引用检查及按确认清单删除；不参与采集 |
 | `runtime_validation` | 矩阵前的独立 CPU／GPU 完整推理验证及报告，不生成测量行 |
 | `input_plan` | 手动和自动尺度规划、规划用 probe、payload 物化与输入计划写入 |
 | `model_schema` | 任务输入输出描述与推理精度说明 |
@@ -129,6 +130,9 @@ dry-run、已有数据完整性判断、计划复用、备份和发布顺序沿�
 `reports` 用标准库校验已有统计/对照 JSON，并提供带单位和口径的表格数据；不加载 Textual 或采集依赖。
 统计页通过 `commands.build_stats_command` 启动既有 `stats.py`，沿用 App 的进程互斥、停止和日志流程；
 完成后在后台读取一次报告并更新表格。读取期间锁定启动入口，不定时扫描 CSV 或自动运行开销实验。
+`images` 提供镜像筛选、大小显示和可滚动的删除确认；`views` 构建镜像页，`app` 管理后台查询和删除的互斥状态。
+Docker 访问由标准库模块 `host.image_management` 执行，固定连接并复核 daemon ID、镜像 ID 和全部标签。
+打开页面、切换筛选和语言只操作内存中的清单；手动刷新和删除才访问 Docker，期间禁止启动实验。
 
 settings、i18n、themes、input、log、scrollbar 各自管理设置、语言、主题和控件。
 CSS 路径相对 App 文件明确定位；设置文件位置、版本、项目隔离算法和恢复优先级保持一致。

@@ -95,6 +95,34 @@ CPU 使用 FP32，GPU 使用 BF16；常规推理使用 SDPA，Torch FLOPs 的独
 不自动升级依赖，也不将工作区代码覆盖进该镜像。Torch、NCU、Massif、Nsys 的工具版本、
 可用性、输出与错误继续由各自计划记录；普通推理成功不代表所有工具已验证成功。
 
+## 镜像管理与清理
+
+TUI“镜像管理”页（`/images`）在点击“刷新”后读取当前 Docker 环境，按实际 image ID 合并全部标签。
+默认只显示 AC-Prof 镜像，也可查看全部镜像、模型相关、公共依赖或无标签镜像；搜索支持模型 ID、标签及镜像 ID。
+选中行下方显示完整标签、模型、创建时间和容器引用；表格的“完整大小”仍包含继承的共享层，与 `docker_image_bytes` 口径一致。
+Docker 连接失败、权限不足或查询超时显示错误并清除旧选择，不把失败显示成空 Docker 环境。
+
+方向键浏览，空格、点击行或“勾选/取消”切换选择。“选择同模型”依据 `MODEL_ID` 或已知任务族的镜像名称，
+选择当前模型的服务、权重和调试镜像，排除公共基础、运行依赖及被容器引用的镜像；同时显示该模型的筛选结果。
+手动筛选保留已有勾选，并显示筛选外的选择数量；“清空选择”或刷新会清掉全部勾选。
+未知命名的旧调试镜像可能无法关联模型，仍可按标签查找并手动选择。
+
+“删除所选”先列出全部目标 ID 和标签，用户确认后重新核验 Docker daemon、镜像身份和容器引用。
+正在运行或已停止的容器均会阻止删除其直接引用的镜像；TUI 不代为移除这些容器。
+删除按较深的镜像层优先执行，移除选定镜像的全部标签，包括 `acprof-build-source` 别名；使用 `--no-prune`，
+不强制删除、不自动清理未选中的父镜像或构建缓存。部分失败时保留已完成操作，并在“运行监控”日志记录 Docker 返回的详情。
+此页不扫描历史结果来自动判断实验是否结束；仍需续采或 profiler 补采时应保留原实验 `image_id` 对应的镜像。
+删除镜像不修改 CSV、静态元数据、日志或历史指标。共享层及构建缓存仍可能占用空间，不能将镜像大小相加作为预计释放量；
+实际占用可通过 `docker system df -v` 另行检查。
+
+打开页面不会连接 Docker；查询和删除在后台执行，与本 TUI 的采集、探测、绘图、报告和补采任务互斥。
+没有定时刷新，也不会在正式测量期间进行镜像扫描或清理。
+
+交互参考 [Lazydocker 镜像面板](https://github.com/jesseduffield/lazydocker/blob/master/pkg/gui/images_panel.go)
+的列表、详情与删除确认（MIT，持续维护）。其 Go/gocui 实现不直接嵌入 Python TUI；表格、后台任务和弹窗复用
+[Textual](https://github.com/Textualize/textual)（MIT，官方持续维护，项目版本 8.2.8），镜像身份与删除复用现有 Docker CLI。
+不新增 Docker SDK 或常驻服务；AC-Prof 的分层标签识别和任务互斥由项目实现，开销只发生在用户操作时。
+
 ## 模型文件选择规则
 
 模型文件默认采用 `--model-download-policy auto`。程序在构建环境中读取固定 commit 的文件清单、配置和分片索引，按照当前加载器选择权重：标准 Transformers 优先默认 safetensors（含分片），否则保留默认 PyTorch `.bin`；Sentence Transformers 保留模块结构；已覆盖的 Stable Diffusion／SDXL／DDPM／DDIM pipeline 按组件选择；TorchScript／skops 遵循现有 artifact 清单。配置、tokenizer、processor 和其它未确认可省略的附属文件会保留。分片缺失直接报错，不静默换一套权重。

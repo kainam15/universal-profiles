@@ -73,6 +73,11 @@ from acprof.tui.log import SelectableLog
 
 from acprof.tui.progress import ProgressSnapshot, RunProgressTracker
 from acprof.tui.reports import ReportView, read_report
+from acprof.host.image_management import ImageInventory, ImageRemoval, ManagedImage, delete_images, list_images
+from acprof.tui.images import (
+    IMAGE_KINDS, ImageDeleteScreen, deletion_message, filtered_images,
+    format_image_size, image_detail, image_error,
+)
 
 from acprof.tui.scrollbar import SolidScrollBarRender
 
@@ -94,6 +99,7 @@ from acprof.tui.views import (
     compose_reports_tab,
     compose_run_tab,
     compose_settings_tab,
+    compose_images_tab,
 )
 
 
@@ -173,6 +179,10 @@ class AcprofTui(BarCursorApp):
         self._report_view: ReportView | None = None
         self._report_loading = False
         self._stats_report_path: Path | None = None
+        self._image_inventory: ImageInventory | None = None
+        self._image_operation = ""
+        self._selected_image_ids: set[str] = set()
+        self._visible_images: tuple[ManagedImage, ...] = ()
 
     def compose(self) -> ComposeResult:
         # A ticking clock would force periodic redraws during RAPL windows.
@@ -186,6 +196,7 @@ class AcprofTui(BarCursorApp):
             yield from compose_plot_tab(self)
             yield from compose_reports_tab(self)
             yield from compose_profile_tab(self)
+            yield from compose_images_tab(self)
             yield from compose_settings_tab(self)
 
         with Vertical(id="bottom-panel"):
@@ -218,6 +229,9 @@ class AcprofTui(BarCursorApp):
         # App.size can still refer to the previous frame while Resize is
         # dispatched. Use the event's new dimensions for responsive classes.
         self._update_responsive_layout(event.size)
+        if (self._form_ready and self._image_inventory is not None and not self._images_unavailable()
+                and self.query_one("#main-tabs", TabbedContent).active == "images-tab"):
+            self._render_images(width=event.size.width)
 
     def _update_responsive_layout(self, size: Size | None = None) -> None:
         size = self.size if size is None else size
@@ -306,6 +320,8 @@ class AcprofTui(BarCursorApp):
                     table.update_cell(row, "status", self.tr(source))
             if self._report_view is not None:
                 self._render_report_view()
+            if self._image_inventory is not None:
+                self._render_images()
 
     def _apply_ui_preferences(self) -> None:
         self._apply_language()
@@ -701,7 +717,7 @@ class AcprofTui(BarCursorApp):
 
     def _is_busy(self) -> bool:
         with self._process_lock:
-            return self._process is not None or bool(self._process_kind) or self._report_loading
+            return self._process is not None or bool(self._process_kind) or self._report_loading or bool(self._image_operation)
 
     def _set_busy(self, busy: bool) -> None:
         # Configuration changes during a run can queue preview redraws and
@@ -709,7 +725,7 @@ class AcprofTui(BarCursorApp):
         if busy:
             self._cancel_preview_timer()
         for widget in self.query(
-            ".config-control, #run-preset, .ui-preference, .profile-tool, .report-control, "
+            ".config-control, #run-preset, .ui-preference, .profile-tool, .report-control, .image-control, "
             "#save-run-default, #restore-ui-defaults, #save-ui-settings"
         ):
             widget.disabled = busy
@@ -723,9 +739,10 @@ class AcprofTui(BarCursorApp):
             "#profile-run",
         ):
             self.query_one(selector, Button).disabled = busy
-        self.query_one("#stop-run", Button).disabled = not busy or self._report_loading
+        self.query_one("#stop-run", Button).disabled = not busy or self._report_loading or bool(self._image_operation)
         if not busy:
             self.set_input_cursor_blink_enabled(True)
+            self._update_image_controls()
 
     def _activate_tab(self, tab_id: str) -> None:
         if self.screen.maximized is not None:
@@ -1341,6 +1358,9 @@ class AcprofTui(BarCursorApp):
         self.action_request_stop()
 
     def action_request_stop(self) -> None:
+        if self._image_operation:
+            self.notify("镜像操作尚未完成，请稍候", severity="warning")
+            return
         if not self._is_busy():
             self.notify("当前没有运行中的任务", severity="warning")
             return
@@ -1536,6 +1556,197 @@ class AcprofTui(BarCursorApp):
             python_executable=PYTHON_EXECUTABLE,
         )
         self._launch(PendingLaunch(tuple(command), "plot", result_csv=str(csv_path)))
+
+    def action_show_images(self) -> None:
+        self._activate_tab("images-tab")
+
+    def _images_unavailable(self) -> bool:
+        return self._is_busy() or self._check_running or self._latest_snapshot.measurement_active or self._pending_launch is not None
+
+    def _current_image(self) -> ManagedImage | None:
+        table = self.query_one("#image-table", DataTable)
+        row = table.cursor_row
+        return self._visible_images[row] if 0 <= row < len(self._visible_images) else None
+
+    def _update_image_controls(self) -> None:
+        busy = self._images_unavailable()
+        current = self._current_image()
+        self.query_one("#image-refresh", Button).disabled = busy
+        self.query_one("#image-toggle", Button).disabled = busy or current is None or bool(current.containers)
+        self.query_one("#image-model", Button).disabled = busy or current is None or not current.model_key or not current.acprof
+        self.query_one("#image-clear", Button).disabled = busy or not self._selected_image_ids
+        self.query_one("#image-delete", Button).disabled = busy or not self._selected_image_ids
+
+    def _image_selection_status(self) -> None:
+        if self._image_inventory is None:
+            return
+        hidden = len(self._selected_image_ids - {item.image_id for item in self._visible_images})
+        self._set_text(self.query_one("#image-status", Static), message(
+            "环境 {0} · 显示 {1}/{2} · 已选 {3}（筛选外 {4}）· 大小含共享层",
+            self._image_inventory.connection.name, len(self._visible_images), len(self._image_inventory.images),
+            len(self._selected_image_ids), hidden,
+        ))
+
+    def _render_images(self, *, width: int | None = None) -> None:
+        table = self.query_one("#image-table", DataTable)
+        current = self._current_image()
+        self._visible_images = (() if self._image_inventory is None else filtered_images(
+            self._image_inventory, self._input("image-search"), self._select("image-scope"),
+        ))
+        table.clear(columns=True)
+        name_width = max(24, min(75, (self.size.width if width is None else width) - 42))
+        for title, key, column_width in (("✓", "selected", 3), ("镜像名称", "name", name_width),
+                                         ("类型", "kind", 8), ("完整大小", "size", 10), ("容器", "containers", 4)):
+            table.add_column(Text(self.tr(title)), key=key, width=column_width)
+        for item in self._visible_images:
+            table.add_row(
+                Text("✓" if item.image_id in self._selected_image_ids else "—" if item.containers else "□"),
+                Text(item.name, overflow="ellipsis", no_wrap=True), Text(self.tr(IMAGE_KINDS[item.kind])),
+                Text(format_image_size(item.size_bytes)), Text(str(len(item.containers))), key=item.image_id,
+            )
+        if current:
+            row = next((i for i, item in enumerate(self._visible_images) if item.image_id == current.image_id), 0)
+            table.move_cursor(row=row, column=0, animate=False)
+        self._image_selection_status()
+        self._update_image_controls()
+        self._show_image_detail()
+
+    @on(Input.Changed, "#image-search")
+    @on(Select.Changed, "#image-scope")
+    def image_filter_changed(self) -> None:
+        if self._form_ready and not self._images_unavailable():
+            self._render_images()
+
+    @on(DataTable.RowHighlighted, "#image-table")
+    def _show_image_detail(self) -> None:
+        item = self._current_image()
+        self._set_text(self.query_one("#image-detail", Static), image_detail(item) if item else
+                       "没有匹配的镜像；可调整筛选或点击刷新。")
+        self._update_image_controls()
+
+    @on(DataTable.RowSelected, "#image-table")
+    @on(Button.Pressed, "#image-toggle")
+    def toggle_image_selection(self) -> None:
+        if self._images_unavailable():
+            return
+        item = self._current_image()
+        if item is None:
+            return
+        if item.containers:
+            self.notify("镜像仍被容器引用，请先单独处理容器", severity="warning")
+            return
+        if item.image_id in self._selected_image_ids:
+            self._selected_image_ids.remove(item.image_id)
+        else:
+            self._selected_image_ids.add(item.image_id)
+        self.query_one("#image-table", DataTable).update_cell(
+            item.image_id, "selected", Text("✓" if item.image_id in self._selected_image_ids else "□"),
+        )
+        self._image_selection_status()
+        self._update_image_controls()
+
+    @on(Button.Pressed, "#image-clear")
+    def clear_image_selection(self) -> None:
+        if not self._images_unavailable():
+            self._selected_image_ids.clear()
+            self._render_images()
+
+    @on(Button.Pressed, "#image-model")
+    def select_model_images(self) -> None:
+        item = self._current_image()
+        if self._images_unavailable() or item is None or not item.model_key or self._image_inventory is None:
+            return
+        self._selected_image_ids = {
+            candidate.image_id for candidate in self._image_inventory.images
+            if candidate.acprof and candidate.model_key == item.model_key and not candidate.containers
+            and candidate.kind not in {"runtime", "base"}
+        }
+        with self.prevent(Input.Changed, Select.Changed):
+            self.query_one("#image-search", Input).value = item.model_id
+            self.query_one("#image-scope", Select).value = "models"
+        self._render_images()
+
+    def _begin_image_operation(self, operation: str, status: str) -> None:
+        self._image_operation = operation
+        self._activate_tab("images-tab")
+        self._set_text(self.query_one("#image-status", Static), status)
+        self._set_busy(True)
+
+    @on(Button.Pressed, "#image-refresh")
+    def refresh_images(self) -> None:
+        if self._images_unavailable():
+            self.notify("请等待当前任务完成", severity="warning")
+            return
+        self._begin_image_operation("refresh", "正在读取 Docker 镜像与容器引用……")
+        self._execute_image_refresh()
+
+    @work(thread=True, group="images", exclusive=True, exit_on_error=False)
+    def _execute_image_refresh(self) -> None:
+        try:
+            inventory, error = list_images(), ""
+        except Exception as exc:
+            inventory, error = None, image_error(exc)
+        self.call_from_thread(self._show_images, inventory, error)
+
+    def _show_images(self, inventory: ImageInventory | None, error: str = "") -> None:
+        self._image_operation = ""
+        self._image_inventory = inventory
+        # 刷新后重新选择，避免用户把刷新前的标签/环境当成本次删除目标。
+        self._selected_image_ids.clear()
+        self._render_images()
+        self._set_busy(self._is_busy())
+        if error:
+            self._set_text(self.query_one("#image-status", Static), message("镜像读取失败：{0}", error))
+
+    @on(Button.Pressed, "#image-delete")
+    def request_delete_images(self) -> None:
+        if self._images_unavailable() or self._image_inventory is None or not self._selected_image_ids:
+            return
+        inventory, ids = self._image_inventory, tuple(sorted(self._selected_image_ids))
+        self._begin_image_operation("confirm", "请核对待删除镜像及全部标签。")
+        self.push_screen(
+            ImageDeleteScreen("删除所选镜像？", deletion_message(inventory, ids), "删除镜像"),
+            lambda confirmed: self._confirmed_image_delete(confirmed, inventory, ids),
+        )
+
+    def _confirmed_image_delete(self, confirmed: bool, inventory: ImageInventory, ids: tuple[str, ...]) -> None:
+        self._image_operation = ""
+        self._set_busy(self._is_busy())
+        if not confirmed:
+            self._set_text(self.query_one("#image-status", Static), "已取消删除，镜像保留。")
+            return
+        if self._images_unavailable():
+            self.notify("请等待当前任务完成", severity="warning")
+            return
+        self._begin_image_operation("delete", "正在复核并删除镜像……")
+        self._execute_image_delete(inventory, ids)
+
+    @work(thread=True, group="images", exclusive=True, exit_on_error=False)
+    def _execute_image_delete(self, inventory: ImageInventory, ids: tuple[str, ...]) -> None:
+        outcomes: tuple[ImageRemoval, ...] = ()
+        error = ""
+        try:
+            outcomes = delete_images(inventory, ids)
+        except Exception as exc:
+            error = image_error(exc)
+        try:
+            current = list_images(inventory.connection)
+        except Exception as exc:
+            current = None
+            error = join_messages("\n", (error, image_error(exc))) if error else image_error(exc)
+        self.call_from_thread(self._image_delete_finished, current, outcomes, error)
+
+    def _image_delete_finished(self, inventory: ImageInventory | None, outcomes: tuple[ImageRemoval, ...], error: str) -> None:
+        self._show_images(inventory)
+        successful = sum(item.success for item in outcomes)
+        result = message("已处理 {0} 个镜像，失败 {1} 个；操作详情见运行监控日志。", successful, len(outcomes) - successful)
+        if error:
+            result = join_messages("\n", (result, message("镜像操作未完成：{0}", error)))
+        self._set_text(self.query_one("#image-status", Static), result)
+        log = self.query_one("#run-log", SelectableLog)
+        log.write(self.tr(result))
+        for outcome in outcomes:
+            log.write(f"{outcome.image_id}\n{outcome.detail}")
 
     def _clear_report(self, status: str) -> None:
         self._report_view = None
@@ -1795,6 +2006,8 @@ class AcprofTui(BarCursorApp):
             self._launch_stats(args[0] if args else None)
         elif command == "report":
             self._open_report(args[0] if args else None)
+        elif command == "images":
+            self.action_show_images()
         elif command == "profile":
             self._launch_profile(
                 dry_run=True,
@@ -1828,7 +2041,7 @@ class AcprofTui(BarCursorApp):
                 "/smoke 最小预设 · /main 主矩阵 · /defaults 默认 · /preview 命令预览 · "
                 "/matrix 切换矩阵看板 · /plot [csv] 绘图 · /profile [dir] [tools] 补采计划 · "
                 "/profile-run [dir] [tools] 执行补采 · /results [csv] 摘要 · "
-                "/stats [csv/dir] 统计 · /report [json] 报告 · "
+                "/stats [csv/dir] 统计 · /report [json] 报告 · /images 镜像管理 · "
                 "/settings 设置 · /log 放大日志 · /clear 清日志 · /quit 退出")
             )
             self._activate_tab("monitor-tab")
@@ -1839,6 +2052,9 @@ class AcprofTui(BarCursorApp):
 
     @on(Button.Pressed, "#quit-app")
     def action_request_quit(self) -> None:
+        if self._image_operation:
+            self.notify("镜像操作尚未完成，请稍候", severity="warning")
+            return
         if self._is_busy():
             self.notify("任务仍在运行，请先使用 /stop 安全终止", severity="warning", timeout=6)
             return
