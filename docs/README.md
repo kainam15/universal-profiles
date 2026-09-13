@@ -14,6 +14,7 @@ AC-Prof 的长期知识在本目录按主题维护。先按任务选择一篇，
 | 选择或排查 GPU/CPU profiler | [分析器](Profilers.md)：Torch、NCU、Massif、Nsys 的窗口、采样、成本与失败 |
 | 排查 OOM、cgroup、抓包、空值或部分结果 | [运行排障](Troubleshooting.md)：证据分类、恢复入口与实时状态检查 |
 | 新增模型/backend、改依赖或镜像 | [运行兼容](Runtime_Compatibility.md)：任务目录、加载接口、环境与构建契约 |
+| 识别镜像类型、查看复用与空间释放规则 | [镜像管理与清理](Runtime_Compatibility.md#镜像管理与清理)：类型、共享层、构建缓存与删除范围 |
 | 查参数、workload 清单、TUI 设置协议 | [CLI 与设置](CLI_Reference.md)：选项、输入规模、持久化和历史兼容 |
 | 选择测试、做 TUI 回归、判断验证边界 | [测试指南](Testing.md)：代码验证、硬件冒烟、终端证据与文档检查 |
 
