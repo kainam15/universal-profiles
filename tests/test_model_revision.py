@@ -4,11 +4,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from acprof.host import docker_runtime
 from acprof.container import download_model
 from acprof.container.handlers import model_revision_kwargs, resolve_model_source
 from acprof.host import orchestrator
-from acprof.host.detect import TaskInfo
 
 
 class ModelRevisionTests(unittest.TestCase):
@@ -79,35 +77,6 @@ class ModelRevisionTests(unittest.TestCase):
             model_revision_kwargs(source, "deadbeef"),
             {"revision": "deadbeef"},
         )
-
-    def test_build_image_passes_model_revision_build_arg(self) -> None:
-        task_info = TaskInfo(
-            model_id="google-bert/bert-base-uncased",
-            pipeline_tag="fill-mask",
-            task_family="nlp",
-            runtime_backend="transformers_pipeline",
-            library_name="transformers",
-            model_revision="0123456789abcdef",
-            detection_method="hub_api",
-        )
-        commands = []
-
-        def fake_run(cmd, check=True, capture=True, **kwargs):
-            del check, capture, kwargs
-            commands.append(cmd)
-            return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
-
-        with patch("acprof.host.docker_runtime.os.path.exists", return_value=True), patch(
-            "acprof.host.docker_runtime._run",
-            side_effect=fake_run,
-        ), patch(
-            "acprof.host.docker_runtime._select_nlp_torch_index_url",
-            return_value=docker_runtime.CUDA124_NLP_TORCH_INDEX_URL,
-        ):
-            docker_runtime._build_legacy_image(task_info, ".")
-
-        self.assertIn("MODEL_REVISION=0123456789abcdef", commands[1])
-
 
 if __name__ == "__main__":
     unittest.main()

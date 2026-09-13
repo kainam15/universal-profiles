@@ -33,7 +33,7 @@ git diff --check
 | 实现范围 | 测试入口示例 |
 | --- | --- |
 | 模块依赖与导入副作用 | `tests/test_architecture.py` |
-| 环境、依赖与镜像 | `tests/test_runtime_profiles.py`、`tests/test_image_layers.py`、`tests/test_runtime_validation.py` |
+| 环境、依赖与镜像 | `tests/test_runtime_profiles.py`、`tests/test_image_layers.py`、`tests/test_runtime_image_build.py`、`tests/test_runtime_validation.py` |
 | 模型文件与离线加载 | `tests/test_model_files.py`、`tests/test_model_download.py`、`tests/test_offline_model_loading.py` |
 | 字段、能耗、资源与补采 | `tests/test_energy_cpu.py`、`tests/test_resource_usage.py`、`tests/test_posthoc.py` |
 | 页面、设置与焦点 | `tests/test_tui_layout_settings.py`、`tests/test_tui_interaction.py`、`tests/test_tui_input.py` |
@@ -42,6 +42,12 @@ git diff --check
 | Docker 镜像管理、标签删除与采集互斥 | `tests/test_image_management.py`、`tests/test_tui_images.py` |
 
 以上是定位入口，不是每次必须运行的清单。先用 `rg --files tests` 查实际受影响的测试；新改动、失败或未解决问题才需要扩大或重复验证。
+
+`test_runtime_image_build.py` 在 Docker 边界模拟环境中验证现用构建链路，包括显式基础镜像、
+模型 commit、Torch 下载源、BuildKit secret 和构建失败停止。设置 `ACPROF_TEST_DOCKER_BUILD=1`
+后还会使用本机 Docker Buildx 的 `--call=outline`，检查七个任务族缺少／传空 `BASE_IMAGE`
+时报错、显式传入时可解析。普通主机回归跳过这两项 Docker 检查；outline 不执行 `RUN`、
+不下载模型或生成镜像，只证明构建参数契约，不能替代依赖变更后的实际镜像构建和推理验证。
 
 ## CI 与环境测试
 

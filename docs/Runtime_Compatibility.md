@@ -84,6 +84,16 @@ CPU 使用 FP32，GPU 使用 BF16；常规推理使用 SDPA，Torch FLOPs 的独
 查不到目标指纹则自动构建；已有标签内容不符会报错。构建期间代码变动会使构建失败，避免
 用旧指纹标记新代码。旧 `:latest` 镜像可留存供历史实验使用，但不直接用于新环境的采集。
 
+主机构建统一经 `build_image` → `build_runtime_image`。未锁定环境按基础 Dockerfile 和构建参数
+生成 `acprof-base:<指纹>`，并显式传给任务族的 `runtime` target；锁定环境直接使用
+`runtime.Dockerfile`，不依赖 `acprof-base:latest`。
+
+任务族 Dockerfile 的 `BASE_IMAGE` 没有默认值。手动构建 NLP、audio、CV、diffusion、multimodal、
+structured 或 timeseries 镜像时，必须通过 `--build-arg BASE_IMAGE=<基础镜像引用>` 明确选择
+基础镜像；未传或传空值会在 Dockerfile 解析阶段失败，不会自动选择本地 `latest`。
+这一约束使用 [BuildKit 原生 ARG/FROM 解析](https://github.com/moby/buildkit/blob/master/frontend/dockerfile/dockerfile2llb/convert.go)，
+不增加 Python 依赖或正式测量窗口内的检查。
+
 在正式资源矩阵之前，使用输入计划的最小尺度、最大已选 CPU／内存，为每个请求的设备模式
 启动独立验证容器，执行完整的加载、预处理、推理和输出序列化。容器无网络，退出后清理。
 验证错误和超时保留日志并退出；Docker 明确报告的 cgroup OOM 记为资源限制，允许矩阵继续。

@@ -16,8 +16,6 @@ from urllib.parse import urlparse
 
 from acprof.config import (
     DOCKER_IMAGE_PREFIX,
-    HF_MIRROR_ENDPOINT,
-    PYPI_MIRROR_INDEX,
     SERVER_PORT,
     READY_POLL_INTERVAL_S,
     READY_TIMEOUT_S,
@@ -359,85 +357,6 @@ def require_image_identity(image: str, runtime_environment: Dict[str, Any]) -> N
         raise RuntimeError("补采镜像 ID 与原实验不一致")
     if runtime_environment and (identity.get("labels") or {}).get(FINGERPRINT_LABEL) != runtime_environment.get("build_fingerprint"):
         raise RuntimeError("补采镜像的运行环境与原实验不一致")
-
-
-def _build_legacy_image(task_info: TaskInfo, project_dir: str) -> ImageInfo:
-    """Build the Docker image for this model's task family.
-
-    Two-stage build:
-    1. Build base image (if not exists)
-    2. Build task-family image with model weights baked in
-    """
-    dockerfiles_dir = os.path.join(project_dir, "dockerfiles")
-    base_tag = f"{DOCKER_IMAGE_PREFIX}-base:latest"
-    family_tag = _model_image_tag(task_info, project_dir)
-
-    # Stage 1: Build base image
-    print(f"\n[build] Stage 1: Building base image {base_tag} ...")
-    base_dockerfile = os.path.join(dockerfiles_dir, "base.Dockerfile")
-
-    result = _run([
-        "docker", "build",
-        "-f", base_dockerfile,
-        "--build-arg", f"HF_ENDPOINT={HF_MIRROR_ENDPOINT}",
-        "--build-arg", "HF_FALLBACK_ENDPOINTS=https://huggingface.co",
-        "--build-arg", f"PYPI_INDEX_URL={PYPI_MIRROR_INDEX}",
-        "--build-arg", f"PYPI_TRUSTED_HOST={_url_host(PYPI_MIRROR_INDEX)}",
-        "-t", base_tag,
-        project_dir,
-    ], check=False)
-    if result.returncode != 0:
-        print(f"[build] Base image build failed:\n{result.stderr}", file=sys.stderr)
-        sys.exit(1)
-
-    # Stage 2: Build family-specific image with model
-    print(f"\n[build] Stage 2: Building {task_info.task_family} image {family_tag} ...")
-    family_dockerfile = os.path.join(dockerfiles_dir, f"{task_info.task_family}.Dockerfile")
-
-    if not os.path.exists(family_dockerfile):
-        print(f"[build] Dockerfile not found: {family_dockerfile}", file=sys.stderr)
-        sys.exit(1)
-
-    family_build_args = [
-        "--build-arg", f"BASE_IMAGE={base_tag}",
-        "--build-arg", f"MODEL_ID={task_info.model_id}",
-        "--build-arg", f"MODEL_REVISION={task_info.model_revision or 'main'}",
-        "--build-arg", f"TASK_FAMILY={task_info.task_family}",
-        "--build-arg", f"RUNTIME_BACKEND={task_info.runtime_backend}",
-        "--build-arg", f"MODEL_ADAPTER={task_info.model_adapter}",
-        "--build-arg", f"MODEL_DOWNLOAD_POLICY={task_info.model_download_policy}",
-    ]
-    if (os.environ.get("HF_TOKEN") or "").strip():
-        family_build_args.extend([
-            "--secret",
-            "id=hf_token,env=HF_TOKEN",
-        ])
-    if task_info.task_family in {"nlp", "diffusion", "multimodal", "structured"}:
-        torch_index_url = _select_nlp_torch_index_url()
-        torch_spec = _select_nlp_torch_spec(torch_index_url)
-        family_build_args.extend([
-            "--build-arg",
-            f"TORCH_INDEX_URL={torch_index_url}",
-            "--build-arg",
-            f"TORCH_PACKAGE_SPEC={torch_spec}",
-        ])
-        family_label = task_info.task_family.upper()
-        print(f"[build] {family_label} torch index: {torch_index_url}")
-        print(f"[build] {family_label} torch spec:  {torch_spec}")
-
-    result = _run([
-        "docker", "build",
-        "-f", family_dockerfile,
-        *family_build_args,
-        "-t", family_tag,
-        project_dir,
-    ], check=False)
-    if result.returncode != 0:
-        print(f"[build] Family image build failed:\n{result.stderr}", file=sys.stderr)
-        sys.exit(1)
-
-    print(f"[build] Image ready: {family_tag}")
-    return ImageInfo(tag=family_tag)
 
 
 def _start_container_session(

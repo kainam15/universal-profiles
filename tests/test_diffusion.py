@@ -4,10 +4,8 @@ import sys
 import tempfile
 import types
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
-from acprof.host import docker_runtime
 from acprof.container.handlers.diffusion import DiffusionHandler
 from acprof.host import orchestrator
 from acprof.host.detect import TaskInfo
@@ -264,39 +262,6 @@ class DiffusionMetadataTests(unittest.TestCase):
             plan["entries"][-1]["payload"]["resolution"],
             max(DEFAULT_RESOLUTIONS),
         )
-
-    def test_diffusion_image_build_receives_selected_torch_wheel(self) -> None:
-        commands = []
-
-        def fake_run(command, **kwargs):
-            commands.append(command)
-            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-
-        project_dir = str(Path(__file__).resolve().parents[1])
-        with patch.object(docker_runtime, "_run", side_effect=fake_run), patch.object(
-            docker_runtime,
-            "_select_nlp_torch_index_url",
-            return_value="https://download.pytorch.org/whl/cu124",
-        ), patch.object(
-            docker_runtime,
-            "_select_nlp_torch_spec",
-            return_value="torch>=2.6,<2.7",
-        ):
-            image = docker_runtime._build_legacy_image(self._task_info(), project_dir)
-
-        self.assertEqual(
-            image.tag,
-            docker_runtime._model_image_tag(self._task_info(), project_dir),
-        )
-        self.assertEqual(len(commands), 2)
-        family_command = commands[1]
-        self.assertIn(
-            str(Path(project_dir, "dockerfiles", "diffusion.Dockerfile")),
-            family_command,
-        )
-        self.assertIn("TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124", family_command)
-        self.assertIn("TORCH_PACKAGE_SPEC=torch>=2.6,<2.7", family_command)
-
 
 if __name__ == "__main__":
     unittest.main()

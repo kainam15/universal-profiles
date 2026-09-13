@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
-ARG BASE_IMAGE=acprof-base:latest
+# BASE_IMAGE must be provided explicitly with --build-arg.
+ARG BASE_IMAGE
 FROM ${BASE_IMAGE} AS runtime
 
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
