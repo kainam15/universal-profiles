@@ -1594,14 +1594,20 @@ class AcprofTui(BarCursorApp):
             self._image_inventory, self._input("image-search"), self._select("image-scope"),
         ))
         table.clear(columns=True)
-        name_width = max(24, min(75, (self.size.width if width is None else width) - 42))
-        for title, key, column_width in (("✓", "selected", 3), ("镜像名称", "name", name_width),
+        reference_width = max(30, (self.size.width if width is None else width) - 44)
+        tag_width = max(12, min(28, reference_width * 2 // 5))
+        repository_width = max(18, min(75, reference_width - tag_width))
+        for title, key, column_width in (("✓", "selected", 3), ("Repository", "repository", repository_width),
+                                         ("Tag", "tag", tag_width),
                                          ("类型", "kind", 8), ("完整大小", "size", 10), ("容器", "containers", 4)):
             table.add_column(Text(self.tr(title)), key=key, width=column_width)
         for item in self._visible_images:
+            repository, separator, tag = item.name.rpartition(":")
             table.add_row(
                 Text("✓" if item.image_id in self._selected_image_ids else "—" if item.containers else "□"),
-                Text(item.name, overflow="ellipsis", no_wrap=True), Text(self.tr(IMAGE_KINDS[item.kind])),
+                Text(repository if separator else item.name, overflow="ellipsis", no_wrap=True),
+                Text(tag if separator else "—", overflow="ellipsis", no_wrap=True),
+                Text(self.tr(IMAGE_KINDS[item.kind])),
                 Text(format_image_size(item.size_bytes)), Text(str(len(item.containers))), key=item.image_id,
             )
         if current:

@@ -221,7 +221,7 @@ class TuiImagesTests(unittest.IsolatedAsyncioTestCase):
             await pilot.resize_terminal(80, 24)
             await pilot.pause()
             self.assertEqual(app._selected_image_ids, before)
-            self.assertLessEqual(app.query_one("#image-table", DataTable).columns["name"].width, 38)
+            self.assertLessEqual(app.query_one("#image-table", DataTable).columns["repository"].width, 38)
             await pilot.click("#image-delete")
             await pilot.pause()
             content = app.screen.query_one("#image-confirm-content")
