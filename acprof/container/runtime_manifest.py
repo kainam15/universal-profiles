@@ -7,7 +7,10 @@ import importlib.metadata
 import json
 import os
 import platform
+import subprocess
 from pathlib import Path
+
+from acprof.dependency_locks import normalized_name, package_versions, read_python_lock, require_exact_packages
 
 
 MANIFEST_PATH = "/app/runtime_environment.json"
@@ -15,13 +18,21 @@ MANIFEST_PATH = "/app/runtime_environment.json"
 
 def installed_packages() -> dict[str, str]:
     return dict(sorted(
-        (dist.metadata["Name"].lower().replace("_", "-"), dist.version)
+        (normalized_name(dist.metadata["Name"]), dist.version)
         for dist in importlib.metadata.distributions()
     ))
 
 
 def collect_manifest() -> dict:
     packages = installed_packages()
+    dependency = json.loads(Path("/opt/acprof/environment-manifest.json").read_text())
+    require_exact_packages(dependency["packages"], packages)
+    output = subprocess.check_output(
+        ["dpkg-query", "-W", "-f=${Package}:${Architecture}\t${Version}\t${db:Status-Status}\n"], text=True,
+    )
+    actual_system = {name: version for line in output.splitlines()
+                     for name, version, status in [line.split("\t")] if status == "installed"}
+    require_exact_packages(dependency["system_packages"], actual_system, kind="system")
     locked = Path("/opt/acprof/requirements.lock")
     lock_hash = ""
     if locked.is_file():
@@ -29,12 +40,11 @@ def collect_manifest() -> dict:
         expected = os.environ.get("ACPROF_DEPENDENCY_LOCK_SHA256", "")
         if expected and lock_hash != expected:
             raise RuntimeError("dependency lock hash differs from selected runtime profile")
-        for line in locked.read_text().splitlines():
-            if not line.strip() or line.startswith("#"):
-                continue
-            name, version = line.split("==", 1)
-            if packages.get(name.lower().replace("_", "-")) != version:
-                raise RuntimeError(f"installed dependency does not match lock: {name}=={version}")
+        require_exact_packages(package_versions(read_python_lock(locked)), packages)
+    else:
+        raise RuntimeError("dependency lock is missing")
+    if dependency["platform_image_id"] != os.environ["ACPROF_PLATFORM_IMAGE_ID"]:
+        raise RuntimeError("platform image differs from dependency manifest")
     source = Path(os.getenv("MODEL_LOCAL_PATH", "/models/model-snapshot"))
     snapshot_revision = source.resolve().name if source.is_symlink() else ""
     if snapshot_revision != os.environ.get("MODEL_REVISION"):
@@ -55,7 +65,12 @@ def collect_manifest() -> dict:
     if any(not (source / item["path"]).is_file() for item in download["files"]):
         raise RuntimeError("model snapshot is missing files from its download plan")
     return {
+        **dependency,
         "schema_version": 1,
+        "request_fingerprint": os.environ["ACPROF_REQUEST_FINGERPRINT"],
+        "platform_image_id": os.environ["ACPROF_PLATFORM_IMAGE_ID"],
+        "environment_image_id": os.environ["ACPROF_ENVIRONMENT_IMAGE_ID"],
+        "model_image_id": os.environ["ACPROF_MODEL_IMAGE_ID"],
         "profile_id": os.environ["ACPROF_RUNTIME_PROFILE"],
         "adapter": os.environ["ACPROF_MODEL_ADAPTER"],
         "build_fingerprint": os.environ["ACPROF_BUILD_FINGERPRINT"],

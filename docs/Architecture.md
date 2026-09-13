@@ -60,7 +60,8 @@ flowchart TD
 | --- | --- |
 | `preflight` | 原生 Linux、本机 Docker、cgroup 与 CPU 能耗前置检查 |
 | `docker_runtime` | 镜像准备和构建、容器启停、ready 检查、冷启动分段及 OOM 状态读取 |
-| `runtime_images` | 依赖层／模型层／代码层构建、内容指纹、环境清单核验及不可变 image ID |
+| `dependency_images` | 平台与依赖环境的内容缓存、安装配方指纹、完整清单和标签核验；主构建及容器 CI 共用 |
+| `runtime_images` | profile/平台选择、模型层与代码层构建、父镜像绑定、运行清单及不可变 image ID |
 | `image_management` | 用户触发的 Docker 镜像清单、标签合并、容器引用检查及按确认清单删除；不参与采集 |
 | `runtime_validation` | 矩阵前的独立 CPU／GPU 完整推理验证及报告，不生成测量行 |
 | `input_plan` | 手动和自动尺度规划、规划用 probe、payload 物化与输入计划写入 |
@@ -91,8 +92,15 @@ flowchart TD
 冷启动状态仍由 client 管理。对照窗口、monitor 启停、正式请求和停止后的统计顺序保持一致。
 界面刷新、绘图、通知与额外文件操作继续位于正式测量窗口之外。
 
-`runtime_profiles` 是标准库声明层，主机检测只读元数据；handler 注册表供 server、输入规划和 profiler 共用。
-`host.runtime_images` 负责环境、模型与最终代码的构建标识；`container.model_files` 是标准库文件规划器，
+`runtime_profiles` 是标准库声明层，分别登记 `RuntimeProfile`、`PlatformSpec`、`DependencyEnvironment`；
+7 个任务族和 22 个逻辑 profile 保留，当前映射至 20 个依赖环境。`dependency_locks` 规范化和验证
+制品锁，环境内容身份独立于 profile、adapter、模型及业务代码。主机检测只读元数据；handler 注册表
+供 server、输入规划和 profiler 共用。
+`host.dependency_images` 构建固定 Python/系统/Torch 平台及其各依赖环境分支；`host.runtime_images`
+绑定模型与最终服务代码的构建身份。镜像是按需缓存，不为每个 profile 强制保留一个镜像。
+`scripts/compile_locks.py` 复用固定 uv 解析目标 wheel；`scripts/compile_system_lock.py` 在隔离基础容器
+中解析 Debian Snapshot。普通构建仅消费锁，`--check` 只读校验锁及映射。
+`container.model_files` 是标准库文件规划器，
 `download_model` 负责下载与构建期完整性检查，`runtime_manifest` 与 `runtime_validate` 分别负责环境清单和独立接口验证。
 分层设计将权重下载与业务代码变更解耦；加载、镜像复用与验证契约见[运行兼容](Runtime_Compatibility.md#构建复用和验证)，
 字段与历史兼容见[采集协议](Profiling_Protocol.md#static_metajson-字段)。

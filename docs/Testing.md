@@ -33,7 +33,7 @@ git diff --check
 | 实现范围 | 测试入口示例 |
 | --- | --- |
 | 模块依赖与导入副作用 | `tests/test_architecture.py` |
-| 环境、依赖与镜像 | `tests/test_runtime_profiles.py`、`tests/test_image_layers.py`、`tests/test_runtime_image_build.py`、`tests/test_runtime_validation.py` |
+| 环境、依赖与镜像 | `tests/test_runtime_profiles.py`、`tests/test_environment_identity.py`、`tests/test_lock_compiler.py`、`tests/test_image_layers.py`、`tests/test_runtime_image_build.py`、`tests/test_image_reuse.py`、`tests/test_runtime_validation.py` |
 | 模型文件与离线加载 | `tests/test_model_files.py`、`tests/test_model_download.py`、`tests/test_offline_model_loading.py` |
 | 字段、能耗、资源与补采 | `tests/test_energy_cpu.py`、`tests/test_resource_usage.py`、`tests/test_posthoc.py` |
 | 页面、设置与焦点 | `tests/test_tui_layout_settings.py`、`tests/test_tui_interaction.py`、`tests/test_tui_input.py` |
@@ -43,30 +43,41 @@ git diff --check
 
 以上是定位入口，不是每次必须运行的清单。先用 `rg --files tests` 查实际受影响的测试；新改动、失败或未解决问题才需要扩大或重复验证。
 
-`test_runtime_image_build.py` 在 Docker 边界模拟环境中验证现用构建链路，包括显式基础镜像、
-模型 commit、Torch 下载源、BuildKit secret 和构建失败停止。设置 `ACPROF_TEST_DOCKER_BUILD=1`
-后还会使用本机 Docker Buildx 的 `--call=outline`，检查七个任务族缺少／传空 `BASE_IMAGE`
-时报错、显式传入时可解析。普通主机回归跳过这两项 Docker 检查；outline 不执行 `RUN`、
-不下载模型或生成镜像，只证明构建参数契约，不能替代依赖变更后的实际镜像构建和推理验证。
+`test_runtime_image_build.py` 在 Docker 边界模拟环境中验证四层构建、跨 profile 的环境共享、
+模型 commit、Torch 来源、BuildKit secret、标签错配、额外包、输入变化及构建失败停止。
+环境身份测试覆盖 22 个 profile / 20 个环境、两组精确共享及 cu128 的版本差异；注释、锁文件名
+和条目顺序不影响身份，版本、制品、来源、平台和系统锁影响身份。配方变化改变构建缓存，业务
+代码变化只重建服务层。它们不能替代实际容器构建与推理验证。
 
 ## CI 与环境测试
 
 `.github/workflows/ci.yml` 在 Python 3.10 / 3.12 上安装哈希锁并执行主机回归；
-七个任务族另构建 Python 3.10 CPU 镜像，以随机小模型或明确导出的样例验证真实加载与推理。
+同时运行 `compile_locks.py --check`。七个任务族分别执行 CPU 接口测试，以随机小模型或明确导出的
+样例验证真实加载与推理；audio 和 multimodal 在同一作业共享一个 CPU 依赖环境，仍分别执行测试。
 网络在容器测试期间关闭。CI Actions 固定为已核验的 commit SHA，作业只授予仓库读取权限。
 
 本地入口：
 
 ```bash
 .venv/bin/python scripts/run_tests.py --report internal-testing/host-tests.json
+.venv/bin/python scripts/compile_locks.py --check
 .venv/bin/python scripts/check_runtime.py --family audio --variant cpu --output-dir internal-testing/audio-runtime
+.venv/bin/python scripts/check_runtime.py --profile moss-transformers560 --build-only --output-dir internal-testing/moss-dependencies
 .venv/bin/python scripts/render_metric_reference.py --check
 ```
 
 `run_tests.py` 保留 unittest 输出，并将每项测试的结果、失败/跳过原因、版本及耗时写入 JSON。
 空测试集必定失败；容器作业带 `--require-no-skips`，跳过或 expected failure 都不算环境验证通过。
 普通主机测试允许缺少推理依赖时跳过，报告明确列出范围。`check_runtime.py` 的目录必须为空；
-`runtime.json` 另记录锁定 profile、实际 image ID 和退出结果，不覆盖旧验证。
+`runtime.json` 另记录逻辑 profile、环境 ID、平台/环境 image ID、完整运行清单和退出结果，不覆盖旧验证。
+`--build-only` 仅证明依赖构建和清单核验；`--family` / `--profile` 共用主构建的环境准备入口。
+普通接口测试固定使用 CPU，即使选择 CUDA wheel；GPU 和自定义 MOSS adapter 由完整服务镜像的
+独立 `runtime_validation` 验证。依赖迁移需逐一构建全部唯一环境，再分别验证共享环境的各 profile。
+
+更新锁前后比较原完整包版本，验证目标 wheel 的 ABI/平台和全部制品 SHA256。默认锁生成保留原
+版本，显式 `--upgrade` 才更新环境包；uv 固定 0.12.13，生成 wheel 锁的脚本使用 Python 3.11+，
+只读检查兼容 Python 3.10+。系统锁可指定同一 snapshot 再生成并比较，过程只修改一次性容器和
+指定输出锁。具体命令见[当前配置](Runtime_Compatibility.md#当前配置)。
 
 源代码、模型权重和依赖层保持分离，CPU 容器测试不下载 Hub 模型，不代替真实 GPU/PMU/抓包实验。
 

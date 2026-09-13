@@ -13,6 +13,7 @@ import unittest
 import numpy as np
 
 from acprof.container.handlers.audio import AudioHandler
+from test_audio_handler import wav_base64
 
 
 _HAS_RUNTIME = all(importlib.util.find_spec(name) for name in ("torch", "transformers", "scipy"))
@@ -51,7 +52,8 @@ class AudioRuntimeTests(unittest.TestCase):
                     feature_extractor.save_pretrained(directory)
                 context = handler.load(directory, task, "transformers_pipeline", "cpu")
                 processed = handler.preprocess(context, {
-                    "audio_samples": np.sin(np.arange(1600) * 0.1).tolist(), "sample_rate": 16000,
+                    "audio_base64": wav_base64((np.sin(np.arange(1600) * 0.1) * 12000).astype(np.int16)),
+                    "audio_format": "wav", "sample_rate": 16000,
                 })
                 output = handler.postprocess(context, handler.predict(context, processed))
                 if task == "automatic-speech-recognition":
@@ -87,7 +89,8 @@ class AudioRuntimeTests(unittest.TestCase):
                 processor.save_pretrained(directory)
                 context = handler.load(directory, "audio-to-audio", "transformers_model", "cpu")
                 processed = handler.preprocess(context, {
-                    "audio_samples": np.sin(np.arange(1600) * 0.1).tolist(), "sample_rate": 16000,
+                    "audio_base64": wav_base64((np.sin(np.arange(1600) * 0.1) * 12000).astype(np.int16)),
+                    "audio_format": "wav", "sample_rate": 16000,
                 })
                 output = handler.postprocess(context, handler.predict(context, processed))
                 self.assertEqual(output["output_type"], "audio")

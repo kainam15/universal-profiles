@@ -12,7 +12,7 @@ ARG MODEL_FILES_KEY
 ENV MODEL_ID=${MODEL_ID} MODEL_REVISION=${MODEL_REVISION} HF_ENDPOINT=${HF_ENDPOINT}
 ENV TASK_FAMILY=${TASK_FAMILY} RUNTIME_BACKEND=${RUNTIME_BACKEND} MODEL_ADAPTER=${MODEL_ADAPTER}
 ENV MODEL_DOWNLOAD_POLICY=${MODEL_DOWNLOAD_POLICY}
-LABEL org.acprof.model-files-key=${MODEL_FILES_KEY}
+LABEL org.acprof.model-files-key=${MODEL_FILES_KEY} org.acprof.image-kind="weights"
 ENV HF_FALLBACK_ENDPOINTS=https://huggingface.co
 COPY acprof/container/download_model.py acprof/container/model_files.py /opt/acprof/
 RUN --mount=type=secret,id=hf_token \

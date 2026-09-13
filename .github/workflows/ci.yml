@@ -28,6 +28,7 @@ jobs:
           cache-dependency-path: requirements.lock
       - run: python -m pip install --require-hashes -r requirements.lock
       - run: python -m pip check
+      - run: python scripts/compile_locks.py --check
       - run: python scripts/run_tests.py --report evidence/host.json
         env:
           ACPROF_WECOM_WEBHOOK_URL: ''
@@ -53,15 +54,27 @@ jobs:
       fail-fast: false
       max-parallel: 2
       matrix:
-        family: [nlp, cv, audio, diffusion, structured, timeseries, multimodal]
+        include:
+          - families: nlp
+          - families: cv
+          - families: audio multimodal
+          - families: diffusion
+          - families: structured
+          - families: timeseries
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
         with:
           python-version: '3.12'
-      - run: python scripts/check_runtime.py --family '${{ matrix.family }}' --variant cpu --output-dir evidence
+      - run: python -m pip install --require-hashes -r requirements.lock
+      - run: |
+          runtime_check_status=0
+          for family in ${{ matrix.families }}; do
+            python scripts/check_runtime.py --family "$family" --variant cpu --output-dir "evidence/$family" || runtime_check_status=1
+          done
+          exit "$runtime_check_status"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
-          name: runtime-${{ matrix.family }}
+          name: runtime-${{ strategy.job-index }}
           path: evidence/

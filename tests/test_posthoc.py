@@ -29,9 +29,12 @@ class PosthocProfileTests(unittest.TestCase):
             metadata["image_id"] = "sha256:" + "a" * 64
             metadata["runtime_environment"] = {"profile_id": "legacy-nlp", "adapter": "family-default"}
             path.write_text(json.dumps(metadata))
+            before = path.read_bytes()
             context = host_posthoc_context.load_result_context(root)
             self.assertEqual(context.image_tag, metadata["image_id"])
             self.assertEqual(context.task_info.runtime_profile_id, "legacy-nlp")
+            self.assertEqual(path.read_bytes(), before)
+            self.assertNotIn("environment_id", context.static_meta["runtime_environment"])
 
     def test_parser_defaults_to_reduced_execution_sampling(self):
         defaults = posthoc._build_parser().parse_args(["results/example"])

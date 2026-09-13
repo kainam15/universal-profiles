@@ -15,7 +15,8 @@ from acprof.runtime_profiles import (
     RuntimeProfile,
     select_runtime_profile,
 )
-from acprof.host.runtime_images import build_fingerprint
+from acprof.host.runtime_images import request_fingerprint
+from runtime_fixture import copy_dependency_tree
 
 
 def moss_task():
@@ -32,9 +33,9 @@ class RuntimeProfileRegressionTests(unittest.TestCase):
     def test_download_policy_changes_image_identity(self):
         task = moss_task()
         task.model_download_policy = "auto"
-        original = build_fingerprint(task)
+        original = request_fingerprint(task)
         task.model_download_policy = "full"
-        self.assertNotEqual(original, build_fingerprint(task))
+        self.assertNotEqual(original, request_fingerprint(task))
 
     def test_moss_architecture_reuses_adapter_for_another_checkpoint(self):
         task = dataclasses.replace(moss_task(), model_id="Example/Moss", model_config={"model_type": "moss_transcribe_diarize"})
@@ -53,7 +54,7 @@ class RuntimeProfileRegressionTests(unittest.TestCase):
         self.assertEqual(select_runtime_profile(task).profile_id, "multimodal-transformers4576")
 
     def test_another_model_adapter_can_select_its_own_runtime(self):
-        profile = RuntimeProfile("example-runtime", "multimodal", "example-adapter", requirements_lock="dockerfiles/locks/multimodal-cu128.txt")
+        profile = RuntimeProfile("example-runtime", "multimodal", PROFILES["multimodal-transformers4576"].environment, "example-adapter")
         task = dataclasses.replace(
             moss_task(), model_id="Example/Custom", pipeline_tag="image-text-to-text",
             model_config={"model_type": "example_arch"},
@@ -66,26 +67,23 @@ class RuntimeProfileRegressionTests(unittest.TestCase):
     def test_legacy_torch_override_invalidates_cached_image(self):
         task = dataclasses.replace(moss_task(), model_id="Example/NLP", task_family="nlp", pipeline_tag="text-generation")
         with patch.dict(os.environ, {"ACPROF_NLP_TORCH_SPEC": "torch==2.6.0"}):
-            original = build_fingerprint(task)
+            original = request_fingerprint(task)
         with patch.dict(os.environ, {"ACPROF_NLP_TORCH_SPEC": "torch==2.7.0"}):
-            self.assertNotEqual(original, build_fingerprint(task))
+            self.assertNotEqual(original, request_fingerprint(task))
 
     def test_source_and_dependency_changes_invalidate_cached_image(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            (root / "acprof").mkdir()
-            (root / "dockerfiles/locks").mkdir(parents=True)
+            copy_dependency_tree(root)
             source = root / "acprof/handler.py"
             lock = root / "dockerfiles/locks/moss-transformers560.txt"
             source.write_text("adapter = 1\n")
-            lock.write_text("transformers==5.6.0\n")
-            (root / "dockerfiles/locks/common-cu128.txt").write_text("torch==2.11.0+cu128\n")
-            original = build_fingerprint(moss_task(), root)
+            original = request_fingerprint(moss_task(), root)
             source.write_text("adapter = 2\n")
-            changed = build_fingerprint(moss_task(), root)
+            changed = request_fingerprint(moss_task(), root)
             self.assertNotEqual(original, changed)
-            lock.write_text("transformers==5.6.1\n")
-            self.assertNotEqual(changed, build_fingerprint(moss_task(), root))
+            lock.write_text(lock.read_text().replace("transformers-5.6.0-", "transformers-5.6.1-"))
+            self.assertNotEqual(changed, request_fingerprint(moss_task(), root))
 
     def test_posthoc_rejects_image_from_another_build(self):
         from acprof.host.runtime_images import FINGERPRINT_LABEL
@@ -95,6 +93,17 @@ class RuntimeProfileRegressionTests(unittest.TestCase):
             "image_id": image, "labels": {FINGERPRINT_LABEL: "other-build"},
         }), self.assertRaisesRegex(RuntimeError, "运行环境"):
             docker_runtime.require_image_identity(image, {"build_fingerprint": "original-build"})
+
+    def test_historical_image_identity_does_not_require_new_environment_fields(self):
+        from acprof.host.runtime_images import FINGERPRINT_LABEL
+        image = "sha256:" + "a" * 64
+        original = {"schema_version": 1, "profile_id": "legacy-nlp", "build_fingerprint": "original-build"}
+        with patch("acprof.host.runtime_images.inspect_identity", return_value={
+            "image_id": image, "labels": {FINGERPRINT_LABEL: "original-build"},
+        }), patch("acprof.host.runtime_images.prepare_environment_image", side_effect=AssertionError("rebuilt history")):
+            docker_runtime.require_image_identity(image, original)
+        self.assertNotIn("environment_id", original)
+        self.assertNotIn("platform_id", original)
 
     def test_startup_error_keeps_python_stderr(self):
         import subprocess

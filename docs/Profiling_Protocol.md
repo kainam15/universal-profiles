@@ -116,8 +116,8 @@ OOM pruning 继续按原有参考 CPU/内存顺序重建证据，复用与推断
 | `runtime_backend` | 容器内使用的 runtime backend，例如 `transformers_pipeline`、`chronos`、`diffusers`。 |
 | `image_tag` | 本次传给 Docker 的镜像引用；v7 新采集使用不可变 `sha256:` image ID，历史文件可能为可变 tag。 |
 | `image_id` | 经 Docker inspect 核验的不可变镜像 ID；补采优先使用该字段。历史文件无法确认时不补造。 |
-| `image_name` | 便于查看的构建标签，含模型名和构建指纹前缀；执行仍使用 `image_id`。 |
-| `runtime_environment` | 镜像内生成的环境清单：profile、adapter、构建指纹、模型及实际 snapshot revision、Python 和已安装包版本、依赖锁与包清单 SHA256、自定义 Python 源码 SHA256，以及可选的 `model_download` 文件选择与完整性清单。普通包版本是实测清单；当前默认 profile 均记录完整依赖锁，历史或自定义未锁定环境的 `dependency_lock_sha256` 可以为空。 |
+| `image_name` | 便于查看的构建标签，含模型名和构建请求指纹前缀；执行仍使用 `image_id`。 |
+| `runtime_environment` | 镜像内生成的环境清单：profile、adapter、构建指纹、模型及实际 snapshot revision、Python 和已安装包版本、依赖锁与包清单 SHA256、自定义 Python 源码 SHA256，以及 `model_download` 文件清单。新构建追加平台/环境身份、各父镜像 ID、系统锁摘要与实际系统包集合，字段详见下文；历史缺失字段不推算。 |
 | `runtime_validation` | 独立容器验证报告。保存实际 image ID、输入尺度／payload SHA256、每个设备的状态、dtype、attention 实现及输出摘要。验证推理接口，不替代 profiler 兼容性检查，也不计入请求或性能测量。失败的完整报告另见 `runtime_validation.json`。 |
 | `batch_size` | 本次 profiling 的 batch size。 |
 | `input_scale_type` | `result_all.csv/input_scale` 的语义名，例如 `seq_length`。 |
@@ -182,6 +182,26 @@ OOM pruning 继续按原有参考 CPU/内存顺序重建证据，复用与推断
 `static_meta.json` 只接受 schema v7；旧版本或缺失版本直接报错。当前完整 cache artifacts 大小
 字段为 `model_cache_bytes`，不读取旧 `model_weight_bytes`。采集/修复记录独立写入
 `collection_history.json`，不从旧静态元数据补造 swap、cgroup 或运行环境信息。
+
+`runtime_environment` 继续使用 schema v1。新服务镜像构建时增加以下身份字段，保持原有包版本、
+模型快照及 `build_fingerprint` 的语义；`static_meta.json` 仍为 v7，CSV 没有新增列。
+
+| 字段 | 含义 |
+| --- | --- |
+| `platform_id` | 声明的平台键：`cpu`、`cu124` 或 `cu128`。 |
+| `platform_definition_id` | 规范化 Python 基础镜像、架构、系统锁和 Torch 闭包的内容摘要。 |
+| `environment_id` | 平台声明与完整 Python 依赖制品的内容摘要，独立于 profile、adapter、模型和代码。 |
+| `platform_image_id` / `environment_image_id` / `model_image_id` | 本次实际继承的平台、环境与模型快照镜像的不可变 Docker ID。 |
+| `platform_build_fingerprint` / `environment_build_fingerprint` | 包含安装配方的构建身份；环境构建还绑定实际平台 image ID。 |
+| `request_fingerprint` | 服务构建声明的查找键；原有 `build_fingerprint` 另绑定不可变模型父镜像 ID，继续表示实际构建身份。 |
+| `python_base_image` / `architecture` | 固定 OCI digest 的 Python 基础镜像及目标 `linux/amd64`。 |
+| `system_lock_sha256` | 规范化系统锁的 SHA256，覆盖 snapshot 来源、索引摘要、系统包集合和 `.deb` 制品。 |
+| `system_packages` | 构建时实测的完整已安装系统包集合，键为 `包名:架构`，值为包含 epoch 的版本。 |
+
+新缓存必须同时核对标签、上述身份字段与内部完整包清单。历史 v7 结果仍按记录的原始 image ID
+和原构建指纹补采；缺失这些新增字段不会触发推算、回填、升级依赖或重建替代镜像。
+`dependency_lock_sha256` 仍是镜像内完整 Python 锁文件字节的摘要；可复用环境中的注释排版
+不参与 `environment_id`，因此构建服务时读取实际父环境清单中的该值。
 
 `runtime_environment.model_download` 是可选的独立 schema v1 清单，历史结果可缺失。`requested_policy` 保存 `auto/full`，`effective_policy` 保存实际 `selected/full`，`reason` 说明筛选或回退原因；`weights` 记录组件、格式、variant 和索引／分片文件。`files` 保存路径、实际逻辑大小和构建时计算的 SHA256，另保留 Hub 提供的 Git blob／LFS 标识；`excluded_files` 是未下载文件的远端元数据。`verification=sha256` 表示构建阶段已完成完整性检查，`plan_sha256` 校验规范化 JSON（不含自身字段）。`selected_bytes` 按清单路径求和，不对相同内容的多个路径去重，因此不等同于 `model_cache_bytes`、镜像大小或释放的磁盘空间。新增清单不改变 CSV 字段和历史指标定义。
 

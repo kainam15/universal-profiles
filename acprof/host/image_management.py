@@ -102,6 +102,12 @@ def _inspect(connection: DockerConnection, resource: str, references: list[str])
 
 def _kind(tags: tuple[str, ...], labels: dict) -> str:
     repositories = [tag.rsplit(":", 1)[0] for tag in tags]
+    explicit_kind = {"platform": "base", "environment": "runtime", "weights": "weights", "model": "model"}.get(
+        labels.get("org.acprof.image-kind"))
+    if explicit_kind:
+        return explicit_kind
+    if any(name.startswith("acprof-platform-") for name in repositories):
+        return "base"
     if any(name.startswith("acprof-runtime-") for name in repositories):
         return "runtime"
     if "acprof-base" in repositories:

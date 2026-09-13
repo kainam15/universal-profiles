@@ -1,7 +1,8 @@
 # 模型运行环境与适配器
 
-AC-Prof 按模型选择运行环境和 adapter。不同 Transformers 版本安装在独立 Docker 依赖层，
-主机只负责检测、规划和测量；新模型可以增加配置与 adapter，沿用已有采集协议。
+AC-Prof 按模型选择逻辑 profile 和 adapter，profile 引用完整依赖环境，Docker 镜像缓存该环境的构建结果。
+7 个任务族负责输入、调用和输出协议；平台负责 Python、系统依赖和 Torch/CUDA 组合。
+不同依赖环境从共同的 Torch 平台分叉，主机只负责检测、规划和测量。
 本文命令均从仓库根目录执行；示例资源配置不表示当前机器可用容量。
 
 新增模型适配或调整镜像依赖时查阅本文。任务支持范围由[本文的任务目录](#任务支持范围)维护，
@@ -20,7 +21,9 @@ AC-Prof 按模型选择运行环境和 adapter。不同 Transformers 版本安�
 ```mermaid
 flowchart LR
     model[模型 ID 和 config 元数据] --> route[运行环境及 adapter 注册表]
-    route --> deps[锁定依赖的镜像层]
+    route --> env[完整依赖环境]
+    platform[平台：Python / 系统锁 / Torch] --> deps[依赖环境镜像缓存]
+    env --> deps
     deps --> weights[固定 commit 的模型层]
     weights --> code[适配代码和环境清单]
     code --> verify[独立 CPU / GPU 推理验证]
@@ -30,26 +33,53 @@ flowchart LR
 
 ## 当前配置
 
-| 运行环境 | 选择条件 | 依赖与接口 |
+| 逻辑 profile | 选择条件 | 依赖与接口 |
 | --- | --- | --- |
 | `multimodal-transformers4576` | 已支持的原生 `multimodal` 模型 | Transformers 4.57.6；`family-default` handler |
 | `moss-transformers560` | MOSS 官方模型 ID，或 `model_type=moss_transcribe_diarize` | Transformers 5.6.0；`moss-transcribe-diarize` adapter |
 | `<family>-cu128` / `<family>-cu124` | NLP、CV、Audio、Diffusion、Structured、Timeseries | 完整依赖锁；Torch 2.11.0 / 2.6.0，保留对应任务族接口 |
 | `<family>-cpu` | 显式 CPU 索引或容器 CI | CPU wheel；同样使用完整依赖锁 |
 
-所有任务族的完整锁位于 [`dockerfiles/locks`](../dockerfiles/locks)，源依赖位于
-[`dockerfiles/requirements`](../dockerfiles/requirements)。uv 为 Linux x86_64、Python 3.10
-解析传递依赖；共享 `common-<variant>.txt` 固定框架层，各族完整锁受共享锁约束。
-构建按锁执行 `pip install --no-deps`、`pip check`，最终清单逐项核对已安装版本。
-多模态另有 `multimodal-transformers4576-cu124` / `-cpu`；MOSS 继续使用专用 CUDA 12.8 环境。
+[`runtime_profiles.py`](../acprof/runtime_profiles.py) 使用标准库声明三个独立对象：
 
-主机使用 [`requirements.lock`](../requirements.lock)，支持 Python 3.10+ 的环境标记和 wheel 哈希；
-其主依赖约束在 `requirements-host.in`。更新命令为 `python scripts/compile_locks.py`（uv 0.12.13），
-可用 `--host-only`、`--runtime-only --variant cu128` 缩小范围。解析成功后仍需运行目标环境验证。
+| 对象 | 声明内容 |
+| --- | --- |
+| `RuntimeProfile` / `PROFILES` | 名称、任务族、adapter、模型/backend 约束、dtype、环境引用；保留 22 个 profile。 |
+| `PlatformSpec` / `PLATFORMS` | Linux amd64、固定 Python 基础镜像 digest、Python 3.10.21、系统锁和 Torch 闭包。CPU / cu128 为 Torch 2.11.0，cu124 为 2.6.0。 |
+| `DependencyEnvironment` / `ENVIRONMENTS` | 平台引用及完整 Python 制品锁；当前有 20 个唯一环境。名称仅用于引用，不决定内容身份。 |
 
-默认 Python 3.10 slim 基础镜像已固定 OCI digest，定义在 `runtime_profiles.py`。
-系统 apt 仓库仍随时间更新，重新构建不能保证镜像字节完全相同；复现实验和补采仍引用原始 image ID。
-只保留 `runtime.Dockerfile`、`runtime-model.Dockerfile`、`runtime-final.Dockerfile` 三层构建；未锁定环境会报错。
+`audio-cpu` 与 `multimodal-transformers4576-cpu` 共享 `audio-cpu` 环境；cu124 的对应两个
+profile 共享 `audio-cu124` 环境。cu128 的 audio 使用 `tqdm==4.70.1`，原生 multimodal 使用
+`4.70.0`，因此保留独立环境。MOSS 继续使用 Transformers 5.6.0 的专用 cu128 环境。
+同族可有多个环境，不同族可共享环境；环境和 profile 数量均不要求长期保留同等数量的镜像。
+
+完整锁位于 [`dockerfiles/locks`](../dockerfiles/locks)，源约束位于
+[`dockerfiles/requirements`](../dockerfiles/requirements)。平台的 `platform-*.txt` 仅包含 Torch
+必需依赖闭包和基础安装工具；Flask、torchvision、torchaudio、NumPy、Pillow 等由环境完整锁声明。
+每个包固定一个适用于目标 Python/ABI/架构的 wheel URL 和 SHA256，包括 pip、setuptools、wheel
+及其依赖。各环境直接继承 Torch 平台，不通过升级另一个环境来构建。
+
+系统锁 [`system-trixie-amd64.json`](../dockerfiles/locks/system-trixie-amd64.json) 固定基础镜像、
+Debian `20260912T203535Z` 和安全仓库 `20260912T113611Z` 的实际 snapshot URL、签名索引摘要、
+全部直接/传递系统包版本和新增/升级 `.deb` 的 URL、大小、SHA256。基础镜像已有包由 OCI digest
+固定，并计入最终完整包集合。普通构建只下载锁中的制品，校验哈希后通过 `--no-download` 安装，
+不查询浮动 apt 仓库、不动态选择包名。
+
+主机使用 [`requirements.lock`](../requirements.lock)，支持 Python 3.10+。锁更新工具固定为
+uv 0.12.13；生成目标 wheel 锁需要 Python 3.11+ 的 `tomllib`，只读检查和运行代码支持 Python 3.10+。
+
+```bash
+# 只读：锁格式、目标平台、源约束及 profile/环境映射；不访问 Docker 或网络
+.venv/bin/python scripts/compile_locks.py --check
+# 保持当前全部包版本重新解析制品；--upgrade 才允许更新环境包
+.venv/bin/python scripts/compile_locks.py --runtime-only --variant cpu --uv /path/to/uv
+# 在固定基础容器中重新解析系统锁；只有此显式更新步骤运行 apt update
+.venv/bin/python scripts/compile_system_lock.py --snapshot 20260913T000000Z
+```
+
+`--host-only` 只更新主机锁；`--variant` 可重复，省略时处理全部平台。迁移保留了原有全部 Python
+包版本，仅补齐基础安装工具、目标制品及其哈希。更新锁后仍需执行目标容器验证。即使依赖和
+来源完全锁定，也不宣称重建的 image ID 必然相同；复现实验和补采仍使用原始 image ID。
 
 主机构建预检沿用驱动兼容分支，CUDA 12.4 选择固定的 Torch 2.6.0 wheel，CUDA 12.8+ 选择 2.11.0。
 `ACPROF_NLP_TORCH_INDEX_URL` 接受官方 `cu124`、`cu128` 和 `cpu` 索引；显式
@@ -74,9 +104,18 @@ CPU 使用 FP32，GPU 使用 BF16；常规推理使用 SDPA，Torch FLOPs 的独
 
 ## 构建、复用和验证
 
-`prepare_image` 先将模型分支解析为完整 commit，再选择运行环境。镜像名称包含构建指纹，
-指纹覆盖模型／任务／后端／环境声明、基础镜像 digest、共享与任务族依赖锁、Dockerfile、AC-Prof Python 代码，以及
-显式指定的 Torch 构建参数和 `model_download_policy`。依赖、权重和代码分层构建，相同内容由 Docker 复用。
+`prepare_image` 将模型分支解析为完整 commit，再通过 profile 引用准备依赖环境。
+构建链路为 `platform.Dockerfile` → `runtime.Dockerfile` → `runtime-model.Dockerfile` →
+`runtime-final.Dockerfile`，分别缓存平台、完整环境、模型快照和服务代码。
+
+`environment_id` 是规范化平台声明、系统锁及全部 Python 包版本、来源 URL、制品 SHA256 的摘要。
+锁的文件名、注释、顺序、profile、adapter、模型和业务代码不参与该身份。平台镜像的指纹另计
+Dockerfile 和安装脚本；环境镜像再计对应配方及不可变平台 image ID。依赖相同而构建配方不同，
+可以产生新的镜像缓存。
+
+服务标签使用 `request_fingerprint` 前 20 位查找候选，覆盖逻辑 profile、环境/构建声明、
+模型 commit、下载策略、后端、构建参数和 AC-Prof 代码；完整 `build_fingerprint` 再绑定实际模型
+父镜像 ID。模型层指纹绑定实际环境 image ID。标签是查找入口，执行与补采始终使用不可变 ID。
 
 分层构建与文件选择细节见[模型文件选择规则](#模型文件选择规则)。
 
@@ -84,8 +123,11 @@ CPU 使用 FP32，GPU 使用 BF16；常规推理使用 SDPA，Torch FLOPs 的独
 查不到目标指纹则自动构建；已有标签内容不符会报错。构建期间代码变动会使构建失败，避免
 用旧指纹标记新代码。旧 `:latest` 镜像可留存供历史实验使用，但不直接用于新环境的采集。
 
-主机构建统一经 `build_image` → `build_runtime_image`，所有 RuntimeProfile 必须指定
-完整依赖锁。旧任务族、base、Massif 和 Nsys Dockerfile 已删除。
+主机构建统一经 `build_image` → `build_runtime_image` → `prepare_environment_image`；环境验证脚本
+和 CI 复用最后一个入口。所有 profile 必须引用已锁定环境。构建前拒绝父层包缺失、版本或制品
+冲突；环境安装仅安装平台之外的差量。安装后执行 `pip check` 并严格核对完整 Python 和系统包
+集合，额外包同样报错。缓存命中时核对完整身份标签和内部清单；构建使用独立输入目录及
+`--iidfile`，核验输入未变、父镜像引用未变、成品清单正确后才发布标签。
 
 正式 server 和 profiler 使用镜像中配置的本地 snapshot。显式 `MODEL_LOCAL_PATH` 不存在时
 立即报错，不回退到 Hub/cache 加载；未知 backend 不会自动选择同任务族的其他 handler。
@@ -100,7 +142,8 @@ CPU 使用 FP32，GPU 使用 BF16；常规推理使用 SDPA，Torch FLOPs 的独
 `static_meta.json` v7 保存 `image_id`、`image_name`、`runtime_environment` 和成功返回的
 `runtime_validation`；单独的 `runtime_validation.json` 与设备日志也保留失败信息。
 只读取当前 schema 的 CSV／静态元数据。补采要求记录不可变 `image_id`，且原镜像存在并匹配构建指纹，
-不自动升级依赖，也不将工作区代码覆盖进该镜像。Torch、NCU、Massif、Nsys 的工具版本、
+不自动升级依赖，也不将工作区代码覆盖进该镜像。历史清单缺失的新平台/环境字段不推算、
+不回填；新构建必须具备并核验这些身份字段，schema 版本保持不变。Torch、NCU、Massif、Nsys 的工具版本、
 可用性、输出与错误继续由各自计划记录；普通推理成功不代表所有工具已验证成功。
 
 ## 镜像管理与清理
@@ -111,8 +154,8 @@ TUI 根据镜像标签和 AC-Prof 元数据判定类型。下表列出常见名�
 
 | 界面类型 | 名称前缀或示例 | 内容与用途 |
 | --- | --- | --- |
-| 公共基础 | `acprof-base:*` | Python、基础库和通用分析工具；供传统任务族构建复用，不含模型权重。默认锁定环境直接从固定的 Python 基础镜像构建运行依赖。 |
-| 运行依赖 | `acprof-runtime-*` | Torch、Transformers 等运行依赖，供环境匹配的模型共用；不含模型权重或 AC-Prof 业务代码。 |
+| 公共基础 | `acprof-platform-<platform_id>:<指纹前20位>`；历史 `acprof-base:*` | 新平台镜像包含固定 Python、系统包和 Torch 必需闭包，不含任务族 Python 依赖或模型。 |
+| 运行依赖 | `acprof-runtime-env:<指纹前20位>`；历史 `acprof-runtime-*` | 完整依赖环境，供多个 profile 或模型共用；不含模型权重或 AC-Prof 业务代码。 |
 | 模型文件 | `acprof-weights-*` | 继承运行依赖，加入某个模型固定 commit 的权重、配置、tokenizer／processor 等文件，供该模型的服务镜像复用。 |
 | 推理服务 | `acprof-nlp-*`、`acprof-cv-*` 等任务族前缀 | 在运行环境与模型文件上加入 AC-Prof 服务代码和环境清单，实际运行模型推理。 |
 | 调试镜像 | `acprof-blip-reuse-base:*`、`acprof-massif-*`、`acprof-nsys-*`、`acprof-ncu-*`；名称含 `dependency-check` 或 `reuse-base` | 调试、修复或旧 profiler 兼容流程留下的镜像；可能继承某个模型的权重。 |
@@ -121,11 +164,12 @@ TUI 根据镜像标签和 AC-Prof 元数据判定类型。下表列出常见名�
 
 镜像、容器和单配置结果文件名中的模型标识统一转小写，将 `/` 替换为 `--`，保留点号 `.` 和原有下划线 `_`。
 例如 `Qwen/Qwen2.5-0.5B` 生成 `qwen--qwen2.5-0.5b`，对应服务镜像
-`acprof-nlp-qwen--qwen2.5-0.5b:<构建指纹前20位>`、结果文件 `result_case_qwen--qwen2.5-0.5b_1c_4g_off.csv`。
+`acprof-nlp-qwen--qwen2.5-0.5b:<request_fingerprint前20位>`、结果文件 `result_case_qwen--qwen2.5-0.5b_1c_4g_off.csv`。
 点号符合 [Docker 镜像名称规则](https://github.com/distribution/reference/blob/main/regexp.go)；下载、加载与元数据仍保留原始模型 ID。
 镜像搜索和“选择同模型”区分点号与下划线。已有镜像标签与结果文件不会自动改名。
 
-常规模型的继承关系是 **运行依赖 → 模型文件 → 推理服务**。后两类共享运行环境和权重层，
+`org.acprof.image-kind` 标签分别标记 `platform/environment/weights/model`；原有镜像仍可通过
+历史标签和名称识别。常规模型的继承关系是 **平台 → 运行依赖 → 模型文件 → 推理服务**。后两类共享运行环境和权重层，
 不会因为保留两类镜像就各存一份权重。`acprof-build-source:<image ID>` 是构建时给已有镜像添加的别名，
 不另存一份镜像内容；TUI 按 image ID 合并这些标签。分类与构建实现分别见
 [`image_management.py`](../acprof/host/image_management.py) 和 [`runtime_images.py`](../acprof/host/runtime_images.py)。
@@ -180,7 +224,7 @@ Docker 连接失败、权限不足或查询超时显示错误并清除旧选择�
 共享环境层不包含 AC-Prof 业务代码或模型。默认构建使用带完整依赖锁的 runtime 镜像，
 再共用模型／最终代码构建流程。模型层指纹包含真实环境 image ID、模型 commit、backend、adapter、
 下载策略和筛选器内容；最终层复制 AC-Prof 代码。修改界面或 handler 可以复用依赖与模型层，
-修改筛选规则只重建模型及最终层。完整 Python 锁不固定 apt 仓库包版本，仍需保留原始 image ID。
+修改筛选规则只重建模型及最终层。Python 和系统依赖均消费锁，补采仍需保留原始 image ID。
 
 主机 NVML 依赖直接使用 NVIDIA 的 `nvidia-ml-py`，Python 导入名仍是 `pynvml`。
 已删除的同名 `pynvml` 发行包由[上游标记为弃用](https://github.com/gpuopenanalytics/pynvml#readme)；
@@ -196,7 +240,7 @@ Docker 连接失败、权限不足或查询超时显示错误并清除旧选择�
 
 | 边界 | 契约与实现入口 |
 | --- | --- |
-| 环境路由 | [`runtime_profiles.py`](../acprof/runtime_profiles.py) 的 `PROFILES` 声明 adapter、依赖锁、`task_types`、`model_types` 和 `backends`；`ARCHITECTURE_PROFILES` / `MODEL_PROFILES` 关联架构或模型。 |
+| 环境路由 | [`runtime_profiles.py`](../acprof/runtime_profiles.py) 的 `PROFILES` 声明 adapter、环境引用、`task_types`、`model_types` 和 `backends`；`ENVIRONMENTS` / `PLATFORMS` 声明依赖；`ARCHITECTURE_PROFILES` / `MODEL_PROFILES` 关联架构或模型。 |
 | 任务支持 | `host/detect.py`、`host/task_support.py` 与 `config.py` 的检测、任务和尺度定义一致；仅移除预检限制不构成适配。 |
 | 推理接口 | 已满足协议时使用 `family-default`；自定义实现由 `HandlerRegistry.register_adapter(name, family, backend, HandlerClass)` 注册，并在 `_auto_register` 导入。 |
 | 输入输出 | `BaseHandler` 维持四阶段接口；模型提示词、参数和尺度经 workload/输入计划传递，输出与 `host/model_schema.py` 一致。 |
@@ -205,6 +249,12 @@ Docker 连接失败、权限不足或查询超时显示错误并清除旧选择�
 当前 loader 的设备、模态和 profiler 边界在下方任务章节维护；新的行为须同时满足[采集协议](Profiling_Protocol.md#协议不变量)。
 
 ## 参考实现与取舍
+
+依赖解析继续使用 [uv](https://github.com/astral-sh/uv) 0.12.13（MIT / Apache-2.0），
+复用其目标平台解析和制品哈希；分层缓存复用 [BuildKit](https://github.com/moby/buildkit)
+（Apache-2.0）。两者持续维护，不新增服务运行依赖。系统来源采用
+[Debian Snapshot](https://snapshot.debian.org/)，显式锁更新时由 APT 验证签名索引，普通构建
+只消费锁定制品。新增逻辑限定于声明、编排和构建校验，不进入正式测量窗口。
 
 构建配置参考 [Cog 的环境声明](https://github.com/replicate/cog/blob/main/docs/yaml.md) 和
 [BentoML 的构建配置](https://github.com/bentoml/BentoML/blob/main/src/bentoml/_internal/bento/build_config.py)，

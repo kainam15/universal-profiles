@@ -13,7 +13,7 @@ from acprof.cli.run_args import build_parser
 from acprof.container.handlers import HandlerRegistry, resolve_model_source
 from acprof.host.compute_profile import _resolve_ncu_metrics, _select_ncu_flop_metrics
 from acprof.host.profiler_common import _load_input_scale_plan_entries
-from acprof.host.runtime_images import runtime_fingerprint
+from acprof.host.dependency_images import runtime_fingerprint
 from acprof.host.runtime_validation import validate_runtime
 from acprof.host.static_metadata import enrich_static_meta_from_input_plan
 from acprof.packet.merge_packet_latency import _request_records

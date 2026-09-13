@@ -119,6 +119,16 @@ class ImageManagementTests(unittest.TestCase):
         self.assertNotIn("must-not-be-displayed", repr(inventory))
         self.assertFalse(self.docker.removals)
 
+    def test_content_labels_identify_all_four_layers_without_profile_names(self):
+        self.docker.images = {
+            "sha256:" + str(index) * 64: image("sha256:" + str(index) * 64, [f"custom-cache:{index}"], 100, [],
+                                              labels={"org.acprof.image-kind": kind})
+            for index, kind in enumerate(("platform", "environment", "weights", "model"))
+        }
+        kinds = {item.image_id: item.kind for item in list_images().images}
+        self.assertEqual(kinds, {"sha256:" + str(index) * 64: kind
+                                 for index, kind in enumerate(("base", "runtime", "weights", "model"))})
+
     def test_delete_removes_all_selected_aliases_children_first_and_preserves_runtime(self):
         inventory = list_images()
         outcome = delete_images(inventory, (WEIGHTS, FINAL, WEIGHTS))

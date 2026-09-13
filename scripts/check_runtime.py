@@ -12,8 +12,8 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from acprof.artifacts import atomic_write_json
-from acprof.host.runtime_images import runtime_fingerprint
-from acprof.runtime_profiles import PROFILES
+from acprof.host.dependency_images import prepare_environment_image
+from acprof.runtime_profiles import DEFAULT_PROFILES, PROFILES, environment_id
 
 PATTERNS = {
     "nlp": ("test_nlp_runtime.py",),
@@ -28,34 +28,36 @@ PATTERNS = {
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--family", choices=PATTERNS, required=True)
+    selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--family", choices=PATTERNS)
+    selection.add_argument("--profile", choices=PROFILES)
     parser.add_argument("--variant", choices=("cpu", "cu124", "cu128"), default="cpu")
+    parser.add_argument("--build-only", action="store_true", help="仅构建并核验完整依赖清单，不宣称模型接口验证通过")
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args(argv)
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
     if any(output.iterdir()):
         parser.error("验证输出目录必须为空")
-    stem = "multimodal-transformers4576" if args.family == "multimodal" else args.family
-    name = stem if args.family == "multimodal" and args.variant == "cu128" else f"{stem}-{args.variant}"
+    name = args.profile or DEFAULT_PROFILES[(args.family, args.variant)]
     profile = PROFILES[name]
-    image = f"acprof-runtime-{name}:{runtime_fingerprint(profile)[:20]}"
+    if profile.adapter != "family-default" and not args.build_only:
+        parser.error("自定义 adapter 请通过主流程独立 runtime validation 验证；此入口可用 --build-only 核验依赖")
     started = time.perf_counter()
-    result = {"schema_version": 1, "family": args.family, "profile": profile.to_dict(),
-              "device": "cpu", "successful": False, "image": image}
+    result = {"schema_version": 1, "family": profile.family, "profile": profile.to_dict(),
+              "validation_scope": "dependencies" if args.build_only else "offline_cpu_interfaces",
+              "device": None if args.build_only else "cpu", "successful": False}
     try:
-        subprocess.run([
-            "docker", "build", "-f", str(ROOT / "dockerfiles/runtime.Dockerfile"),
-            "--build-arg", f"PYTHON_BASE_IMAGE={profile.python_base_image}",
-            "--build-arg", f"TORCH_INDEX_URL={profile.torch_index_url}",
-            "--build-arg", f"COMMON_REQUIREMENTS_LOCK={profile.common_requirements_lock}",
-            "--build-arg", f"REQUIREMENTS_LOCK={profile.requirements_lock}",
-            "-t", image, str(ROOT),
-        ], check=True, cwd=ROOT)
-        image_id = subprocess.check_output([
-            "docker", "image", "inspect", image, "--format", "{{.Id}}",
-        ], text=True).strip()
+        result["environment_id"] = environment_id(profile.environment, ROOT)
+        image = prepare_environment_image(profile.environment, ROOT)
+        image_id = image.image_id
         result["image_id"] = image_id
+        result["image"] = image.name
+        result["platform_image_id"] = image.platform_image_id
+        result["environment_manifest"] = image.manifest
+        if args.build_only:
+            result["successful"] = True
+            return 0
         command = [
             "docker", "run", "--rm", "--network", "none", "--cpus", "2", "--memory", "4g",
             "--user", f"{os.getuid()}:{os.getgid()}",
@@ -67,7 +69,7 @@ def main(argv=None):
         subprocess.run([*command, image_id, "python", "-m", "pip", "check"], check=True)
         run_command = [*command, image_id, "python", "scripts/run_tests.py",
                        "--require-no-skips", "--report", "/evidence/tests.json"]
-        for pattern in PATTERNS[args.family]:
+        for pattern in PATTERNS[profile.family]:
             run_command += ["--pattern", pattern]
         code = subprocess.run(run_command, cwd=ROOT).returncode
         result["successful"] = code == 0
@@ -75,6 +77,9 @@ def main(argv=None):
     except subprocess.CalledProcessError as error:
         result["error"] = str(error)
         return error.returncode or 1
+    except (RuntimeError, ValueError, OSError) as error:
+        result["error"] = str(error)
+        return 1
     finally:
         result["duration_s"] = time.perf_counter() - started
         atomic_write_json(output / "runtime.json", result)

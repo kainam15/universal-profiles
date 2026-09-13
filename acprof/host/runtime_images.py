@@ -6,21 +6,28 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
-from acprof.runtime_profiles import RuntimeProfile, select_runtime_profile
+from acprof.dependency_locks import content_digest
+from acprof.host.dependency_images import (
+    platform_fingerprint, prepare_environment_image, require_image_source, runtime_fingerprint,
+    verify_labels, verify_manifest,
+)
+from acprof.runtime_profiles import RuntimeProfile, environment_id, environment_identity, select_runtime_profile
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FINGERPRINT_LABEL = "org.acprof.build-fingerprint"
+REQUEST_LABEL = "org.acprof.request-fingerprint"
 MODEL_KEY_LABEL = "org.acprof.model-files-key"
 
 
 def configure_runtime_profile(task_info: Any) -> RuntimeProfile:
     """只在主机构建预检选择驱动分支；静态路由模块不探测硬件。"""
     from acprof.host.docker_runtime import _select_nlp_torch_index_url
-    from acprof.runtime_profiles import PROFILES
+    from acprof.runtime_profiles import DEFAULT_PROFILES, PLATFORMS, PROFILES
 
     profile = select_runtime_profile(task_info)
     if profile.adapter == "family-default":
@@ -29,12 +36,10 @@ def configure_runtime_profile(task_info: Any) -> RuntimeProfile:
         if index != f"https://download.pytorch.org/whl/{variant}" or variant not in {"cu128", "cu124", "cpu"}:
             raise ValueError("自定义 Torch 索引需要注册完整依赖锁；支持 cu128、cu124、cpu")
         override = os.environ.get("ACPROF_NLP_TORCH_SPEC", "").strip()
-        version = "2.6.0" if variant == "cu124" else "2.11.0"
+        version = PLATFORMS[variant].torch_version.split("+", 1)[0]
         if override and override not in {f"torch=={version}", f"torch=={version}+{variant}"}:
             raise ValueError(f"Torch 版本与依赖锁不符；{variant} 要求 torch=={version}+{variant}")
-        stem = "multimodal-transformers4576" if profile.family == "multimodal" else profile.family
-        name = stem if profile.family == "multimodal" and variant == "cu128" else f"{stem}-{variant}"
-        profile = PROFILES[name]
+        profile = PROFILES[DEFAULT_PROFILES[(profile.family, variant)]]
     task_info.runtime_profile_id, task_info.model_adapter = profile.profile_id, profile.adapter
     return profile
 
@@ -46,42 +51,37 @@ def download_policy(task_info: Any) -> str:
     return policy
 
 
-def build_fingerprint(task_info: Any, project_dir: str | Path = PROJECT_ROOT) -> str:
+def request_fingerprint(task_info: Any, project_dir: str | Path = PROJECT_ROOT) -> str:
     root = Path(project_dir)
     profile = select_runtime_profile(task_info)
     overrides = {
         key: os.environ.get(key, "").strip()
         for key in ("ACPROF_NLP_TORCH_INDEX_URL", "ACPROF_NLP_TORCH_SPEC")
     } if profile.adapter == "family-default" else {}
+    logical_profile = profile.to_dict()
+    logical_profile["environment"] = environment_id(profile.environment, root)
     digest = hashlib.sha256(json.dumps({
         "schema_version": 1, "model_id": task_info.model_id,
         "model_revision": task_info.model_revision,
         "task": task_info.pipeline_tag, "backend": task_info.runtime_backend,
-        "profile": profile.to_dict(),
+        "profile": logical_profile,
+        "dependency_build": runtime_fingerprint(profile.environment, root),
         "build_overrides": overrides,
         "model_download_policy": download_policy(task_info),
     }, sort_keys=True).encode())
     paths = sorted((root / "acprof").rglob("*.py"))
-    paths += sorted((root / "dockerfiles").glob("*.Dockerfile"))
-    paths.append(root / profile.requirements_lock)
-    paths.append(root / profile.common_requirements_lock)
+    paths += [root / "dockerfiles" / name for name in ("runtime-model.Dockerfile", "runtime-final.Dockerfile")]
     for path in paths:
         digest.update(str(path.relative_to(root)).encode())
         digest.update(path.read_bytes())
     return digest.hexdigest()
 
 
-def runtime_fingerprint(
-    profile: RuntimeProfile, project_dir: str | Path = PROJECT_ROOT,
-) -> str:
-    root = Path(project_dir)
-    digest = hashlib.sha256(json.dumps({
-        "python_base_image": profile.python_base_image, "torch_index_url": profile.torch_index_url,
-    }, sort_keys=True).encode())
-    digest.update((root / profile.requirements_lock).read_bytes())
-    digest.update((root / profile.common_requirements_lock).read_bytes())
-    digest.update((root / "dockerfiles/runtime.Dockerfile").read_bytes())
-    return digest.hexdigest()
+def build_fingerprint(request_id: str, model_image_id: str) -> str:
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", model_image_id):
+        raise ValueError("服务构建必须绑定不可变的模型父镜像 ID")
+    return content_digest({"schema_version": 2, "request_fingerprint": request_id,
+                           "model_image_id": model_image_id})
 
 
 def model_fingerprint(task_info: Any, runtime_id: str, project_dir: str | Path = PROJECT_ROOT) -> str:
@@ -117,14 +117,14 @@ def inspect_identity(image: str) -> dict | None:
         raise RuntimeError(f"Docker 返回了无效的镜像信息: {image}") from exc
 
 
-def verified_image(task_info: Any, name: str, fingerprint: str):
+def verified_image(task_info: Any, name: str, fingerprint: str, project_dir=PROJECT_ROOT):
     from acprof.host.docker_runtime import ImageInfo, _run
 
     identity = inspect_identity(name)
     if identity is None:
         return None
     labels = identity.get("labels") or {}
-    if labels.get(FINGERPRINT_LABEL) != fingerprint:
+    if labels.get(REQUEST_LABEL) != fingerprint:
         raise RuntimeError(f"镜像 {name} 的构建指纹不匹配；请重新构建")
     result = _run([
         "docker", "run", "--rm", "--network", "none", "--entrypoint", "cat",
@@ -138,12 +138,36 @@ def verified_image(task_info: Any, name: str, fingerprint: str):
         raise RuntimeError("镜像运行环境清单无效") from exc
     profile = select_runtime_profile(task_info)
     expected = {
-        "build_fingerprint": fingerprint, "profile_id": profile.profile_id,
+        "request_fingerprint": fingerprint, "profile_id": profile.profile_id,
         "adapter": profile.adapter, "model_id": task_info.model_id,
         "model_revision": task_info.model_revision,
+        "environment_id": environment_id(profile.environment, project_dir),
+        "platform_id": profile.environment.platform.platform_id,
+        "python_version": profile.environment.platform.python_version,
     }
     if not isinstance(manifest, dict) or any(manifest.get(key) != value for key, value in expected.items()):
         raise RuntimeError("镜像环境、适配器或模型 revision 与本次任务不匹配")
+    for key in ("platform_image_id", "environment_image_id", "model_image_id"):
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(manifest.get(key, ""))):
+            raise RuntimeError(f"镜像缺少不可变的 {key}")
+    environment = environment_identity(profile.environment, project_dir)
+    expected.update({
+        "python_base_image": profile.environment.platform.python_base_image,
+        "architecture": profile.environment.platform.architecture,
+        "platform_definition_id": content_digest(environment["platform"]),
+        "platform_build_fingerprint": platform_fingerprint(profile.environment.platform, project_dir),
+        "environment_build_fingerprint": content_digest({
+            "definition": runtime_fingerprint(profile.environment, project_dir),
+            "platform_image_id": manifest["platform_image_id"],
+        }),
+    })
+    actual_build = build_fingerprint(fingerprint, manifest["model_image_id"])
+    if labels.get(FINGERPRINT_LABEL) != actual_build or manifest.get("build_fingerprint") != actual_build:
+        raise RuntimeError("服务镜像与不可变父镜像构建指纹不匹配")
+    verify_labels(identity, expected, "model")
+    if labels.get("org.acprof.runtime-profile") != profile.profile_id or labels.get("org.acprof.model-adapter") != profile.adapter:
+        raise RuntimeError("服务镜像 profile 或 adapter 标签不匹配")
+    verify_manifest(manifest, expected, environment)
     if manifest.get("model_snapshot_revision") != task_info.model_revision:
         raise RuntimeError("镜像内实际 snapshot revision 与本次任务不匹配")
     from acprof.container.model_files import ModelFilesError, validate_plan
@@ -179,11 +203,12 @@ def prepare_runtime_image(task_info: Any, project_dir: str, *, reuse_existing: b
         if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
             raise RuntimeError("模型 revision 未解析为完整 commit SHA，尚未构建或复用镜像")
         task_info.model_revision = revision
-    fingerprint = build_fingerprint(task_info, project_dir)
+    fingerprint = request_fingerprint(task_info, project_dir)
     name = _model_image_tag(task_info, project_dir)
-    print(f"[runtime] 环境: {profile.profile_id}；适配器: {profile.adapter}", flush=True)
+    print(f"[runtime] 配置: {profile.profile_id}；平台: {profile.environment.platform.platform_id}；"
+          f"依赖环境: {environment_id(profile.environment, project_dir)[:20]}；适配器: {profile.adapter}", flush=True)
     if reuse_existing:
-        image = verified_image(task_info, name, fingerprint)
+        image = verified_image(task_info, name, fingerprint, project_dir)
         if image is not None:
             print(f"[build] 指纹核验通过，跳过构建并复用：{name}", flush=True)
             return image
@@ -192,70 +217,74 @@ def prepare_runtime_image(task_info: Any, project_dir: str, *, reuse_existing: b
 
 
 def build_runtime_image(task_info: Any, project_dir: str):
-    from acprof.host.docker_runtime import (
-        _model_image_tag, _run, _sanitize_model_id,
-    )
+    from acprof.host.docker_runtime import ImageInfo, _model_image_tag, _run, _sanitize_model_id
     from acprof.config import HF_MIRROR_ENDPOINT
+
     profile = select_runtime_profile(task_info)
     task_info.runtime_profile_id, task_info.model_adapter = profile.profile_id, profile.adapter
     if not re.fullmatch(r"[0-9a-f]{40}", task_info.model_revision or ""):
         raise RuntimeError("镜像构建要求固定 model revision；请通过 prepare_image 准备镜像")
     root = Path(project_dir)
-    fingerprint = build_fingerprint(task_info, root)
+    fingerprint = request_fingerprint(task_info, root)
     name = _model_image_tag(task_info, root)
 
-    def build(dockerfile: str, target: str, args: dict[str, str]) -> None:
-        command = ["docker", "build", "-f", str(root / "dockerfiles" / dockerfile)]
-        for key, value in args.items():
-            command += ["--build-arg", f"{key}={value}"]
-        if (os.environ.get("HF_TOKEN") or "").strip():
-            command += ["--secret", "id=hf_token,env=HF_TOKEN"]
-        command += ["-t", target, str(root)]
-        # Build output is streamed outside all measurement windows.
-        result = _run(command, check=False, capture=False)
-        if result.returncode:
-            raise RuntimeError(f"Docker 构建失败: {dockerfile} (exit={result.returncode})")
+    def build(dockerfile: str, args: dict[str, str], parent: tuple[str, str]) -> str:
+        with tempfile.TemporaryDirectory(prefix="acprof-model-build-") as directory:
+            iidfile = Path(directory) / "image-id"
+            command = ["docker", "build", "--platform", "linux/amd64", "--iidfile", str(iidfile),
+                       "-f", str(root / "dockerfiles" / dockerfile)]
+            for key, value in args.items():
+                command += ["--build-arg", f"{key}={value}"]
+            if dockerfile == "runtime-model.Dockerfile" and (os.environ.get("HF_TOKEN") or "").strip():
+                command += ["--secret", "id=hf_token,env=HF_TOKEN"]
+            command.append(str(root))
+            require_image_source(*parent)
+            if request_fingerprint(task_info, root) != fingerprint:
+                raise RuntimeError("构建期间代码或依赖配置发生变化，尚未发布镜像标签")
+            result = _run(command, check=False, capture=False)
+            if result.returncode:
+                raise RuntimeError(f"Docker 构建失败: {dockerfile} (exit={result.returncode})")
+            require_image_source(*parent)
+            if request_fingerprint(task_info, root) != fingerprint:
+                raise RuntimeError("构建期间代码或依赖配置发生变化，未发布镜像标签")
+            image_id = iidfile.read_text().strip()
+            if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+                raise RuntimeError("构建未返回不可变 image ID")
+            return image_id
 
-    runtime_tag = f"acprof-runtime-{profile.profile_id}:{runtime_fingerprint(profile, root)[:20]}"
-    if inspect_identity(runtime_tag) is None:
-        build("runtime.Dockerfile", runtime_tag, {
-            "PYTHON_BASE_IMAGE": profile.python_base_image,
-            "REQUIREMENTS_LOCK": profile.requirements_lock,
-            "COMMON_REQUIREMENTS_LOCK": profile.common_requirements_lock,
-            "TORCH_INDEX_URL": profile.torch_index_url,
-        })
-    runtime_id = inspect_identity(runtime_tag)["image_id"]
+    dependency = prepare_environment_image(profile.environment, root)
+    runtime_id = dependency.image_id
     runtime_source = "acprof-build-source:" + runtime_id.split(":", 1)[1]
     _run(["docker", "tag", runtime_id, runtime_source])
     model_key = model_fingerprint(task_info, runtime_id, root)
     model_tag = f"acprof-weights-{profile.family}-{_sanitize_model_id(task_info.model_id)}:{model_key[:20]}"
     model_identity = inspect_identity(model_tag)
     if model_identity is None:
-        build("runtime-model.Dockerfile", model_tag, {
+        candidate = build("runtime-model.Dockerfile", {
             "RUNTIME_IMAGE": runtime_source, "MODEL_ID": task_info.model_id,
             "MODEL_REVISION": task_info.model_revision, "HF_ENDPOINT": HF_MIRROR_ENDPOINT,
             "TASK_FAMILY": task_info.task_family, "RUNTIME_BACKEND": task_info.runtime_backend,
             "MODEL_ADAPTER": profile.adapter, "MODEL_DOWNLOAD_POLICY": download_policy(task_info),
             "MODEL_FILES_KEY": model_key,
-        })
-        model_identity = inspect_identity(model_tag)
-    if model_identity is None or (model_identity.get("labels") or {}).get(MODEL_KEY_LABEL) != model_key:
+        }, (runtime_source, runtime_id))
+        model_identity = inspect_identity(candidate)
+        if model_identity is None or (model_identity.get("labels") or {}).get(MODEL_KEY_LABEL) != model_key:
+            raise RuntimeError("模型文件层指纹不匹配；拒绝发布缓存")
+        _run(["docker", "tag", candidate, model_tag])
+    if (model_identity.get("labels") or {}).get(MODEL_KEY_LABEL) != model_key:
         raise RuntimeError("模型文件层指纹不匹配；拒绝复用")
     model_id = model_identity["image_id"]
     model_source = "acprof-build-source:" + model_id.split(":", 1)[1]
     _run(["docker", "tag", model_id, model_source])
-    lock_hash = hashlib.sha256((root / profile.requirements_lock).read_bytes()).hexdigest()
-    if build_fingerprint(task_info, root) != fingerprint:
-        raise RuntimeError("构建期间代码或依赖配置发生变化，请重新构建以固定版本")
-    build("runtime-final.Dockerfile", name, {
+    final_id = build("runtime-final.Dockerfile", {
         "MODEL_IMAGE": model_source, "RUNTIME_PROFILE": profile.profile_id,
-        "MODEL_ADAPTER": profile.adapter, "BUILD_FINGERPRINT": fingerprint,
-        "DEPENDENCY_LOCK_SHA256": lock_hash,
-    })
-    if build_fingerprint(task_info, root) != fingerprint:
-        _run(["docker", "image", "rm", name], check=False)
-        raise RuntimeError("构建期间代码发生变化，已撤销本次镜像标签；请重新构建")
-    image = verified_image(task_info, name, fingerprint)
+        "MODEL_ADAPTER": profile.adapter, "BUILD_FINGERPRINT": build_fingerprint(fingerprint, model_id),
+        "REQUEST_FINGERPRINT": fingerprint, "PLATFORM_IMAGE_ID": dependency.platform_image_id,
+        "ENVIRONMENT_IMAGE_ID": runtime_id, "MODEL_IMAGE_ID": model_id,
+        "DEPENDENCY_LOCK_SHA256": dependency.manifest["dependency_lock_sha256"],
+    }, (model_source, model_id))
+    image = verified_image(task_info, final_id, fingerprint, root)
     if image is None:
         raise RuntimeError("构建后未找到模型镜像")
-    return image
+    _run(["docker", "tag", final_id, name])
+    return ImageInfo(tag=final_id, name=name, runtime_environment=image.runtime_environment)

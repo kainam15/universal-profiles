@@ -310,10 +310,10 @@ def _select_nlp_torch_index_url() -> str:
 
 
 def _model_image_tag(task_info: TaskInfo, project_dir: Optional[str] = None) -> str:
-    from acprof.host.runtime_images import PROJECT_ROOT, build_fingerprint
+    from acprof.host.runtime_images import PROJECT_ROOT, request_fingerprint
 
     model_tag = _sanitize_model_id(task_info.model_id)
-    fingerprint = build_fingerprint(task_info, project_dir or PROJECT_ROOT)
+    fingerprint = request_fingerprint(task_info, project_dir or PROJECT_ROOT)
     return f"{DOCKER_IMAGE_PREFIX}-{task_info.task_family}-{model_tag}:{fingerprint[:20]}"
 
 

@@ -100,6 +100,10 @@ source .venv/bin/activate
 python -m pip install --require-hashes -r requirements.lock
 ```
 
+容器运行依赖由独立的平台和完整制品锁管理：保留 7 个任务族、22 个逻辑 profile，当前共享为
+20 个依赖环境。镜像按需构建和复用；只读检查可运行 `python scripts/compile_locks.py --check`，
+分层及锁更新命令见[运行兼容](docs/Runtime_Compatibility.md#当前配置)。
+
 私有或 gated 模型可在项目根目录创建 `.env.local`：
 
 ```env
