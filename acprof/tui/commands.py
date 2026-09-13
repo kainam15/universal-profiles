@@ -114,7 +114,6 @@ class RunConfig:
     skip_build: bool = False
     resume: bool = False
     idle_debug: bool = False
-    allow_cgroup_v1: bool = False
 
     @classmethod
     def smoke(cls, model: str = "") -> "RunConfig":
@@ -357,8 +356,6 @@ def build_run_command(
         command.append("--resume")
     if config.idle_debug:
         command.append("--idle-debug")
-    if config.allow_cgroup_v1:
-        command.append("--allow-cgroup-v1")
     return command
 
 
@@ -398,8 +395,6 @@ def build_probe_command(
             command.extend((option, value))
     if config.skip_build:
         command.append("--skip-build")
-    if config.allow_cgroup_v1:
-        command.append("--allow-cgroup-v1")
     return command
 
 

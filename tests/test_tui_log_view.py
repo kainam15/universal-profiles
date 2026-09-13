@@ -8,10 +8,12 @@ from textual.widget import Widget
 from textual.widgets import Button, Collapsible, Tabs
 from textual.widgets.text_area import Selection
 
-from acprof.cli.tui import AcprofTui, LogPanel
-from acprof.cli.tui_core import ProgressSnapshot, RunConfig
-from acprof.cli.tui_log import SelectableLog
-from acprof.cli.tui_scrollbar import SolidScrollBarRender
+from acprof.tui.app import AcprofTui
+from acprof.tui.views import LogPanel
+from acprof.tui.progress import ProgressSnapshot
+from acprof.tui.commands import RunConfig
+from acprof.tui.log import SelectableLog
+from acprof.tui.scrollbar import SolidScrollBarRender
 
 
 class TuiLogViewTests(unittest.IsolatedAsyncioTestCase):

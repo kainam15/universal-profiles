@@ -8,7 +8,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from acprof.host import detect
-from acprof.host.orchestrator import ImageInfo, _model_io_formats, plan_input_scales
+from acprof.host.orchestrator import ImageInfo
+from acprof.host.model_schema import _model_io_formats
+from acprof.host.input_plan import plan_input_scales
 from acprof.host.task_support import TaskSupportError, require_task_support
 
 

@@ -63,9 +63,8 @@ def build_fingerprint(task_info: Any, project_dir: str | Path = PROJECT_ROOT) ->
     }, sort_keys=True).encode())
     paths = sorted((root / "acprof").rglob("*.py"))
     paths += sorted((root / "dockerfiles").glob("*.Dockerfile"))
-    if profile.requirements_lock:
-        paths.append(root / profile.requirements_lock)
-        paths.append(root / profile.common_requirements_lock)
+    paths.append(root / profile.requirements_lock)
+    paths.append(root / profile.common_requirements_lock)
     for path in paths:
         digest.update(str(path.relative_to(root)).encode())
         digest.update(path.read_bytes())
@@ -74,21 +73,14 @@ def build_fingerprint(task_info: Any, project_dir: str | Path = PROJECT_ROOT) ->
 
 def runtime_fingerprint(
     profile: RuntimeProfile, project_dir: str | Path = PROJECT_ROOT,
-    build_args: dict[str, str] | None = None,
 ) -> str:
     root = Path(project_dir)
     digest = hashlib.sha256(json.dumps({
         "python_base_image": profile.python_base_image, "torch_index_url": profile.torch_index_url,
-        "build_args": build_args or {},
     }, sort_keys=True).encode())
-    if profile.requirements_lock:
-        digest.update((root / profile.requirements_lock).read_bytes())
-        digest.update((root / profile.common_requirements_lock).read_bytes())
-        digest.update((root / "dockerfiles/runtime.Dockerfile").read_bytes())
-    else:
-        digest.update((root / "dockerfiles/base.Dockerfile").read_bytes())
-        recipe = (root / f"dockerfiles/{profile.family}.Dockerfile").read_text()
-        digest.update(recipe.split("\nFROM runtime AS model\n", 1)[0].encode())
+    digest.update((root / profile.requirements_lock).read_bytes())
+    digest.update((root / profile.common_requirements_lock).read_bytes())
+    digest.update((root / "dockerfiles/runtime.Dockerfile").read_bytes())
     return digest.hexdigest()
 
 
@@ -201,10 +193,9 @@ def prepare_runtime_image(task_info: Any, project_dir: str, *, reuse_existing: b
 
 def build_runtime_image(task_info: Any, project_dir: str):
     from acprof.host.docker_runtime import (
-        _model_image_tag, _run, _sanitize_model_id, _select_nlp_torch_index_url,
-        _select_nlp_torch_spec, _url_host,
+        _model_image_tag, _run, _sanitize_model_id,
     )
-    from acprof.config import HF_MIRROR_ENDPOINT, PYPI_MIRROR_INDEX
+    from acprof.config import HF_MIRROR_ENDPOINT
     profile = select_runtime_profile(task_info)
     task_info.runtime_profile_id, task_info.model_adapter = profile.profile_id, profile.adapter
     if not re.fullmatch(r"[0-9a-f]{40}", task_info.model_revision or ""):
@@ -213,10 +204,8 @@ def build_runtime_image(task_info: Any, project_dir: str):
     fingerprint = build_fingerprint(task_info, root)
     name = _model_image_tag(task_info, root)
 
-    def build(dockerfile: str, target: str, args: dict[str, str], *, stage: str | None = None) -> None:
+    def build(dockerfile: str, target: str, args: dict[str, str]) -> None:
         command = ["docker", "build", "-f", str(root / "dockerfiles" / dockerfile)]
-        if stage:
-            command += ["--target", stage]
         for key, value in args.items():
             command += ["--build-arg", f"{key}={value}"]
         if (os.environ.get("HF_TOKEN") or "").strip():
@@ -227,33 +216,14 @@ def build_runtime_image(task_info: Any, project_dir: str):
         if result.returncode:
             raise RuntimeError(f"Docker 构建失败: {dockerfile} (exit={result.returncode})")
 
-    if profile.requirements_lock:
-        runtime_tag = f"acprof-runtime-{profile.profile_id}:{runtime_fingerprint(profile, root)[:20]}"
-        if inspect_identity(runtime_tag) is None:
-            build("runtime.Dockerfile", runtime_tag, {
-                "PYTHON_BASE_IMAGE": profile.python_base_image,
-                "REQUIREMENTS_LOCK": profile.requirements_lock,
-                "COMMON_REQUIREMENTS_LOCK": profile.common_requirements_lock,
-                "TORCH_INDEX_URL": profile.torch_index_url,
-            })
-    else:
-        base_args = {
-            "PYTHON_BASE_IMAGE": profile.python_base_image, "HF_ENDPOINT": HF_MIRROR_ENDPOINT,
-            "HF_FALLBACK_ENDPOINTS": "https://huggingface.co", "PYPI_INDEX_URL": PYPI_MIRROR_INDEX,
-            "PYPI_TRUSTED_HOST": _url_host(PYPI_MIRROR_INDEX),
-        }
-        base_hash = hashlib.sha256((root / "dockerfiles/base.Dockerfile").read_bytes() +
-                                   json.dumps(base_args, sort_keys=True).encode()).hexdigest()
-        base_tag = f"acprof-base:{base_hash[:20]}"
-        family_args = {"BASE_IMAGE": base_tag}
-        if profile.family in {"nlp", "diffusion", "multimodal", "structured"}:
-            index = _select_nlp_torch_index_url()
-            family_args.update(TORCH_INDEX_URL=index, TORCH_PACKAGE_SPEC=_select_nlp_torch_spec(index))
-        runtime_tag = f"acprof-runtime-{profile.family}:{runtime_fingerprint(profile, root, family_args)[:20]}"
-        if inspect_identity(runtime_tag) is None:
-            if inspect_identity(base_tag) is None:
-                build("base.Dockerfile", base_tag, base_args)
-            build(f"{profile.family}.Dockerfile", runtime_tag, family_args, stage="runtime")
+    runtime_tag = f"acprof-runtime-{profile.profile_id}:{runtime_fingerprint(profile, root)[:20]}"
+    if inspect_identity(runtime_tag) is None:
+        build("runtime.Dockerfile", runtime_tag, {
+            "PYTHON_BASE_IMAGE": profile.python_base_image,
+            "REQUIREMENTS_LOCK": profile.requirements_lock,
+            "COMMON_REQUIREMENTS_LOCK": profile.common_requirements_lock,
+            "TORCH_INDEX_URL": profile.torch_index_url,
+        })
     runtime_id = inspect_identity(runtime_tag)["image_id"]
     runtime_source = "acprof-build-source:" + runtime_id.split(":", 1)[1]
     _run(["docker", "tag", runtime_id, runtime_source])
@@ -274,7 +244,7 @@ def build_runtime_image(task_info: Any, project_dir: str):
     model_id = model_identity["image_id"]
     model_source = "acprof-build-source:" + model_id.split(":", 1)[1]
     _run(["docker", "tag", model_id, model_source])
-    lock_hash = hashlib.sha256((root / profile.requirements_lock).read_bytes()).hexdigest() if profile.requirements_lock else ""
+    lock_hash = hashlib.sha256((root / profile.requirements_lock).read_bytes()).hexdigest()
     if build_fingerprint(task_info, root) != fingerprint:
         raise RuntimeError("构建期间代码或依赖配置发生变化，请重新构建以固定版本")
     build("runtime-final.Dockerfile", name, {

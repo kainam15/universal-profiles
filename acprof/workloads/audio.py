@@ -544,16 +544,6 @@ class AudioWorkloadGenerator(WorkloadGenerator):
         if self._text_generator is not None:
             # The container tokenizer supplies the measured effective token count.
             return None
-        if payload is not None and "audio_samples" in payload:
-            sample_rate = payload.get("sample_rate", SAMPLE_RATE)
-            if isinstance(sample_rate, bool) or not isinstance(sample_rate, (int, float)):
-                raise ValueError("legacy audio payload has an invalid sample_rate")
-            if float(sample_rate) <= 0:
-                raise ValueError("legacy audio payload sample_rate must be positive")
-            samples = payload["audio_samples"]
-            if not isinstance(samples, list):
-                raise ValueError("legacy audio payload audio_samples must be an array")
-            return len(samples) / float(sample_rate)
         metadata = self.input_metadata(scale_value, payload)
         return float(metadata["duration_s"])
 

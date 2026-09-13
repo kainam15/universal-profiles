@@ -4,7 +4,7 @@ from textual.app import App, ComposeResult
 from textual.scrollbar import ScrollTo, ScrollUp
 from textual.widgets.text_area import Selection
 
-from acprof.cli.tui_log import SelectableLog
+from acprof.tui.log import SelectableLog
 
 
 class LogApp(App):

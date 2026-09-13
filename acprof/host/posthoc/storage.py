@@ -21,7 +21,6 @@ from typing import (
 from acprof.host.collection_history import COLLECTION_HISTORY_NAME, normalize_collection_history
 from acprof.host.posthoc.context import (
     BACKUP_DIRNAME,
-    LOCK_FILENAME,
     PROJECT_DIR,
     PosthocError,
     RESULT_CSV_NAME,
@@ -317,59 +316,18 @@ class PosthocLock:
         from acprof.host.run_state import MeasurementLock, ResultDirectoryLock
         self._result_lock = ResultDirectoryLock(result_dir)
         self._measurement_lock = MeasurementLock()
-        self.path = result_dir / LOCK_FILENAME
-        self._owned = False
 
     def __enter__(self) -> "PosthocLock":
+        self._measurement_lock.__enter__()
         try:
-            self._measurement_lock.__enter__()
             self._result_lock.__enter__()
-            return self._acquire_legacy_lock()
         except BaseException:
-            self._result_lock.__exit__(None, None, None)
             self._measurement_lock.__exit__(None, None, None)
             raise
+        return self
 
-    def _acquire_legacy_lock(self) -> "PosthocLock":
-        payload = json.dumps({"pid": os.getpid(), "created_at": _timestamp_token()})
-        for _attempt in range(2):
-            try:
-                descriptor = os.open(
-                    self.path,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                    0o644,
-                )
-            except FileExistsError:
-                try:
-                    existing = json.loads(self.path.read_text(encoding="utf-8"))
-                    pid = int(existing.get("pid", -1))
-                except (OSError, ValueError, TypeError):
-                    pid = -1
-                if pid > 0 and Path(f"/proc/{pid}").exists():
-                    raise PosthocError(
-                        f"another profile.py process is active (pid={pid}): {self.path}"
-                    )
-                try:
-                    self.path.unlink()
-                except FileNotFoundError:
-                    pass
-                continue
-            with os.fdopen(descriptor, "w", encoding="utf-8") as f:
-                f.write(payload + "\n")
-                f.flush()
-                os.fsync(f.fileno())
-            self._owned = True
-            return self
-        raise PosthocError(f"cannot acquire profile lock: {self.path}")
-
-    def __exit__(self, _exc_type, _exc, _traceback) -> None:
+    def __exit__(self, exc_type, exc, traceback) -> None:
         try:
-            if self._owned:
-                try:
-                    self.path.unlink()
-                except FileNotFoundError:
-                    pass
-                self._owned = False
+            self._result_lock.__exit__(exc_type, exc, traceback)
         finally:
-            self._result_lock.__exit__(_exc_type, _exc, _traceback)
-            self._measurement_lock.__exit__(_exc_type, _exc, _traceback)
+            self._measurement_lock.__exit__(exc_type, exc, traceback)

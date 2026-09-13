@@ -15,7 +15,6 @@ import re
 import shutil
 from time import perf_counter
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
-from uuid import uuid4
 
 from acprof.host.detect import TaskInfo
 from acprof.host.profiler_common import (
@@ -37,37 +36,14 @@ from acprof.host.profilers.execution_parsers import (
     NSYS_REPORTS,
     _finite_float,
     parse_massif_output,
-    parse_massif_snapshots,
-    _header_base,
-    _duration_factor_to_ms,
-    _memory_factor_to_bytes,
-    _csv_table,
-    _field_for_base,
-    _sum_numeric_column,
-    _nsys_memory_report_has_no_data,
-    parse_nsys_stats_csv,
     parse_nsys_stats_reports,
 )
 
-from acprof.host.profilers.tool_discovery import (
-    NSYS_DEFAULT_SEARCH_ROOTS,
-    _candidate_nsys_paths,
-    _nsys_path_rank,
-    _find_nsys_executable,
-    _nsys_mount_root,
-    _find_nsys_importer,
-)
+from acprof.host.profilers.tool_discovery import _find_nsys_executable, _nsys_mount_root
 
 from acprof.host.profilers.execution_environment import (
-    EXECUTION_RUNTIME_LABEL_PREFIX,
-    EXECUTION_RUNTIME_VERSION,
-    EXECUTION_BASE_IMAGE_LABEL,
-    EXECUTION_DOCKERFILE_LABEL,
     _command_detail,
-    _inspect_execution_image,
-    _ensure_execution_image,
-    _build_massif_image,
-    _build_nsys_image,
+    require_execution_image,
     _massif_version,
     _nsys_version,
     _validate_nsys_container_runtime,
@@ -1060,11 +1036,11 @@ def collect_execution_profile_plan(
     massif_version = "unknown"
     if collect_massif:
         try:
-            derived_image = _build_massif_image(image_tag, project_dir)
+            derived_image = require_execution_image(image_tag, MASSIF_TOOL)
         except Exception as exc:
             massif_error = str(exc)
             if not massif_error.startswith("massif_"):
-                massif_error = f"massif_image_build_failed:{exc!r}"
+                massif_error = f"massif_runtime_check_failed:{exc!r}"
         if derived_image:
             massif_version = _massif_version(derived_image)
 
@@ -1086,10 +1062,7 @@ def collect_execution_profile_plan(
             nsys_version = _nsys_version(nsys_bin)
             if nsys_mount_root and not nsys_error:
                 try:
-                    nsys_profile_image = _build_nsys_image(
-                        image_tag,
-                        project_dir,
-                    )
+                    nsys_profile_image = require_execution_image(image_tag, NSYS_TOOL)
                     _validate_nsys_container_runtime(
                         nsys_profile_image,
                         nsys_mount_root,

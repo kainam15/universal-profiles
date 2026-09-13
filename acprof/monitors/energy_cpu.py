@@ -34,15 +34,6 @@ class CPUSample:
 
 
 @dataclass
-class ProcCPUSample:
-    pid: int
-    ppid: int
-    comm: str
-    cpu_s: float
-    cmdline: str
-
-
-@dataclass
 class CPUEnergyResult:
     cpu_energy_iters: int
     cpu_idle_power_w: float
@@ -163,86 +154,6 @@ def _read_host_active_s(proc_stat_path: str = "/proc/stat") -> float:
     return active / _clock_ticks_per_second()
 
 
-def _read_proc_cmdline(pid_dir: str, fallback: str) -> str:
-    try:
-        with open(os.path.join(pid_dir, "cmdline"), "rb") as f:
-            raw = f.read()
-    except OSError:
-        return fallback
-
-    cmdline = raw.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
-    return cmdline or fallback
-
-
-def _parse_proc_stat_process(stat_text: str, ticks: float) -> ProcCPUSample:
-    left = stat_text.find("(")
-    right = stat_text.rfind(")")
-    if left < 0 or right < left:
-        raise ValueError(f"invalid /proc stat process line: {stat_text!r}")
-
-    pid = int(stat_text[:left].strip())
-    comm = stat_text[left + 1:right]
-    fields = stat_text[right + 2:].split()
-    if len(fields) <= 12:
-        raise ValueError(f"short /proc stat process line: {stat_text!r}")
-
-    ppid = int(fields[1])
-    utime_ticks = float(fields[11])
-    stime_ticks = float(fields[12])
-    return ProcCPUSample(
-        pid=pid,
-        ppid=ppid,
-        comm=comm,
-        cpu_s=(utime_ticks + stime_ticks) / ticks,
-        cmdline=comm,
-    )
-
-
-def _read_proc_cpu_snapshot(proc_root: str = "/proc") -> Dict[int, ProcCPUSample]:
-    if not os.path.isdir(proc_root):
-        return {}
-
-    ticks = _clock_ticks_per_second()
-    snapshot: Dict[int, ProcCPUSample] = {}
-    for entry in os.scandir(proc_root):
-        if not entry.name.isdigit():
-            continue
-        pid_dir = entry.path
-        try:
-            with open(os.path.join(pid_dir, "stat"), "r", encoding="utf-8") as f:
-                sample = _parse_proc_stat_process(f.read().strip(), ticks)
-            sample.cmdline = _read_proc_cmdline(pid_dir, sample.comm)
-        except (OSError, ValueError):
-            continue
-        snapshot[sample.pid] = sample
-    return snapshot
-
-
-def _proc_cpu_delta_top(
-    start: Dict[int, Any],
-    end: Dict[int, Any],
-    limit: int = 15,
-) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    for pid, curr in end.items():
-        prev = start.get(pid)
-        prev_cpu_s = float(prev.cpu_s) if prev is not None else 0.0
-        delta_s = float(curr.cpu_s) - prev_cpu_s
-        if delta_s <= 0:
-            continue
-        rows.append({
-            "pid": int(curr.pid),
-            "ppid": int(curr.ppid),
-            "comm": str(curr.comm),
-            "cpu_time_ms": delta_s * 1000.0,
-            "cmd": str(curr.cmdline),
-            "started_during_idle": prev is None,
-        })
-
-    rows.sort(key=lambda row: (row["cpu_time_ms"], row["pid"]), reverse=True)
-    return rows[:limit]
-
-
 def _percentile(values: List[float], pct: float) -> float:
     if not values:
         return float("nan")
@@ -290,11 +201,6 @@ def _build_idle_trace(
     samples: List[CPUSample],
     domains: List[RaplDomain],
     trace_interval_s: float,
-    proc_start: Dict[int, Any],
-    proc_end: Dict[int, Any],
-    proc_snapshot_error: str = "",
-    idle_started_at_unix_s: Optional[float] = None,
-    idle_ended_at_unix_s: Optional[float] = None,
 ) -> Dict[str, Any]:
     if len(samples) < 2:
         return {}
@@ -312,10 +218,8 @@ def _build_idle_trace(
         container_delta_s = end.container_cpu_s - start.container_cpu_s
 
     trace: Dict[str, Any] = {
-        "idle_trace_schema": "cpu_rapl_idle_v1",
+        "idle_trace_schema": "cpu_rapl_control_v1",
         "idle_trace_interval_s": trace_interval_s,
-        "idle_started_at_unix_s": idle_started_at_unix_s,
-        "idle_ended_at_unix_s": idle_ended_at_unix_s,
         "actual_idle_duration_s": duration_s,
         "rapl_domain_names": [domain.name for domain in domains],
         "rapl_start_uj": start.energy_uj,
@@ -335,14 +239,7 @@ def _build_idle_trace(
         },
         "idle_host_active_delta_s": end.host_active_s - start.host_active_s,
         "idle_container_cpu_delta_s": container_delta_s,
-        "idle_proc_cpu_top": _proc_cpu_delta_top(proc_start, proc_end),
-        "idle_proc_cpu_note": (
-            "proc delta is start/end sampling; short-lived processes that exit before "
-            "idle end require bpftrace to attribute"
-        ),
     }
-    if proc_snapshot_error:
-        trace["idle_proc_cpu_error"] = proc_snapshot_error
     return trace
 
 
@@ -399,26 +296,6 @@ def _resolve_container_cpu_reader(
                     raise RuntimeError(f"usage_usec missing from {path}")
 
                 return read_v2
-
-    for line in lines:
-        parts = line.split(":", 2)
-        if len(parts) != 3:
-            continue
-        controllers = set(parts[1].split(","))
-        if "cpuacct" not in controllers:
-            continue
-
-        candidates = [
-            _join_cgroup_path(os.path.join(cgroup_root, parts[1]), parts[2], "cpuacct.usage"),
-            _join_cgroup_path(os.path.join(cgroup_root, "cpuacct"), parts[2], "cpuacct.usage"),
-            _join_cgroup_path(cgroup_root, parts[2], "cpuacct.usage"),
-        ]
-        for usage_path in candidates:
-            if os.path.exists(usage_path):
-                def read_v1(path: str = usage_path) -> float:
-                    return float(_read_int(path)) / 1_000_000_000.0
-
-                return read_v1
 
     return None
 
@@ -605,32 +482,6 @@ class CPUEnergyMonitor:
     def available(self) -> bool:
         return bool(self.domains) and not self._init_error
 
-    def measure_idle(self, trace_interval_s: Optional[float] = None) -> float:
-        self.idle_trace = {}
-        if not self.available:
-            return float("nan")
-
-        try:
-            if trace_interval_s is not None and trace_interval_s > 0:
-                start, end, _trace_samples = self._measure_idle_with_trace(float(trace_interval_s))
-            else:
-                start = self._read_sample(time.perf_counter())
-                sleep_s = max(0.0, self.idle_seconds)
-                if sleep_s > 0:
-                    time.sleep(sleep_s)
-                end = self._read_sample(time.perf_counter())
-        except Exception as exc:
-            self._runtime_error = str(exc)
-            self.idle_power_w = float("nan")
-            self.idle_trace = {}
-            return self.idle_power_w
-
-        duration_s = end.timestamp - start.timestamp
-        if duration_s > 0:
-            self.idle_power_w = _energy_delta_j(start, end, self.domains) / duration_s
-        else:
-            self.idle_power_w = float("nan")
-        return self.idle_power_w
 
     def apply_control_baseline(
         self,
@@ -647,11 +498,8 @@ class CPUEnergyMonitor:
                 samples,
                 self.domains,
                 self.dt,
-                {},
-                {},
             )
             self.idle_trace.update({
-                "idle_trace_schema": "cpu_rapl_control_v1",
                 "cpu_idle_baseline_method": "matched_control_energy_delta",
                 "idle_proc_cpu_top": [],
                 "idle_proc_cpu_note": (
@@ -661,55 +509,6 @@ class CPUEnergyMonitor:
             })
         return self.idle_power_w
 
-    def _measure_idle_with_trace(self, trace_interval_s: float) -> Tuple[CPUSample, CPUSample, List[CPUSample]]:
-        sleep_s = max(0.0, self.idle_seconds)
-        interval_s = max(0.001, trace_interval_s)
-        proc_start: Dict[int, Any] = {}
-        proc_end: Dict[int, Any] = {}
-        proc_snapshot_error = ""
-
-        idle_started_at_unix_s = time.time()
-        start = self._read_sample(time.perf_counter())
-        try:
-            proc_start = _read_proc_cpu_snapshot(self.proc_root)
-        except Exception as exc:
-            proc_snapshot_error = repr(exc)
-
-        trace_samples = [start]
-        deadline = start.timestamp + sleep_s
-        while True:
-            now = time.perf_counter()
-            remaining_s = deadline - now
-            if remaining_s <= 0:
-                break
-            time.sleep(min(interval_s, remaining_s))
-            sample_t = time.perf_counter()
-            if sample_t > trace_samples[-1].timestamp:
-                trace_samples.append(self._read_sample(sample_t))
-
-        if len(trace_samples) == 1 or trace_samples[-1].timestamp < deadline:
-            end_t = time.perf_counter()
-            if end_t > trace_samples[-1].timestamp:
-                trace_samples.append(self._read_sample(end_t))
-
-        end = trace_samples[-1]
-        try:
-            proc_end = _read_proc_cpu_snapshot(self.proc_root)
-        except Exception as exc:
-            proc_snapshot_error = "; ".join(item for item in [proc_snapshot_error, repr(exc)] if item)
-        idle_ended_at_unix_s = time.time()
-
-        self.idle_trace = _build_idle_trace(
-            trace_samples,
-            self.domains,
-            interval_s,
-            proc_start,
-            proc_end,
-            proc_snapshot_error=proc_snapshot_error,
-            idle_started_at_unix_s=idle_started_at_unix_s,
-            idle_ended_at_unix_s=idle_ended_at_unix_s,
-        )
-        return start, end, trace_samples
 
     def start(self) -> None:
         if not self.available:
@@ -786,26 +585,3 @@ class CPUEnergyMonitor:
             self.samples.append(self._read_sample(timestamp))
         except Exception as exc:
             self._runtime_error = str(exc)
-
-
-def measure_energy_threaded(
-    fn: Callable[[], object],
-    sample_hz: float = 20.0,
-    idle_seconds: float = DEFAULT_IDLE_SECONDS,
-    container_name: str = "",
-) -> Tuple[CPUEnergyResult, str, List[CPUSample]]:
-    monitor = CPUEnergyMonitor(
-        sample_hz=sample_hz,
-        idle_seconds=idle_seconds,
-        container_name=container_name,
-    )
-    try:
-        monitor.measure_idle()
-        monitor.start()
-        try:
-            fn()
-        finally:
-            result = monitor.stop()
-        return result
-    finally:
-        monitor.close()

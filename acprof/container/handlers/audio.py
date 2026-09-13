@@ -344,49 +344,29 @@ class AudioHandler(BaseHandler):
         task_type = model_ctx["task_type"]
         if task_type in _TEXT_AUDIO_TASK_TYPES:
             return self._preprocess_text(model_ctx, raw_input)
-        has_base64 = "audio_base64" in raw_input
-        has_legacy_samples = "audio_samples" in raw_input
-        if has_base64 and has_legacy_samples:
-            raise ValueError("provide exactly one of audio_base64 or audio_samples")
-        if not has_base64 and not has_legacy_samples:
-            raise ValueError("missing audio input: expected audio_base64 or audio_samples")
+        if "audio_samples" in raw_input or "audio_base64" not in raw_input:
+            raise ValueError("audio input requires audio_base64 WAV; audio_samples is no longer supported")
 
         metadata = self._audio_metadata(model_ctx)
         required_sample_rate = _optional_positive_int(metadata.get("sampling_rate"))
 
-        if has_base64:
-            audio_format = raw_input.get("audio_format")
-            if audio_format != "wav":
-                raise ValueError("audio_format must be 'wav' for audio_base64 input")
-            if "sample_rate" not in raw_input:
-                raise ValueError("sample_rate is required for audio_base64 input")
-            declared_sample_rate = _positive_int(
-                raw_input.get("sample_rate"), "sample_rate"
+        audio_format = raw_input.get("audio_format")
+        if audio_format != "wav":
+            raise ValueError("audio_format must be 'wav' for audio_base64 input")
+        if "sample_rate" not in raw_input:
+            raise ValueError("sample_rate is required for audio_base64 input")
+        declared_sample_rate = _positive_int(
+            raw_input.get("sample_rate"), "sample_rate"
+        )
+        audio_array, wav_sample_rate = self._decode_wav(
+            raw_input.get("audio_base64")
+        )
+        if declared_sample_rate != wav_sample_rate:
+            raise ValueError(
+                "sample_rate does not match the WAV header "
+                f"({declared_sample_rate} != {wav_sample_rate})"
             )
-            audio_array, wav_sample_rate = self._decode_wav(
-                raw_input.get("audio_base64")
-            )
-            if declared_sample_rate != wav_sample_rate:
-                raise ValueError(
-                    "sample_rate does not match the WAV header "
-                    f"({declared_sample_rate} != {wav_sample_rate})"
-                )
-            sample_rate = wav_sample_rate
-        else:
-            sample_rate = _positive_int(
-                raw_input.get("sample_rate", required_sample_rate or 16000),
-                "sample_rate",
-            )
-            try:
-                audio_array = np.asarray(raw_input.get("audio_samples"), dtype=np.float32)
-            except (TypeError, ValueError) as exc:
-                raise ValueError("audio_samples must be a one-dimensional numeric array") from exc
-            if audio_array.ndim != 1:
-                raise ValueError("audio_samples must be a one-dimensional numeric array")
-            if audio_array.size == 0:
-                raise ValueError("audio_samples must contain at least one sample")
-            if not np.all(np.isfinite(audio_array)):
-                raise ValueError("audio_samples must contain only finite values")
+        sample_rate = wav_sample_rate
 
         input_num_samples = int(audio_array.size)
         duration_s = input_num_samples / sample_rate

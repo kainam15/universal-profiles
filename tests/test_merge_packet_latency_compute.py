@@ -16,10 +16,6 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
             fieldnames = [
                 "sniff_group_id",
                 "latency_s",
-                "compute_profile_tool",
-                "model_mflop_per_request",
-                "compute_mflops_app",
-                "compute_mflops",
                 "model_logical_mflop_per_request_torch_profiler_eager",
                 "model_logical_mflops_app_torch_profiler_eager",
                 "model_logical_mflops_packet_torch_profiler_eager",
@@ -34,10 +30,6 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
                     {
                         "sniff_group_id": "case_seq1_r0",
                         "latency_s": "nan",
-                        "compute_profile_tool": "torch_profiler_eager",
-                        "model_mflop_per_request": "200",
-                        "compute_mflops_app": "400",
-                        "compute_mflops": "400",
                         "model_logical_mflop_per_request_torch_profiler_eager": "200",
                         "model_logical_mflops_app_torch_profiler_eager": "400",
                         "model_logical_mflops_packet_torch_profiler_eager": "nan",
@@ -47,7 +39,7 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
                     }
                 )
             with open(lat_json, "w", encoding="utf-8") as f:
-                json.dump({"case_seq1_r0:0": 0.25}, f)
+                json.dump({'schema_version': 2, 'requests': {'case_seq1_r0:0': {'latency_s': 0.25}}}, f)
 
             subprocess.run(
                 [
@@ -64,8 +56,6 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
             with open(out_csv, "r", encoding="utf-8", newline="") as f:
                 row = next(csv.DictReader(f))
 
-        self.assertEqual(row["compute_mflops"], "800.000000")
-        self.assertEqual(row["compute_mflops_app"], "400")
         self.assertEqual(
             row["model_logical_mflops_packet_torch_profiler_eager"],
             "800.000000",
@@ -88,7 +78,7 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
             static_meta = os.path.join(tmp, "static_meta.json")
 
             with open(static_meta, "w", encoding="utf-8") as f:
-                json.dump({"batch_size": 1}, f)
+                json.dump({"schema_version": 7, "batch_size": 1}, f)
 
             fieldnames = [
                 "sniff_group_id",
@@ -98,8 +88,8 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
                 "latency_p95_s",
                 "latency_slow_ratio",
                 "throughput_samples_per_s",
-                "model_mflop_per_request",
-                "compute_mflops",
+                "model_logical_mflop_per_request_torch_profiler_eager",
+                "model_logical_mflops_packet_torch_profiler_eager",
                 "cpu_cores",
                 "container_cpu_util_avg_pct",
                 "cpu_freq_avg_hz",
@@ -118,8 +108,8 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
                     "latency_p95_s": "nan",
                     "latency_slow_ratio": "nan",
                     "throughput_samples_per_s": "2.000000",
-                    "model_mflop_per_request": "200.000000",
-                    "compute_mflops": "400.000000",
+                    "model_logical_mflop_per_request_torch_profiler_eager": "200.000000",
+                    "model_logical_mflops_packet_torch_profiler_eager": "400.000000",
                     "cpu_cores": "2",
                     "container_cpu_util_avg_pct": "50.0",
                     "cpu_freq_avg_hz": "3000000000",
@@ -129,7 +119,7 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
                 })
 
             with open(lat_json, "w", encoding="utf-8") as f:
-                json.dump({"case_seq1_r0:0": 0.25, "case_seq1_r0:1": 0.25}, f)
+                json.dump({'schema_version': 2, 'requests': {'case_seq1_r0:0': {'latency_s': 0.25}, 'case_seq1_r0:1': {'latency_s': 0.25}}}, f)
 
             subprocess.run(
                 [
@@ -155,7 +145,7 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
         self.assertEqual(rows[0]["latency_p95_s"], "0.250000")
         self.assertEqual(rows[0]["latency_slow_ratio"], "1.000000")
         self.assertEqual(rows[0]["throughput_samples_per_s"], "4.000000")
-        self.assertEqual(rows[0]["compute_mflops"], "800.000000")
+        self.assertEqual(rows[0]["model_logical_mflops_packet_torch_profiler_eager"], "800.000000")
         self.assertEqual(rows[0]["cpu_cycles_est_packet"], "750000000.000000")
         self.assertEqual(rows[0]["cpu_mips_packet"], "2.000000")
         self.assertNotIn("sniff_group_id", fieldnames)
@@ -197,13 +187,7 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
                 })
 
             with open(lat_json, "w", encoding="utf-8") as f:
-                json.dump({
-                    "case_seq1_r0:0": 0.01,
-                    "case_seq1_r0:1": 0.02,
-                    "case_seq1_r0:2": 0.10,
-                    "case_seq1_r0:3": 0.20,
-                    "case_seq1_r0:4": 0.30,
-                }, f)
+                json.dump({'schema_version': 2, 'requests': {'case_seq1_r0:0': {'latency_s': 0.01}, 'case_seq1_r0:1': {'latency_s': 0.02}, 'case_seq1_r0:2': {'latency_s': 0.1}, 'case_seq1_r0:3': {'latency_s': 0.2}, 'case_seq1_r0:4': {'latency_s': 0.3}}}, f)
 
             subprocess.run(
                 [
@@ -239,7 +223,7 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
             out_csv = os.path.join(tmp, "result.merged.csv")
             static_meta = os.path.join(tmp, "static_meta.json")
             with open(static_meta, "w", encoding="utf-8") as f:
-                json.dump({"batch_size": 2}, f)
+                json.dump({"schema_version": 7, "batch_size": 2}, f)
 
             fieldnames = [
                 "sniff_group_id",
@@ -269,29 +253,7 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
                 })
             with open(lat_json, "w", encoding="utf-8") as f:
                 json.dump(
-                    {
-                        "schema_version": 2,
-                        "requests": {
-                            "case_seq4_r0:1": {
-                                "latency_s": 0.4,
-                                "request_wire_bytes": 300,
-                                "response_wire_bytes": 500,
-                                "total_wire_bytes": 800,
-                                "tcp_payload_bytes": 600,
-                                "protocol_overhead_bytes": 200,
-                                "protocol_overhead_ratio": 0.25,
-                            },
-                            "case_seq4_r0:2": {
-                                "latency_s": 0.6,
-                                "request_wire_bytes": 400,
-                                "response_wire_bytes": 600,
-                                "total_wire_bytes": 1000,
-                                "tcp_payload_bytes": 700,
-                                "protocol_overhead_bytes": 300,
-                                "protocol_overhead_ratio": 0.3,
-                            },
-                        },
-                    },
+                    {'schema_version': 2, 'requests': {'case_seq4_r0:1': {'latency_s': 0.4, 'request_wire_bytes': 300, 'response_wire_bytes': 500, 'total_wire_bytes': 800, 'tcp_payload_bytes': 600, 'protocol_overhead_bytes': 200, 'protocol_overhead_ratio': 0.25}, 'case_seq4_r0:2': {'latency_s': 0.6, 'request_wire_bytes': 400, 'response_wire_bytes': 600, 'total_wire_bytes': 1000, 'tcp_payload_bytes': 700, 'protocol_overhead_bytes': 300, 'protocol_overhead_ratio': 0.3}}},
                     f,
                 )
 
@@ -342,13 +304,13 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
             sidecar = f"{in_csv}.sniff_groups.jsonl"
 
             with open(static_meta, "w", encoding="utf-8") as f:
-                json.dump({"batch_size": 2}, f)
+                json.dump({"schema_version": 7, "batch_size": 2}, f)
 
             fieldnames = [
                 "latency_s",
                 "throughput_samples_per_s",
-                "model_mflop_per_request",
-                "compute_mflops",
+                "model_logical_mflop_per_request_torch_profiler_eager",
+                "model_logical_mflops_packet_torch_profiler_eager",
             ]
             with open(in_csv, "w", encoding="utf-8", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -356,14 +318,14 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
                 writer.writerow({
                     "latency_s": "nan",
                     "throughput_samples_per_s": "2.000000",
-                    "model_mflop_per_request": "200.000000",
-                    "compute_mflops": "400.000000",
+                    "model_logical_mflop_per_request_torch_profiler_eager": "200.000000",
+                    "model_logical_mflops_packet_torch_profiler_eager": "400.000000",
                 })
             with open(sidecar, "w", encoding="utf-8") as f:
                 f.write(json.dumps({"sniff_group_id": "case_seq1_r0"}) + "\n")
 
             with open(lat_json, "w", encoding="utf-8") as f:
-                json.dump({"case_seq1_r0:0": 0.5, "case_seq1_r0:1": 0.5}, f)
+                json.dump({'schema_version': 2, 'requests': {'case_seq1_r0:0': {'latency_s': 0.5}, 'case_seq1_r0:1': {'latency_s': 0.5}}}, f)
 
             subprocess.run(
                 [
@@ -386,7 +348,7 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
         self.assertNotIn("sniff_group_id", output_fields)
         self.assertEqual(rows[0]["latency_s"], "0.500000")
         self.assertEqual(rows[0]["throughput_samples_per_s"], "4.000000")
-        self.assertEqual(rows[0]["compute_mflops"], "400.000000")
+        self.assertEqual(rows[0]["model_logical_mflops_packet_torch_profiler_eager"], "400.000000")
 
 
 if __name__ == "__main__":

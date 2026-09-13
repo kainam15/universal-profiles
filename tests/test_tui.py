@@ -11,26 +11,21 @@ from unittest.mock import patch
 from textual.widgets import Button, DataTable, Input, Select, Static, TabbedContent
 from textual.css.query import NoMatches
 
-from acprof.cli.tui import (
-    AcprofTui,
-    ConfirmActionScreen,
-    PendingLaunch,
-    StatusCheckbox,
-)
-from acprof.cli.tui_core import (
-    _readable_rapl_paths,
-    PreflightCheck,
+from acprof.tui.app import AcprofTui
+from acprof.tui.views import ConfirmActionScreen, StatusCheckbox
+from acprof.tui.app import PendingLaunch
+from acprof.tui.diagnostics import _readable_rapl_paths, PreflightCheck, summarize_result_csv
+from acprof.tui.commands import (
     RunConfig,
-    RunProgressTracker,
     TuiConfigError,
     build_probe_command,
     build_profile_command,
     build_run_command,
     format_command,
     parse_slash_command,
-    summarize_result_csv,
 )
-from acprof.cli.tui_log import SelectableLog
+from acprof.tui.progress import RunProgressTracker
+from acprof.tui.log import SelectableLog
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -503,9 +498,7 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(app.ENABLE_COMMAND_PALETTE)
             self.assertFalse(app.use_command_palette)
             self.assertFalse(app.query_one("HeaderIcon").display)
-            self.assertFalse(
-                app.query_one("#allow-cgroup-v1", StatusCheckbox).display
-            )
+            self.assertFalse(app.query("#allow-cgroup-v1"))
             command_bar = app.query_one("#slash-command-bar")
             self.assertEqual(command_bar.styles.padding.top, 1)
             self.assertEqual(command_bar.styles.padding.right, 2)
@@ -723,7 +716,7 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stage_gets_color_class(self):
         """The status-stage widget should receive CSS classes for visual state."""
-        from acprof.cli.tui_core import ProgressSnapshot
+        from acprof.tui.progress import ProgressSnapshot
         app = AcprofTui(RunConfig.smoke("demo/model"))
         async with app.run_test(size=(140, 48)) as pilot:
             await pilot.pause()

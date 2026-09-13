@@ -21,7 +21,7 @@ class RuntimeValidationTests(unittest.TestCase):
 
     def fixture(self, root):
         plan = root / 'input_scale_plan.json'
-        plan.write_text(json.dumps({'entries': [
+        plan.write_text(json.dumps({"schema_version": 2, 'entries': [
             {'input_scale': 10, 'payload': {'text': 'large'}},
             {'input_scale': 1, 'payload': {'text': 'small'}},
         ]}))

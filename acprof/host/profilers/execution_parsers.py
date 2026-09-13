@@ -5,7 +5,7 @@ import csv
 import io
 import math
 import re
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 
 NSYS_REPORTS = (
@@ -108,11 +108,6 @@ def parse_massif_output(report_path: str) -> Dict[str, Any]:
         "cpu_heap_peak_total_bytes_massif": _integer_if_exact(total_peak),
         "cpu_heap_peak_at_ms_massif": _integer_if_exact(total_snapshot["time"]),
     }
-
-
-def parse_massif_snapshots(report_path: str) -> Dict[str, Any]:
-    """Compatibility alias with an explicit parser-oriented name."""
-    return parse_massif_output(report_path)
 
 
 def _header_base(header: str) -> str:

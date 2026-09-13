@@ -9,11 +9,19 @@ from textual.widgets import (
     Button, Checkbox, Collapsible, ContentSwitcher, Input, Select, Static, TabbedContent,
 )
 
-from acprof.cli.tui import AcprofTui, ConfirmActionScreen, PendingLaunch, main
-from acprof.cli.tui_log import SelectableLog
-from acprof.cli.tui_core import ProgressSnapshot, RunConfig
-from acprof.cli.tui_settings import (
-    TuiSettings, UiPreferences, default_settings_path, load_settings, save_settings,
+from acprof.tui.app import AcprofTui
+from acprof.cli.tui import main
+from acprof.tui.views import ConfirmActionScreen
+from acprof.tui.app import PendingLaunch
+from acprof.tui.log import SelectableLog
+from acprof.tui.progress import ProgressSnapshot
+from acprof.tui.commands import RunConfig
+from acprof.tui.settings import (
+    TuiSettings,
+    UiPreferences,
+    default_settings_path,
+    load_settings,
+    save_settings,
 )
 
 

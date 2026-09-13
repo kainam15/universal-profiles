@@ -1,3 +1,9 @@
+import acprof.analysis.latency_model as analysis_latency_model
+import acprof.analysis.latency_report as analysis_latency_report
+import acprof.plotting.config as plotting_config
+import acprof.plotting.data as plotting_data
+import acprof.plotting.latency as plotting_latency
+import acprof.plotting.metrics as plotting_metrics
 import csv
 import json
 import math
@@ -115,6 +121,7 @@ class LatencyModelReportTests(unittest.TestCase):
             encoding="utf-8",
         ) as f:
             json.dump({
+                "schema_version": 7,
                 "model_name": "google-bert/bert-base-uncased",
                 "task_family": "nlp",
                 "input_scale_type": "seq_length",
@@ -125,16 +132,16 @@ class LatencyModelReportTests(unittest.TestCase):
     def _read_artifacts(output_dir: str) -> tuple[dict, list[dict[str, str]]]:
         model_output_dir = os.path.join(
             output_dir,
-            plot.LATENCY_MODEL_DIR,
+            analysis_latency_report.LATENCY_MODEL_DIR,
         )
         with open(
-            os.path.join(model_output_dir, plot.LATENCY_MODEL_REPORT),
+            os.path.join(model_output_dir, analysis_latency_report.LATENCY_MODEL_REPORT),
             "r",
             encoding="utf-8",
         ) as f:
             report = json.load(f)
         with open(
-            os.path.join(model_output_dir, plot.LATENCY_MODEL_RESIDUALS),
+            os.path.join(model_output_dir, analysis_latency_report.LATENCY_MODEL_RESIDUALS),
             "r",
             encoding="utf-8",
             newline="",
@@ -147,18 +154,18 @@ class LatencyModelReportTests(unittest.TestCase):
             csv_path = self._write_fixture(tmp, self._rows())
 
             with patch.object(sys, "argv", ["plot.py", csv_path]), patch.object(
-                plot,
-                "plot_metric",
-            ), patch.object(plot, "plot_cold_start_bar"):
+                plotting_metrics,
+                'plot_metric',
+            ), patch.object(plotting_metrics, 'plot_cold_start_bar'):
                 plot.main()
 
-            model_output_dir = os.path.join(tmp, plot.LATENCY_MODEL_DIR)
+            model_output_dir = os.path.join(tmp, analysis_latency_report.LATENCY_MODEL_DIR)
             self.assertTrue(os.path.isdir(model_output_dir))
             for artifact_name in (
-                plot.LATENCY_MODEL_REPORT,
-                plot.LATENCY_MODEL_RESIDUALS,
-                plot.LATENCY_MODEL_RESIDUAL_PLOT,
-                plot.LATENCY_MODEL_FIT_CURVES_PLOT,
+                analysis_latency_report.LATENCY_MODEL_REPORT,
+                analysis_latency_report.LATENCY_MODEL_RESIDUALS,
+                plotting_config.LATENCY_MODEL_RESIDUAL_PLOT,
+                plotting_config.LATENCY_MODEL_FIT_CURVES_PLOT,
             ):
                 self.assertTrue(
                     os.path.isfile(
@@ -230,19 +237,17 @@ class LatencyModelReportTests(unittest.TestCase):
         )
         self.assertTrue(all(int(row["repeat_count"]) == 3 for row in residual_rows))
         self.assertTrue(
-            all(float(row["predicted_latency_s"]) > 0.0 for row in residual_rows)
+            all(float(row["resource_config_oof_predicted_latency_s"]) > 0.0 for row in residual_rows)
         )
         self.assertTrue(
             all(row["report_schema_version"] == "2" for row in residual_rows)
         )
         for row in residual_rows:
-            self.assertEqual(
-                row["predicted_latency_s"],
-                row["resource_config_oof_predicted_latency_s"],
-            )
+            self.assertNotIn("predicted_latency_s", row)
+            self.assertNotIn("residual_s", row)
             self.assertAlmostEqual(
-                float(row["residual_s"]),
-                float(row["latency_s"]) - float(row["predicted_latency_s"]),
+                float(row["resource_config_oof_residual_s"]),
+                float(row["latency_s"]) - float(row["resource_config_oof_predicted_latency_s"]),
                 places=8,
             )
             if float(row["input_scale"]) == 512.0:
@@ -270,8 +275,8 @@ class LatencyModelReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             rows = self._rows(gpu_modes=("on",))
             csv_path = self._write_fixture(tmp, rows)
-            df = plot.prepare_df(csv_path)
-            plot.write_latency_model_report(df, plot.read_static_meta(csv_path), tmp)
+            df = plotting_data.prepare_df(csv_path)
+            analysis_latency_report.write_latency_model_report(df, plotting_data.read_static_meta(csv_path), tmp)
             report, residual_rows = self._read_artifacts(tmp)
 
         self.assertEqual(report["status"], "ok")
@@ -330,9 +335,9 @@ class LatencyModelReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             csv_path = self._write_fixture(tmp, rows)
             df = pd.read_csv(csv_path)
-            plot.write_latency_model_report(
+            analysis_latency_report.write_latency_model_report(
                 df,
-                plot.read_static_meta(csv_path),
+                plotting_data.read_static_meta(csv_path),
                 tmp,
             )
             report, residual_rows = self._read_artifacts(tmp)
@@ -382,9 +387,9 @@ class LatencyModelReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             csv_path = self._write_fixture(tmp, rows)
             df = pd.read_csv(csv_path)
-            plot.write_latency_model_report(
+            analysis_latency_report.write_latency_model_report(
                 df,
-                plot.read_static_meta(csv_path),
+                plotting_data.read_static_meta(csv_path),
                 tmp,
             )
             report, _ = self._read_artifacts(tmp)
@@ -435,9 +440,9 @@ class LatencyModelReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             csv_path = self._write_fixture(tmp, rows)
             df = pd.read_csv(csv_path)
-            plot.write_latency_model_report(
+            analysis_latency_report.write_latency_model_report(
                 df,
-                plot.read_static_meta(csv_path),
+                plotting_data.read_static_meta(csv_path),
                 tmp,
             )
             report, residual_rows = self._read_artifacts(tmp)
@@ -500,9 +505,9 @@ class LatencyModelReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             csv_path = self._write_fixture(tmp, rows)
             df = pd.read_csv(csv_path)
-            plot.write_latency_model_report(
+            analysis_latency_report.write_latency_model_report(
                 df,
-                plot.read_static_meta(csv_path),
+                plotting_data.read_static_meta(csv_path),
                 tmp,
             )
             report, _ = self._read_artifacts(tmp)
@@ -567,9 +572,9 @@ class LatencyModelReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             csv_path = self._write_fixture(tmp, rows)
             df = pd.read_csv(csv_path)
-            plot.write_latency_model_report(
+            analysis_latency_report.write_latency_model_report(
                 df,
-                plot.read_static_meta(csv_path),
+                plotting_data.read_static_meta(csv_path),
                 tmp,
             )
             report, _ = self._read_artifacts(tmp)
@@ -580,7 +585,7 @@ class LatencyModelReportTests(unittest.TestCase):
         self.assertTrue(upper_tail["enabled"])
         self.assertGreater(
             upper_tail["calibration"]["mean_absolute_percentage_error"],
-            plot.LATENCY_MODEL_GPU_UPPER_TAIL_ACTIVATION_MAPE,
+            analysis_latency_model.LATENCY_MODEL_GPU_UPPER_TAIL_ACTIVATION_MAPE,
         )
         self.assertLess(
             gpu_report["metrics"]["input_scale_holdout"][
@@ -600,7 +605,7 @@ class LatencyModelReportTests(unittest.TestCase):
             rows = self._rows(break_one_gpu_max_scale_case=True)
             csv_path = self._write_fixture(tmp, rows)
             df = pd.read_csv(csv_path)
-            plot.write_latency_model_report(df, plot.read_static_meta(csv_path), tmp)
+            analysis_latency_report.write_latency_model_report(df, plotting_data.read_static_meta(csv_path), tmp)
             report, _ = self._read_artifacts(tmp)
 
         self.assertEqual(report["models"]["cpu"]["status"], "ok")
@@ -608,17 +613,17 @@ class LatencyModelReportTests(unittest.TestCase):
         pooled_metrics = gpu_report["metrics"]["input_scale_holdout"]
         self.assertGreaterEqual(
             pooled_metrics["r2"],
-            plot.LATENCY_MODEL_MIN_VALIDATION_R2,
+            analysis_latency_model.LATENCY_MODEL_MIN_VALIDATION_R2,
         )
         self.assertLessEqual(
             pooled_metrics["relative_mae"],
-            plot.LATENCY_MODEL_MAX_VALIDATION_RELATIVE_MAE,
+            analysis_latency_model.LATENCY_MODEL_MAX_VALIDATION_RELATIVE_MAE,
         )
         self.assertGreater(
             gpu_report["validation"]["input_scale_holdout"][
                 "worst_case_relative_error"
             ],
-            plot.LATENCY_MODEL_MAX_SCALE_CASE_RELATIVE_ERROR,
+            analysis_latency_model.LATENCY_MODEL_MAX_VALIDATION_CASE_RELATIVE_ERROR,
         )
         self.assertEqual(gpu_report["status"], "poor_fit")
         self.assertEqual(report["status"], "poor_fit")
@@ -636,24 +641,24 @@ class LatencyModelReportTests(unittest.TestCase):
             rows = self._rows(break_gpu_resource_config=True)
             csv_path = self._write_fixture(tmp, rows)
             df = pd.read_csv(csv_path)
-            plot.write_latency_model_report(df, plot.read_static_meta(csv_path), tmp)
+            analysis_latency_report.write_latency_model_report(df, plotting_data.read_static_meta(csv_path), tmp)
             report, _ = self._read_artifacts(tmp)
 
         gpu_report = report["models"]["gpu"]
         pooled_metrics = gpu_report["metrics"]["resource_configuration_holdout"]
         self.assertGreaterEqual(
             pooled_metrics["r2"],
-            plot.LATENCY_MODEL_MIN_VALIDATION_R2,
+            analysis_latency_model.LATENCY_MODEL_MIN_VALIDATION_R2,
         )
         self.assertLessEqual(
             pooled_metrics["relative_mae"],
-            plot.LATENCY_MODEL_MAX_VALIDATION_RELATIVE_MAE,
+            analysis_latency_model.LATENCY_MODEL_MAX_VALIDATION_RELATIVE_MAE,
         )
         self.assertGreater(
             gpu_report["validation"]["resource_configuration_holdout"][
                 "worst_fold_relative_mae"
             ],
-            plot.LATENCY_MODEL_MAX_CONFIGURATION_FOLD_RELATIVE_MAE,
+            analysis_latency_model.LATENCY_MODEL_MAX_CONFIGURATION_FOLD_RELATIVE_MAE,
         )
         self.assertEqual(gpu_report["status"], "poor_fit")
         self.assertEqual(report["status"], "poor_fit")
@@ -674,7 +679,7 @@ class LatencyModelReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             csv_path = self._write_fixture(tmp, rows)
             df = pd.read_csv(csv_path)
-            plot.write_latency_model_report(df, plot.read_static_meta(csv_path), tmp)
+            analysis_latency_report.write_latency_model_report(df, plotting_data.read_static_meta(csv_path), tmp)
             report, _ = self._read_artifacts(tmp)
 
         gpu_report = report["models"]["gpu"]
@@ -691,17 +696,17 @@ class LatencyModelReportTests(unittest.TestCase):
             for row in rows:
                 row["gpu_mode"] = "mystery-device"
             csv_path = self._write_fixture(tmp, rows)
-            model_output_dir = os.path.join(tmp, plot.LATENCY_MODEL_DIR)
+            model_output_dir = os.path.join(tmp, analysis_latency_report.LATENCY_MODEL_DIR)
             os.makedirs(model_output_dir, exist_ok=True)
             residuals_path = os.path.join(
                 model_output_dir,
-                plot.LATENCY_MODEL_RESIDUALS,
+                analysis_latency_report.LATENCY_MODEL_RESIDUALS,
             )
             with open(residuals_path, "w", encoding="utf-8") as f:
                 f.write("stale-marker\n")
 
             df = pd.read_csv(csv_path)
-            plot.write_latency_model_report(df, plot.read_static_meta(csv_path), tmp)
+            analysis_latency_report.write_latency_model_report(df, plotting_data.read_static_meta(csv_path), tmp)
             report, residual_rows = self._read_artifacts(tmp)
             with open(residuals_path, "r", encoding="utf-8") as f:
                 residual_text = f.read()
@@ -717,22 +722,22 @@ class LatencyModelReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             csv_path = self._write_fixture(tmp, self._rows())
             df = pd.read_csv(csv_path)
-            plot.write_latency_model_report(
+            analysis_latency_report.write_latency_model_report(
                 df,
-                plot.read_static_meta(csv_path),
+                plotting_data.read_static_meta(csv_path),
                 tmp,
             )
-            model_output_dir = os.path.join(tmp, plot.LATENCY_MODEL_DIR)
+            model_output_dir = os.path.join(tmp, analysis_latency_report.LATENCY_MODEL_DIR)
             residuals_path = os.path.join(
                 model_output_dir,
-                plot.LATENCY_MODEL_RESIDUALS,
+                analysis_latency_report.LATENCY_MODEL_RESIDUALS,
             )
             out_png = os.path.join(
                 model_output_dir,
-                plot.LATENCY_MODEL_RESIDUAL_PLOT,
+                plotting_config.LATENCY_MODEL_RESIDUAL_PLOT,
             )
 
-            plotted = plot.plot_latency_model_residuals(
+            plotted = plotting_latency.plot_latency_model_residuals(
                 residuals_path,
                 out_png,
             )
@@ -745,26 +750,26 @@ class LatencyModelReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             csv_path = self._write_fixture(tmp, self._rows())
             df = pd.read_csv(csv_path)
-            plot.write_latency_model_report(
+            analysis_latency_report.write_latency_model_report(
                 df,
-                plot.read_static_meta(csv_path),
+                plotting_data.read_static_meta(csv_path),
                 tmp,
             )
-            model_output_dir = os.path.join(tmp, plot.LATENCY_MODEL_DIR)
+            model_output_dir = os.path.join(tmp, analysis_latency_report.LATENCY_MODEL_DIR)
             residuals_path = os.path.join(
                 model_output_dir,
-                plot.LATENCY_MODEL_RESIDUALS,
+                analysis_latency_report.LATENCY_MODEL_RESIDUALS,
             )
             report_path = os.path.join(
                 model_output_dir,
-                plot.LATENCY_MODEL_REPORT,
+                analysis_latency_report.LATENCY_MODEL_REPORT,
             )
             out_png = os.path.join(
                 model_output_dir,
-                plot.LATENCY_MODEL_FIT_CURVES_PLOT,
+                plotting_config.LATENCY_MODEL_FIT_CURVES_PLOT,
             )
 
-            plotted = plot.plot_latency_model_fit_curves(
+            plotted = plotting_latency.plot_latency_model_fit_curves(
                 residuals_path,
                 report_path,
                 out_png,
@@ -778,7 +783,7 @@ class LatencyModelReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             residuals_path = os.path.join(
                 tmp,
-                plot.LATENCY_MODEL_RESIDUALS,
+                analysis_latency_report.LATENCY_MODEL_RESIDUALS,
             )
             with open(
                 residuals_path,
@@ -788,15 +793,15 @@ class LatencyModelReportTests(unittest.TestCase):
             ) as f:
                 writer = csv.DictWriter(
                     f,
-                    fieldnames=plot.LATENCY_MODEL_RESIDUAL_FIELDS,
+                    fieldnames=analysis_latency_report.LATENCY_MODEL_RESIDUAL_FIELDS,
                 )
                 writer.writeheader()
             out_png = os.path.join(
                 tmp,
-                plot.LATENCY_MODEL_RESIDUAL_PLOT,
+                plotting_config.LATENCY_MODEL_RESIDUAL_PLOT,
             )
 
-            plotted = plot.plot_latency_model_residuals(
+            plotted = plotting_latency.plot_latency_model_residuals(
                 residuals_path,
                 out_png,
             )

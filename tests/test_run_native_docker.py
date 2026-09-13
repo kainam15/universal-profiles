@@ -1,3 +1,4 @@
+import acprof.host.preflight as host_preflight
 import io
 import json
 import os
@@ -6,7 +7,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from acprof.host import docker_runtime, input_plan
 from acprof.host import orchestrator
@@ -162,7 +163,7 @@ class NativeDockerGuardTests(unittest.TestCase):
                 f.write("0::/user.slice/test.scope\n")
 
             self.assertEqual(
-                run.detect_cgroup_version(
+                host_preflight.detect_cgroup_version(
                     cgroup_root=cgroup_root,
                     proc_self_cgroup_path=proc_self_cgroup,
                 ),
@@ -175,7 +176,7 @@ class NativeDockerGuardTests(unittest.TestCase):
                 f.write("3:memory:/docker/test\n")
 
             self.assertEqual(
-                run.detect_cgroup_version(
+                host_preflight.detect_cgroup_version(
                     cgroup_root=cgroup_root,
                     proc_self_cgroup_path=proc_self_cgroup,
                 ),
@@ -192,21 +193,10 @@ class NativeDockerGuardTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 1)
         message = stderr.getvalue()
-        self.assertIn("requires the unified cgroup v2", message)
-        self.assertIn("cgroup_version=v1", message)
-        self.assertIn("--allow-cgroup-v1", message)
+        self.assertIn("requires unified cgroup v2", message)
+        self.assertIn("detected v1", message)
+        self.assertNotIn("--allow-cgroup-v1", message)
 
-    def test_cgroup_preflight_allows_explicit_v1_compatibility(self) -> None:
-        stderr = io.StringIO()
-        with patch(
-            "acprof.host.preflight.detect_cgroup_version",
-            return_value="v1",
-        ), redirect_stderr(stderr):
-            version = run.require_cgroup_prerequisites(allow_cgroup_v1=True)
-
-        self.assertEqual(version, "v1")
-        self.assertIn("legacy compatibility", stderr.getvalue())
-        self.assertIn("do not mix", stderr.getvalue())
 
     def test_partial_results_require_matching_cgroup_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -250,7 +240,7 @@ class NativeDockerGuardTests(unittest.TestCase):
                     cgroup_version="v2",
                 )
 
-    def test_main_passes_legacy_cgroup_flag_to_preflight(self) -> None:
+    def test_main_rejects_legacy_cgroup_flag_before_preflight(self) -> None:
         with patch.object(
             sys,
             "argv",
@@ -272,8 +262,8 @@ class NativeDockerGuardTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as raised:
                 run.main()
 
-        self.assertEqual(raised.exception.code, 7)
-        preflight.assert_called_once_with(allow_cgroup_v1=True)
+        self.assertEqual(raised.exception.code, 2)
+        preflight.assert_not_called()
 
     def test_cpu_energy_preflight_exits_with_remediation_when_unavailable(self) -> None:
         stderr = io.StringIO()
@@ -521,10 +511,7 @@ class NativeDockerGuardTests(unittest.TestCase):
                 run.main()
 
         self.assertEqual(raised.exception.code, 2)
-        preflight.assert_called_once_with(
-            project_dir=run.PROJECT_DIR,
-            sniff_iface="docker0",
-        )
+        preflight.assert_called_once_with(sniff_iface="docker0")
 
     def test_main_defaults_to_auto_window_and_compute_profiler_disabled(self) -> None:
         task_info = TaskInfo(
@@ -589,7 +576,13 @@ class NativeDockerGuardTests(unittest.TestCase):
         ) as build_image, patch(
             "acprof.host.static_metadata.collect_static_meta",
             side_effect=collect_metadata,
-        ) as collect_static_meta, patch(
+        ) as collect_static_meta, patch.multiple(
+            "acprof.host.static_metadata",
+            enrich_static_meta_from_input_plan=Mock(side_effect=lambda meta, planned: meta),
+            enrich_static_meta=Mock(side_effect=lambda meta, values: meta),
+        ), patch(
+            "acprof.host.runtime_validation.validate_runtime", return_value={}
+        ), patch(
             "acprof.host.static_metadata.write_static_meta_json"
         ), patch(
             "acprof.host.input_plan.plan_input_scales",
@@ -677,6 +670,12 @@ class NativeDockerGuardTests(unittest.TestCase):
         ), patch(
             "acprof.host.static_metadata.collect_static_meta",
             return_value=SimpleNamespace(),
+        ), patch.multiple(
+            "acprof.host.static_metadata",
+            enrich_static_meta_from_input_plan=Mock(side_effect=lambda meta, planned: meta),
+            enrich_static_meta=Mock(side_effect=lambda meta, values: meta),
+        ), patch(
+            "acprof.host.runtime_validation.validate_runtime", return_value={}
         ), patch(
             "acprof.host.static_metadata.write_static_meta_json"
         ), patch(
@@ -744,7 +743,7 @@ class NativeDockerGuardTests(unittest.TestCase):
                 "--model",
                 "dummy-model",
                 "--skip-build",
-                "--no-compute-profile",
+                "--compute-profile-tool", "none",
                 "--cpus",
                 "1",
                 "--mems",
@@ -779,7 +778,13 @@ class NativeDockerGuardTests(unittest.TestCase):
         ), patch(
             "acprof.host.static_metadata.collect_static_meta",
             return_value=SimpleNamespace(),
-        ) as collect_static_meta, patch(
+        ) as collect_static_meta, patch.multiple(
+            "acprof.host.static_metadata",
+            enrich_static_meta_from_input_plan=Mock(side_effect=lambda meta, planned: meta),
+            enrich_static_meta=Mock(side_effect=lambda meta, values: meta),
+        ), patch(
+            "acprof.host.runtime_validation.validate_runtime", return_value={}
+        ), patch(
             "acprof.host.static_metadata.write_static_meta_json"
         ) as write_static_meta_json, patch(
             "acprof.cli.run.write_collection_history_json"
@@ -799,7 +804,7 @@ class NativeDockerGuardTests(unittest.TestCase):
         _, kwargs = collect_static_meta.call_args
         self.assertEqual(
             kwargs["run_command"],
-            "python run.py --model dummy-model --skip-build --no-compute-profile "
+            "python run.py --model dummy-model --skip-build --compute-profile-tool none "
             "--cpus 1 --mems 2 --gpus off --output-dir "
             + tmp_dir,
         )

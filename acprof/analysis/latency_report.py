@@ -15,7 +15,6 @@ from acprof.analysis.latency_model import (
     LATENCY_MODEL_GPU_UPPER_TAIL_MIN_SCALE_SPAN_RATIO,
     LATENCY_MODEL_MAX_CONFIGURATION_FOLD_MAPE,
     LATENCY_MODEL_MAX_CONFIGURATION_FOLD_RELATIVE_MAE,
-    LATENCY_MODEL_MAX_SCALE_CASE_RELATIVE_ERROR,
     LATENCY_MODEL_MAX_VALIDATION_CASE_RELATIVE_ERROR,
     LATENCY_MODEL_MAX_VALIDATION_MAPE,
     LATENCY_MODEL_MAX_VALIDATION_RELATIVE_MAE,
@@ -50,8 +49,6 @@ LATENCY_MODEL_RESIDUAL_FIELDS = [
     "latency_s",
     "latency_mean_s",
     "latency_std_s",
-    "predicted_latency_s",
-    "residual_s",
     "fitted_predicted_latency_s",
     "fitted_residual_s",
     "resource_config_oof_predicted_latency_s",
@@ -408,16 +405,6 @@ def write_latency_model_report(
                 "latency_s": f"{actual:.9f}",
                 "latency_mean_s": f"{float(row.latency_mean_s):.9f}",
                 "latency_std_s": f"{float(row.latency_std_s):.9f}",
-                # Backward-compatible aliases now point to the honest
-                # configuration-out-of-fold prediction, not an in-cell repeat.
-                "predicted_latency_s": _format_optional_float(
-                    configuration_prediction
-                ),
-                "residual_s": _format_optional_float(
-                    None
-                    if configuration_prediction is None
-                    else actual - configuration_prediction
-                ),
                 "fitted_predicted_latency_s": _format_optional_float(
                     fitted_prediction
                 ),
@@ -488,15 +475,6 @@ def write_latency_model_report(
             configuration_predictions
         ),
         "input_scale_holdout_test_case_rows": len(scale_predictions),
-        # Kept for report-v1 readers. This is cross-validation, so these are
-        # accounting aliases rather than one fixed pair of disjoint row sets.
-        "train_rows": len(points),
-        "test_rows": len(configuration_predictions),
-        "legacy_row_count_note": (
-            "train_rows is the number of cases in the final full fit; test_rows "
-            "is the number receiving one resource-configuration OOF prediction. "
-            "They are not a single fixed mutually exclusive split."
-        ),
         "split_rule": (
             "resource configuration: leave one complete (cpu_cores,mem_cap_gb) "
             "out per fold; input scale: train below maximum and hold out maximum"
@@ -505,18 +483,11 @@ def write_latency_model_report(
             "fit": fit_metrics,
             "resource_configuration_holdout": configuration_metrics,
             "input_scale_holdout": input_scale_metrics,
-            # Compatibility aliases: "test" is now true configuration OOF.
-            "train": fit_metrics,
-            "test": configuration_metrics,
         },
         "models": model_reports,
         "quality_gate": {
             "passed": status == "ok",
             "thresholds": {
-                # Compatibility key retained; the scope field below makes clear
-                # that a fixed-scale extrapolation fold is gated by relative
-                # errors rather than configuration-variation R-squared.
-                "minimum_validation_r2": LATENCY_MODEL_MIN_VALIDATION_R2,
                 "minimum_resource_configuration_validation_r2": (
                     LATENCY_MODEL_MIN_VALIDATION_R2
                 ),
@@ -539,7 +510,7 @@ def write_latency_model_report(
                     LATENCY_MODEL_MAX_VALIDATION_CASE_RELATIVE_ERROR
                 ),
                 "maximum_single_scale_holdout_case_relative_error": (
-                    LATENCY_MODEL_MAX_SCALE_CASE_RELATIVE_ERROR
+                    LATENCY_MODEL_MAX_VALIDATION_CASE_RELATIVE_ERROR
                 ),
                 "minimum_validation_predictions": (
                     LATENCY_MODEL_MIN_VALIDATION_POINTS

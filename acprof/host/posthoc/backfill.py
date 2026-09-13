@@ -15,7 +15,7 @@ from typing import (
     Tuple,
 )
 
-from acprof.host.collection_history import LEGACY_STATIC_META_COLLECTION_FIELDS, append_collection_record
+from acprof.host.collection_history import append_collection_record
 from acprof.host.compute_profile_plan import (
     NCU_ERROR_FIELD,
     NCU_KERNEL_COUNT_FIELD,
@@ -31,7 +31,11 @@ from acprof.host.compute_profile_plan import (
     compute_mflops,
     find_compute_profile_entry,
 )
-from acprof.host.execution_profile_plan import MASSIF_METRIC_FIELDS, NSYS_METRIC_FIELDS, find_execution_profile_entry
+from acprof.host.execution_profile_plan import (
+    MASSIF_METRIC_FIELDS,
+    NSYS_METRIC_FIELDS,
+    find_execution_profile_entry,
+)
 from acprof.host.posthoc.context import (
     NCU_DERIVED_APP_FIELD,
     NCU_DERIVED_PACKET_FIELD,
@@ -286,8 +290,6 @@ def update_static_meta(
     execution_plan: Optional[Mapping[str, Any]],
 ) -> Dict[str, Any]:
     updated = copy.deepcopy(context.static_meta)
-    for field in LEGACY_STATIC_META_COLLECTION_FIELDS:
-        updated.pop(field, None)
     selected = tuple(tools)
 
     compute_selected = [tool for tool in selected if tool in {"torch", "ncu"}]

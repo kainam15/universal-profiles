@@ -19,7 +19,7 @@
 - CPU package、估算 vCPU、GPU device 与 container-attributed 数据分别命名和解释，整机测量不能静默替换容器归因。
 - 单请求、workload window、进程生命周期、独立 profiler 使用不同窗口与分母；比较前核对请求数、尺度单位及来源资源。
 - 数值 `0`、CSV `nan`、JSON `null` 和字段缺失含义不同；未知历史数据不补成零，推导或代表资源复用不冒充独立实测。
-- JSON 保留原生类型；schema 版本由协议与兼容策略决定。历史文件缺少可选字段时，消费者按相应约定降级。
+- JSON 保留原生类型；schema 版本由协议与兼容策略决定。只接受当前 schema；可选指标不可用时保持 `nan`，不转换旧字段或推测来源。
 - 输入计划、`input_scale_plan_sha256`、workload 素材与模型 revision 必须一致；派生字段复用已有采样，不额外发起请求。
 - 静态对象描述与采集过程来源分开保存；补采和修复记录进入 `collection_history.json`，保留原始备份和可回溯信息。
 
@@ -36,7 +36,7 @@
 | `interrupted_cases/` | 恢复时保存中断 case 的原始 CSV、PCAP 与关联 sidecar；备份完成后才开始该 case 的新测量。 |
 | `static_meta.json` | 单个 JSON object 的静态元数据。记录模型版本、参数/精度/量化/许可证、输入输出格式、per-scale 静态逻辑 FLOPs、推理后端、镜像、GPU/主机 RAM、主机 swap、Docker 存储和环境信息。 |
 | `collection_history.json` | schema v1 的采集/修复 provenance。分别记录 post-hoc profiler 补采、timeout retry、quality retry 和静态元数据回填历史；最新一次状态由对应 history 的最后一项得到。 |
-| `input_scale_plan.json` | 所有任务族共用的 input scale/payload 计划。schema v2 额外记录 workload provenance、per-scale 输入元数据和模型约束；读取端继续兼容无版本字段的 v1 计划。主采集和 compute profiler 复用同一份 payload。 |
+| `input_scale_plan.json` | 所有任务族共用的 input scale/payload 计划。schema v2 额外记录 workload provenance、per-scale 输入元数据和模型约束；读取端要求 schema v2，拒绝缺少版本或 v1 计划。主采集和 compute profiler 复用同一份 payload。 |
 | `startup_oom_pruning.json` | 仅启用 `--prune-startup-oom` 时生成。记录最低参考 CPU、执行顺序、逐 GPU mode 的实测启动 OOM 前缀、最低启动可行内存、推断跳过 case、排除范围与资源单调性假设。 |
 | `compute_profile_plan.json` | per-scale FLOP profiling 结果。每个 CPU/GPU scale 可同时记录独立的 `torch_profiler_eager` 与 `ncu` profile；NCU 只存在于 GPU profile。失败信息按工具保存，只读取当前按 profiler 分层的 plan 结构。 |
 | `execution_profile_plan.json` | 显式 execution profiling 的采样与 per-resource-config/per-scale 汇总。Massif 条目对应 `gpu_mode=off`，Nsight Systems 条目对应 `gpu_mode=on`；复用 entry 记录实际 source resource 与 sampling strategy，失败按工具记录且不阻断主实验。 |
@@ -140,8 +140,8 @@ OOM pruning 继续按原有参考 CPU/内存顺序重建证据，复用与推断
 | `docker_storage_device` | 承载 `DockerRootDir` 的 mount source，例如 `/dev/nvme0n1p2`；无法识别时为 `unknown`。 |
 | `docker_storage_type` | 根据 `lsblk` transport/rotational 信息得到的 `nvme_ssd`、`ssd`、`hdd` 或内存文件系统 `memory`；证据不足时为 `unknown`。 |
 | `environment` | 自动检测的运行环境标签，例如 `ubuntu24.04`；历史文件也可能包含 WSL/macOS 标签，当前正式采集会拒绝这些环境。 |
-| `cgroup_version` | 本次 preflight 实际检测到的 hierarchy：正式数据应为 `v2`；显式兼容旧环境时可为 `v1`。 |
-| `cgroup_collection_mode` | `strict_v2` 表示默认正式采集策略；`legacy_compatible` 表示用户显式启用了 `--allow-cgroup-v1`。分析正式数据集时应同时要求 `cgroup_version=v2` 和 `cgroup_collection_mode=strict_v2`。 |
+| `cgroup_version` | 本次 preflight 实际检测到的 hierarchy：仅支持 `v2`，其它 hierarchy 在预检退出。 |
+| `cgroup_collection_mode` | 当前唯一采集策略为 `strict_v2`。分析正式数据集时应同时要求 `cgroup_version=v2` 和 `cgroup_collection_mode=strict_v2`。 |
 | `cpu_power_source` | CPU package 功耗来源。`rapl` 表示使用 Linux RAPL powercap 真实计数器；`unavailable` 表示当前环境没有可用 RAPL。 |
 | `vcpu_power_method` | estimated vCPU 功耗计算方法。`rapl_cgroup_cpu_share` 表示对 RAPL package energy 逐采样区间按 container cgroup CPU share 归因；`unavailable` 表示无法估算。 |
 | `cpu_governor` | Host CPU frequency governor 汇总值，例如 `performance`、`powersave`、`schedutil`；如果各 CPU policy 不一致，会写成 `mixed:<governor>=<count>,...`；无法读取时为 `unavailable`。 |
@@ -166,7 +166,7 @@ OOM pruning 继续按原有参考 CPU/内存顺序重建证据，复用与推断
 | `execution_profile_tools` | 本次显式启用且适用于所选 GPU modes 的 execution profiler 列表，例如 `["massif","nsys"]`；工具缺失时仍列出，并通过对应 error 字段诊断；默认关闭时为空列表。 |
 | `massif_peak_semantics` | Massif peak 的 process-lifetime 口径，明确包含模型加载与预热。 |
 | `massif_repeat` | 每个 Massif probe 内的 inference repeat；peak bytes 不按 repeat 归一化。 |
-| `massif_version` | 实际执行分析的 container image 中的 Valgrind/Massif 版本；镜像可以是共享运行依赖的模型镜像或旧模型兼容镜像，未启用或无法确认时为 `unknown`。 |
+| `massif_version` | 实际执行分析的 container image 中的 Valgrind/Massif 版本；使用共享运行依赖的原模型镜像，未启用或无法确认时为 `unknown`。 |
 | `massif_sampling_strategy` | `representative_per_scale` 或 `full_resource_matrix`。 |
 | `massif_reference_cpu_cores` / `massif_reference_mem_cap_gb` | 缩减采样实际使用的代表资源；完整矩阵时为 `null`。 |
 | `massif_reused_across_resource_cases` | Massif entry 是否从代表资源复用到其他结果行。 |
@@ -179,7 +179,9 @@ OOM pruning 继续按原有参考 CPU/内存顺序重建证据，复用与推断
 | `execution_profiles_retained` | raw Massif / Nsight Systems artifacts 是否保留。 |
 | `execution_profile_provenance` | execution profile 的来源；默认关闭时为 `disabled`。 |
 
-`schema_version=3` 的历史文件使用 `model_weight_bytes` 表示上述完整 cache artifacts 大小；v4 以 `model_cache_bytes` 替代该旧字段；v5 新增 host swap 字段；v6 新增 cgroup 版本与采集模式；v7 新增运行环境和验证记录。历史文件不会自动伪造当时的 swap、cgroup 或依赖环境；无法回溯的值应保持未知，补录时在 `collection_history.json` 记录来源。
+`static_meta.json` 只接受 schema v7；旧版本或缺失版本直接报错。当前完整 cache artifacts 大小
+字段为 `model_cache_bytes`，不读取旧 `model_weight_bytes`。采集/修复记录独立写入
+`collection_history.json`，不从旧静态元数据补造 swap、cgroup 或运行环境信息。
 
 `runtime_environment.model_download` 是可选的独立 schema v1 清单，历史结果可缺失。`requested_policy` 保存 `auto/full`，`effective_policy` 保存实际 `selected/full`，`reason` 说明筛选或回退原因；`weights` 记录组件、格式、variant 和索引／分片文件。`files` 保存路径、实际逻辑大小和构建时计算的 SHA256，另保留 Hub 提供的 Git blob／LFS 标识；`excluded_files` 是未下载文件的远端元数据。`verification=sha256` 表示构建阶段已完成完整性检查，`plan_sha256` 校验规范化 JSON（不含自身字段）。`selected_bytes` 按清单路径求和，不对相同内容的多个路径去重，因此不等同于 `model_cache_bytes`、镜像大小或释放的磁盘空间。新增清单不改变 CSV 字段和历史指标定义。
 
@@ -193,11 +195,11 @@ OOM pruning 继续按原有参考 CPU/内存顺序重建证据，复用与推断
 | --- | --- |
 | `schema_version` | `collection_history.json` schema 版本，当前为 `1`。 |
 | `posthoc_profile_history` | `profile.py` 事后补采记录，包括工具、采样策略、完成时间与备份位置。 |
-| `timeout_retry_history` | 请求超时后的重采/合并记录。当前仓库没有自动生成该记录的入口，但会迁移和保留已有数据。 |
-| `quality_retry_history` | 质量检查后的定向重采/合并记录。当前仓库没有自动生成该记录的入口，但会迁移和保留已有数据。 |
+| `timeout_retry_history` | 请求超时后的重采/合并记录。当前仓库没有自动生成该记录的入口，保留独立历史文件中的已有记录。 |
+| `quality_retry_history` | 质量检查后的定向重采/合并记录。当前仓库没有自动生成该记录的入口，保留独立历史文件中的已有记录。 |
 | `static_meta_backfill_history` | 对历史结果补充静态元数据时的来源、字段、备份位置及无法回溯的字段。 |
 
-不再重复保存 `posthoc_profile_last_run`、`timeout_retry_last_run` 或 `quality_retry_last_run`；需要最新记录时读取对应 `*_history[-1]`。旧版 `static_meta.json` 中已有的六个 history/last-run 字段，会在首次成功 post-hoc 更新时无损迁移并去重。
+不再重复保存 `posthoc_profile_last_run`、`timeout_retry_last_run` 或 `quality_retry_last_run`；需要最新记录时读取对应 `*_history[-1]`。`static_meta.json` 中的 history/last-run 字段会被拒绝，不再执行迁移。
 
 ### 最大输入探测结果
 

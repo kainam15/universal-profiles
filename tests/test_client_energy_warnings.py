@@ -29,6 +29,12 @@ REMOVED_LEGACY_COMPUTE_FIELDS = (
 
 
 class EffectiveEnergyWarningTests(unittest.TestCase):
+    def setUp(self):
+        for name in ("IDLE_SECONDS", "IDLE_COOLDOWN_SECONDS"):
+            mocked = patch.object(client, name, 0.0)
+            mocked.start()
+            self.addCleanup(mocked.stop)
+
     def test_latency_metrics_use_the_current_client_slow_threshold(self) -> None:
         latencies = [0.01, 0.06, 0.2, float("nan"), float("inf")]
         for threshold, expected in ((0.05, 2 / 3), (0.1, 1 / 3)):
@@ -173,23 +179,8 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         start = CSV_FIELDS.index("input_scale")
         self.assertEqual(CSV_FIELDS[start:start + len(expected)], expected)
 
-    def test_input_scale_plan_v1_derives_audio_metadata_and_v2_preserves_it(self) -> None:
+    def test_input_scale_plan_preserves_current_audio_metadata(self) -> None:
         plans = [
-            (
-                {
-                    "entries": [
-                        {
-                            "input_scale": 0.25,
-                            "payload": {
-                                "audio_samples": [0.0, 0.1, -0.1, 0.0],
-                                "sample_rate": 16000,
-                                "params": {},
-                            },
-                        }
-                    ]
-                },
-                {"input_num_samples": 4, "sample_rate": 16000},
-            ),
             (
                 {
                     "schema_version": 2,
@@ -869,17 +860,17 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(rows[0]["repeat_in_window"], "20")
         self.assertEqual(one_request.call_count, 20)
 
-    def test_gpu_energy_uses_single_idle_measurement_per_workload_window(self) -> None:
+    def test_gpu_energy_uses_one_matched_control_baseline_per_workload(self) -> None:
         sleep_calls = []
 
         class FakeGpuMonitor:
-            measure_idle_calls = 0
+            apply_control_calls = 0
 
             def __init__(self, *args, **kwargs):
                 self.idle_power_w = float("nan")
 
-            def measure_idle(self):
-                type(self).measure_idle_calls += 1
+            def apply_control_baseline(self, result, samples, trace=False):
+                type(self).apply_control_calls += 1
                 self.idle_power_w = 10.0
                 return 10.0
 
@@ -965,7 +956,7 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                     fieldnames = reader.fieldnames or []
                     rows = list(reader)
 
-        self.assertEqual(FakeGpuMonitor.measure_idle_calls, 2)
+        self.assertEqual(FakeGpuMonitor.apply_control_calls, 2)
         self.assertEqual(sleep_calls, [2.5, 2.5])
         self.assertIn("gpu_idle_power_w", fieldnames)
         self.assertNotIn("idle_power_w", fieldnames)
@@ -982,13 +973,13 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         sleep_calls = []
 
         class FakeCPUMonitor:
-            measure_idle_calls = 0
+            apply_control_calls = 0
 
             def __init__(self, **kwargs):
                 self.idle_power_w = float("nan")
 
-            def measure_idle(self, trace_interval_s=None):
-                type(self).measure_idle_calls += 1
+            def apply_control_baseline(self, result, samples, trace=False):
+                type(self).apply_control_calls += 1
                 self.idle_power_w = 5.0
                 return self.idle_power_w
 
@@ -1074,7 +1065,7 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
             ):
                 client.main()
 
-        self.assertEqual(FakeCPUMonitor.measure_idle_calls, 2)
+        self.assertEqual(FakeCPUMonitor.apply_control_calls, 2)
         self.assertEqual(sleep_calls, [2.5, 2.5])
 
     def test_client_entrypoint_prints_friendly_energy_abort_without_traceback(self) -> None:
@@ -1287,7 +1278,7 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
 
     def test_cpu_monitor_unavailable_keeps_successful_row_ok(self) -> None:
         class FakeUnavailableCPUMonitor:
-            def measure_idle(self):
+            def apply_control_baseline(self, result, samples, trace=False):
                 return float("nan")
 
             def start(self):
@@ -1347,14 +1338,14 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                 self.idle_power_w = float("nan")
                 self.idle_trace = {}
 
-            def measure_idle(self, trace_interval_s=None):
-                type(self).trace_intervals.append(trace_interval_s)
+            def apply_control_baseline(self, result, samples, trace=False):
+                type(self).trace_intervals.append(trace)
                 self.idle_power_w = next(type(self).idle_values)
                 self.idle_trace = {
                     "idle_trace_schema": "cpu_rapl_idle_v1",
                     "actual_idle_duration_s": 3.0,
                     "rapl_trace": {
-                        "interval_s": trace_interval_s,
+                        "interval_s": 0.1,
                         "power_windows": [{"t0_s": 0.0, "t1_s": 0.1, "power_w": 6.0}],
                     },
                     "idle_proc_cpu_top": [{"pid": 123, "comm": "python", "cpu_time_ms": 10.0}],
@@ -1471,7 +1462,7 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(rows[1]["gpu_idle_measured_at"], "nan")
         self.assertEqual(rows[1]["gpu_idle_rel_range_so_far"], "nan")
         self.assertEqual(rows[1]["cpu_idle_rel_range_so_far"], "0.095238")
-        self.assertEqual(FakeCPUMonitor.trace_intervals, [0.1, 0.1])
+        self.assertEqual(FakeCPUMonitor.trace_intervals, [True, True])
         self.assertEqual(len(diag_rows), 2)
         self.assertEqual(diag_rows[1]["sniff_group_id"], "case_seq1_r1")
         self.assertEqual(diag_rows[1]["cpu_idle_measured_at"], "2026-05-02T10:00:01+08:00")
@@ -1497,7 +1488,7 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                 self.idle_power_w = float("nan")
                 self.idle_trace = {}
 
-            def measure_idle(self, trace=False):
+            def apply_control_baseline(self, result, samples, trace=False):
                 type(self).trace_args.append(trace)
                 self.idle_power_w = next(type(self).idle_values)
                 self.idle_trace = {

@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 from textual.widgets import Button, Checkbox, Input, Static, TabbedContent, TabPane
 
-from acprof.cli.tui import AcprofTui
-from acprof.cli.tui_core import RunConfig
+from acprof.tui.app import AcprofTui
+from acprof.tui.commands import RunConfig
 
 
 class TuiResultToolsTests(unittest.IsolatedAsyncioTestCase):

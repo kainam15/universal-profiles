@@ -817,10 +817,8 @@ def enrich_static_meta_from_input_plan(
     planned: PlannedInputScales,
 ) -> StaticMeta:
     """Attach the exact workload provenance used to build the payload plan."""
-    # CLI orchestration tests and third-party integrations may supply a metadata
-    # stand-in while mocking collection. Preserve that compatibility boundary.
     if not isinstance(static_meta, StaticMeta):
-        return static_meta
+        raise TypeError("static_meta must be a StaticMeta instance")
     return replace(
         static_meta,
         workload=dict(planned.workload),

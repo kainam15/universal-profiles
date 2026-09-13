@@ -80,11 +80,8 @@ Docker 数据可能在另一挂载点，磁盘问题还需对实际 `DockerRootD
 
 ### 资源占用率字段全是 `nan`
 
-- `container_*` usage/I/O 字段依赖被测容器的 cgroup CPU、memory、swap 与 I/O 文件；如果 Docker inspect、`/proc/<pid>/cgroup` 或 `/sys/fs/cgroup` 不可读，对应字段会保持 `nan`，不会影响其他可用指标。
-- 默认正式模式已在启动阶段强制 cgroup v2。只有显式使用 `--allow-cgroup-v1` 的兼容运行才会走 v1 fallback；其 `memory.peak` / `memory.stat` 分解与计数器、`io.stat` 操作数、`pids.*`、`memory.events` 和 per-cgroup PSI 字段保持 `nan`，不会使用 host 全局数据冒充 container 指标。
-- `cpu_freq_*` 字段依赖 Linux cpufreq sysfs 或 `/proc/cpuinfo`。如果当前内核、虚拟化环境或权限不暴露当前频率，会保持 `nan`。
-- `cpu_cycles_est_app` 依赖 `latency_app_s`、`cpu_freq_avg_hz`、`cpu_cores` 和 `container_cpu_util_avg_pct` 都有效；`cpu_cycles_est_packet` 还额外依赖 packet latency merge 成功回填 `latency_s`。
-- `gpu_*` utilization / VRAM 字段仅在 `gpu_mode=on` 且 NVML 可用时采集；口径是 NVML device-level，可能包含同一 GPU 上其他进程的占用。
+- 正式采集只支持 cgroup v2；cgroup v1 在启动阶段退出，不再提供兼容开关。
+  缺失的 cgroup 文件保持未知，不使用 host 全局数据冒充 container 指标。
 
 ### MIPS、cache miss 与 dTLB miss
 
@@ -126,7 +123,9 @@ AC-Prof 要求 RAPL energy counter 可读。按错误信息检查 `/sys/class/po
 
 ### `[cgroup][ERROR]`
 
-正式实验要求统一 cgroup v2。检查 `test -f /sys/fs/cgroup/cgroup.controllers` 和 `cat /proc/self/cgroup`；修复主机启动/systemd 配置并重启后再采集。`--allow-cgroup-v1` 只用于旧环境诊断，运行会标记为 `legacy_compatible`，不要与正式 v2 数据合并分析。如果结果目录留有不同版本或版本未知的 `result_case_*.csv`，程序会拒绝续写；请换用新的 `--output-dir` 或先归档旧部分结果。
+正式实验要求统一 cgroup v2。检查 `test -f /sys/fs/cgroup/cgroup.controllers` 和
+`cat /proc/self/cgroup`；修复主机启动/systemd 配置并重启后再采集。已删除 `--allow-cgroup-v1`。
+结果目录留有不同版本或版本未知的 `result_case_*.csv` 时会拒绝续写；使用新输出目录或归档原部分结果。
 
 ### `[mips][ERROR]`
 
@@ -166,7 +165,7 @@ cat /proc/sys/kernel/perf_event_paranoid
 - **必须采集此类型：** 等待支持该类型的项目版本，或按[适配契约](Runtime_Compatibility.md#新增一个模型适配)补齐输入、推理、输出与指标口径，再验证后采集。
 - **确实是识别错误：** 核对模型页的 `pipeline_tag`，通过 `--task`、`--task-family`、`--backend`（TUI 高级配置中的“识别覆盖”）纠正。仅在模型实际支持目标任务时使用；把图像描述模型改填成图像分类不会获得分类能力。
 
-`image-to-text` 已有图像描述输出适配，要求 `--batch-size 1`。如果启动时报 `Unknown task image-to-text`，需核对报错镜像的实际依赖：[Transformers v5 迁移说明](https://github.com/huggingface/transformers/blob/main/MIGRATION_GUIDE_V5.md#vision-pipelines-that-should-just-be-vlms)确认旧 pipeline 已移除。当前 CV Dockerfile 固定 `transformers==4.57.6`；确认镜像内依赖不符后按构建错误提示重建，只修改主机 `.venv` 不会改变镜像内依赖。该版本的[官方实现](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/pipelines/image_to_text.py)采用 Apache-2.0 许可，项目直接调用其图像预处理和生成流程，未另引入推理框架。此兼容路径不包含多模态对话任务，也不保证所有图像描述模型架构都能运行。
+`image-to-text` 已有图像描述输出适配，要求 `--batch-size 1`。如果启动时报 `Unknown task image-to-text`，需核对报错镜像的实际依赖：[Transformers v5 迁移说明](https://github.com/huggingface/transformers/blob/main/MIGRATION_GUIDE_V5.md#vision-pipelines-that-should-just-be-vlms)确认旧 pipeline 已移除。当前 CV 依赖锁固定 `transformers==4.57.6`；确认镜像内依赖不符后按构建错误提示重建，只修改主机 `.venv` 不会改变镜像内依赖。该版本的[官方实现](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/pipelines/image_to_text.py)采用 Apache-2.0 许可，项目直接调用其图像预处理和生成流程，未另引入推理框架。此兼容路径不包含多模态对话任务，也不保证所有图像描述模型架构都能运行。
 
 Hub 已明确给出的未知任务标签会保留并提示，不再被通用架构后缀猜成另一类任务。Hub 无法访问、缺少元数据等识别失败仍保留独立诊断，不统一归为“不支持”。
 

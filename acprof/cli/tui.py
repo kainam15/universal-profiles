@@ -1,79 +1,13 @@
-"""TUI CLI 参数解析和旧导入路径的兼容入口。"""
+"""TUI 命令参数与启动。"""
 from __future__ import annotations
 
 import argparse
 from dataclasses import replace
 from typing import Sequence
 
-from acprof.tui.app import (
-    AcprofTui,
-    PROJECT_DIR,
-    PYTHON_EXECUTABLE,
-    PendingLaunch,
-)
+from acprof.tui.app import AcprofTui
 
-from acprof.tui.commands import (
-    RunConfig,
-    TuiConfigError,
-    build_plot_command,
-    build_probe_command,
-    build_profile_command,
-    build_run_command,
-    format_command,
-    parse_slash_command,
-)
-
-from acprof.tui.diagnostics import (
-    PreflightCheck,
-    quick_preflight,
-    summarize_result_csv,
-)
-
-from acprof.tui.i18n import (
-    LANGUAGE_OPTIONS,
-    error_message,
-    join_messages,
-    message,
-    translate,
-)
-
-from acprof.tui.input import (
-    BarCursorApp,
-    BarCursorInput as Input,
-)
-
-from acprof.tui.log import (
-    SelectableLog,
-)
-
-from acprof.tui.progress import (
-    ProgressSnapshot,
-    RunProgressTracker,
-)
-
-from acprof.tui.scrollbar import (
-    SolidScrollBarRender,
-)
-
-from acprof.tui.settings import (
-    UiPreferences,
-    default_settings_path,
-    load_settings,
-    save_settings,
-)
-
-from acprof.tui.themes import (
-    THEME_CATALOG,
-    THEME_OPTIONS,
-)
-
-from acprof.tui.views import (
-    COLLAPSED_SYMBOL,
-    ConfirmActionScreen,
-    EXPANDED_SYMBOL,
-    LogPanel,
-    StatusCheckbox,
-)
+from acprof.tui.commands import RunConfig
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -95,8 +29,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    args = _build_parser().parse_args(argv)
-    app = AcprofTui()
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    try:
+        app = AcprofTui()
+    except ValueError as exc:
+        parser.error(str(exc))
     config = app.initial_config
     model = config.model if args.model is None else args.model
     if args.preset == "smoke":

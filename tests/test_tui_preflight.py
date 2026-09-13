@@ -7,7 +7,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from acprof.cli.tui_core import RunConfig, quick_preflight
+from acprof.tui.commands import RunConfig
+from acprof.tui.diagnostics import quick_preflight
 from acprof.monitors.perf_mips import PERF_PROBE_TIMEOUT_S
 
 

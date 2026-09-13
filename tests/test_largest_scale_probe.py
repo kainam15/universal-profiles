@@ -15,7 +15,9 @@ from acprof.host.largest_scale_probe import (
     run_largest_scale_probe,
     select_minimum_resources,
 )
-from acprof.host.orchestrator import ImageInfo, PlannedInputScales, RunningContainer
+from acprof.host.orchestrator import ImageInfo
+from acprof.host.input_plan import PlannedInputScales
+from acprof.host.docker_runtime import RunningContainer
 from acprof.host import orchestrator
 
 

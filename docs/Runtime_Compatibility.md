@@ -49,7 +49,7 @@ flowchart LR
 
 默认 Python 3.10 slim 基础镜像已固定 OCI digest，定义在 `runtime_profiles.py`。
 系统 apt 仓库仍随时间更新，重新构建不能保证镜像字节完全相同；复现实验和补采仍引用原始 image ID。
-旧任务族 Dockerfile 保留作兼容入口，主采集统一通过 `runtime.Dockerfile` 构建锁定环境。
+只保留 `runtime.Dockerfile`、`runtime-model.Dockerfile`、`runtime-final.Dockerfile` 三层构建；未锁定环境会报错。
 
 主机构建预检沿用驱动兼容分支，CUDA 12.4 选择固定的 Torch 2.6.0 wheel，CUDA 12.8+ 选择 2.11.0。
 `ACPROF_NLP_TORCH_INDEX_URL` 接受官方 `cu124`、`cu128` 和 `cpu` 索引；显式
@@ -84,15 +84,11 @@ CPU 使用 FP32，GPU 使用 BF16；常规推理使用 SDPA，Torch FLOPs 的独
 查不到目标指纹则自动构建；已有标签内容不符会报错。构建期间代码变动会使构建失败，避免
 用旧指纹标记新代码。旧 `:latest` 镜像可留存供历史实验使用，但不直接用于新环境的采集。
 
-主机构建统一经 `build_image` → `build_runtime_image`。未锁定环境按基础 Dockerfile 和构建参数
-生成 `acprof-base:<指纹>`，并显式传给任务族的 `runtime` target；锁定环境直接使用
-`runtime.Dockerfile`，不依赖 `acprof-base:latest`。
+主机构建统一经 `build_image` → `build_runtime_image`，所有 RuntimeProfile 必须指定
+完整依赖锁。旧任务族、base、Massif 和 Nsys Dockerfile 已删除。
 
-任务族 Dockerfile 的 `BASE_IMAGE` 没有默认值。手动构建 NLP、audio、CV、diffusion、multimodal、
-structured 或 timeseries 镜像时，必须通过 `--build-arg BASE_IMAGE=<基础镜像引用>` 明确选择
-基础镜像；未传或传空值会在 Dockerfile 解析阶段失败，不会自动选择本地 `latest`。
-这一约束使用 [BuildKit 原生 ARG/FROM 解析](https://github.com/moby/buildkit/blob/master/frontend/dockerfile/dockerfile2llb/convert.go)，
-不增加 Python 依赖或正式测量窗口内的检查。
+正式 server 和 profiler 使用镜像中配置的本地 snapshot。显式 `MODEL_LOCAL_PATH` 不存在时
+立即报错，不回退到 Hub/cache 加载；未知 backend 不会自动选择同任务族的其他 handler。
 
 在正式资源矩阵之前，使用输入计划的最小尺度、最大已选 CPU／内存，为每个请求的设备模式
 启动独立验证容器，执行完整的加载、预处理、推理和输出序列化。容器无网络，退出后清理。
@@ -103,7 +99,7 @@ structured 或 timeseries 镜像时，必须通过 `--build-arg BASE_IMAGE=<基�
 
 `static_meta.json` v7 保存 `image_id`、`image_name`、`runtime_environment` 和成功返回的
 `runtime_validation`；单独的 `runtime_validation.json` 与设备日志也保留失败信息。
-历史 CSV／静态元数据按原样读取。补采有 `image_id` 时要求原镜像存在并匹配构建指纹，
+只读取当前 schema 的 CSV／静态元数据。补采要求记录不可变 `image_id`，且原镜像存在并匹配构建指纹，
 不自动升级依赖，也不将工作区代码覆盖进该镜像。Torch、NCU、Massif、Nsys 的工具版本、
 可用性、输出与错误继续由各自计划记录；普通推理成功不代表所有工具已验证成功。
 
@@ -122,6 +118,12 @@ TUI 根据镜像标签和 AC-Prof 元数据判定类型。下表列出常见名�
 | 调试镜像 | `acprof-blip-reuse-base:*`、`acprof-massif-*`、`acprof-nsys-*`、`acprof-ncu-*`；名称含 `dependency-check` 或 `reuse-base` | 调试、修复或旧 profiler 兼容流程留下的镜像；可能继承某个模型的权重。 |
 | 其它镜像 | 例如 `acprof-validation-host:*` | 未匹配上述分类的已标记镜像。此例用于开发时验证主机依赖、Python 兼容性和回归测试，常规采集不会自动创建或使用它。 |
 | 无标签 | Docker 中显示为 `<none>:<none>` | 没有名称标签的镜像，仍需按 image ID 核对内容和引用；无标签不等于可以释放其全部空间。 |
+
+镜像、容器和单配置结果文件名中的模型标识统一转小写，将 `/` 替换为 `--`，保留点号 `.` 和原有下划线 `_`。
+例如 `Qwen/Qwen2.5-0.5B` 生成 `qwen--qwen2.5-0.5b`，对应服务镜像
+`acprof-nlp-qwen--qwen2.5-0.5b:<构建指纹前20位>`、结果文件 `result_case_qwen--qwen2.5-0.5b_1c_4g_off.csv`。
+点号符合 [Docker 镜像名称规则](https://github.com/distribution/reference/blob/main/regexp.go)；下载、加载与元数据仍保留原始模型 ID。
+镜像搜索和“选择同模型”区分点号与下划线。已有镜像标签与结果文件不会自动改名。
 
 常规模型的继承关系是 **运行依赖 → 模型文件 → 推理服务**。后两类共享运行环境和权重层，
 不会因为保留两类镜像就各存一份权重。`acprof-build-source:<image ID>` 是构建时给已有镜像添加的别名，
@@ -175,7 +177,14 @@ Docker 连接失败、权限不足或查询超时显示错误并清除旧选择�
 
 自定义 adapter、`auto_map`、量化配置、未知模型类型或未覆盖的 pipeline 使用完整快照，并打印回退原因。GPU 推理 dtype 不用于选择文件名中的 FP16／FP32 variant；不会自动转换、量化权重或切换 EMA checkpoint。需要完整仓库时，`run.py` 和 `probe.py` 均可传入 `--model-download-policy full`。TUI 使用默认 `auto`；两种策略具有不同的镜像指纹。
 
-共享环境层不包含 AC-Prof 业务代码或模型。其它任务族 Dockerfile 的 `runtime` target 作为历史兼容入口，默认构建使用带完整依赖锁的 runtime 镜像，再共用模型／最终代码构建流程。模型层的指纹包含真实环境 image ID、模型 commit、backend、adapter、下载策略和筛选器内容；最终层再复制 AC-Prof 代码。修改界面或 handler 可以复用依赖与模型层，修改筛选规则只重建模型及最终层。历史或自定义未锁定环境仍记录实际安装版本；完整 Python 锁也不固定 apt 仓库的包版本，不能据此承诺删掉环境镜像后可重建出逐字节相同的环境。
+共享环境层不包含 AC-Prof 业务代码或模型。默认构建使用带完整依赖锁的 runtime 镜像，
+再共用模型／最终代码构建流程。模型层指纹包含真实环境 image ID、模型 commit、backend、adapter、
+下载策略和筛选器内容；最终层复制 AC-Prof 代码。修改界面或 handler 可以复用依赖与模型层，
+修改筛选规则只重建模型及最终层。完整 Python 锁不固定 apt 仓库包版本，仍需保留原始 image ID。
+
+主机 NVML 依赖直接使用 NVIDIA 的 `nvidia-ml-py`，Python 导入名仍是 `pynvml`。
+已删除的同名 `pynvml` 发行包由[上游标记为弃用](https://github.com/gpuopenanalytics/pynvml#readme)；
+这项替换不增加采集步骤或测量开销。
 
 镜像内 `/models/model_download_plan.json` 保存所选文件、排除文件、选择原因、框架版本、文件 SHA256 和清单 SHA256。文件大小／内容检查在构建阶段执行，清单写入 `static_meta.json/runtime_environment/model_download`；正式 server 启动不会再次扫描、下载或校验全部权重。`model_cache_bytes` 统计实际缓存 artifacts，`docker_image_bytes` 包含该镜像继承的共享层；判断磁盘节省应查看 `docker system df -v` 的共享／独占占用。保留旧镜像时，它引用的大层仍会占用空间。
 
@@ -431,4 +440,4 @@ MOSS 自动选择专用 adapter 和依赖锁，不需要修改主机 `.venv`。�
 - `/predict` 返回 `task="image-to-text"`、`output_type="caption"`、`captions: string[]`、`n_results`、`output_length` 和可空的 `output_token_count`。一次请求输入一张图；若生成多条候选，`n_results` 为候选数，字符/token 指标为该请求所有候选之和。空字符串是有效输出，缺少 `generated_text`、非字符串内容或没有候选则报请求错误，不计为成功检测结果。
 - 输入 `params` 直接传给官方 pipeline，缺省时使用该 pipeline 与固定模型 revision 的默认生成配置。响应文本解析与重新分词属于原请求的后处理，计入 application/packet 延迟；不新增推理轮次。输出文本会增加相应响应字节，不能与旧版误标为 detection 的响应直接比较。
 - `input_scale` 仍是传入合成 RGB 图片相对 224 像素基准的缩放倍率。模型内部可能缩放到固定分辨率；输出 token 数也不能代表视觉编码器 FLOP。此实现覆盖官方旧 pipeline 可加载的图像描述模型，不扩展到多模态对话或所有模型架构。
-- 使用现有 CSV 列和任务相关的 `static_meta.json.output_format`，沿用现有输出字段；运行环境元数据见 static schema v7；窗口聚合沿用现有逻辑，只对有限的输出计数求平均，全部不可得时为 `nan`。旧 CSV 缺少输出字段时沿用 `nan`，旧元数据按原样读取，不回填历史结果。正式性能分析仍筛选 `status=ok` 且 `warmup=0`。
+- 使用现有 CSV 列和任务相关的 `static_meta.json.output_format`，沿用现有输出字段；运行环境元数据见 static schema v7；窗口聚合沿用现有逻辑，只对有限的输出计数求平均，全部不可得时为 `nan`。缺少可选输出字段时为 `nan`，静态元数据必须为当前 schema v7。正式性能分析仍筛选 `status=ok` 且 `warmup=0`。

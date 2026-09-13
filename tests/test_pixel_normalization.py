@@ -1,3 +1,7 @@
+import acprof.plotting.config as plotting_config
+import acprof.plotting.data as plotting_data
+import acprof.plotting.metrics as plotting_metrics
+import matplotlib.pyplot as matplotlib_pyplot
 import csv
 import hashlib
 import json
@@ -12,6 +16,7 @@ import pandas as pd
 
 from acprof.cli import plot
 from acprof.config import CSV_FIELDS
+from acprof.pixel_metrics import pixel_counts_from_metadata
 from acprof.host import client
 from acprof.host.orchestrator import _write_case_error_csv
 from acprof.packet import merge_packet_latency
@@ -31,7 +36,7 @@ class PixelNormalizationTests(unittest.TestCase):
         plan = {"schema_version": 2, "task_family": family, "entries": entries}
         plan_bytes = json.dumps(plan).encode()
         (root / "input_scale_plan.json").write_bytes(plan_bytes)
-        meta = {"task_family": family, "input_scale_type": scale_type,
+        meta = {"schema_version": 7, "task_family": family, "input_scale_type": scale_type,
                 "batch_size": batch, "workload": workload or {},
                 "input_scale_plan_sha256": hashlib.sha256(plan_bytes).hexdigest()}
         (root / "static_meta.json").write_text(json.dumps(meta))
@@ -46,6 +51,9 @@ class PixelNormalizationTests(unittest.TestCase):
                  "container_attributed_j_per_input_unit": 2.56,
                  "latency_s": 0.131072, "latency_app_s": 0.262144},
             ]
+        metadata_by_scale = {entry["input_scale"]: entry.get("input_metadata", {}) for entry in entries}
+        rows = [{**pixel_counts_from_metadata(metadata_by_scale.get(row["input_scale"]), batch,
+                                              task_family=family, workload=workload), **row} for row in rows]
         path = root / "result_all.csv"
         pd.DataFrame([
             {"cpu_cores": 1, "mem_cap_gb": 4, "gpu_mode": "off",
@@ -54,11 +62,11 @@ class PixelNormalizationTests(unittest.TestCase):
         ]).to_csv(path, index=False)
         return path
 
-    def test_legacy_diffusion_uses_area_and_keeps_scale_units(self):
+    def test_diffusion_uses_recorded_area_and_keeps_scale_units(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = self.write_result(tmp)
             originals = {p: p.read_bytes() for p in Path(tmp).iterdir()}
-            df = plot.prepare_df(str(path))
+            df = plotting_data.prepare_df(str(path))
             self.assertIn("output_pixels_per_request", df)
             self.assertEqual(df.output_pixels_per_request.tolist(), [32768, 131072])
             self.assertEqual(df.input_units_per_request.tolist(), [256, 512])
@@ -77,7 +85,7 @@ class PixelNormalizationTests(unittest.TestCase):
                     "image_width": 112, "image_height": 112, "num_frames": 3}}],
                 rows=[{"input_scale": 0.5, "input_units_per_request": 0.5,
                        "container_attributed_energy_eff_j": 37.632}])
-            df = plot.prepare_df(str(path))
+            df = plotting_data.prepare_df(str(path))
         self.assertIn("input_pixels_per_request", df)
         self.assertEqual(df.input_pixels_per_request.tolist(), [37632])
         self.assertEqual(df.container_attributed_j_per_input_megapixel.tolist(), [1000])
@@ -89,7 +97,7 @@ class PixelNormalizationTests(unittest.TestCase):
                 entries=[{"input_scale": 20, "input_metadata": {
                     "image_width": 20, "image_height": 30}}],
                 rows=[{"input_scale": 20, "container_attributed_energy_eff_j": 1.2}])
-            df = plot.prepare_df(str(path))
+            df = plotting_data.prepare_df(str(path))
         self.assertIn("input_pixels_per_request", df)
         self.assertEqual(df.input_pixels_per_request.tolist(), [1200])
         self.assertEqual(df.container_attributed_j_per_input_megapixel.tolist(), [1000])
@@ -100,7 +108,7 @@ class PixelNormalizationTests(unittest.TestCase):
                 "output_pixel_count_per_frame": 16384,
                 "output_num_frames": 4, "output_pixel_count_per_video": 65536}}],
                 rows=[{"input_scale": 128, "container_attributed_energy_eff_j": 1310.72}])
-            df = plot.prepare_df(str(path))
+            df = plotting_data.prepare_df(str(path))
         self.assertIn("output_pixels_per_request", df)
         self.assertEqual(df.output_pixels_per_request.tolist(), [131072])
         self.assertEqual(df.container_attributed_j_per_output_megapixel.tolist(), [10000])
@@ -111,32 +119,18 @@ class PixelNormalizationTests(unittest.TestCase):
             with self.subTest(scale_type=scale_type), tempfile.TemporaryDirectory() as tmp:
                 path = self.write_result(tmp, family=family, scale_type=scale_type,
                     entries=[{"input_scale": 128, "input_metadata": {}}])
-                df = plot.prepare_df(str(path))
+                df = plotting_data.prepare_df(str(path))
                 self.assertIn("output_pixels_per_request", df)
                 self.assertTrue(df.output_pixels_per_request.isna().all())
                 self.assertTrue(df.input_pixels_per_request.isna().all())
                 self.assertEqual(df.container_attributed_j_per_input_unit.tolist(), [1.28, 2.56])
 
-    def test_untrusted_or_unmatched_plan_leaves_pixels_unknown(self):
-        for failure in ("hash", "scale", "batch", "missing"):
-            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
-                path = self.write_result(tmp)
-                meta_path = Path(tmp) / "static_meta.json"
-                meta = json.loads(meta_path.read_text())
-                if failure == "hash":
-                    meta["input_scale_plan_sha256"] = "0" * 64
-                elif failure == "batch":
-                    meta.pop("batch_size")
-                elif failure == "scale":
-                    rows = pd.read_csv(path)
-                    rows["input_scale"] = [192, 320]
-                    rows.to_csv(path, index=False)
-                else:
-                    (Path(tmp) / "input_scale_plan.json").unlink()
-                meta_path.write_text(json.dumps(meta))
-                df = plot.prepare_df(str(path))
-                self.assertIn("output_pixels_per_request", df)
-                self.assertTrue(df.output_pixels_per_request.isna().all())
+    def test_explicit_counts_do_not_read_the_input_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.write_result(tmp)
+            (Path(tmp) / "input_scale_plan.json").write_text("not a plan")
+            df = plotting_data.prepare_df(str(path))
+        self.assertEqual(df.output_pixels_per_request.tolist(), [32768, 131072])
 
     def test_explicit_pixel_counts_work_without_sidecars_and_refresh_stale_rates(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -147,20 +141,20 @@ class PixelNormalizationTests(unittest.TestCase):
                 "latency_s": 0.032768, "latency_s_per_output_megapixel": 999}])
             (Path(tmp) / "static_meta.json").unlink()
             (Path(tmp) / "input_scale_plan.json").unlink()
-            df = plot.prepare_df(str(path))
+            df = plotting_data.prepare_df(str(path))
         self.assertEqual(df.container_attributed_j_per_output_megapixel.tolist(), [10000])
         self.assertEqual(df.latency_s_per_output_megapixel.tolist(), [1])
 
-    def test_legacy_rows_with_empty_new_columns_can_use_the_verified_plan(self):
+    def test_missing_pixel_counts_are_not_reconstructed_from_plan(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = self.write_result(tmp)
             rows = pd.read_csv(path)
             rows["input_pixels_per_request"] = ""
             rows["output_pixels_per_request"] = ""
             rows.to_csv(path, index=False)
-            df = plot.prepare_df(str(path))
-        self.assertEqual(df.output_pixels_per_request.tolist(), [32768, 131072])
-        self.assertEqual(df.container_attributed_j_per_output_megapixel.tolist(), [10000, 10000])
+            df = plotting_data.prepare_df(str(path))
+        self.assertTrue(df.output_pixels_per_request.isna().all())
+        self.assertTrue(df.container_attributed_j_per_output_megapixel.isna().all())
 
     def test_invalid_counts_and_energy_remain_nan_but_zero_energy_is_valid(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -170,7 +164,7 @@ class PixelNormalizationTests(unittest.TestCase):
                 for pixels, energy in ((16384, 0), (0, 1), (-1, 1),
                                        (16384, -1), (16384, float("nan")), (1.5, 1))
             ])
-            df = plot.prepare_df(str(path))
+            df = plotting_data.prepare_df(str(path))
         values = df.container_attributed_j_per_output_megapixel.tolist()
         self.assertEqual(values[0], 0)
         self.assertTrue(all(math.isnan(value) for value in values[1:]))
@@ -178,73 +172,61 @@ class PixelNormalizationTests(unittest.TestCase):
     def test_resolution_panel_does_not_fall_back_to_edge_when_geometry_is_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = self.write_result(tmp)
-            (Path(tmp) / "input_scale_plan.json").unlink()
-            df = plot.prepare_df(str(path))
+            rows = pd.read_csv(path)
+            rows["output_pixels_per_request"] = float("nan")
+            rows.to_csv(path, index=False)
+            df = plotting_data.prepare_df(str(path))
         title, _, rows, columns, panels, shared = next(
-            spec for spec in plot.METRIC_OVERVIEW_PLOTS
+            spec for spec in plotting_config.METRIC_OVERVIEW_PLOTS
             if spec[1] == "service_efficiency_overview_vs_scale.png")
         try:
-            with patch.object(plot.plt, "close"):
-                plot.plot_metric_overview(df, panels=panels, rows=rows,
+            with patch.object(matplotlib_pyplot, "close"):
+                plotting_metrics.plot_metric_overview(df, panels=panels, rows=rows,
                     columns=columns, shared_y_groups=shared, title=title,
                     xlabel="resolution_px", out_png=None)
-                axis = plot.plt.gcf().axes[3]
+                axis = matplotlib_pyplot.gcf().axes[3]
             self.assertEqual(len(axis.lines), 0)
             self.assertIn("No data", [text.get_text() for text in axis.texts])
             self.assertIn("Output Megapixel", axis.get_title())
         finally:
-            plot.plt.close("all")
+            matplotlib_pyplot.close("all")
 
     def test_non_image_panel_keeps_the_task_unit(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = self.write_result(tmp, family="audio", scale_type="duration_s", entries=[])
-            df = plot.prepare_df(str(path))
+            df = plotting_data.prepare_df(str(path))
         try:
-            with patch.object(plot.plt, "close"):
-                plot.plot_metric(df, "container_attributed_j_per_input_unit",
+            with patch.object(matplotlib_pyplot, "close"):
+                plotting_metrics.plot_metric(df, "container_attributed_j_per_input_unit",
                     "Energy per Input Unit", "J/input unit", "duration_s", None)
-                axis = plot.plt.gca()
+                axis = matplotlib_pyplot.gca()
             self.assertEqual(list(axis.lines[0].get_ydata()), [1.28, 2.56])
             self.assertEqual(axis.get_ylabel(), "J/input unit")
         finally:
-            plot.plt.close("all")
+            matplotlib_pyplot.close("all")
 
-    def test_malformed_plan_does_not_block_other_metrics(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = self.write_result(tmp)
-            plan_path = Path(tmp) / "input_scale_plan.json"
-            content = json.dumps({"schema_version": 2, "entries": 42}).encode()
-            plan_path.write_bytes(content)
-            meta_path = Path(tmp) / "static_meta.json"
-            meta = json.loads(meta_path.read_text())
-            meta["input_scale_plan_sha256"] = hashlib.sha256(content).hexdigest()
-            meta_path.write_text(json.dumps(meta))
-            with self.assertWarnsRegex(RuntimeWarning, "input_scale_plan"):
-                df = plot.prepare_df(str(path))
-        self.assertTrue(df.output_pixels_per_request.isna().all())
-        self.assertEqual(df.container_attributed_energy_eff_j.tolist(), [327.68, 1310.72])
 
     def test_energy_and_latency_panels_plot_pixels(self):
         with tempfile.TemporaryDirectory() as tmp:
-            df = plot.prepare_df(str(self.write_result(tmp)))
+            df = plotting_data.prepare_df(str(self.write_result(tmp)))
         for filename, index, expected, unit in (
             ("service_efficiency_overview_vs_scale.png", 3, [10000, 10000], "J/Mpixel"),
             ("latency_overview_vs_scale.png", 2, [1, 1], "s/Mpixel"),
         ):
             with self.subTest(filename=filename):
                 title, _, rows, columns, panels, shared = next(
-                    spec for spec in plot.METRIC_OVERVIEW_PLOTS if spec[1] == filename)
+                    spec for spec in plotting_config.METRIC_OVERVIEW_PLOTS if spec[1] == filename)
                 try:
-                    with patch.object(plot.plt, "close"):
-                        plot.plot_metric_overview(df, panels=panels, rows=rows,
+                    with patch.object(matplotlib_pyplot, "close"):
+                        plotting_metrics.plot_metric_overview(df, panels=panels, rows=rows,
                             columns=columns, shared_y_groups=shared, title=title,
                             xlabel="resolution_px", out_png=None)
-                        axis = plot.plt.gcf().axes[index]
+                        axis = matplotlib_pyplot.gcf().axes[index]
                     self.assertIn("Output Megapixel", axis.get_title())
                     self.assertIn(unit, axis.get_ylabel())
                     self.assertEqual(list(axis.lines[0].get_ydata()), expected)
                 finally:
-                    plot.plt.close("all")
+                    matplotlib_pyplot.close("all")
 
     def test_live_client_writes_pixels_and_application_latency(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -279,7 +261,7 @@ class PixelNormalizationTests(unittest.TestCase):
                 "latency_app_s_per_output_megapixel": 2,
                 "container_attributed_j_per_output_megapixel": 10000}]).to_csv(source, index=False)
             latencies = root / "latencies.json"
-            latencies.write_text(json.dumps({"case:1": 0.032768}))
+            latencies.write_text(json.dumps({"schema_version": 2, "requests": {"case:1": {"latency_s": 0.032768}}}))
             merge_packet_latency.main([str(source), str(latencies), str(destination)])
             with destination.open() as f:
                 row = next(csv.DictReader(f))

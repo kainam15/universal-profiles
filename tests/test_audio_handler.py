@@ -160,29 +160,18 @@ class AudioHandlerTests(unittest.TestCase):
         self.assertFalse(processed["_truncated_by_limit"])
         self.assertIn("within", processed["_probe_reason"])
 
-    def test_preprocess_keeps_legacy_float_samples_compatible(self):
-        processed = self.handler.preprocess(
-            self.context(),
-            {
-                "audio_samples": [0.0, 0.25, -0.5],
-                "sample_rate": 16000,
-                "params": {},
-            },
-        )
-
-        np.testing.assert_array_equal(
-            processed["audio"], np.array([0.0, 0.25, -0.5], dtype=np.float32)
-        )
-        self.assertEqual(processed["_input_num_samples"], 3)
+    def test_preprocess_rejects_legacy_float_samples(self):
+        with self.assertRaisesRegex(ValueError, "audio_base64"):
+            self.handler.preprocess(self.context(), {"audio_samples": [0.0, 0.25], "sample_rate": 16000})
 
     def test_preprocess_rejects_missing_empty_and_ambiguous_audio(self):
-        with self.assertRaisesRegex(ValueError, "missing audio input"):
+        with self.assertRaisesRegex(ValueError, "audio_base64"):
             self.handler.preprocess(self.context(), {"params": {}})
-        with self.assertRaisesRegex(ValueError, "at least one sample"):
+        with self.assertRaisesRegex(ValueError, "audio_base64"):
             self.handler.preprocess(
                 self.context(), {"audio_samples": [], "sample_rate": 16000}
             )
-        with self.assertRaisesRegex(ValueError, "exactly one"):
+        with self.assertRaisesRegex(ValueError, "audio_base64"):
             self.handler.preprocess(
                 self.context(),
                 {
@@ -266,7 +255,8 @@ class AudioHandlerTests(unittest.TestCase):
         processed = self.handler.preprocess(
             self.context(),
             {
-                "audio_samples": np.zeros(480001, dtype=np.float32),
+                "audio_base64": wav_base64(np.zeros(480001, dtype=np.int16)),
+                "audio_format": "wav",
                 "sample_rate": 16000,
             },
         )

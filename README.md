@@ -8,7 +8,7 @@ AC-Prof 是一个面向 Hugging Face 推理服务的零侵入运行时分析工�
 
 ## 先看这两点
 
-> **运行环境：** AC-Prof 只支持原生 Linux 主机和本机 Docker Engine，正式采集默认强制使用统一 cgroup v2。WSL、Docker Desktop、远程 Docker daemon、Windows 和 macOS 不能作为实验采集环境。当前推荐并验证的是 Ubuntu 24.04。
+> **运行环境：** AC-Prof 只支持原生 Linux 主机和本机 Docker Engine，正式采集强制使用统一 cgroup v2。WSL、Docker Desktop、远程 Docker daemon、Windows 和 macOS 不能作为实验采集环境。当前推荐并验证的是 Ubuntu 24.04。
 
 > **时间成本：** 默认 6 档 input scale 时，完整矩阵计划生成 1,344 行主实验（含 warmup）。按默认每行约 10 秒 workload、20 秒 Idle 基线和 5 秒前置冷却估算，仅主测量窗口就约 13 小时，且还不包含模型下载、镜像构建、case 切换，以及显式启用各类分析器时的额外耗时。第一次使用请先跑下面的最小 smoke test；具体公式见[时间成本估算](docs/Profiling_Protocol.md#结果行数和时间成本估算)。
 
@@ -160,11 +160,13 @@ python plot.py \
 CV 和图像多模态使用 processor 处理前的输入像素；视频计入全部帧。横轴仍表示原来的
 边长或缩放倍率。文本 token、音频秒数、去噪步数等尺度继续使用各自的 input unit。
 
-旧的 `input_units_per_request` 和 `*_per_input_unit` 字段保留原义。
-读取历史结果时，`plot.py` 可从同目录、hash 匹配的 `input_scale_plan.json` 尺寸记录和
-batch 元数据派生像素指标，无需重新采集，也不改写 CSV、输入计划或静态元数据。
+`input_units_per_request` 和 `*_per_input_unit` 继续表示任务尺度单位。
+`plot.py` 仅使用 CSV 已记录的显式像素计数，不再从旧计划补造像素指标。
 缺少可靠像素数时，对应子图显示 `No data`，不以边长代替面积。
-公式和兼容规则见 [像素归一化口径](docs/Metrics.md#像素归一化口径)。
+公式和字段要求见 [像素归一化口径](docs/Metrics.md#像素归一化口径)。
+
+当前只保留已有替代实现的最新入口：设置 version 4、输入计划 schema v2、静态元数据 schema v7。
+旧参数、旧 schema、旧 GPU/通用 FLOP 字段会直接报错；详见[当前协议要求](docs/Architecture.md#只保留当前协议)。
 
 ## 运行正式实验
 
@@ -172,7 +174,7 @@ batch 元数据派生像素指标，无需重新采集，也不改写 CSV、输�
 
 中断后使用原命令加 `--resume`，或在 TUI 高级参数勾选“恢复未完成实验”。系统会核对原参数、
 镜像和输入计划，保留完成的 case，并备份后重新测量中断的 case。新实验应选择新的输出目录；
-已有产物不会被默认覆盖。旧实验没有恢复状态文件时仍可绘图、补采，主实验恢复约定见
+已有产物不会被默认覆盖。符合当前产物协议的实验没有恢复状态文件时仍可绘图、补采，主实验恢复约定见
 [结果完整性与断点续跑](docs/Profiling_Protocol.md#结果完整性与断点续跑)。
 
 ### 先探测最大输入
@@ -425,7 +427,7 @@ python run.py --model google-bert/bert-base-uncased --notify none
 
 通知覆盖实验开始、已启用 profiler 的各工具阶段完成、每个资源 case 完成和最终总结。
 CPU Torch、GPU Torch、NCU、Massif、Nsys 各自汇总实际采样项、失败数、阶段耗时和累计耗时；
-兼容 vendor 模式的 CPU Advisor 同样适用。阶段状态区分成功、部分失败、失败和无结果。
+vendor 模式的 CPU Advisor 同样适用。阶段状态区分成功、部分失败、失败和无结果。
 关闭或不适用的工具不发阶段通知，代表资源复用不重复计数。最终总结区分成功、部分成功、
 无结果、失败和用户取消。TUI 启动的 `run.py` 使用同一设置，独立 `profile.py` 不发送这些通知。
 
@@ -501,7 +503,7 @@ NCU metrics（适用时）必须匹配，才能恢复旧报告。分析固定使
 写入前把旧文件备份到 `posthoc_backups/<timestamp>/`，验证临时文件后原子替换
 `result_all.csv`、`static_meta.json` 和 `collection_history.json`，失败时从备份恢复。
 操作记录追加到 `posthoc_profile_history`，原始实验命令和非 profiler 字段保持原样。
-旧结果首次成功补采时会创建历史文件并迁移已有记录；报告与补采 plan 位于 `posthoc_profiles/`。
+仅接受当前产物协议，不迁移旧静态元数据中的历史记录；报告与补采 plan 位于 `posthoc_profiles/`。
 同一结果目录若仍被采集或分析进程使用，补采会拒绝启动。
 
 ### 从已有计划生成派生 CSV

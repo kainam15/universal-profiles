@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from acprof.cli.tui_core import RunConfig
-from acprof.cli.tui_settings import (
+from acprof.tui.commands import RunConfig
+from acprof.tui.settings import (
     SETTINGS_VERSION,
     TuiSettings,
     UiPreferences,
@@ -78,33 +78,15 @@ class TuiSettingsTests(unittest.TestCase):
         self.assertEqual(json.loads(self.path.read_text())["version"], SETTINGS_VERSION)
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
 
-    def test_legacy_settings_load_without_rewriting_and_upgrade_when_saved(self):
-        for version_fields in ({}, {"version": 1}, {"version": 2}, {"version": 3}):
+    def test_old_settings_versions_fail_without_rewriting(self):
+        for version_fields in ({}, {"version": 1}, {"version": 2}, {"version": 3},
+                               {"version": True}, {"version": SETTINGS_VERSION + 1}):
             with self.subTest(version_fields=version_fields):
-                last_model = "demo/recent" if version_fields.get("version") == 2 else ""
-                self.write_payload({
-                    **version_fields,
-                    "ui": {"theme": "acprof-light"},
-                    "run_defaults": {"model": "demo/saved", "cpus": "1,3"},
-                    "last_model": last_model,
-                })
+                self.write_payload({**version_fields, "run_defaults": {"model": "demo/saved"}})
                 previous = self.path.read_bytes()
-                restored, warning = load_settings(self.path, self.project)
-                self.assertEqual(warning, "")
-                self.assertEqual(restored.last_model, last_model)
-                self.assertEqual(restored.last_result_dir, "")
-                self.assertEqual(restored.last_result_csv, "")
-                self.assertEqual(restored.run_defaults.model, "demo/saved")
-                self.assertEqual(restored.ui.language, "zh")
+                with self.assertRaisesRegex(ValueError, "版本"):
+                    load_settings(self.path, self.project)
                 self.assertEqual(self.path.read_bytes(), previous)
-                updated = replace(
-                    restored, last_model="demo/latest",
-                    last_result_dir="results/demo--latest",
-                    last_result_csv="results/demo--latest/result_all.csv",
-                )
-                save_settings(self.path, updated, self.project)
-                self.assertEqual(load_settings(self.path, self.project), (updated, ""))
-                self.assertEqual(json.loads(self.path.read_text())["version"], SETTINGS_VERSION)
 
     def test_empty_model_is_valid_for_defaults_but_other_validation_remains(self):
         settings = TuiSettings(run_defaults=RunConfig(model="  ", cpus="1, 2", gpus="OFF"))
@@ -132,8 +114,6 @@ class TuiSettingsTests(unittest.TestCase):
     def test_bad_types_and_values_fall_back_without_coercion(self):
         bad_payloads = (
             [],
-            {"version": True},
-            {"version": SETTINGS_VERSION + 1},
             {"last_model": None},
             {"last_model": True},
             {"last_model": 5},
@@ -168,13 +148,13 @@ class TuiSettingsTests(unittest.TestCase):
         )
         for payload in bad_payloads:
             with self.subTest(payload=payload):
-                self.write_payload(payload)
+                self.write_payload({"version": SETTINGS_VERSION, **payload} if isinstance(payload, dict) else payload)
                 restored, warning = load_settings(self.path, self.project)
                 self.assertEqual(restored, TuiSettings())
                 self.assertTrue(warning)
 
     def test_unknown_top_level_fields_are_discarded_and_not_saved(self):
-        self.write_payload({"ui": {"theme": "acprof-light"}, "token": "do-not-store"})
+        self.write_payload({"version": SETTINGS_VERSION, "ui": {"theme": "acprof-light"}, "token": "do-not-store"})
         settings, warning = load_settings(self.path, self.project)
         self.assertEqual(warning, "")
         self.assertEqual(settings.ui.theme, "acprof-light")

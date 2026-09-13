@@ -1,4 +1,7 @@
 import contextlib
+import base64
+import io
+import wave
 from pathlib import Path
 import sys
 import tempfile
@@ -109,8 +112,16 @@ class AudioTaskExtensionTests(unittest.TestCase):
         context = {"task_type": "audio-classification", "audio_metadata": {"sampling_rate": 32000}}
         signal = types.ModuleType("scipy.signal")
         signal.resample_poly = Mock(side_effect=lambda value, up, down: np.repeat(value, up))
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(16000)
+            wav.writeframes(np.full(160, 8192, dtype="<i2").tobytes())
+        request = {"audio_base64": base64.b64encode(buffer.getvalue()).decode(),
+                   "audio_format": "wav", "sample_rate": 16000}
         with patch.dict(sys.modules, {"scipy": types.ModuleType("scipy"), "scipy.signal": signal}):
-            output = self.handler.preprocess(context, {"audio_samples": [0.25] * 160, "sample_rate": 16000})
+            output = self.handler.preprocess(context, request)
         self.assertEqual(output["sample_rate"], 32000)
         self.assertEqual(len(output["audio"]), 320)
         self.assertEqual(output["_effective_input_scale"], 0.01)

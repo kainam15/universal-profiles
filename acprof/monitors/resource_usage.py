@@ -191,24 +191,7 @@ def _read_cgroup_limit(path: str) -> int:
         raw = f.read().strip().lower()
     if raw == "max":
         return -1
-    value = int(raw)
-    # cgroup v1 represents an unlimited limit with a very large page-aligned
-    # integer rather than the cgroup v2 ``max`` token.
-    return -1 if value >= (1 << 60) else value
-
-
-def _read_v1_swap_usage(memsw_path: str, memory_path: str) -> int:
-    return max(0, _read_int(memsw_path) - _read_int(memory_path))
-
-
-def _read_v1_swap_limit(memsw_path: str, memory_path: str) -> int:
-    memsw_limit = _read_cgroup_limit(memsw_path)
-    memory_limit = _read_cgroup_limit(memory_path)
-    if memsw_limit < 0:
-        return -1
-    if memory_limit < 0:
-        return memsw_limit
-    return max(0, memsw_limit - memory_limit)
+    return int(raw)
 
 
 def _read_cgroup_v2_io_stat(path: str) -> Tuple[int, int]:
@@ -243,22 +226,6 @@ def _read_cgroup_v2_io_operations(path: str) -> Dict[str, float]:
                 elif key == "wios":
                     write_ops += int(raw_value)
     return {"read_ops": float(read_ops), "write_ops": float(write_ops)}
-
-
-def _read_cgroup_v1_io_service_bytes(path: str) -> Tuple[int, int]:
-    read_bytes = 0
-    write_bytes = 0
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            parts = line.split()
-            if len(parts) < 3 or parts[0].lower() == "total":
-                continue
-            operation = parts[1].strip().lower()
-            if operation == "read":
-                read_bytes += int(parts[2])
-            elif operation == "write":
-                write_bytes += int(parts[2])
-    return read_bytes, write_bytes
 
 
 def _read_cpu_stat_usage_s(path: str) -> float:
@@ -341,20 +308,6 @@ def _read_cgroup_v2_cpu_throttle(path: str) -> Dict[str, float]:
         "nr_periods": stats.get("nr_periods", float("nan")),
         "nr_throttled": stats.get("nr_throttled", float("nan")),
         "throttled_usec": stats.get("throttled_usec", float("nan")),
-    }
-
-
-def _read_cgroup_v1_cpu_throttle(path: str) -> Dict[str, float]:
-    stats = _read_flat_cgroup_stats(path)
-    throttled_time_ns = stats.get("throttled_time", float("nan"))
-    return {
-        "nr_periods": stats.get("nr_periods", float("nan")),
-        "nr_throttled": stats.get("nr_throttled", float("nan")),
-        "throttled_usec": (
-            throttled_time_ns / 1_000.0
-            if throttled_time_ns == throttled_time_ns
-            else float("nan")
-        ),
     }
 
 
@@ -676,25 +629,6 @@ def _first_existing(paths: List[str]) -> Optional[str]:
     return None
 
 
-def _v1_candidates(
-    cgroup_root: str,
-    controllers: str,
-    relative: str,
-    leaf: str,
-) -> List[str]:
-    controller_parts = [part for part in controllers.split(",") if part]
-    roots = [os.path.join(cgroup_root, controllers)]
-    roots.extend(os.path.join(cgroup_root, part) for part in controller_parts)
-    roots.append(cgroup_root)
-
-    candidates: List[str] = []
-    for root in roots:
-        path = _join_cgroup_path(root, relative, leaf)
-        if path not in candidates:
-            candidates.append(path)
-    return candidates
-
-
 def _resolve_container_metric_readers(
     container_name: str,
     cgroup_root: str = "/sys/fs/cgroup",
@@ -840,111 +774,7 @@ def _resolve_container_metric_readers(
                 )
             return readers
 
-    for line in lines:
-        parts = line.split(":", 2)
-        if len(parts) != 3:
-            continue
-
-        controllers = set(parts[1].split(","))
-        if readers.cpu_throttle is None and "cpu" in controllers:
-            cpu_stat_path = _first_existing(
-                _v1_candidates(cgroup_root, parts[1], parts[2], "cpu.stat")
-            )
-            if cpu_stat_path is not None:
-                readers.cpu_throttle = (
-                    lambda path=cpu_stat_path: _read_cgroup_v1_cpu_throttle(path)
-                )
-
-        if readers.cpu is None and "cpuacct" in controllers:
-            cpu_path = _first_existing(
-                _v1_candidates(cgroup_root, parts[1], parts[2], "cpuacct.usage")
-            )
-            if cpu_path is not None:
-                readers.cpu = (
-                    lambda path=cpu_path: float(_read_int(path)) / 1_000_000_000.0
-                )
-
-        if readers.memory is None and "memory" in controllers:
-            mem_path = _first_existing(
-                _v1_candidates(cgroup_root, parts[1], parts[2], "memory.usage_in_bytes")
-            )
-            if mem_path is not None:
-                readers.memory = lambda path=mem_path: _read_int(path)
-
-            memsw_path = _first_existing(
-                _v1_candidates(
-                    cgroup_root,
-                    parts[1],
-                    parts[2],
-                    "memory.memsw.usage_in_bytes",
-                )
-            )
-            if memsw_path is not None and mem_path is not None:
-                readers.swap = (
-                    lambda memsw=memsw_path, memory=mem_path: _read_v1_swap_usage(
-                        memsw,
-                        memory,
-                    )
-                )
-
-            memsw_limit_path = _first_existing(
-                _v1_candidates(
-                    cgroup_root,
-                    parts[1],
-                    parts[2],
-                    "memory.memsw.limit_in_bytes",
-                )
-            )
-            memory_limit_path = _first_existing(
-                _v1_candidates(
-                    cgroup_root,
-                    parts[1],
-                    parts[2],
-                    "memory.limit_in_bytes",
-                )
-            )
-            if memsw_limit_path is not None and memory_limit_path is not None:
-                readers.swap_limit = (
-                    lambda memsw=memsw_limit_path, memory=memory_limit_path: (
-                        _read_v1_swap_limit(memsw, memory)
-                    )
-                )
-
-        if readers.io is None and "blkio" in controllers:
-            io_path = _first_existing(
-                _v1_candidates(
-                    cgroup_root,
-                    parts[1],
-                    parts[2],
-                    "blkio.throttle.io_service_bytes",
-                )
-                + _v1_candidates(
-                    cgroup_root,
-                    parts[1],
-                    parts[2],
-                    "blkio.io_service_bytes",
-                )
-            )
-            if io_path is not None:
-                readers.io = (
-                    lambda path=io_path: _read_cgroup_v1_io_service_bytes(path)
-                )
-
     return readers
-
-
-def _resolve_container_readers(
-    container_name: str,
-    cgroup_root: str = "/sys/fs/cgroup",
-    proc_root: str = "/proc",
-) -> Tuple[Optional[Callable[[], float]], Optional[Callable[[], int]]]:
-    """Compatibility wrapper for callers that only need CPU and memory."""
-    readers = _resolve_container_metric_readers(
-        container_name,
-        cgroup_root=cgroup_root,
-        proc_root=proc_root,
-    )
-    return readers.cpu, readers.memory
 
 
 def _result_from_samples(
@@ -1453,35 +1283,3 @@ class ResourceUsageMonitor:
 
     def _append_sample(self, timestamp: float) -> None:
         self.samples.append(self._read_sample(timestamp))
-
-
-def measure_usage_threaded(
-    fn: Callable[[], object],
-    sample_hz: float = 20.0,
-    container_name: str = "",
-    cpu_cores: float = 1.0,
-    mem_cap_gb: float = 1.0,
-    use_gpu: bool = False,
-    device_index: int = 0,
-    cpu_sysfs_root: str = "/sys/devices/system/cpu",
-    proc_cpuinfo_path: str = "/proc/cpuinfo",
-) -> Tuple[ResourceUsageResult, str, List[ResourceUsageSample]]:
-    monitor = ResourceUsageMonitor(
-        sample_hz=sample_hz,
-        container_name=container_name,
-        cpu_cores=cpu_cores,
-        mem_cap_gb=mem_cap_gb,
-        use_gpu=use_gpu,
-        device_index=device_index,
-        cpu_sysfs_root=cpu_sysfs_root,
-        proc_cpuinfo_path=proc_cpuinfo_path,
-    )
-    try:
-        monitor.start()
-        try:
-            fn()
-        finally:
-            result = monitor.stop()
-        return result
-    finally:
-        monitor.close()

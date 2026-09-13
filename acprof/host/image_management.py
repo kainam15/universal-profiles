@@ -42,7 +42,7 @@ class ManagedImage:
 
     @property
     def model_key(self) -> str:
-        return self.model_id.casefold().replace("/", "--").replace(".", "_")
+        return self.model_id.casefold().replace("/", "--")
 
 
 @dataclass(frozen=True)

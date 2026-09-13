@@ -1,3 +1,9 @@
+import acprof.analysis.latency_report as analysis_latency_report
+import acprof.plotting.config as plotting_config
+import acprof.plotting.data as plotting_data
+import acprof.plotting.diagnostics as plotting_diagnostics
+import acprof.plotting.metrics as plotting_metrics
+import matplotlib.pyplot as matplotlib_pyplot
 import csv
 import colorsys
 import json
@@ -15,100 +21,13 @@ from acprof.config import CSV_FIELDS
 
 
 class ResourceUsageCsvPlotTests(unittest.TestCase):
-    def test_legacy_runtime_options_control_aggregation_and_metric_display(self) -> None:
-        df = pd.DataFrame([
-            {
-                "cpu_cores": 1,
-                "mem_cap_gb": 4,
-                "gpu_mode": "off",
-                "input_scale": 64,
-                "latency_s": value,
-                "cold_start_s": 2 * value,
-            }
-            for value in (1.0, 2.0, 9.0)
-        ])
-        for aggregation, expected, show_plots in (
-            ("median", 2.0, True),
-            ("mean", 4.0, False),
-        ):
-            with self.subTest(aggregation=aggregation):
-                try:
-                    with patch.object(plot, "AGG_FUNC", aggregation), patch.object(
-                        plot, "SHOW_PLOTS", show_plots
-                    ), patch.object(plot.plt, "show") as show, patch.object(plot.plt, "close"):
-                        self.assertEqual(
-                            plot.aggregate_metric(df, "latency_s")["latency_s"].tolist(),
-                            [expected],
-                        )
-                        self.assertEqual(
-                            plot.aggregate_cold_start(df)["cold_start_s"].tolist(),
-                            [2 * expected],
-                        )
-                        plot.plot_metric(
-                            df, "latency_s", "Latency", "Seconds", "input_scale", None,
-                        )
-                        self.assertEqual(
-                            list(plot.plt.gca().lines[0].get_ydata()), [expected],
-                        )
-                        self.assertEqual(show.call_count, int(show_plots))
-                finally:
-                    plot.plt.close("all")
 
-    def test_legacy_runtime_options_reach_energy_overview_panels(self) -> None:
-        effective = ("gpu_energy_eff_j", "gpu_avg_power_eff_w", "gpu_peak_power_eff_w")
-        total = ("gpu_energy_total_j", "gpu_avg_power_total_w", "gpu_peak_power_total_w")
-        df = pd.DataFrame([
-            {
-                "cpu_cores": 1,
-                "mem_cap_gb": 4,
-                "gpu_mode": "on",
-                "input_scale": 64,
-                **{metric: value for metric in (*effective, *total)},
-            }
-            for value in (1.0, 2.0, 9.0)
-        ])
-        try:
-            with patch.object(plot, "AGG_FUNC", "median"), patch.object(
-                plot, "SHOW_PLOTS", True
-            ), patch.object(plot.plt, "show") as show, patch.object(plot.plt, "close"):
-                plot.plot_energy_power_overview(
-                    df, effective_metrics=effective, total_metrics=total,
-                    title="Energy", xlabel="input_scale", out_png=None,
-                )
-                axes = plot.plt.gcf().axes
-                self.assertEqual(len(axes), 6)
-                for axis in axes:
-                    self.assertEqual(list(axis.lines[0].get_ydata()), [2.0])
-                show.assert_called_once_with()
-        finally:
-            plot.plt.close("all")
-
-    def test_legacy_csv_filter_defaults_remain_bound_at_definition(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            csv_path = os.path.join(tmp, "result_all.csv")
-            pd.DataFrame([
-                {
-                    "cpu_cores": 1,
-                    "mem_cap_gb": 4,
-                    "gpu_mode": "off",
-                    "input_scale": 64,
-                    "status": status,
-                    "warmup": warmup,
-                    "latency_s": 1.0,
-                }
-                for status, warmup in (("ok", 0), ("ok", 1), ("error", 0))
-            ]).to_csv(csv_path, index=False)
-            with patch.object(plot, "ONLY_OK", False), patch.object(plot, "EXCLUDE_WARMUP", False):
-                self.assertEqual(len(plot.prepare_df(csv_path)), 1)
-                self.assertEqual(
-                    len(plot.prepare_df(csv_path, only_ok=False, exclude_warmup=False)), 3,
-                )
 
     @staticmethod
     def _overview_spec(filename: str):
         return next(
             spec
-            for spec in plot.METRIC_OVERVIEW_PLOTS
+            for spec in plotting_config.METRIC_OVERVIEW_PLOTS
             if spec[1] == filename
         )
 
@@ -212,10 +131,10 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             mem = int(label.rsplit("Mem", 1)[1])
             colors_by_mem[mem] = kwargs["color"]
 
-        with patch.object(plot.plt, "plot", side_effect=capture_plot), patch.object(
-            plot.plt, "legend"
+        with patch.object(matplotlib_pyplot, "plot", side_effect=capture_plot), patch.object(
+            matplotlib_pyplot, "legend"
         ):
-            plot.plot_metric(
+            plotting_metrics.plot_metric(
                 df,
                 metric="container_mem_util_avg_pct",
                 title="Container Memory Utilization vs. Input Scale",
@@ -254,10 +173,10 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             cpu = int(label.split("+CPU", 1)[1].split("+", 1)[0])
             colors_by_cpu[cpu] = kwargs["color"]
 
-        with patch.object(plot.plt, "plot", side_effect=capture_plot), patch.object(
-            plot.plt, "legend"
+        with patch.object(matplotlib_pyplot, "plot", side_effect=capture_plot), patch.object(
+            matplotlib_pyplot, "legend"
         ):
-            plot.plot_metric(
+            plotting_metrics.plot_metric(
                 df,
                 metric="container_mem_util_avg_pct",
                 title="Container Memory Utilization vs. Input Scale",
@@ -331,9 +250,9 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 })
             static_meta_path = os.path.join(tmp, "static_meta.json")
             with open(static_meta_path, "w", encoding="utf-8") as f:
-                json.dump({"gpu_mem_total_bytes": 8 * 1024 ** 3}, f)
+                json.dump({"schema_version": 7, "gpu_mem_total_bytes": 8 * 1024 ** 3}, f)
 
-            df = plot.prepare_df(csv_path)
+            df = plotting_data.prepare_df(csv_path)
 
         self.assertEqual(float(df["container_cpu_util_avg_pct"].iloc[0]), 25.5)
         self.assertEqual(float(df["cpu_freq_avg_hz"].iloc[0]), 3_000_000_000.0)
@@ -446,7 +365,7 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                     **{field: "1.5" for field in metric_fields},
                 })
 
-            df = plot.prepare_df(csv_path)
+            df = plotting_data.prepare_df(csv_path)
 
         for field in metric_fields:
             self.assertTrue(pd.api.types.is_numeric_dtype(df[field]), field)
@@ -488,7 +407,7 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                     },
                 ])
 
-            df = plot.prepare_df(csv_path)
+            df = plotting_data.prepare_df(csv_path)
 
         self.assertEqual(len(df), 1)
         self.assertEqual(df["status"].iloc[0], "ok")
@@ -519,12 +438,12 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                     "latency_s": "999",
                 })
 
-            df = plot.prepare_df(csv_path)
+            df = plotting_data.prepare_df(csv_path)
 
         self.assertTrue(df.empty)
         self.assertIn("config", df.columns)
 
-    def test_prepare_df_accepts_padded_legacy_csv_headers_and_values(self) -> None:
+    def test_prepare_df_normalizes_padded_headers_and_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             csv_path = os.path.join(tmp, "result_all.csv")
             with open(csv_path, "w", encoding="utf-8", newline="") as f:
@@ -533,13 +452,11 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                     "gpu_mem_used_avg_bytes\n"
                 )
                 f.write(f"1, 4, on     , 64, 0, ok    , {3 * 1024 ** 3}\n")
-            static_meta_path = os.path.join(tmp, "static_meta.csv")
+            static_meta_path = os.path.join(tmp, "static_meta.json")
             with open(static_meta_path, "w", encoding="utf-8", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=["gpu_mem_total_bytes"])
-                writer.writeheader()
-                writer.writerow({"gpu_mem_total_bytes": str(8 * 1024 ** 3)})
+                json.dump({"schema_version": 7, "gpu_mem_total_bytes": 8 * 1024 ** 3}, f)
 
-            df = plot.prepare_df(csv_path)
+            df = plotting_data.prepare_df(csv_path)
 
         self.assertEqual(len(df), 1)
         self.assertEqual(df["gpu_mode"].iloc[0], "on")
@@ -555,9 +472,9 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 "input_scale",
                 "warmup",
                 "status",
-                "model_mflop_per_request",
-                "compute_mflops_app",
-                "compute_mflops",
+                "model_logical_mflop_per_request_torch_profiler_eager",
+                "model_logical_mflops_app_torch_profiler_eager",
+                "model_logical_mflops_packet_torch_profiler_eager",
             ]
             with open(csv_path, "w", encoding="utf-8", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -569,16 +486,16 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                     "input_scale": "64",
                     "warmup": "0",
                     "status": "ok",
-                    "model_mflop_per_request": "200.5",
-                    "compute_mflops_app": "401.0",
-                    "compute_mflops": "802.0",
+                    "model_logical_mflop_per_request_torch_profiler_eager": "200.5",
+                    "model_logical_mflops_app_torch_profiler_eager": "401.0",
+                    "model_logical_mflops_packet_torch_profiler_eager": "802.0",
                 })
 
-            df = plot.prepare_df(csv_path)
+            df = plotting_data.prepare_df(csv_path)
 
-        self.assertEqual(float(df["model_mflop_per_request"].iloc[0]), 200.5)
-        self.assertEqual(float(df["compute_mflops_app"].iloc[0]), 401.0)
-        self.assertEqual(float(df["compute_mflops"].iloc[0]), 802.0)
+        self.assertEqual(float(df["model_logical_mflop_per_request_torch_profiler_eager"].iloc[0]), 200.5)
+        self.assertEqual(float(df["model_logical_mflops_app_torch_profiler_eager"].iloc[0]), 401.0)
+        self.assertEqual(float(df["model_logical_mflops_packet_torch_profiler_eager"].iloc[0]), 802.0)
         self.assertEqual(
             float(
                 df[
@@ -650,7 +567,7 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                     "compute_profile_error_nsys": "nsys diagnostic",
                 })
 
-            df = plot.prepare_df(csv_path)
+            df = plotting_data.prepare_df(csv_path)
 
         for field, expected in execution_values.items():
             self.assertTrue(pd.api.types.is_numeric_dtype(df[field]), field)
@@ -668,7 +585,7 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             "nsys diagnostic",
         )
 
-    def test_prepare_df_prefers_new_compute_fields_and_parses_ncu_fields(
+    def test_prepare_df_parses_current_torch_and_ncu_fields(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -690,9 +607,6 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 "input_scale",
                 "warmup",
                 "status",
-                "model_mflop_per_request",
-                "compute_mflops_app",
-                "compute_mflops",
                 "model_logical_mflop_per_request_torch_profiler_eager",
                 "model_logical_mflops_app_torch_profiler_eager",
                 "model_logical_mflops_packet_torch_profiler_eager",
@@ -708,9 +622,6 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                     "input_scale": "64",
                     "warmup": "0",
                     "status": "ok",
-                    "model_mflop_per_request": "200.5",
-                    "compute_mflops_app": "401.0",
-                    "compute_mflops": "802.0",
                     (
                         "model_logical_mflop_per_request_"
                         "torch_profiler_eager"
@@ -726,7 +637,7 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                     **ncu_values,
                 })
 
-            df = plot.prepare_df(csv_path)
+            df = plotting_data.prepare_df(csv_path)
 
         self.assertEqual(
             float(
@@ -744,18 +655,11 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             ),
             1999.0,
         )
-        self.assertEqual(
-            float(
-                df[
-                    "model_logical_mflops_packet_torch_profiler_eager"
-                ].iloc[0]
-            ),
-            802.0,
-        )
+        self.assertTrue(pd.isna(df["model_logical_mflops_packet_torch_profiler_eager"].iloc[0]))
         for column, value in ncu_values.items():
             self.assertEqual(float(df[column].iloc[0]), float(value))
 
-    def test_prepare_df_routes_legacy_compute_values_by_profiler_tool(
+    def test_prepare_df_rejects_legacy_compute_fields(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -802,32 +706,8 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                     },
                 ])
 
-            prepared = plot.prepare_df(csv_path)
-
-        torch_row = prepared.iloc[0]
-        ncu_row = prepared.iloc[1]
-        self.assertEqual(
-            torch_row[
-                "model_logical_mflop_per_request_torch_profiler_eager"
-            ],
-            100.0,
-        )
-        self.assertTrue(
-            pd.isna(torch_row["gpu_executed_mflop_per_request_ncu"])
-        )
-        self.assertTrue(
-            pd.isna(
-                ncu_row[
-                    "model_logical_mflop_per_request_torch_profiler_eager"
-                ]
-            )
-        )
-        self.assertEqual(
-            ncu_row["gpu_executed_mflop_per_request_ncu"],
-            300.0,
-        )
-        self.assertEqual(ncu_row["gpu_executed_mflops_app_ncu"], 600.0)
-        self.assertEqual(ncu_row["gpu_executed_mflops_packet_ncu"], 750.0)
+            with self.assertRaisesRegex(ValueError, "compute_profile_tool"):
+                plotting_data.prepare_df(csv_path)
 
     def test_compute_overviews_separate_torch_eager_from_ncu(self) -> None:
         torch_spec = self._overview_spec(
@@ -868,39 +748,34 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
         )
         overview_metrics = {
             metric
-            for spec in plot.METRIC_OVERVIEW_PLOTS
+            for spec in plotting_config.METRIC_OVERVIEW_PLOTS
             for metric in self._overview_metric_names(spec)
         }
         self.assertNotIn("compute_mflops", overview_metrics)
 
-    def test_thirteen_overviews_and_massif_cover_all_legacy_metrics_once(
+    def test_thirteen_overviews_and_massif_cover_all_current_metrics_once(
         self,
     ) -> None:
         grouped_metrics = [
             metric
-            for spec in plot.METRIC_OVERVIEW_PLOTS
+            for spec in plotting_config.METRIC_OVERVIEW_PLOTS
             for metric in self._overview_metric_names(spec)
         ]
-        standalone_metrics = [spec[0] for spec in plot.PLOT_METRICS]
-        legacy_metrics = [spec[0] for spec in plot.LEGACY_PLOT_METRICS]
+        standalone_metrics = [spec[0] for spec in plotting_config.PLOT_METRICS]
 
-        self.assertEqual(len(plot.METRIC_OVERVIEW_PLOTS), 13)
+        self.assertEqual(len(plotting_config.METRIC_OVERVIEW_PLOTS), 13)
         self.assertEqual(standalone_metrics, ["cpu_heap_peak_total_gib_massif"])
         self.assertEqual(len(grouped_metrics), 49)
         self.assertEqual(len(set(grouped_metrics + standalone_metrics)), 50)
-        self.assertEqual(
-            set(grouped_metrics + standalone_metrics),
-            set(legacy_metrics),
-        )
         self.assertTrue(
             all(
                 rows * columns <= 6
                 for _title, _filename, rows, columns, _panels, _shared
-                in plot.METRIC_OVERVIEW_PLOTS
+                in plotting_config.METRIC_OVERVIEW_PLOTS
             )
         )
         self.assertEqual(
-            {spec[1] for spec in plot.METRIC_OVERVIEW_PLOTS},
+            {spec[1] for spec in plotting_config.METRIC_OVERVIEW_PLOTS},
             {
                 "latency_overview_vs_scale.png",
                 "service_efficiency_overview_vs_scale.png",
@@ -933,8 +808,8 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             self._overview_spec("service_efficiency_overview_vs_scale.png")
         )
 
-        with patch.object(plot.plt, "close"):
-            plot.plot_metric_overview(
+        with patch.object(matplotlib_pyplot, "close"):
+            plotting_metrics.plot_metric_overview(
                 df,
                 panels=panels,
                 rows=rows,
@@ -944,7 +819,7 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 xlabel="input_scale",
                 out_png=None,
             )
-            figure = plot.plt.gcf()
+            figure = matplotlib_pyplot.gcf()
 
         try:
             self.assertEqual(len(figure.axes), 6)
@@ -958,11 +833,11 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             self.assertEqual(figure.axes[4].get_xlabel(), "input_scale")
             self.assertEqual(figure.axes[3].get_xlabel(), "input_scale")
         finally:
-            plot.plt.close(figure)
+            matplotlib_pyplot.close(figure)
 
     def test_energy_power_overview_specs_are_registered(self) -> None:
         self.assertEqual(
-            plot.ENERGY_POWER_OVERVIEW_PLOTS,
+            plotting_config.ENERGY_POWER_OVERVIEW_PLOTS,
             [
                 (
                     (
@@ -1011,9 +886,9 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 ),
             ],
         )
-        single_metrics = {metric for metric, *_rest in plot.PLOT_METRICS}
+        single_metrics = {metric for metric, *_rest in plotting_config.PLOT_METRICS}
         for effective_metrics, total_metrics, *_rest in (
-            plot.ENERGY_POWER_OVERVIEW_PLOTS
+            plotting_config.ENERGY_POWER_OVERVIEW_PLOTS
         ):
             for metric in (*effective_metrics, *total_metrics):
                 self.assertNotIn(metric, single_metrics)
@@ -1050,8 +925,8 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             )
         ])
 
-        with patch.object(plot.plt, "close"):
-            plot.plot_energy_power_overview(
+        with patch.object(matplotlib_pyplot, "close"):
+            plotting_metrics.plot_energy_power_overview(
                 df,
                 effective_metrics=(
                     "gpu_energy_eff_j",
@@ -1067,7 +942,7 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 xlabel="input_scale",
                 out_png=None,
             )
-            figure = plot.plt.gcf()
+            figure = matplotlib_pyplot.gcf()
 
         try:
             self.assertEqual(len(figure.axes), 6)
@@ -1122,7 +997,7 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 [text.get_text() for text in figure.texts],
             )
         finally:
-            plot.plt.close(figure)
+            matplotlib_pyplot.close(figure)
 
     def test_energy_idle_annotations_distinguish_measurement_scopes(
         self,
@@ -1166,7 +1041,7 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             },
         ])
 
-        gpu_note = plot._energy_idle_annotation(
+        gpu_note = plotting_metrics._energy_idle_annotation(
             df,
             effective_metrics=(
                 "gpu_energy_eff_j",
@@ -1179,7 +1054,7 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 "gpu_peak_power_total_w",
             ),
         )
-        cpu_note = plot._energy_idle_annotation(
+        cpu_note = plotting_metrics._energy_idle_annotation(
             df,
             effective_metrics=(
                 "cpu_energy_eff_j",
@@ -1192,7 +1067,7 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 "cpu_peak_power_total_w",
             ),
         )
-        vcpu_note = plot._energy_idle_annotation(
+        vcpu_note = plotting_metrics._energy_idle_annotation(
             df,
             effective_metrics=(
                 "vcpu_energy_eff_j",
@@ -1245,7 +1120,7 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
     def test_energy_idle_annotation_reports_unavailable_debug_range(
         self,
     ) -> None:
-        note = plot._energy_idle_annotation(
+        note = plotting_metrics._energy_idle_annotation(
             pd.DataFrame([{"gpu_mode": "on", "gpu_idle_power_w": 15.0}]),
             effective_metrics=(
                 "gpu_energy_eff_j",
@@ -1270,7 +1145,7 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
     def test_execution_profile_overview_and_massif_are_registered(self) -> None:
         metrics = {
             metric: (title, ylabel, filename)
-            for metric, title, ylabel, filename in plot.PLOT_METRICS
+            for metric, title, ylabel, filename in plotting_config.PLOT_METRICS
         }
 
         self.assertEqual(
@@ -1305,8 +1180,8 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             self._overview_spec("nsys_timing_overview_vs_scale.png")
         )
 
-        with patch.object(plot.plt, "subplots") as subplots:
-            plot.plot_metric_overview(
+        with patch.object(matplotlib_pyplot, "subplots") as subplots:
+            plotting_metrics.plot_metric_overview(
                 df,
                 panels=panels,
                 rows=rows,
@@ -1356,8 +1231,8 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             self._overview_spec("cpu_memory_behavior_overview_vs_scale.png")
         )
 
-        with patch.object(plot.plt, "close"):
-            plot.plot_metric_overview(
+        with patch.object(matplotlib_pyplot, "close"):
+            plotting_metrics.plot_metric_overview(
                 df,
                 panels=panels,
                 rows=rows,
@@ -1367,7 +1242,7 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 xlabel="input_scale",
                 out_png=None,
             )
-            figure = plot.plt.gcf()
+            figure = matplotlib_pyplot.gcf()
 
         try:
             cache_count_axis, cache_rate_axis, dtlb_count_axis, dtlb_rate_axis = (
@@ -1379,7 +1254,7 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             self.assertGreater(cache_count_axis.get_ylim()[1], 1.0e10)
             self.assertLess(dtlb_count_axis.get_ylim()[1], 1.0e9)
         finally:
-            plot.plt.close(figure)
+            matplotlib_pyplot.close(figure)
 
     def test_prepare_df_converts_bandwidth_behavior_fields_to_numeric(self) -> None:
         bandwidth_fields = [
@@ -1419,7 +1294,7 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                     "cpu_dtlb_load_miss_rate_pct": "2.5",
                 })
 
-            df = plot.prepare_df(csv_path)
+            df = plotting_data.prepare_df(csv_path)
 
         for field in bandwidth_fields:
             self.assertTrue(pd.api.types.is_numeric_dtype(df[field]), field)
@@ -1473,14 +1348,14 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                     },
                 ])
 
-            df = plot.prepare_df(csv_path)
+            df = plotting_data.prepare_df(csv_path)
 
         for field in total_fields:
             self.assertTrue(pd.api.types.is_numeric_dtype(df[field]), field)
             self.assertEqual(float(df[field].iloc[0]), 12.5)
             self.assertTrue(pd.isna(df[field].iloc[1]))
 
-    def test_prepare_df_aliases_legacy_gpu_energy_columns(self) -> None:
+    def test_prepare_df_rejects_legacy_gpu_energy_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             csv_path = os.path.join(tmp, "result_all.csv")
             fieldnames = [
@@ -1507,10 +1382,8 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                     "energy_eff_j": "0.25",
                 })
 
-            df = plot.prepare_df(csv_path)
-
-        self.assertEqual(float(df["gpu_avg_power_eff_w"].iloc[0]), 2.5)
-        self.assertEqual(float(df["gpu_energy_eff_j"].iloc[0]), 0.25)
+            with self.assertRaisesRegex(ValueError, "energy_eff_j"):
+                plotting_data.prepare_df(csv_path)
 
     def test_main_generates_one_gpu_energy_power_overview(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1555,16 +1428,16 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 out_pngs.append(os.path.basename(kwargs["out_png"]))
 
             with patch.object(sys, "argv", ["plot.py", csv_path]), patch.object(
-                plot, "plot_metric", side_effect=capture_plot_metric
+                plotting_metrics, 'plot_metric', side_effect=capture_plot_metric
             ), patch.object(
-                plot,
-                "plot_metric_overview",
+                plotting_metrics,
+                'plot_metric_overview',
                 side_effect=capture_plot_metric,
             ), patch.object(
-                plot,
-                "plot_energy_power_overview",
+                plotting_metrics,
+                'plot_energy_power_overview',
                 side_effect=capture_plot_metric,
-            ), patch.object(plot, "plot_cold_start_bar"):
+            ), patch.object(plotting_metrics, 'plot_cold_start_bar'):
                 plot.main()
 
         self.assertIn("gpu_energy_power_overview_vs_scale.png", out_pngs)
@@ -1638,15 +1511,15 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 modes_by_directory[output_directory] = set(group_df["gpu_mode"])
 
             with patch.object(
-                plot,
-                "plot_metric_overview",
+                plotting_metrics,
+                'plot_metric_overview',
                 side_effect=capture_plot_overview,
             ), patch.object(
-                plot, "plot_metric"
+                plotting_metrics, 'plot_metric'
             ), patch.object(
-                plot, "plot_energy_power_overview"
-            ), patch.object(plot, "plot_cold_start_bar"), patch.object(
-                plot, "write_latency_model_report"
+                plotting_metrics, 'plot_energy_power_overview'
+            ), patch.object(plotting_metrics, 'plot_cold_start_bar'), patch.object(
+                analysis_latency_report, 'write_latency_model_report'
             ):
                 plot.main([csv_path])
 
@@ -1708,12 +1581,12 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                 out_pngs.append(os.path.basename(kwargs["out_png"]))
 
             with patch.object(sys, "argv", ["plot.py", csv_path]), patch.object(
-                plot,
-                "plot_metric_overview",
+                plotting_metrics,
+                'plot_metric_overview',
                 side_effect=capture_plot_metric,
-            ), patch.object(plot, "plot_metric"), patch.object(
-                plot, "plot_energy_power_overview"
-            ), patch.object(plot, "plot_cold_start_bar"):
+            ), patch.object(plotting_metrics, 'plot_metric'), patch.object(
+                plotting_metrics, 'plot_energy_power_overview'
+            ), patch.object(plotting_metrics, 'plot_cold_start_bar'):
                 plot.main()
 
         self.assertIn("cpu_execution_overview_vs_scale.png", out_pngs)
@@ -1729,7 +1602,7 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
         ):
             self.assertNotIn(legacy_filename, out_pngs)
 
-    def test_prepare_df_can_keep_failures_and_backfill_historical_attributed_energy(
+    def test_prepare_df_keeps_failures_without_inventing_attributed_energy(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1776,15 +1649,12 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
                     },
                 ])
 
-            prepared = plot.prepare_df(csv_path, only_ok=False)
+            prepared = plotting_data.prepare_df(csv_path, only_ok=False)
 
         self.assertEqual(len(prepared), 2)
-        cpu_row = prepared[prepared["gpu_mode"] == "off"].iloc[0]
-        gpu_row = prepared[prepared["gpu_mode"] == "on"].iloc[0]
-        self.assertEqual(float(cpu_row["container_attributed_energy_eff_j"]), 3.0)
-        self.assertEqual(float(cpu_row["container_attributed_edp_app_js"]), 6.0)
-        self.assertEqual(float(gpu_row["container_attributed_energy_eff_j"]), 7.0)
-        self.assertEqual(float(gpu_row["container_attributed_edp_app_js"]), 28.0)
+        self.assertIn("error", prepared["status"].tolist())
+        self.assertNotIn("container_attributed_energy_eff_j", prepared)
+        self.assertNotIn("container_attributed_edp_app_js", prepared)
 
     def test_resource_feasibility_summary_preserves_failure_reasons(self) -> None:
         rows = pd.DataFrame([
@@ -1841,7 +1711,7 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
             },
         ])
 
-        summary = plot.summarize_resource_feasibility(rows)
+        summary = plotting_diagnostics.summarize_resource_feasibility(rows)
         states = {
             (
                 int(row.cpu_cores),
@@ -1889,28 +1759,28 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             outputs = {
-                "feasibility": os.path.join(tmp, plot.RESOURCE_FEASIBILITY_PLOT),
-                "tail": os.path.join(tmp, plot.TAIL_LATENCY_PLOT),
-                "pareto": os.path.join(tmp, plot.LATENCY_ENERGY_PARETO_PLOT),
-                "cold": os.path.join(tmp, plot.COLD_START_BREAKDOWN_PLOT),
+                "feasibility": os.path.join(tmp, plotting_config.RESOURCE_FEASIBILITY_PLOT),
+                "tail": os.path.join(tmp, plotting_config.TAIL_LATENCY_PLOT),
+                "pareto": os.path.join(tmp, plotting_config.LATENCY_ENERGY_PARETO_PLOT),
+                "cold": os.path.join(tmp, plotting_config.COLD_START_BREAKDOWN_PLOT),
             }
             plotted = [
-                plot.plot_resource_feasibility_heatmap(
+                plotting_diagnostics.plot_resource_feasibility_heatmap(
                     frame,
                     xlabel="seq_length",
                     out_png=outputs["feasibility"],
                 ),
-                plot.plot_tail_latency_overview(
+                plotting_diagnostics.plot_tail_latency_overview(
                     frame,
                     xlabel="seq_length",
                     out_png=outputs["tail"],
                 ),
-                plot.plot_latency_energy_pareto(
+                plotting_diagnostics.plot_latency_energy_pareto(
                     frame,
                     xlabel="seq_length",
                     out_png=outputs["pareto"],
                 ),
-                plot.plot_cold_start_breakdown(
+                plotting_diagnostics.plot_cold_start_breakdown(
                     frame,
                     out_png=outputs["cold"],
                 ),
@@ -1922,11 +1792,11 @@ class ResourceUsageCsvPlotTests(unittest.TestCase):
 
         self.assertEqual(plotted, [True, True, True, True])
         self.assertTrue(all(size > 0 for size in output_sizes.values()))
-        tail_rows = plot._aggregate_tail_latency(frame)
+        tail_rows = plotting_diagnostics._aggregate_tail_latency(frame)
         self.assertEqual(set(tail_rows["mem_cap_gb"]), {8})
 
     def test_pareto_frontier_excludes_dominated_points(self) -> None:
-        mask = plot._pareto_frontier_mask(
+        mask = plotting_diagnostics._pareto_frontier_mask(
             np.array([1.0, 2.0, 3.0, 1.5]),
             np.array([4.0, 2.0, 3.0, 5.0]),
         )

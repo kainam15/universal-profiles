@@ -7,17 +7,25 @@ import unittest
 from unittest.mock import patch
 
 from rich.cells import cell_len
-from textual.widgets import Button, ContentSwitcher, DataTable, Input, Select, Static, TabbedContent
+from textual.widgets import (
+    Button,
+    ContentSwitcher,
+    DataTable,
+    Input,
+    Select,
+    Static,
+    TabbedContent,
+)
 from textual.widgets.text_area import Selection
 
-from acprof.cli.tui import AcprofTui, PROJECT_DIR
-from acprof.cli.tui_core import (
-    PreflightCheck, ProgressSnapshot, ResultSummary, RunConfig, RunProgressTracker,
-    TuiConfigError, build_run_command,
-)
-from acprof.cli.tui_i18n import ENGLISH, error_message, message, translate
-from acprof.cli.tui_log import SelectableLog
-from acprof.cli.tui_settings import TuiSettings, load_settings, save_settings
+from acprof.tui.app import AcprofTui
+from acprof.tui.app import PROJECT_DIR
+from acprof.tui.diagnostics import PreflightCheck, ResultSummary
+from acprof.tui.progress import ProgressSnapshot, RunProgressTracker
+from acprof.tui.commands import RunConfig, TuiConfigError, build_run_command
+from acprof.tui.i18n import ENGLISH, error_message, message, translate
+from acprof.tui.log import SelectableLog
+from acprof.tui.settings import TuiSettings, load_settings, save_settings
 
 
 class TranslationTests(unittest.TestCase):

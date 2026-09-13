@@ -53,8 +53,8 @@ CUDA124_NLP_TORCH_SPEC = "torch>=2.6,<2.7"
 
 
 def _sanitize_model_id(model_id: str) -> str:
-    """Sanitize model ID for use in Docker image tags and file names."""
-    return model_id.replace("/", "--").replace(".", "_").lower()
+    """生成镜像、容器和文件名的模型标识；转小写、展开斜线并保留点号。"""
+    return model_id.replace("/", "--").lower()
 
 
 def _run(cmd: List[str], check: bool = True, capture: bool = True, **kwargs) -> subprocess.CompletedProcess:
@@ -307,17 +307,6 @@ def _select_nlp_torch_index_url() -> str:
     if cuda_version >= (12, 4):
         return CUDA124_NLP_TORCH_INDEX_URL
     return DEFAULT_NLP_TORCH_INDEX_URL
-
-
-def _select_nlp_torch_spec(torch_index_url: Optional[str] = None) -> str:
-    override = (os.environ.get("ACPROF_NLP_TORCH_SPEC") or "").strip()
-    if override:
-        return override
-
-    resolved_index_url = (torch_index_url or _select_nlp_torch_index_url()).rstrip("/")
-    if resolved_index_url == CUDA124_NLP_TORCH_INDEX_URL:
-        return CUDA124_NLP_TORCH_SPEC
-    return DEFAULT_NLP_TORCH_SPEC
 
 
 def _model_image_tag(task_info: TaskInfo, project_dir: Optional[str] = None) -> str:

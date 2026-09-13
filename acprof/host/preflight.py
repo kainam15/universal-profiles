@@ -85,41 +85,14 @@ def detect_cgroup_version(
     return "unknown"
 
 
-def require_cgroup_prerequisites(*, allow_cgroup_v1: bool = False) -> str:
-    """Require unified cgroup v2 unless legacy compatibility was requested."""
+def require_cgroup_prerequisites() -> str:
+    """仅支持统一 cgroup v2，在任何采集前拒绝其它层级。"""
     version = detect_cgroup_version()
-    if version == "v2":
-        return version
-
-    if version == "v1" and allow_cgroup_v1:
-        print(
-            "[cgroup][WARN] cgroup v1 legacy compatibility is enabled. "
-            "memory.events and per-cgroup PSI remain unavailable; do not mix "
-            "this run with the formal cgroup v2 dataset.",
-            file=sys.stderr,
-        )
-        return version
-
-    compatibility_hint = (
-        "\n\nFor legacy diagnostics only, rerun with --allow-cgroup-v1. "
-        "That mode is recorded in static_meta.json and is not equivalent to "
-        "the formal cgroup v2 collection mode."
-        if version == "v1"
-        else ""
-    )
-    print(
-        "[cgroup][ERROR] Formal AC-Prof collection requires the unified "
-        "cgroup v2 hierarchy.\n\n"
-        f"Detected: cgroup_version={version}\n\n"
-        "Verify the host before collecting data:\n"
-        "  test -f /sys/fs/cgroup/cgroup.controllers\n"
-        "  cat /proc/self/cgroup\n\n"
-        "Enable unified cgroup v2 in the host boot/systemd configuration, "
-        "reboot, and rerun AC-Prof."
-        f"{compatibility_hint}",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+    if version != "v2":
+        print(f"[cgroup][ERROR] AC-Prof requires unified cgroup v2; detected {version}. "
+              "Enable cgroup v2 in the host boot/systemd configuration and reboot.", file=sys.stderr)
+        sys.exit(1)
+    return version
 
 
 def require_result_cgroup_compatibility(

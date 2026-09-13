@@ -53,7 +53,10 @@ CUDA API、kernel 和 memcpy 时间各自是活动时长之和，活动可能重
 - Nsys 也支持 `--nsys-sampling per-scale`：只采一个代表 CPU/内存 × 每个 input scale，结果复用到其他 GPU 资源配置。
 - 两者均支持 `full`：在各自适用的 GPU 模式下，逐 CPU × 内存 × input scale 采集。
 
-新构建的模型使用 `acprof-base` 或运行环境依赖层中预装的 Valgrind 和 Nsys 运行库；启用分析时直接使用模型镜像，无需为每个新模型再构建 Massif / Nsys 镜像。Nsys 主程序仍从宿主机挂载，可用 `--nsys-root` 指定；host 无需安装 Valgrind。两个工具只在独立分析探针中运行。已有旧模型镜像无需重新下载权重：首次使用时按需构建兼容镜像，以后实际模型镜像 ID 和分析 Dockerfile 均未改变时直接复用，跳过 `docker build`。
+锁定环境的模型镜像预装 Valgrind 和 Nsys 运行库；分析直接使用原模型的不可变 image ID。
+缺少对应能力标记时立即报错，要求用当前构建流程重建；不再为旧模型按需派生兼容镜像。
+Nsys 主程序仍从宿主机挂载，可用 `--nsys-root` 指定；host 无需安装 Valgrind。
+两个工具只在独立分析探针中运行。
 
 需要严格采完整资源矩阵时显式传入：
 
@@ -70,6 +73,9 @@ python run.py --model google-bert/bert-base-uncased \
 Nsys 的 `per-cpu-scale` 只使用代表内存，`per-scale` 同时使用代表 CPU 和内存。
 
 ## Torch 与 NCU 计算指标
+
+NCU 仅选择当前 SASS 和浮点 Tensor counters，不使用旧 `flop_count_*`。查询失败会报告原因，
+不会猜测默认 counter 列表后继续。
 
 Torch eager 记录模型逻辑计算量，NCU 记录 GPU 实际执行量；两者分别使用
 `*_torch_profiler_eager` 和 `*_ncu` 列。历史 plan / CSV 中的五个通用 compute 字段
@@ -157,7 +163,7 @@ Nsys 还需生成和解析 timeline；repeat 参数会进一步增加工作量�
 
 ### Massif / Nsight Systems execution profiling 字段全是 `nan`
 
-- 默认 `--execution-profile-tool none` 不采 execution profile，这是预期结果；需要显式选择 `massif`、`nsys` 或 `both`。
-- Massif 字段只填充 `gpu_mode=off` 行，Nsight Systems 字段只填充 `gpu_mode=on` 行；不适用的另一组字段保持 `nan`。
-- 分别查看 `compute_profile_error_massif` 和 `compute_profile_error_nsys`。Massif 检查模型镜像中预装的 Valgrind；旧模型兼容构建失败时检查 Docker build/apt 网络与 `dockerfiles/massif.Dockerfile` 日志，不要求 host 安装 `valgrind`。Nsight Systems 检查 `nsys`、`--nsys-root`、实际分析镜像的 importer runtime preflight、NVIDIA driver / Container Toolkit 兼容性，以及 raw `.nsys-rep` 是否可导出；旧模型的依赖由 `dockerfiles/nsys.Dockerfile` 补齐。出现 `nsys_importer_unavailable` 时，优先检查分析镜像中 `libdw.so.1` 等动态库；probe 阶段只出现 `.qdstrm` 而没有 `.nsys-rep` 属于 importer 失败。
-- 两者是显式 opt-in 的独立 probe；一个失败不会影响另一个 execution probe、FLOP compute profiling 或主实验。完整状态与静态口径见 `execution_profile_plan.json` 和 `static_meta.json`。
+- 分别查看 `compute_profile_error_massif` 和 `compute_profile_error_nsys`。出现
+  `massif_runtime_unavailable` / `nsys_runtime_unavailable` 时，使用当前锁定环境重建镜像。
+  Massif 要求镜像内预装 Valgrind；Nsys 还需主机 `nsys`、`--nsys-root` 和 importer runtime preflight。
+  `nsys_importer_unavailable` 表示镜像动态库或 importer 运行失败；仅产生 `.qdstrm` 而没有 `.nsys-rep` 不算成功。

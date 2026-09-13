@@ -1,7 +1,7 @@
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pynvml
 
@@ -143,40 +143,6 @@ class GPUEnergyMonitor:
             self.handle = None
             self.gpu_name = "unknown"
 
-    def measure_idle(self, trace: bool = False) -> float:
-        self.idle_trace = {}
-        if self._init_error or self.handle is None:
-            if trace:
-                self.idle_trace = {
-                    "gpu_idle_trace_schema": "nvml_gpu_idle_v1",
-                    "gpu_idle_error": self._init_error or "NVML handle is unavailable",
-                }
-            return float("nan")
-
-        idle_samples: List[Tuple[float, float]] = []
-        t_start = time.perf_counter()
-        t_idle_end = t_start + self.idle_seconds
-        t_last = t_start
-        try:
-            while True:
-                now = time.perf_counter()
-                t_last = now
-                if now >= t_idle_end:
-                    break
-                idle_samples.append((now, _get_total_power_w(self.handle)))
-                time.sleep(self.dt)
-        except Exception as exc:
-            self._runtime_error = str(exc)
-
-        powers = [power for _, power in idle_samples]
-        self.idle_power_w = _time_weighted_average_power(idle_samples)
-        if trace:
-            self.idle_trace = self._build_idle_trace(
-                idle_samples=idle_samples,
-                t_start=t_start,
-                t_end=t_last,
-            )
-        return self.idle_power_w
 
     def _build_idle_trace(
         self,
@@ -317,29 +283,3 @@ class GPUEnergyMonitor:
             self.samples.append((timestamp, _get_total_power_w(self.handle)))
         except Exception as exc:
             self._runtime_error = str(exc)
-
-
-def measure_energy_threaded(
-    fn: Callable[[], Any],
-    sample_hz: float = 20.0,
-    idle_seconds: float = DEFAULT_IDLE_SECONDS,
-    device_index: int = 0,
-    align_to_fn: bool = True,
-) -> Tuple[EnergyResult, str, str, List[Tuple[float, float]]]:
-    del align_to_fn
-
-    monitor = GPUEnergyMonitor(
-        sample_hz=sample_hz,
-        idle_seconds=idle_seconds,
-        device_index=device_index,
-    )
-    try:
-        monitor.measure_idle()
-        monitor.start()
-        try:
-            fn()
-        finally:
-            result = monitor.stop()
-        return result
-    finally:
-        monitor.close()

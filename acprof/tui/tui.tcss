@@ -160,7 +160,6 @@ Button:disabled, Button:disabled:hover, Button:disabled:focus, Button:disabled.-
 #profile-tools .option-checkbox { width: 1fr; margin-right: 0; }
 #profile-tools .option-checkbox > .toggle--button { color: $panel; }
 #profile-tools .option-checkbox.-on > .toggle--button { color: $background; }
-#allow-cgroup-v1 { display: none; }
 .settings-options { height: auto; margin: 1 0; }
 #settings-status { height: auto; min-height: 1; padding: 0 2; color: $accent; }
 #saved-run-summary { height: auto; border-left: thick $accent; padding: 0 1; margin-bottom: 1; }

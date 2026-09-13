@@ -8,12 +8,14 @@ from typing import Any, Dict, Optional
 
 
 def resolve_model_source(model_id: str, model_path: Optional[str] = None) -> str:
-    """Prefer a baked local snapshot while retaining model-ID cache compatibility."""
+    """Use the configured baked snapshot, or an explicit Hub source for manual callers."""
     candidate = model_path
     if candidate is None:
         candidate = os.getenv("MODEL_LOCAL_PATH", "")
     candidate = candidate.strip()
-    if candidate and os.path.isdir(candidate):
+    if candidate:
+        if not os.path.isdir(candidate):
+            raise FileNotFoundError(f"configured model snapshot is missing: {candidate}")
         return candidate
     return model_id
 
@@ -105,10 +107,6 @@ class HandlerRegistry:
         key = f"{task_family}:{backend}"
         handler = cls._handlers.get(key)
         if handler is None:
-            # Fallback: try family with default backend
-            for k, v in cls._handlers.items():
-                if k.startswith(f"{task_family}:"):
-                    return v
             raise ValueError(
                 f"No handler registered for task_family='{task_family}', backend='{backend}'. "
                 f"Available: {list(cls._handlers.keys())}"

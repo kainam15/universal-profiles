@@ -221,30 +221,6 @@ class DetectEnvironmentTests(unittest.TestCase):
                 "https://example.invalid/torch",
             )
 
-    def test_select_nlp_torch_spec_uses_compatible_range_for_cu124(self) -> None:
-        self.assertEqual(
-            docker_runtime._select_nlp_torch_spec(docker_runtime.CUDA124_NLP_TORCH_INDEX_URL),
-            docker_runtime.CUDA124_NLP_TORCH_SPEC,
-        )
-
-    def test_select_nlp_torch_spec_accepts_cu124_index_with_trailing_slash(self) -> None:
-        self.assertEqual(
-            docker_runtime._select_nlp_torch_spec(
-                docker_runtime.CUDA124_NLP_TORCH_INDEX_URL + "/"
-            ),
-            docker_runtime.CUDA124_NLP_TORCH_SPEC,
-        )
-
-    def test_select_nlp_torch_spec_respects_explicit_override(self) -> None:
-        with patch.dict(
-            "acprof.host.docker_runtime.os.environ",
-            {"ACPROF_NLP_TORCH_SPEC": "torch==9.9.9"},
-            clear=True,
-        ):
-            self.assertEqual(
-                docker_runtime._select_nlp_torch_spec(),
-                "torch==9.9.9",
-            )
 
     def test_runtime_container_is_offline_and_does_not_receive_hf_token(self) -> None:
         task_info = TaskInfo(
@@ -460,7 +436,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 input_scale_type="seq_length",
                 run_command=(
                     "python run.py --model google-bert/bert-base-uncased "
-                    "--no-compute-profile"
+                    "--compute-profile-tool none"
                 ),
                 compute_profile_enabled=False,
             )

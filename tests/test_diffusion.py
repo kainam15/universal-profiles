@@ -9,12 +9,9 @@ from unittest.mock import patch
 from acprof.container.handlers.diffusion import DiffusionHandler
 from acprof.host import orchestrator
 from acprof.host.detect import TaskInfo
-from acprof.host.orchestrator import (
-    ImageInfo,
-    _inference_precision_by_device,
-    _model_io_formats,
-    plan_input_scales,
-)
+from acprof.host.orchestrator import ImageInfo
+from acprof.host.model_schema import _inference_precision_by_device, _model_io_formats
+from acprof.host.input_plan import plan_input_scales
 from acprof.workloads.diffusion import (
     BASE_SEED,
     DEFAULT_GUIDANCE_SCALE,

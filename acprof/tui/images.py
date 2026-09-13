@@ -52,7 +52,7 @@ def format_image_size(value: int) -> str:
 
 
 def filtered_images(inventory: ImageInventory, query: str, scope: str) -> tuple[ManagedImage, ...]:
-    terms = query.casefold().replace("/", "--").replace(".", "_").split()
+    terms = query.casefold().replace("/", "--").split()
     items = []
     for item in inventory.images:
         if scope == "acprof" and not item.acprof:
@@ -63,7 +63,7 @@ def filtered_images(inventory: ImageInventory, query: str, scope: str) -> tuple[
             continue
         if scope == "untagged" and item.tags:
             continue
-        haystack = " ".join((*item.tags, item.image_id, item.model_id)).casefold().replace("/", "--").replace(".", "_")
+        haystack = " ".join((*item.tags, item.image_id, item.model_id)).casefold().replace("/", "--")
         if all(term in haystack for term in terms):
             items.append(item)
     return tuple(items)

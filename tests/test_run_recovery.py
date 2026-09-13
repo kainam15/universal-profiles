@@ -75,6 +75,7 @@ class RunRecoveryTests(unittest.TestCase):
             stack.enter_context(patch("acprof.host.detect.detect_task", return_value=self.task))
             stack.enter_context(patch("acprof.host.docker_runtime.prepare_image", return_value=self.image))
             stack.enter_context(patch("acprof.host.docker_runtime.require_image_identity"))
+            stack.enter_context(patch("acprof.host.runtime_validation.validate_runtime", return_value={"status": "ok"}))
             stack.enter_context(patch("acprof.host.static_metadata.collect_static_meta", return_value=metadata))
             stack.enter_context(patch("acprof.host.input_plan.plan_input_scales", side_effect=self.prepare_plan))
             stack.enter_context(patch("acprof.host.orchestrator.run_single_case", side_effect=case or self.write_case))

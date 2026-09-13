@@ -276,13 +276,7 @@ class AudioWorkloadTests(unittest.TestCase):
         metadata = generator.input_metadata(requested, payload)
         self.assertEqual(metadata["input_num_samples"], SAMPLE_RATE)
         self.assertEqual(generator.effective_input_scale(requested, payload), 1.0)
-        self.assertEqual(
-            generator.effective_input_scale(
-                99,
-                {"audio_samples": [0.0] * 8, "sample_rate": 4},
-            ),
-            2.0,
-        )
+        self.assertEqual(generator.effective_input_scale(99, payload), 1.0)
 
     def test_rejects_invalid_manual_scales(self):
         generator = self._generator()

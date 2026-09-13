@@ -13,7 +13,6 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from acprof.config import DEFAULT_COMPUTE_PROFILE_TOOL
 from acprof.host.detect import TaskInfo
 from acprof.host.profiler_common import (
-    CONTAINER_INPUT_SCALE_PLAN_FILE,
     _base_docker_cmd,
     _format_scale_value,
     _load_input_scale_plan_entries,
@@ -29,47 +28,23 @@ from acprof.host.profiler_progress import (
 
 
 from acprof.host.profilers.compute_parsers import (
-    NCU_FLOAT_TYPE_PATTERN,
     NCU_TENSOR_METRIC_RE,
-    NCU_SCALAR_FLOP_METRICS,
     NCU_SASS_FLOP_WEIGHTS,
     NCU_DURATION_METRIC,
-    _clean_numeric_text,
     _to_float,
     _finite_or_none,
     parse_advisor_self_gflop_csv,
-    _metric_name_from_row,
-    _metric_value_from_row,
-    _metric_unit_from_row,
-    _ncu_metric_flop_weight,
     _is_ncu_flop_metric,
-    _is_ncu_tensor_metric,
-    _is_ncu_sass_metric,
-    _duration_to_ms,
-    _ncu_csv_rows,
-    _first_finite,
-    _first_text,
-    _ncu_launch_count_wide,
-    _ncu_launch_count_long,
     parse_ncu_profile_csv,
-    parse_ncu_flop_csv,
 )
 
-from acprof.host.profilers.tool_discovery import (
-    DEFAULT_TOOL_SEARCH_ROOTS,
-    _candidate_executable_paths,
-    _executable_version_key,
-    _best_existing_executable,
-    _find_executable,
-    _tool_mount_root,
-    _tool_mount_roots,
-)
+from acprof.host.profilers.tool_discovery import _find_executable, _tool_mount_roots
 
 
 COMPUTE_PROFILE_PLAN_NAME = "compute_profile_plan.json"
 TORCH_PROFILER_TOOL = "torch_profiler_eager"
 NCU_TOOL = "ncu"
-COMPUTE_PROFILE_TOOL_MODES = {"none", "auto", "both", "ncu", "torch", "vendor"}
+COMPUTE_PROFILE_TOOL_MODES = {"none", "both", "ncu", "torch", "vendor"}
 NCU_FMA_FLOP_WEIGHT = 2.0
 NCU_CHECKPOINT_SCHEMA_VERSION = 1
 NCU_COMPLETE_ENTRY_FIELDS = (
@@ -273,22 +248,7 @@ def _select_ncu_flop_metrics(available_metrics: Iterable[str]) -> List[str]:
         metric for metric in available
         if NCU_TENSOR_METRIC_RE.match(metric)
     )
-    # Legacy flop_count_* metrics overlap with the SASS metrics. Use them only
-    # when the current Nsight Compute version does not expose the SASS counters.
-    scalar_metrics = (
-        []
-        if sass_metrics
-        else [
-            metric
-            for metric in NCU_SCALAR_FLOP_METRICS
-            if metric in available
-        ]
-    )
-    return [*sass_metrics, *scalar_metrics, *tensor_metrics]
-
-
-def _fallback_ncu_flop_metrics() -> List[str]:
-    return list(NCU_SASS_FLOP_WEIGHTS)
+    return [*sass_metrics, *tensor_metrics]
 
 
 def _resolve_ncu_metrics(
@@ -321,9 +281,6 @@ def _resolve_ncu_metrics(
             detail = result.stderr.strip() or result.stdout.strip()
             if detail:
                 query_errors.append(detail)
-    fallback_metrics = _fallback_ncu_flop_metrics()
-    if fallback_metrics:
-        return fallback_metrics, ""
     error = "; ".join(error for error in query_errors if error)
     if error:
         return [], f"ncu_no_flop_metrics_found:{error}"
@@ -1168,11 +1125,11 @@ def collect_compute_profile_plan(
     normalized_gpus = {_normal_gpu_mode(gpu) for gpu in gpu_list}
     collect_torch_cpu = (
         "off" in normalized_gpus
-        and tool_mode in {"auto", "both", "torch"}
+        and tool_mode in {"both", "torch"}
     )
     collect_torch_gpu = (
         "on" in normalized_gpus
-        and tool_mode in {"auto", "both", "torch"}
+        and tool_mode in {"both", "torch"}
     )
     collect_advisor_cpu = (
         "off" in normalized_gpus
@@ -1180,7 +1137,7 @@ def collect_compute_profile_plan(
     )
     collect_ncu_gpu = (
         "on" in normalized_gpus
-        and tool_mode in {"auto", "both", "ncu", "vendor"}
+        and tool_mode in {"both", "ncu", "vendor"}
     )
     if (
         collect_torch_cpu

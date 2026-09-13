@@ -12,10 +12,12 @@ from unittest.mock import patch
 from textual.widgets import Button, DataTable, Static
 
 from acprof.cli import probe, run
-from acprof.cli.tui import AcprofTui, PendingLaunch
-from acprof.cli.tui_core import RunConfig, RunProgressTracker
-from acprof.cli.tui_i18n import translate
-from acprof.cli.tui_log import SelectableLog
+from acprof.tui.app import AcprofTui
+from acprof.tui.app import PendingLaunch
+from acprof.tui.commands import RunConfig
+from acprof.tui.progress import RunProgressTracker
+from acprof.tui.i18n import translate
+from acprof.tui.log import SelectableLog
 from acprof.host import detect
 from acprof.host.task_support import TaskSupportError, require_task_support
 

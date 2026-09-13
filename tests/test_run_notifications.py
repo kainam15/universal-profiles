@@ -342,6 +342,12 @@ class RunNotificationLifecycleTests(unittest.TestCase):
             return_value=docker_runtime.ImageInfo(tag="acprof-nlp-org--resolved-model:latest"),
         ), patch(
             "acprof.host.static_metadata.collect_static_meta", return_value=SimpleNamespace(),
+        ), patch.multiple(
+            "acprof.host.static_metadata",
+            enrich_static_meta_from_input_plan=Mock(side_effect=lambda meta, planned: meta),
+            enrich_static_meta=Mock(side_effect=lambda meta, values: meta),
+        ), patch(
+            "acprof.host.runtime_validation.validate_runtime", return_value={}
         ), patch(
             "acprof.host.static_metadata.write_static_meta_json",
         ), patch(

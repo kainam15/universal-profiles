@@ -13,7 +13,7 @@ from acprof.tui.app import AcprofTui, PendingLaunch
 from acprof.tui.commands import RunConfig
 from acprof.tui.progress import ProgressSnapshot
 from acprof.host.image_management import ImageManagementError
-from test_image_management import DockerFixture, FINAL, RUNTIME, WEIGHTS
+from test_image_management import DockerFixture, FINAL, RUNTIME, WEIGHTS, image
 
 
 class TuiImagesTests(unittest.IsolatedAsyncioTestCase):
@@ -108,6 +108,38 @@ class TuiImagesTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(await pilot.click("#image-clear"))
                     await pilot.pause()
                     self.assertFalse(app._selected_image_ids)
+
+    async def test_version_dots_distinguish_models_in_selection_and_search(self):
+        self.docker.images[FINAL] = image(
+            FINAL, ["acprof-nlp-qwen--qwen2.5-0.5b:code"], 410,
+            ["os", "deps", "weights", "code"], "Qwen/Qwen2.5-0.5B")
+        # 没有 MODEL_ID 时，从带点号的标签识别同一模型。
+        self.docker.images[WEIGHTS] = image(
+            WEIGHTS, ["acprof-weights-nlp-qwen--qwen2.5-0.5b:weights"], 400,
+            ["os", "deps", "weights"])
+        other = "sha256:" + "d" * 64
+        self.docker.images[other] = image(
+            other, ["acprof-nlp-qwen--qwen2_5-0_5b:code"], 410,
+            ["os", "deps", "other-weights", "code"], "Qwen/Qwen2_5-0_5B")
+        app = self.make_app()
+        async with app.run_test(size=(120, 30)) as pilot:
+            await self.load_images(app, pilot)
+            table = app.query_one("#image-table", DataTable)
+            self.assertEqual(table.get_row(FINAL)[1].plain, "acprof-nlp-qwen--qwen2.5-0.5b")
+            table.move_cursor(row=table.get_row_index(FINAL))
+            await pilot.pause()
+            self.assertTrue(await pilot.click("#image-model"))
+            await pilot.pause()
+            with self.subTest(action="选择同模型"):
+                self.assertEqual(app._selected_image_ids, {FINAL, WEIGHTS})
+            search = app.query_one("#image-search", Input)
+            for query, expected in (("Qwen/Qwen2.5-0.5B", {FINAL, WEIGHTS}),
+                                    ("qwen--qwen2_5-0_5b", {other})):
+                with self.subTest(query=query):
+                    search.focus()
+                    await pilot.press("ctrl+a", *query)
+                    await pilot.pause()
+                    self.assertEqual({item.image_id for item in app._visible_images}, expected)
 
     async def test_confirmation_cancel_and_delete_all_model_tags_with_buttons_visible(self):
         app = self.make_app()

@@ -9,7 +9,7 @@
 `acprof/tui/settings.py` 管理项目隔离的 `tui.json`，当前版本为 v4；
 路径与操作方式见 [README 的 TUI 说明](../README.md#交互式终端界面)。
 `ui.language` 是字符串，仅接受 `zh`（简体中文，默认）和 `en`（English），不使用系统 locale 自动推断。
-兼容读取 v1、v2、v3 设置，缺少语言字段时使用中文；加载时不改写文件，下次保存时写入 v4。
+只读取 version 4 设置；缺少版本、v1/v2/v3 文件或仍包含已删除的 `allow_cgroup_v1` 字段时直接报错，原文件保持不变。归档旧设置后可重新配置。
 未知语言值或错误类型遵循现有校验规则：提示、使用默认设置，并保留原文件，直到用户主动保存。
 
 切换语言仅更新当次界面，点击“保存设置”后持久化；“恢复界面默认”将当次语言恢复为中文。
@@ -19,7 +19,7 @@
 
 v4 新增顶层字符串 `last_result_dir` 和 `last_result_csv`，分别保存最近使用的结果目录和 CSV 路径。
 TUI 中，结果目录位于“补采工具”页，结果 CSV 与摘要位于“绘图工具”页；切换页面保留输入草稿和工具勾选。
-两者默认均为 `""`；旧文件缺少字段时保持空值，不从模型草稿推测历史输出目录。
+两者默认均为 `""`；当前版本文件缺少可选字段时保持空值，不从模型草稿推测历史输出目录。
 TUI 保存实际使用的绝对路径，相对输入以项目根目录为基准，支持 `~`、空格和中文。
 确认采集时，两者与 `last_model` 一次性原子保存；采集结束后采用进度解析得到的合并 CSV，
 未提供时沿用已确认配置中的输出路径。它们表示最近一次采集的目标位置，不保证任务成功或文件仍然存在。
@@ -75,10 +75,10 @@ TUI 保存实际使用的绝对路径，相对输入以项目根目录为基准�
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `--compute-profile-tool` | `none` | 默认跳过全部 compute probe；`both` 独立采集 `torch_profiler_eager` 逻辑 FLOP，并在 `gpu_mode=on` 时采集 NCU GPU 实际执行 FLOP。`auto` 是 `both` 的弃用别名；`torch`、`ncu`、`vendor` 用于单工具诊断或旧流程兼容。 |
+| `--compute-profile-tool` | `none` | 默认跳过全部 compute probe；`both` 独立采集 `torch_profiler_eager` 逻辑 FLOP，并在 `gpu_mode=on` 时采集 NCU GPU 实际执行 FLOP。`torch`、`ncu` 用于单工具诊断，`vendor` 用于 CPU Advisor 与 GPU NCU；`auto` 不再接受。 |
 | `--advisor-root` | auto | Host Intel Advisor install root or executable；显式值优先于自动检测。 |
 | `--ncu-root` | auto | Host Nsight Compute install root or `ncu` executable；显式值优先于自动检测。 |
-| `--advisor-repeat` | `20` | 旧 `vendor` CPU Advisor probe 的推理重复次数；最终 FLOP 会除回单 request。 |
+| `--advisor-repeat` | `20` | `vendor` CPU Advisor probe 的推理重复次数；最终 FLOP 会除回单 request。 |
 | `--torch-profiler-repeat` | `1` | `torch_profiler_eager` probe 的推理重复次数；CPU/GPU 结果分别除回单 request。 |
 | `--ncu-repeat` | `1` | NCU GPU probe 的推理重复次数；FLOP、kernel 数和 kernel 时间最终都除回单 request。 |
 | `--compute-profile-cpus` | host logical CPUs | 临时 compute profiler container 的 CPU core cap。 |
@@ -112,7 +112,8 @@ TUI 保存实际使用的绝对路径，相对输入以项目根目录为基准�
 | `--model-download-policy` | `auto` | `auto` 按已覆盖的加载器规则筛选文件，未知结构保留完整快照并记录原因；`full` 下载固定 commit 的完整仓库。策略进入镜像指纹，不能相互误复用。采集和探测入口均支持。 |
 | `--notify` | `auto` | `auto` 在配置 Webhook 后启用企业微信；`none` 关闭，`wecom` 显式选择企业微信。配置见 [README](../README.md#企业微信通知)。 |
 | `--help` | — | 显示此入口的全部公开参数后退出。 |
-| `--allow-cgroup-v1` | false | 仅用于旧主机诊断的兼容开关。默认正式模式要求 cgroup v2；启用后允许 v1，但会记录 `legacy_compatible`，且 memory peak/stat、I/O 操作数、PID、memory events 与 per-cgroup PSI 不具备同等口径。 |
+
+`--allow-cgroup-v1`、`--no-compute-profile` 和 `--compute-profile-tool auto` 已删除，使用它们会在参数解析时退出。关闭计算分析使用 `--compute-profile-tool none`。
 
 结果目录存在异常中断留下的 `result_case_*.csv` 时，`run.py` 会先读取同目录 `static_meta.json/cgroup_version`。只有版本与当前 host 一致才允许续写；版本不同、缺失或元数据不可读时会退出，避免把 v1/v2 窗口合并到同一结果文件。
 
@@ -137,7 +138,7 @@ TUI 保存实际使用的绝对路径，相对输入以项目根目录为基准�
 | `structured` 策略 | `observation_count` | 每个 batch 项的独立向量观测数，观测宽度固定；不是交互时间步。 |
 | `structured` 图 | `node_count` | 每张图的节点数，特征宽度固定，默认双向环有 2 × 节点数条边。 |
 
-未提供 `--input-scales` 时，当前内置 workload/legacy 配置通常会为一次 profiling run 规划 6 档 input scale；自定义音频清单则使用清单中声明的档数：
+未提供 `--input-scales` 时，当前内置 workload 配置通常会为一次 profiling run 规划 6 档 input scale；自定义音频清单则使用清单中声明的档数：
 
 - `nlp` 文本任务会启动容器读取 tokenizer / handler 的可用最大输入长度，最后一档尽量贴近有效上限。Decoder-only 生成额外预留 `max_new_tokens`；encoder-decoder 不从 encoder 输入预算扣除 decoder 输出长度。表格问答按 `1,2,4,8,16,32` 行规划，不进入 token 二分搜索；超出模型容量时明确失败。
 - 读取音频的任务从 workload 清单读取默认尺度；内置英文语音清单为 `1,2,5,10,20,30` 秒。文本到语音／音频进入同一 token 规划器；tokenizer 没有有限上限时采用显式 512-token 采集上限，该值不是模型最大容量，Bark 使用自身 semantic 输入限制。`cv` 使用 generator 最大尺度；`timeseries` 读取已加载 Chronos 的 context limit，并与 workload 上限取较小值，拒绝静默截断。
@@ -154,7 +155,7 @@ TUI 保存实际使用的绝对路径，相对输入以项目根目录为基准�
 
 音频分类、Encodec／DAC 音频重建和 Silero VAD 默认复用相同语音前缀。codec 按模型需要在预处理阶段重采样，输入规模仍按源音频时长记录。生成／重建响应的 `audio_num_samples`、`audio_sample_rate`、`audio_duration_s` 描述输出波形，不能写入文字 token 计数；VAD 的 `segments` 是秒为单位的连续阈值帧区间，阈值与分帧策略随响应记录，不是识别文本。Silero 每个请求重置状态，profiler 重复调用也不会延续上一请求的隐藏状态。
 
-新增任务沿用现有 CSV 字段、静态 schema v7 与输入计划 schema v2，旧文件无需迁移。`input_units_per_request = effective_input_scale × batch_size`：表格／策略是总行数／观测数，图是总节点数。结构化 `input_num_samples` 对表格／策略记总行数／观测数，对图记图数量，另外在计划记录总节点数与边数。NLP 检索／排序的单位仍为候选文本尺度乘 batch，不再乘候选数量；固定 query、候选数及重复编码成本属于该请求，比较实验时必须保持一致。零样本 NLI 的候选标签推理成本同样包含在请求中。
+新增任务使用当前 CSV 字段、静态 schema v7 与输入计划 schema v2；旧 schema 会被拒绝。`input_units_per_request = effective_input_scale × batch_size`：表格／策略是总行数／观测数，图是总节点数。结构化 `input_num_samples` 对表格／策略记总行数／观测数，对图记图数量，另外在计划记录总节点数与边数。NLP 检索／排序的单位仍为候选文本尺度乘 batch，不再乘候选数量；固定 query、候选数及重复编码成本属于该请求，比较实验时必须保持一致。零样本 NLI 的候选标签推理成本同样包含在请求中。
 
 结构化输入为固定种子的合成矩阵／环图，保存特征宽度、种子、结构、清单 SHA256 及实际 payload；各资源组合和 profiler 使用同一计划。模型缺少 SafeTensors 元数据时，参数量／权重字节数保持 `null`，不能以输入大小代替。skops 与 Silero 的 GPU 配置失败不会生成虚假的 GPU 指标；TorchScript 不支持加载时更换 attention implementation，eager FLOP 采集明确失败并保留工具状态，不能把缺失 FLOP 当作 0。
 
@@ -169,7 +170,7 @@ python run.py --model openai/whisper-large-v3 \
 
 当前音频 request 只实现 `batch_size=1` 和 `short_form`。清单会拒绝非空的 `chunk_length_s` / `stride_length_s`；长音频 sequential/chunked 应使用独立 workload，不能通过把本清单尺度直接扩展到 30 秒以上来混测。
 
-视觉、多模态与图像条件生成也接受 `--workload-spec`，清单和支持边界见 [README 视觉任务](Runtime_Compatibility.md#视觉任务) 与 [多模态任务](Runtime_Compatibility.md#多模态任务)。输入计划沿用 schema v2，新增信息写在扩展的 `workload`、`input_metadata` 和 `payload` object 内；CSV 未增加列，历史文件无需填补新字段。`workload` 保存素材路径／SHA256、清单 SHA256、提示词、参数、尺度单位和固定条件；实际序列化 payload 及计划 SHA256 是重放依据。
+视觉、多模态与图像条件生成也接受 `--workload-spec`，清单和支持边界见 [README 视觉任务](Runtime_Compatibility.md#视觉任务) 与 [多模态任务](Runtime_Compatibility.md#多模态任务)。输入计划沿用 schema v2，新增信息写在扩展的 `workload`、`input_metadata` 和 `payload` object 内；CSV 未增加列，当前 schema 的可选字段允许缺失。`workload` 保存素材路径／SHA256、清单 SHA256、提示词、参数、尺度单位和固定条件；实际序列化 payload 及计划 SHA256 是重放依据。
 
 CV 每请求一个图片／视频样本，`input_num_samples=1`；视频帧数及每帧 SHA256 单独记录在 `input_metadata`。零样本标签、VitPose 的人物框和参数也随 payload 重放，不增加隐藏的人物检测请求。CV 响应按任务区分 classification、detection、caption、depth、segmentation、masks、features、keypoints；大张量／掩码／深度图只返回摘要。未产生文本的任务不填写输出 token 数，相关 CSV 指标保持 `NaN`。
 
@@ -184,7 +185,7 @@ CV 每请求一个图片／视频样本，`input_num_samples=1`；视频帧数�
 ### `probe.py`
 
 复用 `--model`、`--task`、`--task-family`、`--backend`、`--batch-size`、`--workload-spec`、
-`--output-dir`、`--skip-build` 和 `--allow-cgroup-v1` 的参数及默认值。
+`--output-dir` 和 `--skip-build` 的参数及默认值。
 资源列表与超时的用途如下：
 
 | 参数 | 默认值 | 说明 |

@@ -72,10 +72,8 @@ def _sniff_interface_exists(sniff_iface: str) -> bool:
     return result.returncode == 0
 
 
-def require_packet_latency_prerequisites(project_dir: str, sniff_iface: str) -> None:
+def require_packet_latency_prerequisites(sniff_iface: str) -> None:
     """Fail early when native-Linux packet latency cannot be collected."""
-    del project_dir  # Kept for compatibility with existing callers.
-
     missing_tools = [
         name for name in ("tcpdump", "tshark")
         if shutil.which(name) is None

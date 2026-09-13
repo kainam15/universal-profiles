@@ -4,7 +4,7 @@ from __future__ import annotations
 import csv
 import math
 import re
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
 NCU_FLOAT_TYPE_PATTERN = r"(?:bf\d+|fp\d+|tf\d+)"
@@ -14,9 +14,6 @@ NCU_TENSOR_METRIC_RE = re.compile(
     rf"^sm__ops_path_tensor_src_{NCU_FLOAT_TYPE_PATTERN}"
     rf"(?:_{NCU_FLOAT_TYPE_PATTERN})*_dst_{NCU_FLOAT_TYPE_PATTERN}\.sum$"
 )
-
-
-NCU_SCALAR_FLOP_METRICS = ("flop_count_hp", "flop_count_sp", "flop_count_dp")
 
 
 NCU_SASS_FLOP_WEIGHTS = {
@@ -125,7 +122,7 @@ def _metric_unit_from_row(row: Dict[str, str]) -> str:
 
 
 def _ncu_metric_flop_weight(metric_name: str) -> Optional[float]:
-    if metric_name in NCU_SCALAR_FLOP_METRICS or NCU_TENSOR_METRIC_RE.match(metric_name):
+    if NCU_TENSOR_METRIC_RE.match(metric_name):
         return 1.0
     if metric_name in NCU_SASS_FLOP_WEIGHTS:
         return NCU_SASS_FLOP_WEIGHTS[metric_name]
@@ -343,9 +340,6 @@ def parse_ncu_profile_csv(
                     duration_found = True
         launch_count = _ncu_launch_count_wide(rows)
 
-    # Legacy flop_count_* and SASS counters describe the same scalar work.
-    # Prefer SASS when both families appear to avoid counting it twice.
-    has_sass = any(_is_ncu_sass_metric(name) for name, _, _ in metric_values)
     tensor_flops = 0.0
     scalar_flops = 0.0
     tensor_found = False
@@ -357,7 +351,7 @@ def parse_ncu_profile_csv(
         if _is_ncu_tensor_metric(metric_name):
             tensor_flops += value * weight
             tensor_found = True
-        elif not (has_sass and metric_name in NCU_SCALAR_FLOP_METRICS):
+        else:
             scalar_flops += value * weight
             scalar_found = True
 
@@ -413,8 +407,3 @@ def parse_ncu_profile_csv(
         "gpu_compute_capability": compute_capability,
         "gpu_sm_count": sm_count,
     }
-
-
-def parse_ncu_flop_csv(report_path: str) -> float:
-    """Backward-compatible total FLOP parser for an NCU raw CSV export."""
-    return float(parse_ncu_profile_csv(report_path)["total_flops_per_request"])

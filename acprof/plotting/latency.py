@@ -70,8 +70,8 @@ def plot_latency_model_residuals(
         "hardware_model",
         "input_scale",
         "latency_s",
-        "predicted_latency_s",
-        "residual_s",
+        "resource_config_oof_predicted_latency_s",
+        "resource_config_oof_residual_s",
     }
     missing_columns = sorted(required_columns.difference(residual_df.columns))
     if missing_columns:
@@ -87,8 +87,8 @@ def plot_latency_model_residuals(
     numeric_columns = [
         "input_scale",
         "latency_s",
-        "predicted_latency_s",
-        "residual_s",
+        "resource_config_oof_predicted_latency_s",
+        "resource_config_oof_residual_s",
         "max_scale_holdout_predicted_latency_s",
         "max_scale_holdout_residual_s",
     ]
@@ -107,15 +107,15 @@ def plot_latency_model_residuals(
             [
                 "input_scale",
                 "latency_s",
-                "predicted_latency_s",
-                "residual_s",
+                "resource_config_oof_predicted_latency_s",
+                "resource_config_oof_residual_s",
             ]
         ]
         .apply(np.isfinite)
         .all(axis=1)
         & (residual_df["input_scale"] > 0.0)
         & (residual_df["latency_s"] > 0.0)
-        & (residual_df["predicted_latency_s"] > 0.0)
+        & (residual_df["resource_config_oof_predicted_latency_s"] > 0.0)
     )
     residual_df = residual_df[valid_mask].copy()
     if residual_df.empty:
@@ -123,7 +123,7 @@ def plot_latency_model_residuals(
         return False
 
     residual_df["relative_residual_pct"] = (
-        100.0 * residual_df["residual_s"] / residual_df["latency_s"]
+        100.0 * residual_df["resource_config_oof_residual_s"] / residual_df["latency_s"]
     )
     hardware_order = [
         hardware_model
@@ -166,7 +166,7 @@ def plot_latency_model_residuals(
         style = hardware_styles[hardware_model]
         parity_axis.scatter(
             hardware_df["latency_s"],
-            hardware_df["predicted_latency_s"],
+            hardware_df["resource_config_oof_predicted_latency_s"],
             color=style["color"],
             marker=style["marker"],
             edgecolor="white",
@@ -178,13 +178,13 @@ def plot_latency_model_residuals(
     parity_min = float(
         min(
             residual_df["latency_s"].min(),
-            residual_df["predicted_latency_s"].min(),
+            residual_df["resource_config_oof_predicted_latency_s"].min(),
         )
     )
     parity_max = float(
         max(
             residual_df["latency_s"].max(),
-            residual_df["predicted_latency_s"].max(),
+            residual_df["resource_config_oof_predicted_latency_s"].max(),
         )
     )
     parity_axis.plot(
@@ -206,7 +206,7 @@ def plot_latency_model_residuals(
     parity_axis.legend(fontsize=8)
     r2, relative_mae, mean_absolute_percentage_error = _residual_plot_metrics(
         residual_df["latency_s"],
-        residual_df["predicted_latency_s"],
+        residual_df["resource_config_oof_predicted_latency_s"],
     )
     metric_lines = [f"n = {len(residual_df)}"]
     if r2 is not None:
@@ -223,7 +223,7 @@ def plot_latency_model_residuals(
         ]
         _, _, hardware_mape = _residual_plot_metrics(
             hardware_df["latency_s"],
-            hardware_df["predicted_latency_s"],
+            hardware_df["resource_config_oof_predicted_latency_s"],
         )
         if math.isfinite(hardware_mape):
             metric_lines.append(
@@ -251,7 +251,7 @@ def plot_latency_model_residuals(
         ]
         style = hardware_styles[hardware_model]
         prediction_axis.scatter(
-            hardware_df["predicted_latency_s"],
+            hardware_df["resource_config_oof_predicted_latency_s"],
             hardware_df["relative_residual_pct"],
             color=style["color"],
             marker=style["marker"],

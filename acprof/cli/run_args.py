@@ -113,21 +113,14 @@ Examples:
     )
 
     # Compute profiling
-    # Kept as a hidden compatibility alias for existing scripts. New commands
-    # should use --compute-profile-tool none, matching execution profiling.
-    parser.add_argument(
-        "--no-compute-profile",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
     parser.add_argument(
         "--compute-profile-tool",
-        choices=("none", "both", "auto", "torch", "ncu", "vendor"),
+        choices=("none", "both", "torch", "ncu", "vendor"),
         default=DEFAULT_COMPUTE_PROFILE_TOOL,
         help=(
             "Compute FLOP profiler (default: none): none skips all compute "
             "probes; both independently collects torch_profiler_eager logical "
-            "FLOP and ncu GPU executed FLOP; auto is a deprecated alias for both"
+            "FLOP and ncu GPU executed FLOP"
         ),
     )
     parser.add_argument("--advisor-root", default=None, help="Host Intel Advisor install root or advisor executable")
@@ -269,14 +262,6 @@ Examples:
         help=(
             "Notification mode: auto (default) enables WeCom when "
             "ACPROF_WECOM_WEBHOOK_URL is configured; none disables notifications"
-        ),
-    )
-    parser.add_argument(
-        "--allow-cgroup-v1",
-        action="store_true",
-        help=(
-            "Allow legacy cgroup v1 for diagnostic compatibility; formal "
-            "collection requires cgroup v2"
         ),
     )
 

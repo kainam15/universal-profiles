@@ -21,8 +21,6 @@ class ImageLayerIdentityTests(unittest.TestCase):
                 "acprof/container/download_model.py": "downloader = 1\n",
                 "acprof/container/model_files.py": "selector = 1\n",
                 "acprof/handler.py": "handler = 1\n",
-                "dockerfiles/base.Dockerfile": "FROM python:3.10-slim\n",
-                "dockerfiles/nlp.Dockerfile": "FROM base AS runtime\nRUN install-deps\n\nFROM runtime AS model\nCOPY models /models\n",
                 "dockerfiles/runtime-model.Dockerfile": "FROM runtime\nCOPY downloader /opt\n",
                 "dockerfiles/runtime.Dockerfile": "FROM python\nRUN install-locked-deps\n",
                 "dockerfiles/locks/nlp-cu128.txt": "torch==2.11.0+cu128\n",
@@ -47,7 +45,7 @@ class ImageLayerIdentityTests(unittest.TestCase):
                             dataclasses.replace(task, model_download_policy="full")):
                 self.assertNotEqual(changed_model, model_fingerprint(changed, "sha256:" + "b" * 64, root))
             self.assertNotEqual(changed_model, model_fingerprint(task, "sha256:" + "c" * 64, root))
-            self.assertNotEqual(runtime, runtime_fingerprint(profile, root, {"TORCH_INDEX_URL": "cpu"}))
+            self.assertNotEqual(runtime, runtime_fingerprint(dataclasses.replace(profile, python_base_image="python:3.10-slim@sha256:" + "c" * 64), root))
 
 
 if __name__ == "__main__":

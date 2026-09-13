@@ -19,6 +19,18 @@ class ResultValidationError(ValueError):
     """输入不完整或无法唯一归属到计划中的测量。"""
 
 
+def require_current_fields(fields: Iterable[str]) -> None:
+    """拒绝已被明确归因字段替代的旧列，不猜测其测量来源。"""
+    retired = {
+        "energy_iters", "avg_power_total_w", "peak_power_total_w", "energy_total_j",
+        "avg_power_eff_w", "peak_power_eff_w", "energy_eff_j", "model_mflop_per_request",
+        "compute_mflops_app", "compute_mflops", "compute_profile_tool", "compute_profile_error",
+    }
+    unsupported = retired.intersection(fields)
+    if unsupported:
+        raise ResultValidationError(f"unsupported retired CSV fields: {sorted(unsupported)}; regenerate current results")
+
+
 def measurement_key(row: Mapping[str, object]) -> MeasurementKey:
     values = []
     for field in KEY_FIELDS:
@@ -60,6 +72,7 @@ def read_result_csv(path: str | Path, *, expected: Iterable[MeasurementKey] | No
     with path.open(encoding="utf-8-sig", newline="") as stream:
         reader = csv.DictReader(stream, strict=True)
         fields = reader.fieldnames or []
+        require_current_fields(fields)
         if not fields or len(fields) != len(set(fields)):
             raise ResultValidationError(f"missing or duplicate CSV columns: {path}")
         missing = set(KEY_FIELDS) - set(fields)

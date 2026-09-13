@@ -1,7 +1,7 @@
 # AC-Prof 代码架构
 
 AC-Prof 的命令入口负责参数和调度，业务模块按输入规划、运行时采集、结果分析与界面组织。
-根目录脚本及旧 Python 导入路径保持兼容；新增调用应直接引用职责所属模块。
+根目录脚本负责命令启动；Python 调用直接引用职责所属模块，不保留已被替代的导入入口。
 
 修改模块边界、依赖方向或兼容入口时查阅本文。操作说明见 [README](../README.md#项目结构与开发)，
 字段与测量口径见 [指标与结果分析](Metrics.md#result_allcsv-字段解释)，运行环境扩展见[模型运行环境与适配器](Runtime_Compatibility.md)。
@@ -16,10 +16,10 @@ AC-Prof 的命令入口负责参数和调度，业务模块按输入规划、运
 
 | 位置 | 职责 |
 | --- | --- |
-| `acprof/cli/` | 命令参数、入口调度、退出处理和兼容导出 |
+| `acprof/cli/` | 命令参数、入口调度和退出处理 |
 | `acprof/tui/` | Textual 页面、事件、命令构造、进度、设置和日志控件 |
 | `acprof/analysis/` | 延迟模型的数值计算、验证与报告文件 |
-| `acprof/plotting/` | CSV 兼容整理、图表配置、颜色与渲染 |
+| `acprof/plotting/` | 当前 CSV 校验、图表配置、颜色与渲染 |
 | `acprof/host/` | 模型检测、环境预检、输入计划、容器与采集编排、profiler |
 | `acprof/host/posthoc/` | 已有结果的 profiler 补采、回填、备份与回滚 |
 | `acprof/container/` | 容器内模型下载、HTTP server、推理处理器和 profiler runner |
@@ -71,17 +71,17 @@ flowchart TD
 | `run_state` | 目录锁、实验身份、已完成 case 校验、中断备份和恢复；仅在测量窗口外运行 |
 | `client` | 环境与 workload 初始化、请求、对照窗口和正式窗口控制、结果写入 |
 | `client_metrics` | 已完成采样结果到指标字段的纯计算与格式化 |
-| `compute_profile` / `execution_profile` | profiler 计划、采集、断点与汇总；显式保留旧解析/查找入口 |
+| `compute_profile` / `execution_profile` | profiler 计划、采集、断点与汇总 |
 | `profilers/compute_parsers` / `profilers/execution_parsers` | Advisor/NCU CSV、Massif snapshot 和 Nsys stats 的纯标准库解析 |
 | `profilers/tool_discovery` | 可执行文件、版本目录优先级和完整工具挂载路径 |
-| `profilers/execution_environment` | 独立镜像与运行库核验、旧镜像兼容构建、工具版本查询 |
+| `profilers/execution_environment` | 原始模型镜像的 profiler 能力核验、工具版本查询 |
 | `profiler_common` | 两类 profiler 共享的命令、容器参数、输入计划读取及原子 JSON 写入 |
 
 `docker_runtime` 是输入规划的下层；`static_metadata` 引用 runtime、输入计划类型和
-任务 schema；这些模块均不反向引用 `orchestrator`。它们的已有入口仍从
-`orchestrator` 显式导出。两个 profiler 单向依赖 `profiler_common`，各自保留本地执行边界。
-解析器不导入 Docker、模型检测或采集编排，单独读取报告无需安装推理框架。兼容导出直接引用
-新模块中的函数；测试在函数实际查找依赖的位置 mock，不使用运行时 `globals` 转发。
+任务 schema；这些模块均不反向引用 `orchestrator`。调用方直接引用各模块。
+两个 profiler 单向依赖 `profiler_common`，解析与工具查找使用 `profilers/` 下的实现。
+解析器不导入 Docker、模型检测或采集编排，单独读取报告无需安装推理框架。
+测试在函数实际查找依赖的位置 mock。
 
 `metric_registry` 统一 CSV 字段、单位、来源、窗口和 profiler 完成条件；`config.CSV_FIELDS`
 保留同一列表对象。`analysis/audit` 和 `analysis/uncertainty` 负责只读审计与窗口统计，
@@ -103,9 +103,9 @@ flowchart TD
 `plotting` 内的 `config`、`data`、`styles` 分别管理图表声明、CSV 整理和样式；
 `metrics`、`diagnostics`、`latency` 分别渲染常规指标、诊断图和模型图。
 
-旧绘图入口保留函数签名及 `SHOW_PLOTS`、`SAVE_PNG`、`AGG_FUNC` 等配置行为，
-通过短包装显式传给实现。`prepare_df` 的默认参数继续在函数定义时绑定。
-CSV 字段、历史数据兼容、warmup/status 过滤、图表名称和模型计算口径保持一致。
+绘图函数从 `acprof.plotting.data`、`metrics`、`latency` 等模块导入，数值报告从
+`acprof.analysis.latency_report` 导入。`acprof.cli.plot` 只解析参数和调度；已移除
+旧函数包装、`SHOW_PLOTS` / `AGG_FUNC` 全局转发和重复指标清单。
 
 补采包采用以下依赖关系：
 
@@ -136,7 +136,19 @@ Docker 访问由标准库模块 `host.image_management` 执行，固定连接并
 
 settings、i18n、themes、input、log、scrollbar 各自管理设置、语言、主题和控件。
 CSS 路径相对 App 文件明确定位；设置文件位置、版本、项目隔离算法和恢复优先级保持一致。
-旧 `acprof.cli.tui*` 模块显式导出同一实现对象。
+TUI 应用从 `acprof.tui.app` 导入，配置和命令从 `acprof.tui.commands` 导入；旧 `acprof.cli.tui_*` 模块已删除。
 
-兼容层显式导出对象，不代理任意全局赋值；因此依赖 mock 的查找位置会随实现模块迁移，
-旧路径仍用于入口兼容验证。测试选择、终端证据与验证范围统一见[测试指南](Testing.md)。
+测试覆盖当前实现与旧入口拒绝行为；不为历史调用增加转导出或参数别名。
+测试选择、终端证据与验证范围统一见[测试指南](Testing.md)。
+
+## 只保留当前协议
+
+已有明确替代实现的兼容代码直接删除；旧参数、旧 schema 或未登记的运行环境在入口报错。
+当前设置文件要求 version 4，输入计划要求 schema v2，静态元数据要求 schema v7，
+抓包记录要求 schema v2 的 `requests` 对象，历史记录单独保存在 schema v1 的 `collection_history.json`。
+不读取 `static_meta.csv`，不迁移嵌入静态元数据的 history/last-run，不转换旧 GPU/通用 FLOP 列。
+
+采集只支持 cgroup v2 和锁定依赖的镜像；CPU/GPU 使用匹配 monitor 的对照窗口作为能耗基线。
+Massif/Nsys 使用原模型镜像预装的运行库，缺少能力标记时要求重建，不派生兼容镜像。
+未知 backend、丢失的显式本地快照和无法查询的 NCU counters 都明确报错。
+驱动分支、任务专用 handler 和 `profile.py` 的标准库代理具有独立用途，继续保留。

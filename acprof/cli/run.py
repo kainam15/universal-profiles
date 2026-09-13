@@ -8,10 +8,8 @@ Usage:
 """
 from __future__ import annotations
 
-import argparse
 import csv
 from dataclasses import dataclass, replace
-import json
 import math
 import os
 import shlex
@@ -20,30 +18,13 @@ import sys
 import time
 from pathlib import Path
 
-from acprof.config import (
-    DEFAULT_COMPUTE_PROFILE_TOOL,
-    DEFAULT_IDLE_COOLDOWN_SECONDS,
-    DEFAULT_IDLE_SECONDS,
-    DEFAULT_REQUEST_TIMEOUT_SECONDS,
-    DEFAULT_REPEAT_IN_WINDOW,
-    DEFAULT_REPEAT_WINDOW_SECONDS,
-    SCALING_DIMENSIONS,
-)
+from acprof.config import SCALING_DIMENSIONS
 from acprof.host.env_utils import bootstrap_project_env
 from acprof.host.run_state import RunState, RunStateError, load_run_state, run_options
 from acprof.host.preflight import (
-    NATIVE_DOCKER_SOCKET,
-    _docker_info_is_docker_desktop,
-    _docker_context_is_docker_desktop,
-    _process_is_wsl,
-    _exit_unsupported_host,
     require_native_linux_host,
-    detect_cgroup_version,
     require_cgroup_prerequisites,
     require_result_cgroup_compatibility,
-    _docker_host_is_native_socket,
-    _exit_nonlocal_docker,
-    _exit_docker_desktop,
     require_native_docker,
     require_cpu_energy_prerequisites,
 )
@@ -559,9 +540,7 @@ def _run_main():
 
     args = parser.parse_args()
     run_command = _format_run_command(sys.argv)
-    compute_profile_disabled = (
-        args.no_compute_profile or args.compute_profile_tool == "none"
-    )
+    compute_profile_disabled = args.compute_profile_tool == "none"
     if args.repeat_in_window < 0:
         parser.error("--repeat-in-window must be >= 0")
     if args.repeat_window_seconds <= 0.0:
@@ -604,18 +583,11 @@ def _run_main():
 
     require_native_linux_host()
     require_native_docker()
-    cgroup_version = require_cgroup_prerequisites(
-        allow_cgroup_v1=args.allow_cgroup_v1,
-    )
-    cgroup_collection_mode = (
-        "legacy_compatible" if args.allow_cgroup_v1 else "strict_v2"
-    )
+    cgroup_version = require_cgroup_prerequisites()
+    cgroup_collection_mode = "strict_v2"
 
     try:
-        require_packet_latency_prerequisites(
-            project_dir=PROJECT_DIR,
-            sniff_iface=args.sniff_iface,
-        )
+        require_packet_latency_prerequisites(sniff_iface=args.sniff_iface)
     except PacketLatencyError as exc:
         print(f"\n[sniff][ERROR] {exc}", file=sys.stderr)
         sys.exit(1)
@@ -801,21 +773,19 @@ def _run_main():
         )
         write_static_meta_json(static_meta, static_meta_json)
         compute_profile_plan_file = ""
-        if getattr(image_info, "runtime_environment", {}):
-            from acprof.host.runtime_validation import validate_runtime
-            from acprof.host.static_metadata import enrich_static_meta
-
-            try:
-                validation = validate_runtime(
-                    task_info=task_info, image_info=image_info, planned=planned_input_scales,
-                    cpu_list=cpu_list, mem_list=mem_list, gpu_list=gpu_list, output_dir=output_dir,
-                    timeout_seconds=args.request_timeout_seconds,
-                )
-                static_meta = enrich_static_meta(static_meta, {"runtime_validation": validation})
-                write_static_meta_json(static_meta, static_meta_json)
-            except (RuntimeError, OSError, ValueError) as exc:
-                print(f"[runtime-check][ERROR] {exc}", file=sys.stderr)
-                sys.exit(1)
+        from acprof.host.runtime_validation import validate_runtime
+        from acprof.host.static_metadata import enrich_static_meta
+        try:
+            validation = validate_runtime(
+                task_info=task_info, image_info=image_info, planned=planned_input_scales,
+                cpu_list=cpu_list, mem_list=mem_list, gpu_list=gpu_list, output_dir=output_dir,
+                timeout_seconds=args.request_timeout_seconds,
+            )
+            static_meta = enrich_static_meta(static_meta, {"runtime_validation": validation})
+            write_static_meta_json(static_meta, static_meta_json)
+        except (RuntimeError, OSError, ValueError) as exc:
+            print(f"[runtime-check][ERROR] {exc}", file=sys.stderr)
+            sys.exit(1)
         total_cases = len(cpu_list) * len(mem_list) * len(gpu_list)
         _update_run_notification_plan(
             model_id=task_info.model_id,
@@ -823,11 +793,7 @@ def _run_main():
             total_cases=total_cases,
         )
         if compute_profile_disabled:
-            reason = (
-                "--no-compute-profile (compatibility alias)"
-                if args.no_compute_profile
-                else "--compute-profile-tool none"
-            )
+            reason = "--compute-profile-tool none"
             print(f"[compute] Compute profiling disabled by {reason}")
         else:
             try:

@@ -1,18 +1,25 @@
 import shlex
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 from textual.widgets import Button, Input, Select, Static
 
-from acprof.cli.tui import AcprofTui
-from acprof.cli.tui_core import ProgressSnapshot, RunConfig, format_command
+from acprof.tui.app import AcprofTui
+from acprof.tui.progress import ProgressSnapshot
+from acprof.tui.commands import RunConfig, format_command
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 
 class TuiInteractionTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.settings_path = Path(temporary.name) / "tui.json"
+
     async def test_pending_form_preview_is_safe_after_widgets_are_unmounted(self):
         class ClosingPreviewApp(AcprofTui):
             CSS_PATH = AcprofTui.CSS_PATH
@@ -23,14 +30,14 @@ class TuiInteractionTests(unittest.IsolatedAsyncioTestCase):
                 # the form. Deliver it here without depending on clock timing.
                 self._sync_form_state()
 
-        app = ClosingPreviewApp(RunConfig.smoke("demo/model"))
+        app = ClosingPreviewApp(RunConfig.smoke("demo/model"), settings_path=self.settings_path)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause()
             app._configuration_changed()
             self.assertIsNotNone(app._preview_timer)
 
     async def test_rapid_clicks_are_not_discarded_by_button_active_effect(self):
-        app = AcprofTui(RunConfig.smoke("demo/model"))
+        app = AcprofTui(RunConfig.smoke("demo/model"), settings_path=self.settings_path)
         async with app.run_test(size=(140, 45)) as pilot:
             app._activate_tab("settings-tab")
             await pilot.pause()
@@ -46,7 +53,7 @@ class TuiInteractionTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(all(not field.cursor_blink for field in app.query(Input)))
 
     async def test_burst_of_form_changes_collects_once_and_keeps_latest_values(self):
-        app = AcprofTui(RunConfig.smoke("demo/model"))
+        app = AcprofTui(RunConfig.smoke("demo/model"), settings_path=self.settings_path)
         async with app.run_test(size=(140, 45)) as pilot:
             await pilot.pause(0.1)
             with patch.object(app, "_collect_config", wraps=app._collect_config) as collect:
@@ -61,7 +68,7 @@ class TuiInteractionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.query_one("#run-preset", Select).value, "custom")
 
     async def test_applying_preset_does_not_queue_redundant_preview_updates(self):
-        app = AcprofTui(RunConfig.smoke("demo/model"))
+        app = AcprofTui(RunConfig.smoke("demo/model"), settings_path=self.settings_path)
         async with app.run_test(size=(140, 45)) as pilot:
             await pilot.pause(0.1)
             with patch.object(
@@ -75,7 +82,7 @@ class TuiInteractionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.query_one("#cpus", Input).value, "1,2,4,8")
 
     async def test_starting_run_cancels_preview_and_locks_configuration(self):
-        app = AcprofTui(RunConfig.smoke("demo/model"))
+        app = AcprofTui(RunConfig.smoke("demo/model"), settings_path=self.settings_path)
         async with app.run_test(size=(140, 45)) as pilot:
             await pilot.pause(0.1)
             with patch.object(app, "_refresh_command_preview") as refresh:
@@ -95,7 +102,7 @@ class TuiInteractionTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(all(not control.disabled for control in controls))
 
     async def test_measurement_pauses_elapsed_timer_and_resumes_after_window(self):
-        app = AcprofTui(RunConfig.smoke("demo/model"))
+        app = AcprofTui(RunConfig.smoke("demo/model"), settings_path=self.settings_path)
         async with app.run_test(size=(140, 45)) as pilot:
             await pilot.pause()
             timer = Mock()

@@ -34,13 +34,17 @@ class RuntimeProfile:
     model_types: tuple[str, ...] = ()
     backends: tuple[str, ...] = ("transformers_model", "transformers_pipeline")
 
+    def __post_init__(self) -> None:
+        if not self.requirements_lock:
+            raise ValueError("运行环境必须登记完整 requirements_lock；不支持未锁定环境")
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @property
     def common_requirements_lock(self) -> str:
         variant = self.torch_index_url.rstrip("/").rsplit("/", 1)[-1]
-        return f"dockerfiles/locks/common-{variant}.txt" if self.requirements_lock else ""
+        return f"dockerfiles/locks/common-{variant}.txt"
 
 
 PROFILES = {

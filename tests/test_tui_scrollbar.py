@@ -4,7 +4,7 @@ from rich.color import Color
 from rich.console import Console
 from rich.style import Style
 
-from acprof.cli.tui_scrollbar import SolidScrollBarRender
+from acprof.tui.scrollbar import SolidScrollBarRender
 
 
 class SolidScrollBarRenderTests(unittest.TestCase):

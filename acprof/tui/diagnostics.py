@@ -90,7 +90,7 @@ def quick_preflight(
     checks.append(
         PreflightCheck(
             "cgroup v2",
-            "ok" if cgroup_v2 else ("warn" if config.allow_cgroup_v1 else "fail"),
+            "ok" if cgroup_v2 else "fail",
             message('统一层级可用') if cgroup_v2 else message('未找到 cgroup.controllers'),
         )
     )

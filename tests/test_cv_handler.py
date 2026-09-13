@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 
 from acprof.container.handlers.cv import CVHandler
 from acprof.host.detect import TaskInfo
-from acprof.host.orchestrator import _model_io_formats
+from acprof.host.model_schema import _model_io_formats
 from acprof.host.task_support import require_task_support
 from acprof.workloads.cv import CVWorkloadGenerator
 from PIL import Image

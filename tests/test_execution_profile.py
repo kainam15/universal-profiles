@@ -25,7 +25,7 @@ def _write_input_scale_plan(directory: str) -> str:
     path = os.path.join(directory, "input_scale_plan.json")
     with open(path, "w", encoding="utf-8") as plan_file:
         json.dump(
-            {
+            {"schema_version": 2,
                 "entries": [
                     {
                         "input_scale": 8.0,
@@ -69,17 +69,17 @@ heap_tree=peak
 
 
 class ExecutionProfileTests(unittest.TestCase):
-    def test_v1_and_v2_input_plans_reuse_the_exact_payload(self) -> None:
+    def test_current_input_plan_reuses_the_exact_payload(self) -> None:
         payload = {
             "audio_base64": "UklGRg==",
             "audio_format": "wav",
             "sample_rate": 16000,
             "params": {"asr_task": "transcribe"},
         }
-        for schema_version in (1, 2):
+        for schema_version in (2,):
             with self.subTest(schema_version=schema_version), tempfile.TemporaryDirectory() as tmp:
                 path = os.path.join(tmp, "input_scale_plan.json")
-                plan = {
+                plan = {"schema_version": 2,
                     "entries": [
                         {
                             "input_scale": 1.0,
@@ -490,8 +490,8 @@ heap_tree=peak
     ) -> None:
         events = []
         with tempfile.TemporaryDirectory() as tmp, patch(
-            "acprof.host.execution_profile._build_massif_image",
-            side_effect=RuntimeError("massif_image_build_failed:no_apt"),
+            "acprof.host.execution_profile.require_execution_image",
+            side_effect=RuntimeError("massif_runtime_unavailable:rebuild_current_image"),
         ), patch(
             "acprof.host.execution_profile._find_nsys_executable",
             return_value=None,
@@ -575,8 +575,8 @@ heap_tree=peak
             raise RuntimeError("notification unavailable")
 
         with tempfile.TemporaryDirectory() as tmp, patch(
-            "acprof.host.execution_profile._build_massif_image",
-            side_effect=RuntimeError("massif_image_build_failed:no_apt"),
+            "acprof.host.execution_profile.require_execution_image",
+            side_effect=RuntimeError("massif_runtime_unavailable:rebuild_current_image"),
         ), patch(
             "acprof.host.execution_profile._find_nsys_executable",
             return_value=None,
@@ -647,12 +647,11 @@ heap_tree=peak
 
         with tempfile.TemporaryDirectory() as tmp, patch.multiple(
             execution_profile,
-            _build_massif_image=Mock(return_value="massif:test"),
+            require_execution_image=Mock(side_effect=lambda image, tool: tool + ":test"),
             _massif_version=Mock(return_value="test"),
             _find_nsys_executable=Mock(return_value="/opt/nsys/bin/nsys"),
             _nsys_mount_root=Mock(return_value="/opt/nsys"),
             _nsys_version=Mock(return_value="test"),
-            _build_nsys_image=Mock(return_value="nsys:test"),
             _validate_nsys_container_runtime=Mock(),
             _collect_massif_entry=Mock(
                 side_effect=lambda **kwargs: collect_sample("Massif", **kwargs)
@@ -743,10 +742,8 @@ heap_tree=peak
     ) -> None:
         events = []
         with tempfile.TemporaryDirectory() as tmp, patch(
-            "acprof.host.execution_profile._build_massif_image",
-        ) as build_massif, patch(
-            "acprof.host.execution_profile._build_nsys_image",
-        ) as build_nsys, patch(
+            "acprof.host.execution_profile.require_execution_image",
+        ) as require_image, patch(
             "acprof.host.execution_profile._find_nsys_executable",
         ) as find_nsys:
             plan_path = execution_profile.collect_execution_profile_plan(
@@ -774,8 +771,7 @@ heap_tree=peak
                 )
             )
 
-        build_massif.assert_not_called()
-        build_nsys.assert_not_called()
+        require_image.assert_not_called()
         find_nsys.assert_not_called()
         self.assertEqual(events, [])
         self.assertEqual(plan["profiles"], [])

@@ -1,13 +1,8 @@
 """结果 CSV 整理、分组和基础聚合。"""
 
-import csv
-import hashlib
-import json
 import math
 import os
-import warnings
 
-import numpy as np
 import pandas as pd
 
 from acprof.metric_registry import NUMERIC_FIELDS
@@ -15,7 +10,6 @@ from acprof.metric_registry import NUMERIC_FIELDS
 from acprof.pixel_metrics import (
     PIXEL_COUNT_FIELDS,
     PIXEL_RATE_SOURCES,
-    pixel_counts_from_metadata,
     pixel_rate_metrics,
 )
 
@@ -24,15 +18,7 @@ from acprof.analysis.latency_model import (
     GPU_MODE_ON_VALUES,
 )
 
-from acprof.plotting.config import (
-    BYTES_PER_GIB,
-    COMPUTE_NUMERIC_COLUMNS,
-    EXECUTION_PROFILE_NUMERIC_COLUMNS,
-    GPU_METRIC_ALIASES,
-    NCU_COMPUTE_LEGACY_FALLBACKS,
-    PLOT_OUTPUT_DIRS,
-    TORCH_EAGER_COMPUTE_LEGACY_FALLBACKS,
-)
+from acprof.plotting.config import BYTES_PER_GIB, COMPUTE_NUMERIC_COLUMNS, PLOT_OUTPUT_DIRS
 
 
 def make_config_label(row) -> str:
@@ -66,76 +52,14 @@ def build_plot_groups(df: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
     return list(zip(PLOT_OUTPUT_DIRS, (cpu_df, gpu_df, combined_df)))
 
 
-def _metadata_object(value: object) -> dict:
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except (ValueError, TypeError):
-            return {}
-    return value if isinstance(value, dict) else {}
-
-
-def _read_pixel_plan(csv_path: str, static_meta: dict) -> dict:
-    """只读取与当前结果关联的计划；不使用相邻 probe 或其他实验的尺寸。"""
-    path = os.path.join(os.path.dirname(csv_path), "input_scale_plan.json")
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, "rb") as source:
-            content = source.read()
-        expected = static_meta.get("input_scale_plan_sha256")
-        if expected and hashlib.sha256(content).hexdigest() != str(expected).strip():
-            raise ValueError("input_scale_plan SHA256 does not match static_meta")
-        plan = json.loads(content)
-        if not isinstance(plan, dict) or plan.get("schema_version", 1) not in (1, 2):
-            raise ValueError("unsupported input_scale_plan schema")
-        if not isinstance(plan.get("entries"), list):
-            raise ValueError("input_scale_plan entries must be an array")
-        for metadata_key, plan_key in (("task_family", "task_family"), ("model_name", "model_id")):
-            if static_meta.get(metadata_key) and plan.get(plan_key) and static_meta[metadata_key] != plan[plan_key]:
-                raise ValueError(f"input_scale_plan {plan_key} does not match static_meta")
-        return plan
-    except (OSError, ValueError, TypeError) as exc:
-        warnings.warn(f"Pixel normalization: ignoring {path}: {exc}", RuntimeWarning, stacklevel=2)
-        return {}
-
-
-def _with_pixel_metrics(df: pd.DataFrame, csv_path: str, static_meta: dict) -> pd.DataFrame:
-    plan = _read_pixel_plan(csv_path, static_meta)
-    family = str(static_meta.get("task_family") or plan.get("task_family") or "")
-    workload = _metadata_object(static_meta.get("workload") or plan.get("workload"))
-    pipeline_tag = str(static_meta.get("pipeline_tag") or plan.get("pipeline_tag") or "")
-    entries = {}
-    duplicates = set()
-    for entry in plan.get("entries", []) or []:
-        if not isinstance(entry, dict):
-            continue
-        try:
-            scale = float(entry["input_scale"])
-        except (KeyError, TypeError, ValueError, OverflowError):
-            continue
-        if not math.isfinite(scale) or scale <= 0:
-            continue
-        if scale in entries:
-            duplicates.add(scale)
-        entries[scale] = entry
-    for scale in duplicates:
-        entries.pop(scale)
-
+def _with_pixel_metrics(df: pd.DataFrame, static_meta: dict) -> pd.DataFrame:
+    """只使用 CSV 的显式像素数；不从历史计划补写缺失的测量字段。"""
     derived_rows = []
     for row in df.to_dict("records"):
-        entry = entries.get(row.get("input_scale"), {})
-        counts = pixel_counts_from_metadata(
-            entry.get("input_metadata"), row.get("batch_size", static_meta.get("batch_size")),
-            task_family=family, pipeline_tag=pipeline_tag, workload=workload,
-        )
+        counts = {}
         for field in PIXEL_COUNT_FIELDS:
-            # 显式计数无需 sidecar；兼容合并旧 CSV 时补入的空列，但不替换零/负数。
-            value = row.get(field, counts[field])
-            if pd.isna(value) or (isinstance(value, str) and value.strip().lower() in {"", "nan"}):
-                value = counts[field]
             try:
-                number = float(value)
+                number = float(row.get(field, "nan"))
             except (TypeError, ValueError, OverflowError):
                 number = float("nan")
             counts[field] = number if math.isfinite(number) and number > 0 and number.is_integer() else float("nan")
@@ -144,8 +68,9 @@ def _with_pixel_metrics(df: pd.DataFrame, csv_path: str, static_meta: dict) -> p
     derived = pd.DataFrame(derived_rows, index=df.index,
                            columns=[*PIXEL_COUNT_FIELDS, *PIXEL_RATE_SOURCES])
     result = df.drop(columns=derived.columns, errors="ignore").join(derived)
+    family = static_meta.get("task_family", "")
     result.attrs["pixel_scale_kind"] = {"diffusion": "output", "cv": "input", "multimodal": "input"}.get(family, "")
-    result.attrs["input_scale_type"] = str(static_meta.get("input_scale_type") or workload.get("input_scale_type") or "")
+    result.attrs["input_scale_type"] = str(static_meta.get("input_scale_type") or "")
     return result
 
 
@@ -189,6 +114,8 @@ def prepare_df(
 
     df = pd.read_csv(csv_path, skipinitialspace=True)
     df.columns = [str(col).strip() for col in df.columns]
+    from acprof.result_csv import require_current_fields
+    require_current_fields(df.columns)
     for col in df.columns:
         if pd.api.types.is_object_dtype(df[col]) or pd.api.types.is_string_dtype(df[col]):
             df[col] = df[col].map(lambda value: value.strip() if isinstance(value, str) else value)
@@ -200,46 +127,10 @@ def prepare_df(
             errors="coerce",
         )
 
-    for old_name, new_name in GPU_METRIC_ALIASES.items():
-        if new_name not in df.columns and old_name in df.columns:
-            df[new_name] = df[old_name]
-
     num_cols = [*NUMERIC_FIELDS, "gpu_mem_total_bytes", *COMPUTE_NUMERIC_COLUMNS]
     for c in num_cols:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-
-    if "compute_profile_tool" in df.columns:
-        profile_tools = (
-            df["compute_profile_tool"].fillna("").astype(str).str.strip().str.lower()
-        )
-        torch_fallback_rows = profile_tools.str.contains("torch")
-        ncu_fallback_rows = (
-            profile_tools.eq("ncu") | profile_tools.str.contains("nsight")
-        )
-    else:
-        # Very old CSVs did not identify the profiler. Preserve their previous
-        # generic-as-logical fallback, but do not label the same data as NCU.
-        torch_fallback_rows = pd.Series(True, index=df.index)
-        ncu_fallback_rows = pd.Series(False, index=df.index)
-
-    def _fill_profile_specific_fallbacks(fallbacks, eligible_rows):
-        for new_name, legacy_name in fallbacks.items():
-            if legacy_name not in df.columns:
-                continue
-            if new_name not in df.columns:
-                df[new_name] = np.nan
-            missing_rows = df[new_name].isna() & eligible_rows
-            df.loc[missing_rows, new_name] = df.loc[missing_rows, legacy_name]
-
-    _fill_profile_specific_fallbacks(
-        TORCH_EAGER_COMPUTE_LEGACY_FALLBACKS,
-        torch_fallback_rows,
-    )
-    _fill_profile_specific_fallbacks(
-        NCU_COMPUTE_LEGACY_FALLBACKS,
-        ncu_fallback_rows,
-    )
 
     bytes_to_gib = {
         "container_mem_usage_avg_bytes": "container_mem_usage_avg_gib",
@@ -260,57 +151,7 @@ def prepare_df(
         if source_col in df.columns:
             df[target_col] = df[source_col] / float(BYTES_PER_GIB)
 
-    # The compatibility conversions above can fragment wide historical
-    # frames; consolidate once before adding cross-column derived metrics.
-    df = df.copy()
-
-    # Current CSVs write the container-attributed value directly. Historical
-    # results predate that derived column but contain the same two source
-    # measurements, so reconstruct only missing values with the documented
-    # CPU/GPU attribution semantics.
-    if "vcpu_energy_eff_j" in df.columns and "gpu_mode" in df.columns:
-        if "container_attributed_energy_eff_j" not in df.columns:
-            df["container_attributed_energy_eff_j"] = np.nan
-        attributed_energy = df["container_attributed_energy_eff_j"].copy()
-        gpu_on = df["gpu_mode"].map(is_gpu_on)
-        gpu_off = df["gpu_mode"].map(is_gpu_off)
-        vcpu_energy = pd.to_numeric(df["vcpu_energy_eff_j"], errors="coerce")
-
-        cpu_candidates = gpu_off & attributed_energy.isna() & vcpu_energy.ge(0)
-        attributed_energy.loc[cpu_candidates] = vcpu_energy.loc[cpu_candidates]
-
-        if "gpu_energy_eff_j" in df.columns:
-            gpu_energy = pd.to_numeric(df["gpu_energy_eff_j"], errors="coerce")
-            gpu_candidates = (
-                gpu_on
-                & attributed_energy.isna()
-                & vcpu_energy.ge(0)
-                & gpu_energy.ge(0)
-            )
-            attributed_energy.loc[gpu_candidates] = (
-                vcpu_energy.loc[gpu_candidates]
-                + gpu_energy.loc[gpu_candidates]
-            )
-        df["container_attributed_energy_eff_j"] = attributed_energy
-
-    if (
-        "container_attributed_energy_eff_j" in df.columns
-        and "latency_app_s" in df.columns
-    ):
-        if "container_attributed_edp_app_js" not in df.columns:
-            df["container_attributed_edp_app_js"] = np.nan
-        missing_edp = df["container_attributed_edp_app_js"].isna()
-        energy = pd.to_numeric(
-            df["container_attributed_energy_eff_j"],
-            errors="coerce",
-        )
-        latency = pd.to_numeric(df["latency_app_s"], errors="coerce")
-        valid_edp = missing_edp & energy.ge(0) & latency.ge(0)
-        df.loc[valid_edp, "container_attributed_edp_app_js"] = (
-            energy.loc[valid_edp] * latency.loc[valid_edp]
-        )
-
-    df = _with_pixel_metrics(df, csv_path, static_meta)
+    df = _with_pixel_metrics(df, static_meta)
 
     if only_ok and "status" in df.columns:
         normalized_status = df["status"].astype(str).str.strip().str.lower()
@@ -334,24 +175,8 @@ def prepare_df(
 
 
 def read_static_meta(csv_path: str) -> dict[str, object]:
-    result_dir = os.path.dirname(csv_path) or "."
-    static_meta_json = os.path.join(result_dir, "static_meta.json")
-    if os.path.exists(static_meta_json):
-        with open(static_meta_json, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-        if not isinstance(payload, dict):
-            raise ValueError(
-                f"static metadata must be a JSON object: {static_meta_json}"
-            )
-        return payload
-
-    # Historical result directories used a one-row CSV.
-    legacy_csv = os.path.join(result_dir, "static_meta.csv")
-    if not os.path.exists(legacy_csv):
-        return {}
-    with open(legacy_csv, "r", encoding="utf-8", newline="") as f:
-        row = next(csv.DictReader(f), None)
-    return row or {}
+    from acprof.artifacts import read_static_metadata
+    return read_static_metadata(os.path.dirname(csv_path) or ".")
 
 
 def aggregate_metric(df: pd.DataFrame, metric: str, *, agg_func: str = "mean") -> pd.DataFrame:

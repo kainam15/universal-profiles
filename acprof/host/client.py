@@ -45,16 +45,6 @@ from acprof.config import (
     SCALING_DIMENSIONS,
 )
 from acprof.host.compute_profile_plan import (
-    NCU_ERROR_FIELD,
-    NCU_KERNEL_COUNT_FIELD,
-    NCU_KERNEL_TIME_FIELD,
-    NCU_SCALAR_MFLOP_FIELD,
-    NCU_TENSOR_MFLOP_FIELD,
-    NCU_TENSOR_SHARE_FIELD,
-    NCU_TOTAL_MFLOP_FIELD,
-    TORCH_ERROR_FIELD,
-    TORCH_LOGICAL_MFLOP_FIELD,
-    compute_mflops as _compute_mflops,
     find_compute_profile_entry as _find_compute_profile_entry,
     load_compute_profile_plan as _load_compute_profile_plan,
 )
@@ -68,8 +58,6 @@ from acprof.pixel_metrics import pixel_counts_from_metadata, pixel_rate_metrics
 from acprof.host.client_metrics import (
     CPU_METRIC_FIELDS,
     EFFICIENCY_METRIC_FIELDS,
-    EXECUTION_PROFILE_ERROR_FIELDS,
-    EXECUTION_PROFILE_NUMERIC_FIELDS,
     GPU_METRIC_FIELDS,
     LATENCY_APP_DISTRIBUTION_FIELDS,
     LATENCY_PACKET_DISTRIBUTION_FIELDS,
@@ -78,7 +66,6 @@ from acprof.host.client_metrics import (
     _compute_profile_row_metrics,
     _cpu_metrics_from_result,
     _derived_efficiency_metrics,
-    _divide_if_number,
     _eff_negative_warnings,
     _estimate_cpu_cycles,
     _execution_profile_row_metrics,
@@ -96,7 +83,6 @@ from acprof.host.client_metrics import (
     _named_negative_warnings,
     _nan_metrics,
     _per_positive_denominator,
-    _percentile_nearest_rank,
     _prepared_body_size_bytes,
     _resource_usage_metrics_from_result,
     _to_float_or_nan,
@@ -315,18 +301,6 @@ def _canonical_task_param(payload: Optional[Dict[str, Any]]) -> str:
     )
 
 
-def _derive_input_metadata(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Recover v1 audio metadata without changing its legacy payload."""
-    metadata: Dict[str, Any] = {}
-    audio_samples = payload.get("audio_samples")
-    if isinstance(audio_samples, (list, tuple)):
-        metadata["input_num_samples"] = len(audio_samples)
-        sample_rate = payload.get("sample_rate")
-        if sample_rate is not None:
-            metadata["sample_rate"] = sample_rate
-    return metadata
-
-
 def _slow_ratio(xs: List[float]) -> float:
     return _client_metrics._slow_ratio(
         xs, slow_latency_threshold_s=SLOW_LATENCY_THRESHOLD_S
@@ -500,17 +474,8 @@ def _load_input_scale_entries() -> List[Dict[str, Any]]:
         with open(INPUT_SCALE_PLAN_FILE, "r", encoding="utf-8") as f:
             plan = json.load(f)
 
-        raw_schema_version = plan.get("schema_version", 1)
-        try:
-            schema_version = int(raw_schema_version)
-        except (TypeError, ValueError) as exc:
-            raise RuntimeError(
-                f"invalid input scale plan schema_version: {raw_schema_version!r}"
-            ) from exc
-        if schema_version not in {1, 2}:
-            raise RuntimeError(
-                f"unsupported input scale plan schema_version={schema_version}"
-            )
+        from acprof.artifacts import require_schema_version
+        require_schema_version(plan, 2, "input_scale_plan.json")
 
         entries = plan.get("entries")
         if not isinstance(entries, list) or not entries:
@@ -534,21 +499,9 @@ def _load_input_scale_entries() -> List[Dict[str, Any]]:
             scale_label = str(
                 entry.get("scale_label") or _generic_scale_label(scale_value)
             )
-            raw_input_metadata = entry.get("input_metadata")
-            if raw_input_metadata is None:
-                input_metadata = _derive_input_metadata(payload)
-            elif isinstance(raw_input_metadata, dict):
-                input_metadata = dict(raw_input_metadata)
-                if "input_num_samples" not in input_metadata:
-                    derived_metadata = _derive_input_metadata(payload)
-                    if "input_num_samples" in derived_metadata:
-                        input_metadata["input_num_samples"] = derived_metadata[
-                            "input_num_samples"
-                        ]
-            else:
-                raise RuntimeError(
-                    f"invalid input_metadata at input scale plan entry {idx}"
-                )
+            input_metadata = entry.get("input_metadata", {})
+            if not isinstance(input_metadata, dict):
+                raise ValueError(f"invalid input_metadata at input scale plan entry {idx}")
             loaded_entries.append({
                 "input_scale": scale_value,
                 "scale_label": scale_label,
@@ -559,20 +512,10 @@ def _load_input_scale_entries() -> List[Dict[str, Any]]:
 
         return loaded_entries
 
-    if workload_gen is None:
-        raise RuntimeError("legacy input scales require a workload generator")
-    return [
-        {
-            "input_scale": float(scale_value),
-            "scale_label": workload_gen.scale_label(scale_value),
-            "payload": None,
-            "input_metadata": {},
-        }
-        for scale_value in input_scales
-    ]
+    raise ValueError("INPUT_SCALE_PLAN_FILE is required; generate a schema v2 input plan first")
 
 
-input_scale_entries = _load_input_scale_entries()
+input_scale_entries: List[Dict[str, Any]] = []
 
 
 # ─────────────────────────────────────────────
@@ -587,7 +530,7 @@ if USE_ENERGY:
         energy_mod = None
         print(f"[WARN] GPU energy monitoring unavailable: {_e.__class__.__name__}: {_e}",
               file=__import__('sys').stderr)
-        print("[WARN] Install pynvml: pip install pynvml", file=__import__('sys').stderr)
+        print("[WARN] Install NVML bindings: pip install nvidia-ml-py", file=__import__('sys').stderr)
 
 cpu_energy_mod = None
 try:
@@ -633,14 +576,6 @@ def _append_sniff_group(sidecar_f, sniff_group_id: str) -> None:
 def _sleep_before_idle_baseline() -> None:
     if IDLE_COOLDOWN_SECONDS > 0.0:
         time.sleep(IDLE_COOLDOWN_SECONDS)
-
-
-def _supports_matched_control(*monitors: Any) -> bool:
-    active = [monitor for monitor in monitors if monitor is not None]
-    return bool(active) and all(
-        callable(getattr(monitor, "apply_control_baseline", None))
-        for monitor in active
-    )
 
 
 def _run_matched_control_window(
@@ -994,13 +929,16 @@ def _append_row(
 
 
 def main() -> None:
+    global input_scale_entries
+    if not input_scale_entries:
+        input_scale_entries = _load_input_scale_entries()
     global _FIRST_PREDICT_APP_S
     _FIRST_PREDICT_APP_S = float("nan")
 
     if USE_ENERGY and energy_mod is None:
         raise EnergyAbort(
             "GPU energy monitoring is required for gpu_mode=on but NVML/pynvml is unavailable. "
-            "Install pynvml, verify NVIDIA driver access, or rerun with --gpus off."
+            "Install nvidia-ml-py, verify NVIDIA driver access, or rerun with --gpus off."
         )
     if USE_MIPS and perf_mips_mod is None:
         raise MIPSAbort(
@@ -1155,46 +1093,23 @@ def main() -> None:
 
                         if gpu_monitor is not None or cpu_monitor is not None:
                             _sleep_before_idle_baseline()
-                            if _supports_matched_control(gpu_monitor, cpu_monitor):
-                                _run_matched_control_window(
-                                    gpu_monitor,
-                                    cpu_monitor,
-                                    resource_usage_monitor,
-                                    mips_monitor,
+                            _run_matched_control_window(
+                                gpu_monitor,
+                                cpu_monitor,
+                                resource_usage_monitor,
+                                mips_monitor,
+                            )
+                            measured_at = _now_iso()
+                            if gpu_monitor is not None:
+                                gpu_idle_measured_at = measured_at
+                                gpu_idle_trace = dict(
+                                    getattr(gpu_monitor, "idle_trace", {}) or {}
                                 )
-                                measured_at = _now_iso()
-                                if gpu_monitor is not None:
-                                    gpu_idle_measured_at = measured_at
-                                    gpu_idle_trace = dict(
-                                        getattr(gpu_monitor, "idle_trace", {}) or {}
-                                    )
-                                if cpu_monitor is not None:
-                                    cpu_idle_measured_at = measured_at
-                                    idle_trace = dict(
-                                        getattr(cpu_monitor, "idle_trace", {}) or {}
-                                    )
-                            else:
-                                # Compatibility path for third-party/legacy monitors.
-                                if gpu_monitor is not None:
-                                    if IDLE_DEBUG:
-                                        gpu_monitor.measure_idle(trace=True)
-                                    else:
-                                        gpu_monitor.measure_idle()
-                                    gpu_idle_measured_at = _now_iso()
-                                    gpu_idle_trace = dict(
-                                        getattr(gpu_monitor, "idle_trace", {}) or {}
-                                    )
-                                if cpu_monitor is not None:
-                                    if IDLE_DEBUG:
-                                        cpu_monitor.measure_idle(
-                                            trace_interval_s=IDLE_DEBUG_TRACE_INTERVAL_S
-                                        )
-                                    else:
-                                        cpu_monitor.measure_idle()
-                                    cpu_idle_measured_at = _now_iso()
-                                    idle_trace = dict(
-                                        getattr(cpu_monitor, "idle_trace", {}) or {}
-                                    )
+                            if cpu_monitor is not None:
+                                cpu_idle_measured_at = measured_at
+                                idle_trace = dict(
+                                    getattr(cpu_monitor, "idle_trace", {}) or {}
+                                )
 
                             if IDLE_DEBUG:
                                 if gpu_monitor is not None:

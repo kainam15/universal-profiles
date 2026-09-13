@@ -73,7 +73,13 @@ from acprof.tui.log import SelectableLog
 
 from acprof.tui.progress import ProgressSnapshot, RunProgressTracker
 from acprof.tui.reports import ReportView, read_report
-from acprof.host.image_management import ImageInventory, ImageRemoval, ManagedImage, delete_images, list_images
+from acprof.host.image_management import (
+    ImageInventory,
+    ImageRemoval,
+    ManagedImage,
+    delete_images,
+    list_images,
+)
 from acprof.tui.images import (
     IMAGE_KINDS, ImageDeleteScreen, deletion_message, filtered_images,
     format_image_size, image_detail, image_error,
@@ -592,7 +598,6 @@ class AcprofTui(BarCursorApp):
             skip_build=self._checked("skip-build"),
             resume=self._checked("resume-run"),
             idle_debug=self._checked("idle-debug"),
-            allow_cgroup_v1=self._checked("allow-cgroup-v1"),
         )
         if allow_empty_model and not config.model:
             validated = replace(config, model="settings/default-model").validate(
@@ -643,7 +648,6 @@ class AcprofTui(BarCursorApp):
                         "skip-build": config.skip_build,
                         "resume-run": config.resume,
                         "idle-debug": config.idle_debug,
-                        "allow-cgroup-v1": config.allow_cgroup_v1,
                     }.items():
                         self.query_one(f"#{widget_id}", Checkbox).value = value
                     self.query_one("#run-preset", Select).value = preset
@@ -1429,7 +1433,6 @@ class AcprofTui(BarCursorApp):
             model="preflight-only",
             gpus=self._select("gpus"),
             sniff_iface=self._input("sniff-iface"),
-            allow_cgroup_v1=self._checked("allow-cgroup-v1"),
         )
         self._check_running = True
         # Disabling a focused button first moves focus to another control in

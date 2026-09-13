@@ -20,27 +20,9 @@ NETWORK_RECORD_TO_CSV_FIELD = {
 
 
 def _read_static_batch_size(csv_path: str) -> float:
-    result_dir = os.path.dirname(csv_path) or "."
-    static_meta_json = os.path.join(result_dir, "static_meta.json")
-    row = None
-    if os.path.exists(static_meta_json):
-        with open(static_meta_json, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-        if isinstance(payload, dict):
-            row = payload
-    else:
-        legacy_csv = os.path.join(result_dir, "static_meta.csv")
-        if os.path.exists(legacy_csv):
-            with open(legacy_csv, "r", encoding="utf-8", newline="") as f:
-                row = next(csv.DictReader(f), None)
-
-    if not row:
-        return float("nan")
-
-    try:
-        return float(row.get("batch_size", "nan"))
-    except Exception:
-        return float("nan")
+    from acprof.artifacts import read_static_metadata
+    metadata = read_static_metadata(os.path.dirname(csv_path) or ".")
+    return _to_float(metadata.get("batch_size", "nan"))
 
 
 def _to_float(value: object) -> float:
@@ -51,27 +33,13 @@ def _to_float(value: object) -> float:
 
 
 def _request_records(payload: object) -> dict[str, dict[str, float]]:
-    """Normalize both the legacy flat map and packet schema v2."""
-    if not isinstance(payload, dict):
-        return {}
-    raw_requests = payload.get("requests")
-    if isinstance(raw_requests, dict):
-        records = {}
-        for request_id, raw_record in raw_requests.items():
-            if not isinstance(raw_record, dict):
-                continue
-            records[str(request_id)] = {
-                key: _to_float(value)
-                for key, value in raw_record.items()
-            }
-        return records
-
-    records = {}
-    for request_id, latency in payload.items():
-        parsed = _to_float(latency)
-        if math.isfinite(parsed):
-            records[str(request_id)] = {"latency_s": parsed}
-    return records
+    from acprof.artifacts import require_schema_version
+    require_schema_version(payload, 2, "packet metrics")
+    requests = payload.get("requests")
+    if not isinstance(requests, dict) or any(not isinstance(row, dict) for row in requests.values()):
+        raise ValueError("packet schema v2 requires a requests object containing record objects")
+    return {str(request_id): {key: _to_float(value) for key, value in record.items()}
+            for request_id, record in requests.items()}
 
 
 def _input_units_per_request(row: dict, batch_size: float) -> float:
@@ -181,48 +149,15 @@ def _mflops_for_latency(work_mflop: object, latency_s: float) -> float:
 
 
 def _recompute_packet_flop_rates(row: dict, latency_s: float) -> None:
-    """Recompute packet-denominator rates without changing app rates."""
-    legacy_work = _to_float(row.get("model_mflop_per_request", "nan"))
-    logical_work = _to_float(
-        row.get(
-            "model_logical_mflop_per_request_torch_profiler_eager",
-            "nan",
-        )
-    )
-    ncu_work = _to_float(
-        row.get("gpu_executed_mflop_per_request_ncu", "nan")
-    )
-    tool = str(row.get("compute_profile_tool", "") or "").strip().lower()
-
-    # Legacy CSVs can carry generic aliases; new CSVs use explicit fields.
-    generic_work = (
-        legacy_work if math.isfinite(legacy_work) else logical_work
-    )
-    generic_rate = _mflops_for_latency(generic_work, latency_s)
-    if "compute_mflops" in row and math.isfinite(generic_rate):
-        row["compute_mflops"] = _fmt_float(generic_rate)
-
-    if not math.isfinite(logical_work) and "torch" in tool:
-        logical_work = legacy_work
-    logical_rate = _mflops_for_latency(logical_work, latency_s)
-    if (
-        "model_logical_mflops_packet_torch_profiler_eager" in row
-        and math.isfinite(logical_rate)
+    from acprof.result_csv import require_current_fields
+    require_current_fields(row)
+    for source, destination in (
+        ("model_logical_mflop_per_request_torch_profiler_eager", "model_logical_mflops_packet_torch_profiler_eager"),
+        ("gpu_executed_mflop_per_request_ncu", "gpu_executed_mflops_packet_ncu"),
     ):
-        row[
-            "model_logical_mflops_packet_torch_profiler_eager"
-        ] = _fmt_float(logical_rate)
-
-    if not math.isfinite(ncu_work) and (
-        tool == "ncu" or "nsight" in tool
-    ):
-        ncu_work = legacy_work
-    ncu_rate = _mflops_for_latency(ncu_work, latency_s)
-    if (
-        "gpu_executed_mflops_packet_ncu" in row
-        and math.isfinite(ncu_rate)
-    ):
-        row["gpu_executed_mflops_packet_ncu"] = _fmt_float(ncu_rate)
+        value = _mflops_for_latency(row.get(source), latency_s)
+        if destination in row and math.isfinite(value):
+            row[destination] = _fmt_float(value)
 
 
 def _estimate_cpu_cycles(row: dict, latency_s: float) -> float:
@@ -303,6 +238,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     if fields is None:
         raise SystemExit("empty csv")
 
+    from acprof.result_csv import require_current_fields
+    require_current_fields(fields)
     sidecar_groups = _read_sidecar_groups(in_csv)
 
     for idx, r in enumerate(rows):

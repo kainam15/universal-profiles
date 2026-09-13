@@ -1,3 +1,5 @@
+import acprof.host.profilers.compute_parsers as host_profilers_compute_parsers
+import acprof.host.profilers.tool_discovery as host_profilers_tool_discovery
 import csv
 import json
 import os
@@ -17,7 +19,7 @@ def _write_input_scale_plan(directory: str, input_scale: float = 8.0) -> str:
     path = os.path.join(directory, "input_scale_plan.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(
-            {
+            {"schema_version": 2,
                 "model_id": "google-bert/bert-base-uncased",
                 "task_family": "nlp",
                 "pipeline_tag": "fill-mask",
@@ -79,17 +81,17 @@ class ComputeProfileTests(unittest.TestCase):
             ):
                 compute_profile._load_input_scale_plan_entries(missing)
 
-    def test_v1_and_v2_input_plans_reuse_the_exact_payload(self) -> None:
+    def test_current_input_plan_reuses_the_exact_payload(self) -> None:
         payload = {
             "audio_base64": "UklGRg==",
             "audio_format": "wav",
             "sample_rate": 16000,
             "params": {"asr_task": "transcribe"},
         }
-        for schema_version in (1, 2):
+        for schema_version in (2,):
             with self.subTest(schema_version=schema_version), tempfile.TemporaryDirectory() as tmp:
                 path = os.path.join(tmp, "input_scale_plan.json")
-                plan = {
+                plan = {"schema_version": 2,
                     "entries": [
                         {
                             "input_scale": 1.0,
@@ -201,7 +203,7 @@ class ComputeProfileTests(unittest.TestCase):
                 writer.writeheader()
                 writer.writerow({
                     "Kernel Name": "kernel_a",
-                    "Metric Name": "flop_count_sp",
+                    "Metric Name": "smsp__sass_thread_inst_executed_op_fadd_pred_on.sum",
                     "Metric Unit": "FLOP",
                     "Metric Value": "1,000",
                 })
@@ -241,7 +243,7 @@ class ComputeProfileTests(unittest.TestCase):
                 })
 
             self.assertAlmostEqual(
-                compute_profile.parse_ncu_flop_csv(report_path),
+                host_profilers_compute_parsers.parse_ncu_profile_csv(report_path)["total_flops_per_request"],
                 3500.0,
             )
 
@@ -268,7 +270,7 @@ class ComputeProfileTests(unittest.TestCase):
                 })
 
             self.assertAlmostEqual(
-                compute_profile.parse_ncu_flop_csv(report_path),
+                host_profilers_compute_parsers.parse_ncu_profile_csv(report_path)["total_flops_per_request"],
                 30.0,
             )
 
@@ -289,7 +291,7 @@ class ComputeProfileTests(unittest.TestCase):
                 writer.writerow(["1", "kernel_b", "1K", "2K", "200"])
 
             self.assertAlmostEqual(
-                compute_profile.parse_ncu_flop_csv(report_path),
+                host_profilers_compute_parsers.parse_ncu_profile_csv(report_path)["total_flops_per_request"],
                 10 + 20 * 2 + 1000 + 2000 * 2,
             )
 
@@ -593,7 +595,7 @@ class ComputeProfileTests(unittest.TestCase):
 
         self.assertEqual(metrics, [fadd, f"{ffma}.sum", tensor])
 
-    def test_resolve_ncu_metrics_falls_back_when_query_requires_privileges(self) -> None:
+    def test_resolve_ncu_metrics_reports_privilege_failure(self) -> None:
         calls = []
 
         def fake_run(cmd, check=False):
@@ -620,8 +622,8 @@ class ComputeProfileTests(unittest.TestCase):
         with patch("acprof.host.compute_profile._run", side_effect=fake_run):
             metrics, error = compute_profile._resolve_ncu_metrics("/opt/ncu")
 
-        self.assertEqual(metrics, list(compute_profile.NCU_SASS_FLOP_WEIGHTS))
-        self.assertEqual(error, "")
+        self.assertEqual(metrics, [])
+        self.assertIn("ERR_NVGPUCTRPERM", error)
         self.assertEqual(len(calls), 2)
 
     def test_resolve_ncu_metrics_retries_query_in_gpu_container(self) -> None:
@@ -1101,114 +1103,6 @@ class ComputeProfileTests(unittest.TestCase):
         self.assertNotIn("tool", plan["profiles"]["cpu"])
         self.assertNotIn("tool", plan["profiles"]["gpu"])
 
-    def test_auto_compute_profile_is_alias_for_dual_collection(self) -> None:
-        task_info = TaskInfo(
-            model_id="google-bert/bert-base-uncased",
-            pipeline_tag="fill-mask",
-            task_family="nlp",
-            runtime_backend="transformers_pipeline",
-            library_name="transformers",
-            model_revision="main",
-            detection_method="hub_api",
-        )
-        calls = []
-
-        def fake_find_executable(root, names):
-            calls.append(("find", names))
-            if "ncu" in names:
-                return "/usr/bin/ncu"
-            raise AssertionError("advisor should not be resolved in auto mode")
-
-        def fake_torch_profile(**kwargs):
-            calls.append(("torch", kwargs["profile_key"], kwargs["use_gpu"]))
-            return {
-                "tool": "torch_profiler_eager",
-                "repeat": kwargs["repeat"],
-                "error": "",
-                "entries": [
-                    {
-                        "input_scale": 8.0,
-                        "tool": "torch_profiler_eager",
-                        "model_logical_mflop_per_request_torch_profiler_eager": 123.0,
-                        "error": "",
-                    }
-                ],
-            }
-
-        def fake_gpu_profile(**kwargs):
-            calls.append(("gpu", kwargs["ncu_bin"]))
-            return {
-                "tool": "ncu",
-                "repeat": kwargs["repeat"],
-                "error": "",
-                "entries": [
-                    {
-                        "input_scale": 8.0,
-                        "tool": "ncu",
-                        "gpu_executed_mflop_per_request_ncu": 456.0,
-                        "error": "",
-                    }
-                ],
-            }
-
-        with tempfile.TemporaryDirectory() as tmp, patch(
-            "acprof.host.compute_profile._find_executable",
-            side_effect=fake_find_executable,
-        ), patch(
-            "acprof.host.compute_profile._profile_torch_entries",
-            side_effect=fake_torch_profile,
-        ), patch(
-            "acprof.host.compute_profile._profile_cpu_entries",
-            side_effect=AssertionError("vendor CPU profiler should not run in auto mode"),
-        ), patch(
-            "acprof.host.compute_profile._profile_gpu_entries",
-            side_effect=fake_gpu_profile,
-        ):
-            plan_path = compute_profile.collect_compute_profile_plan(
-                task_info=task_info,
-                image_tag="acprof-test:latest",
-                cpu_list=[1],
-                mem_list=[4],
-                gpu_list=["off", "on"],
-                output_dir=tmp,
-                input_scale_plan_file=_write_input_scale_plan(tmp),
-                advisor_root=None,
-                ncu_root=None,
-                advisor_repeat=20,
-                ncu_repeat=1,
-                keep_profiles=False,
-                compute_profile_tool="auto",
-            )
-
-            with open(plan_path, "r", encoding="utf-8") as f:
-                plan = json.load(f)
-
-        self.assertEqual(
-            calls,
-            [
-                ("find", ("ncu", "nv-nsight-cu-cli")),
-                ("torch", "cpu", False),
-                ("torch", "gpu", True),
-                ("gpu", "/usr/bin/ncu"),
-            ],
-        )
-        self.assertEqual(
-            plan["profiles"]["cpu"]["torch_profiler_eager"]["tool"],
-            "torch_profiler_eager",
-        )
-        self.assertEqual(plan["profiles"]["gpu"]["ncu"]["tool"], "ncu")
-        self.assertEqual(
-            plan["profiles"]["cpu"]["torch_profiler_eager"]["entries"][0][
-                "model_logical_mflop_per_request_torch_profiler_eager"
-            ],
-            123.0,
-        )
-        self.assertEqual(
-            plan["profiles"]["gpu"]["ncu"]["entries"][0][
-                "gpu_executed_mflop_per_request_ncu"
-            ],
-            456.0,
-        )
 
     def test_both_mode_keeps_torch_and_ncu_failures_independent(self) -> None:
         task_info = TaskInfo(
@@ -1455,11 +1349,11 @@ class ComputeProfileTests(unittest.TestCase):
         ncu_bin = "/opt/nvidia/nsight-compute/2025.1.0/ncu"
 
         self.assertEqual(
-            compute_profile._tool_mount_root(advisor_bin, None),
+            host_profilers_tool_discovery._tool_mount_root(advisor_bin, None),
             "/opt/intel/oneapi/advisor/2025.5",
         )
         self.assertEqual(
-            compute_profile._tool_mount_root(ncu_bin, None),
+            host_profilers_tool_discovery._tool_mount_root(ncu_bin, None),
             "/opt/nvidia/nsight-compute/2025.1.0",
         )
 

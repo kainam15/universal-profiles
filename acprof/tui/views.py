@@ -379,12 +379,6 @@ def compose_run_tab(app: AcprofTui) -> ComposeResult:
                         id="idle-debug",
                         classes="config-control option-checkbox",
                     ))
-                    yield app._localized_widget(StatusCheckbox(
-                        "允许 cgroup v1（仅诊断）",
-                        value=app.initial_config.allow_cgroup_v1,
-                        id="allow-cgroup-v1",
-                        classes="config-control option-checkbox",
-                    ))
                 with Horizontal(classes="checkbox-row"):
                     yield app._localized_widget(StatusCheckbox(
                         "恢复未完成实验",

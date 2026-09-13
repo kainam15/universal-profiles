@@ -1,6 +1,6 @@
 # 指标与结果分析
 
-查字段、分析过滤、历史 CSV 兼容或图表时查阅。能耗详见 [能耗测量](Energy_Measurement.md)，独立工具详见 [Profiler](Profilers.md)，产物结构见 [采集协议](Profiling_Protocol.md)。
+查字段、分析过滤、CSV 格式要求或图表时查阅。能耗详见 [能耗测量](Energy_Measurement.md)，独立工具详见 [Profiler](Profilers.md)，产物结构见 [采集协议](Profiling_Protocol.md)。
 
 [文档导航](README.md)
 
@@ -11,7 +11,7 @@
 不可用或不适用的数值为 `nan`，历史 CSV 缺少新字段时不能补成 `0`。
 
 字段按用途分组，列顺序、类型、单位、来源和窗口由 [metric_registry.py](../acprof/metric_registry.py) 统一登记；
-`config.CSV_FIELDS` 保持兼容引用。完整元数据见[字段速查](Metric_Reference.md)，绘图数值转换和补采完成条件复用登记表。
+`config.CSV_FIELDS` 引用同一字段列表。完整元数据见[字段速查](Metric_Reference.md)，绘图数值转换和补采完成条件复用登记表。
 `*_per_request` 和能量列按窗口内请求数归一化；`*_delta` 若未注明归一化，则表示整个窗口的增量。
 
 | 查阅方向 | 字段组 |
@@ -80,20 +80,15 @@ mean/median 聚合，默认仅纳入 `status=ok` 且 `warmup=0` 的行。
 10000 J/Mpixel。旧字段 `E / (batch_size × resolution_px)` 会从 1.28 升至 2.56，
 因此它的上升不能用于判断每像素能效变差。
 
-像素归一化使用 2 个像素计数和 6 个比值字段；旧 partial case 缺少这些
+像素归一化使用 2 个像素计数和 6 个比值字段；partial case 缺少这些
 可选列时仍可保留原测量行并补写失败记录，新列填 `nan`。静态 schema 保持 v7，
-输入计划保持兼容的 v2，多模态视频计划另行记录 `video_frame_width / video_frame_height`。
+输入计划要求 v2，多模态视频计划另行记录 `video_frame_width / video_frame_height`。
 实时采集在 monitor 停止后从物化计划计算像素数；若服务返回的有效尺度与计划不一致，
 像素计数保持 `nan`。packet 回填只更新 packet 像素延迟，不改变 application 延迟或能耗。
 
-历史文件读取时优先使用 CSV 已有的显式像素计数；没有计数列或列为空/`nan` 时，可按同目录输入计划的
-精确尺度匹配宽高/像素数，并结合 batch 元数据派生。旧多模态视频也可使用该计划对应的
-`workload.fixed_media.image_resolution` 与已记录帧数。有 `input_scale_plan_sha256`
-时必须匹配，同时核对计划中的模型和任务族；不匹配或损坏时警告并跳过计划派生。
-旧 schema 未记录 hash 时仅使用同目录、模型/任务族未冲突的计划，不补造 hash。
-缺少计划、对应尺度、batch 或尺寸时保持未知；不根据模型名、边长或默认 224 像素猜测。
-读取时从原始能耗/延迟和有效像素数重新计算比值，避免使用回填前的过期派生值。
-整个过程不改写历史 CSV、静态元数据、输入计划及其 hash。
+绘图只使用 CSV 的显式 `input_pixels_per_request` / `output_pixels_per_request`。
+缺少计数、空值或非法计数保持 `nan`；不再读取输入计划为旧行补造像素数，相关面板显示 `No data`。
+有效计数对应的比值由原始能耗/延迟重算，避免使用过期派生值；不改写输入 CSV。
 
 输入像素数不等同于模型实际处理的 patch/token 数或 FLOP：processor 可能缩放、切块或
 固定尺寸。像素指标描述给定工作负载的成本，比较时仍需核对模型、推理步数、精度和
@@ -133,15 +128,15 @@ mean/median 聚合，默认仅纳入 `status=ok` 且 `warmup=0` 的行。
 | `container_mem_usage_peak_bytes` | 当前 Docker container 在测量窗口内的峰值 memory usage，单位 bytes。 |
 | `container_mem_util_avg_pct` | 当前 Docker container 平均 memory usage / `mem_cap_gb` 的百分比。 |
 | `container_mem_util_peak_pct` | 当前 Docker container 峰值 memory usage / `mem_cap_gb` 的百分比。 |
-| `container_mem_peak_cgroup_bytes` | workload 窗口结束时读取 cgroup v2 `memory.peak`。它是该新建 container cgroup 自创建以来的内存峰值，因此能捕获 `sample_hz` 之间的瞬时峰值，也可能包含模型加载期；不是单个 workload window 可重置的峰值。文件不存在或 cgroup v1 时为 `nan`。 |
+| `container_mem_peak_cgroup_bytes` | workload 窗口结束时读取 cgroup v2 `memory.peak`。它是该新建 container cgroup 自创建以来的内存峰值，因此能捕获 `sample_hz` 之间的瞬时峰值，也可能包含模型加载期；不是单个 workload window 可重置的峰值。文件不存在时为 `nan`。 |
 | `container_mem_anon_bytes_end` / `container_mem_file_bytes_end` / `container_mem_slab_bytes_end` | workload 窗口结束时 cgroup v2 `memory.stat` 的匿名内存、文件页和 slab 当前字节数。`slab` 缺失时使用 `slab_reclaimable + slab_unreclaimable`；无法读取时为 `nan`。 |
 | `container_mem_pgfault_delta` / `container_mem_pgmajfault_delta` | cgroup v2 `memory.stat` 的 page fault / major page fault 计数器在 workload 窗口首尾的增量。它们是整个 cgroup 的事件数，不按 request 归一化。 |
 | `container_mem_workingset_refault_delta` | cgroup v2 `memory.stat` 的 workingset refault 窗口增量；内核只提供 anon/file 分项时取两者之和，用于观察页被回收后再次访问。 |
-| `container_mem_high_events_delta` / `container_mem_max_events_delta` | cgroup v2 `memory.events` 的 `high` 和 `max` 计数器在 workload 窗口内的增量，分别表示 memory high 边界触发和 memory max 边界命中次数。cgroup v1 无同口径字段时为 `nan`。 |
+| `container_mem_high_events_delta` / `container_mem_max_events_delta` | cgroup v2 `memory.events` 的 `high` 和 `max` 计数器在 workload 窗口内的增量，分别表示 memory high 边界触发和 memory max 边界命中次数。文件不可用时为 `nan`。 |
 | `container_mem_oom_events_delta` / `container_mem_oom_kill_events_delta` | cgroup v2 `memory.events` 的 `oom` 与 `oom_kill` 窗口增量；前者表示 cgroup 内分配进入 OOM，后者表示实际发生进程 OOM kill。 |
 | `container_mem_pressure_some_stall_pct` / `container_mem_pressure_full_stall_pct` | cgroup v2 `memory.pressure` 的 `some/full total` 窗口增量占窗口时长的比例。`full` 表示窗口内所有相关任务同时因内存压力停顿。 |
-| `container_swap_limit_bytes` | 当前 container cgroup 的独立 swap hard limit。cgroup v2 来自 `memory.swap.max`；cgroup v1 由 mem+swap limit 减去 memory limit 得到。`-1` 表示 cgroup 未设上限，无法读取时为 `nan`。 |
-| `container_swap_usage_avg_bytes` | 本行 workload 测量窗口内 container swap 使用量的平均值。cgroup v2 读取 `memory.swap.current`；cgroup v1 由 mem+swap usage 减去 memory usage，按现有 `sample_hz` 采样。 |
+| `container_swap_limit_bytes` | 当前 container cgroup 的独立 swap hard limit。cgroup v2 来自 `memory.swap.max`。`-1` 表示 cgroup 未设上限，无法读取时为 `nan`。 |
+| `container_swap_usage_avg_bytes` | 本行 workload 测量窗口内 container swap 使用量的平均值。cgroup v2 读取 `memory.swap.current`，按现有 `sample_hz` 采样。 |
 | `container_swap_usage_peak_bytes` | 同一测量窗口内采样到的 container swap 使用量峰值，单位 bytes；它不是 host 全局 swap 使用量。 |
 | `container_io_read_bytes_per_request` | 本行测量窗口首尾 container cgroup block-I/O read bytes 计数器之差，再除以实际 `repeat_in_window`；聚合 cgroup 报告的全部设备，无法读取或本行未完成请求时为 `nan`。 |
 | `container_io_write_bytes_per_request` | 本行测量窗口首尾 container cgroup block-I/O write bytes 计数器之差，再除以实际 `repeat_in_window`；page-cache hit 不产生块设备读取，因此该值不等于应用读取的文件字节数。 |
@@ -243,7 +238,7 @@ TUI 的“统计报告”页调用同一个 `stats.py`，默认分析应用延�
 
 ### 绘图入口
 
-`plot.py` 默认读取同目录下的 `static_meta.json`，用其中的 `input_scale_type` 作为横轴语义名；读取历史结果时仍兼容旧的 `static_meta.csv`。图片会写入结果目录下的三个子目录：
+`plot.py` 默认读取同目录下的 `static_meta.json`，用其中的 `input_scale_type` 作为横轴语义名；静态元数据要求 schema v7，旧 `static_meta.csv` 会直接报错。图片会写入结果目录下的三个子目录：
 
 - `cpu/`：只使用 `gpu_mode=off` 的 CPU 数据
 - `gpu/`：只使用 `gpu_mode=on` 的 GPU 数据

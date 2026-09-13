@@ -24,6 +24,10 @@ LOG_MAX_LINES = (500, 1000, 3000, 10000)
 SETTINGS_VERSION = 4
 
 
+class UnsupportedSettingsError(ValueError):
+    """设置版本不受支持，调用方不得静默回退或覆盖文件。"""
+
+
 @dataclass(frozen=True)
 class UiPreferences:
     theme: str = "acprof-dark"
@@ -113,9 +117,12 @@ def _validate_field_types(
 def _decode_settings(payload: Any, project_dir: Path) -> TuiSettings:
     if not isinstance(payload, dict):
         raise ValueError(message('设置文件的最外层必须是 JSON 对象'))
-    version = payload.get("version", 1)
-    if type(version) is not int or version not in (1, 2, 3, SETTINGS_VERSION):
-        raise ValueError(message('不支持此设置文件版本'))
+    version = payload.get("version")
+    if type(version) is not int or version != SETTINGS_VERSION:
+        raise UnsupportedSettingsError(
+            f"不支持设置文件版本 {version!r}；当前要求 version={SETTINGS_VERSION}。"
+            "请归档旧设置文件后重新配置。"
+        )
     ui_values = payload.get("ui", {})
     if not isinstance(ui_values, dict):
         raise ValueError(message('界面设置必须是 JSON 对象'))
@@ -126,6 +133,10 @@ def _decode_settings(payload: Any, project_dir: Path) -> TuiSettings:
     if defaults_values is not None:
         if not isinstance(defaults_values, dict):
             raise ValueError(message('实验默认配置必须是 JSON 对象'))
+        if "allow_cgroup_v1" in defaults_values:
+            raise UnsupportedSettingsError(
+                "设置包含已删除的 allow_cgroup_v1；请归档旧设置文件后重新配置。"
+            )
         _validate_field_types(defaults_values, RunConfig, message('实验默认配置'))
         defaults = RunConfig(**defaults_values)
     # Ignore unknown top-level keys; only recognized fields can be saved again.
@@ -139,12 +150,14 @@ def _decode_settings(payload: Any, project_dir: Path) -> TuiSettings:
 def load_settings(path: Path, project_dir: Path) -> tuple[TuiSettings, str]:
     """Load valid preferences, or return defaults and a readable warning.
 
-    Missing files are a normal first launch.  Invalid files are left intact so
-    the user can inspect them or explicitly overwrite them from Settings.
+    Missing files are a normal first launch. Retired versions and fields raise
+    without modifying the file; malformed current values retain a warning.
     """
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
         settings = _decode_settings(payload, Path(project_dir))
+    except UnsupportedSettingsError:
+        raise
     except FileNotFoundError:
         return TuiSettings(), ""
     except (OSError, ValueError, UnicodeError) as exc:

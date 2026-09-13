@@ -9,7 +9,12 @@ from acprof.host.detect import TaskInfo
 from acprof.host import docker_runtime
 from acprof.container.handlers import HandlerRegistry
 from acprof.workloads import get_generator
-from acprof.runtime_profiles import ARCHITECTURE_PROFILES, PROFILES, RuntimeProfile, select_runtime_profile
+from acprof.runtime_profiles import (
+    ARCHITECTURE_PROFILES,
+    PROFILES,
+    RuntimeProfile,
+    select_runtime_profile,
+)
 from acprof.host.runtime_images import build_fingerprint
 
 
@@ -48,7 +53,7 @@ class RuntimeProfileRegressionTests(unittest.TestCase):
         self.assertEqual(select_runtime_profile(task).profile_id, "multimodal-transformers4576")
 
     def test_another_model_adapter_can_select_its_own_runtime(self):
-        profile = RuntimeProfile("example-runtime", "multimodal", "example-adapter")
+        profile = RuntimeProfile("example-runtime", "multimodal", "example-adapter", requirements_lock="dockerfiles/locks/multimodal-cu128.txt")
         task = dataclasses.replace(
             moss_task(), model_id="Example/Custom", pipeline_tag="image-text-to-text",
             model_config={"model_type": "example_arch"},

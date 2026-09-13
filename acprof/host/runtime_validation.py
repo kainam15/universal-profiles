@@ -18,14 +18,14 @@ def validate_runtime(
     mem_list: list[int], gpu_list: list[str], output_dir: str,
     timeout_seconds: float = 300.0,
 ) -> dict:
-    # Compatibility for programmatic callers using an unmanaged historical image.
-    # All images returned by prepare_image carry a runtime environment.
     if not getattr(image_info, "runtime_environment", {}):
-        return {"schema_version": 1, "status": "legacy_unverified", "devices": {}}
+        raise ValueError("镜像缺少 runtime_environment；请使用当前版本重新构建运行环境")
     from acprof.host.docker_runtime import _inspect_container_state
     from acprof.host.env_utils import hf_offline_docker_env_args
+    from acprof.artifacts import require_schema_version
 
     plan = json.loads(Path(planned.plan_file).read_text())
+    require_schema_version(plan, 2, "input_scale_plan.json")
     entry = min(plan["entries"], key=lambda item: float(item["input_scale"]))
     encoded = json.dumps(entry["payload"], ensure_ascii=False).encode()
     report: dict[str, Any] = {

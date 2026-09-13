@@ -65,6 +65,8 @@ def _load_input_scale_plan_entries(
             f"invalid input scale plan (expected object): {input_scale_plan_file}"
         )
 
+    from acprof.artifacts import require_schema_version
+    require_schema_version(plan, 2, "input_scale_plan.json")
     raw_entries = plan.get("entries")
     if not isinstance(raw_entries, list) or not raw_entries:
         raise ValueError(

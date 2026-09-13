@@ -330,7 +330,7 @@ class ResourceUsageMonitorTests(unittest.TestCase):
             )
             self.assertEqual(readers.io_pressure(), {"some": 3000.0, "full": 400.0})
 
-    def test_resolves_cgroup_v1_resource_readers(self) -> None:
+    def test_cgroup_v1_counters_are_not_used(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             proc_root = os.path.join(tmp, "proc")
             cgroup_root = os.path.join(tmp, "cgroup")
@@ -422,31 +422,8 @@ class ResourceUsageMonitorTests(unittest.TestCase):
                     proc_root=proc_root,
                 )
 
-            self.assertIsNotNone(readers.cpu)
-            self.assertIsNotNone(readers.memory)
-            self.assertIsNotNone(readers.swap)
-            self.assertIsNotNone(readers.swap_limit)
-            self.assertIsNotNone(readers.io)
-            self.assertIsNotNone(readers.cpu_throttle)
-            assert readers.cpu is not None
-            assert readers.memory is not None
-            assert readers.swap is not None
-            assert readers.swap_limit is not None
-            assert readers.io is not None
-            assert readers.cpu_throttle is not None
-            self.assertEqual(readers.cpu(), 2.5)
-            self.assertEqual(readers.memory(), 67890)
-            self.assertEqual(readers.swap(), 1000)
-            self.assertEqual(readers.swap_limit(), 4000)
-            self.assertEqual(readers.io(), (400, 600))
-            self.assertEqual(
-                readers.cpu_throttle(),
-                {
-                    "nr_periods": 10.0,
-                    "nr_throttled": 2.0,
-                    "throttled_usec": 500000.0,
-                },
-            )
+            for name in ("cpu", "memory", "swap", "swap_limit", "io", "cpu_throttle"):
+                self.assertIsNone(getattr(readers, name), name)
 
     def test_window_counter_metrics_calculate_deltas_and_psi_stalls(self) -> None:
         result = resource_usage._nan_result(2)

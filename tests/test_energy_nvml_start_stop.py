@@ -26,25 +26,6 @@ class FakeThread:
 
 
 class GPUEnergyMonitorStartStopTests(unittest.TestCase):
-    def test_measure_idle_uses_time_weighted_mean_power(self) -> None:
-        with patch("acprof.monitors.energy_nvml.pynvml.nvmlInit"), patch(
-            "acprof.monitors.energy_nvml.pynvml.nvmlDeviceGetHandleByIndex",
-            return_value="handle",
-        ), patch(
-            "acprof.monitors.energy_nvml.pynvml.nvmlDeviceGetName",
-            return_value=b"Test GPU",
-        ), patch(
-            "acprof.monitors.energy_nvml.pynvml.nvmlDeviceGetPowerUsage",
-            side_effect=[30000, 10000, 10000],
-        ), patch(
-            "acprof.monitors.energy_nvml.time.perf_counter",
-            side_effect=[0.0, 0.0, 0.1, 0.2, 0.3],
-        ), patch("acprof.monitors.energy_nvml.time.sleep"):
-            monitor = energy_nvml.GPUEnergyMonitor(sample_hz=10.0, idle_seconds=0.3)
-            idle_power_w = monitor.measure_idle()
-
-        self.assertEqual(idle_power_w, 15.0)
-        self.assertEqual(monitor.idle_power_w, 15.0)
 
     def test_apply_control_baseline_uses_integrated_average_and_records_method(self) -> None:
         with patch("acprof.monitors.energy_nvml.pynvml.nvmlInit"), patch(
@@ -70,40 +51,6 @@ class GPUEnergyMonitorStartStopTests(unittest.TestCase):
             "nvml_gpu_control_v1",
         )
 
-    def test_measure_idle_records_power_trace_when_requested(self) -> None:
-        with patch("acprof.monitors.energy_nvml.pynvml.nvmlInit"), patch(
-            "acprof.monitors.energy_nvml.pynvml.nvmlDeviceGetHandleByIndex",
-            return_value="handle",
-        ), patch(
-            "acprof.monitors.energy_nvml.pynvml.nvmlDeviceGetName",
-            return_value=b"Test GPU",
-        ), patch(
-            "acprof.monitors.energy_nvml.pynvml.nvmlDeviceGetPowerUsage",
-            side_effect=[30000, 10000],
-        ), patch(
-            "acprof.monitors.energy_nvml.time.perf_counter",
-            side_effect=[0.0, 0.0, 0.1, 0.2],
-        ), patch("acprof.monitors.energy_nvml.time.sleep"):
-            monitor = energy_nvml.GPUEnergyMonitor(sample_hz=10.0, idle_seconds=0.2)
-            idle_power_w = monitor.measure_idle(trace=True)
-
-        self.assertEqual(idle_power_w, 20.0)
-        self.assertEqual(monitor.idle_trace["gpu_idle_trace_schema"], "nvml_gpu_idle_v1")
-        self.assertEqual(monitor.idle_trace["gpu_idle_sample_count"], 2)
-        self.assertEqual(monitor.idle_trace["gpu_idle_power_min_w"], 10.0)
-        self.assertEqual(monitor.idle_trace["gpu_idle_power_max_w"], 30.0)
-        self.assertEqual(
-            monitor.idle_trace["gpu_idle_power_time_weighted_mean_w"],
-            20.0,
-        )
-        self.assertEqual(monitor.idle_trace["gpu_idle_power_p50_w"], 20.0)
-        self.assertEqual(
-            monitor.idle_trace["gpu_idle_power_samples"],
-            [
-                {"t_s": 0.0, "power_w": 30.0},
-                {"t_s": 0.1, "power_w": 10.0},
-            ],
-        )
 
     def test_start_stop_samples_and_calculates_energy(self) -> None:
         FakeThread.instances = []
@@ -144,57 +91,14 @@ class GPUEnergyMonitorStartStopTests(unittest.TestCase):
     def test_nvml_init_failure_returns_error_result(self) -> None:
         with patch("acprof.monitors.energy_nvml.pynvml.nvmlInit", side_effect=RuntimeError("nvml boom")):
             monitor = energy_nvml.GPUEnergyMonitor(sample_hz=10.0, idle_seconds=0.0)
-            idle_power_w = monitor.measure_idle()
             monitor.start()
             result, gpu_name, err, samples = monitor.stop()
 
-        self.assertTrue(math.isnan(idle_power_w))
         self.assertEqual(gpu_name, "unknown")
         self.assertIn("nvml boom", err)
         self.assertEqual(samples, [])
         self.assertEqual(result.energy_iters, 0)
         self.assertTrue(math.isnan(result.energy_total_j))
-
-    def test_compat_wrapper_stops_and_closes_when_fn_raises(self) -> None:
-        class FakeMonitor:
-            def __init__(self):
-                self.measured_idle = False
-                self.started = False
-                self.stopped = False
-                self.closed = False
-
-            def measure_idle(self):
-                self.measured_idle = True
-                return 10.0
-
-            def start(self):
-                self.started = True
-
-            def stop(self):
-                self.stopped = True
-                return energy_nvml._nan_result(), "Test GPU", "", []
-
-            def close(self):
-                self.closed = True
-
-        fake_monitor = FakeMonitor()
-
-        def failing_fn():
-            raise ValueError("workload failed")
-
-        with patch("acprof.monitors.energy_nvml.GPUEnergyMonitor", return_value=fake_monitor):
-            with self.assertRaises(ValueError):
-                energy_nvml.measure_energy_threaded(
-                    fn=failing_fn,
-                    sample_hz=10.0,
-                    idle_seconds=0.1,
-                    device_index=0,
-                )
-
-        self.assertTrue(fake_monitor.measured_idle)
-        self.assertTrue(fake_monitor.started)
-        self.assertTrue(fake_monitor.stopped)
-        self.assertTrue(fake_monitor.closed)
 
 
 if __name__ == "__main__":

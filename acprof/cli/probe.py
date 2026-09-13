@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import os
 from pathlib import Path
 import sys
 import time
@@ -96,7 +95,6 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Reuse the local model image if present; automatically build it if missing",
     )
-    parser.add_argument("--allow-cgroup-v1", action="store_true")
     return parser
 
 
@@ -120,9 +118,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     bootstrap_project_env(str(PROJECT_DIR))
     require_native_linux_host()
     require_native_docker()
-    cgroup_version = require_cgroup_prerequisites(
-        allow_cgroup_v1=args.allow_cgroup_v1
-    )
+    cgroup_version = require_cgroup_prerequisites()
 
     from acprof.host.detect import detect_task
 

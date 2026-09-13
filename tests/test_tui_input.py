@@ -13,9 +13,11 @@ from textual.driver import Driver
 from textual.geometry import Offset
 from textual.widgets import Button, Collapsible, Input
 
-from acprof.cli.tui import AcprofTui, ConfirmActionScreen
-from acprof.cli.tui_core import ProgressSnapshot, RunConfig
-from acprof.cli.tui_input import BarCursorInput
+from acprof.tui.app import AcprofTui
+from acprof.tui.views import ConfirmActionScreen
+from acprof.tui.progress import ProgressSnapshot
+from acprof.tui.commands import RunConfig
+from acprof.tui.input import BarCursorInput
 
 
 class RecordingDriver(Driver):

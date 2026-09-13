@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import (
@@ -20,7 +21,7 @@ from typing import (
 )
 
 from acprof.metric_registry import tool_fields
-from acprof.host.collection_history import COLLECTION_HISTORY_NAME, migrate_legacy_static_meta_history
+from acprof.host.collection_history import COLLECTION_HISTORY_NAME, normalize_collection_history
 from acprof.host.compute_profile_plan import (
     INPUT_SCALE_ABS_TOLERANCE,
     NCU_ERROR_FIELD,
@@ -34,12 +35,7 @@ from acprof.host.compute_profile_plan import (
     TORCH_LOGICAL_MFLOP_FIELD,
 )
 from acprof.host.detect import TaskInfo
-from acprof.host.execution_profile_plan import (
-    MASSIF_ERROR_FIELD,
-    MASSIF_METRIC_FIELDS,
-    NSYS_ERROR_FIELD,
-    NSYS_METRIC_FIELDS,
-)
+from acprof.host.execution_profile_plan import MASSIF_ERROR_FIELD, NSYS_ERROR_FIELD
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[3]
@@ -58,9 +54,6 @@ POSTHOC_DIRNAME = "posthoc_profiles"
 
 
 BACKUP_DIRNAME = "posthoc_backups"
-
-
-LOCK_FILENAME = ".posthoc.lock"
 
 
 SUPPORTED_TOOLS = ("torch", "ncu", "nsys", "massif")
@@ -210,6 +203,11 @@ def _load_result_csv(path: Path) -> Tuple[List[str], List[Dict[str, str]], str]:
         reader = csv.DictReader(f)
         fieldnames = list(reader.fieldnames or [])
         rows = list(reader)
+    from acprof.result_csv import require_current_fields
+    try:
+        require_current_fields(fieldnames)
+    except ValueError as exc:
+        raise PosthocError(str(exc)) from exc
     if not fieldnames:
         raise PosthocError(f"empty result CSV: {path}")
     required = {"cpu_cores", "mem_cap_gb", "gpu_mode", "input_scale"}
@@ -287,7 +285,11 @@ def load_result_context(result_dir: str | os.PathLike[str]) -> ResultContext:
     collection_history_path = directory / COLLECTION_HISTORY_NAME
     input_scale_plan_path = directory / INPUT_SCALE_PLAN_NAME
     fieldnames, rows, encoding = _load_result_csv(result_csv)
-    static_meta = _load_json_object(static_meta_path, STATIC_META_NAME)
+    from acprof.artifacts import read_static_metadata, require_schema_version
+    try:
+        static_meta = read_static_metadata(directory, required=True)
+    except (ValueError, OSError) as exc:
+        raise PosthocError(str(exc)) from exc
     collection_history_existed = collection_history_path.is_file()
     collection_history_payload = (
         _load_json_object(collection_history_path, COLLECTION_HISTORY_NAME)
@@ -295,13 +297,14 @@ def load_result_context(result_dir: str | os.PathLike[str]) -> ResultContext:
         else None
     )
     try:
-        static_meta, collection_history = migrate_legacy_static_meta_history(
-            static_meta,
-            collection_history_payload,
-        )
+        collection_history = normalize_collection_history(collection_history_payload)
     except ValueError as exc:
         raise PosthocError(f"invalid collection history: {exc}") from exc
     input_plan = _load_json_object(input_scale_plan_path, INPUT_SCALE_PLAN_NAME)
+    try:
+        require_schema_version(input_plan, 2, INPUT_SCALE_PLAN_NAME)
+    except ValueError as exc:
+        raise PosthocError(str(exc)) from exc
 
     model_id = str(
         static_meta.get("model_name") or input_plan.get("model_id") or ""
@@ -359,9 +362,9 @@ def load_result_context(result_dir: str | os.PathLike[str]) -> ResultContext:
             f"result CSV scales are missing from input_scale_plan.json: {labels}"
         )
 
-    image_tag = str(static_meta.get("image_id") or static_meta.get("image_tag") or "").strip()
-    if not image_tag:
-        raise PosthocError("static_meta.json has no image_tag")
+    image_tag = str(static_meta.get("image_id") or "").strip()
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_tag):
+        raise PosthocError("static_meta.json requires an immutable image_id; regenerate current results")
 
     task_info = TaskInfo(
         model_id=model_id,
