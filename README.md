@@ -15,7 +15,7 @@ AC-Prof 是一个面向 Hugging Face 推理服务的零侵入运行时分析工�
 ## 文档导航
 
 [docs/README.md](docs/README.md) 是长期项目知识的导航入口；按问题读取对应专题。
-本文维护安装与操作示例；[REFERENCE.md](REFERENCE.md) 仅保留旧链接导航，不再维护第二份字段或参数说明。
+本文维护安装与操作示例；字段、协议与参数说明统一在对应专题维护。
 Agent 从 [AGENTS.md](AGENTS.md) 读取全局约束，再按目录和任务读取局部规则、文档及 Skills。
 
 ## AC-Prof 会采集什么
