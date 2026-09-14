@@ -581,7 +581,7 @@ def compose_settings_tab(app: AcprofTui) -> ComposeResult:
 
 
 def compose_images_tab(app: AcprofTui) -> ComposeResult:
-    from acprof.tui.images import IMAGE_HINT, ImageTable, ImageTree, ImageTreeHeader
+    from acprof.tui.images import IMAGE_HINT, ImageDetailPanel, ImageTable, ImageTree, ImageTreeHeader
 
     with TabPane("镜像管理", id="images-tab"):
         with Vertical(id="image-panel"):
@@ -621,7 +621,4 @@ def compose_images_tab(app: AcprofTui) -> ComposeResult:
                     ResizableDataTable(id="image-layer-table", classes="image-control", cursor_type="row", zebra_stripes=True),
                 ):
                     yield app._localized_widget(table)
-            with VerticalScroll(id="image-detail-scroll"):
-                yield app._localized_widget(Static(
-                    "选择一行查看全部标签、模型与容器引用。", id="image-detail", markup=False,
-                ))
+            yield ImageDetailPanel(id="image-detail-scroll")

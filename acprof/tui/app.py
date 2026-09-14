@@ -84,7 +84,7 @@ from acprof.host.image_management import (
 )
 from acprof.tui.images import (
     IMAGE_KINDS, ImageDeleteScreen, deletion_message, filtered_images,
-    format_image_size, image_detail, image_display_name, image_error, ImageTree, layer_detail, render_image_tree,
+    format_image_size, image_display_name, image_error, ImageDetailPanel, ImageTree, render_image_tree,
 )
 
 from acprof.tui.scrollbar import SolidScrollBarRender
@@ -1697,18 +1697,23 @@ class AcprofTui(BarCursorApp):
     @on(DataTable.RowHighlighted, "#image-layer-table")
     @on(Tree.NodeHighlighted, "#image-tree")
     def _show_image_detail(self) -> None:
+        detail = self.query_one("#image-detail-scroll", ImageDetailPanel)
         if self._image_view == "layers":
             row = self.query_one("#image-layer-table", DataTable).cursor_row
             layer = self._visible_image_layers[row] if 0 <= row < len(self._visible_image_layers) else None
-            self._set_text(self.query_one("#image-detail", Static), layer_detail(layer, self._image_inventory) if layer else
-                           "没有匹配的层；可调整筛选或点击刷新。")
+            if layer and self._image_inventory:
+                detail.show_layer(layer, self._image_inventory)
+            else:
+                detail.show_empty("没有匹配的层；可调整筛选或点击刷新。")
             self._update_image_controls()
             return
         item = self._current_image()
         if item:
             self._focused_image_id = item.image_id
-        self._set_text(self.query_one("#image-detail", Static), image_detail(item, self._image_inventory) if item and self._image_inventory else
-                       "没有匹配的镜像；可调整筛选或点击刷新。")
+        if item and self._image_inventory:
+            detail.show_image(item, self._image_inventory)
+        else:
+            detail.show_empty("没有匹配的镜像；可调整筛选或点击刷新。")
         self._update_image_controls()
 
     @on(DataTable.RowSelected, "#image-table")

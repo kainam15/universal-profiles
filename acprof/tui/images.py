@@ -11,13 +11,13 @@ from textual.strip import Strip
 from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
-from textual.widgets import Button, DataTable, Static, Tree
+from textual.widgets import Button, Collapsible, DataTable, Static, Tree
 
 from acprof.host.image_graph import reclaimable_image_bytes
 from acprof.host.image_management import ImageInventory, ImageLayer, ImageManagementError, ManagedImage
 from acprof.tui.i18n import join_messages, message
 from acprof.tui.table import ResizableDataTable
-from acprof.tui.views import ConfirmActionScreen
+from acprof.tui.views import COLLAPSED_SYMBOL, EXPANDED_SYMBOL, ConfirmActionScreen
 
 
 IMAGE_KINDS = {
@@ -189,6 +189,68 @@ class ImageTree(Tree[ManagedImage]):
                 node.expand()
 
 
+class ImageDetailPanel(VerticalScroll):
+    """常显摘要与按需展开的详情；同一对象重绘时保留阅读状态。"""
+
+    _detail_key: tuple[str, str] | None = None
+
+    def compose(self) -> ComposeResult:
+        yield self.app._localized_widget(Static("", id="image-detail-title", markup=False))
+        yield self.app._localized_widget(Static(
+            "选择一行查看镜像摘要；展开分组查看详情。", id="image-detail", markup=False,
+        ))
+        for group, content, title in (("dependencies", "dependency", "依赖清单"),
+                                       ("metadata", "metadata", "镜像信息"),
+                                       ("diagnostics", "diagnostic", "诊断信息")):
+            with self.app._localized_widget(Collapsible(
+                title=title, collapsed=True, id="image-" + group,
+                collapsed_symbol=COLLAPSED_SYMBOL, expanded_symbol=EXPANDED_SYMBOL,
+            )):
+                yield self.app._localized_widget(Static("", id=f"image-{content}-detail", markup=False))
+
+    def on_mount(self) -> None:
+        self.show_empty("选择一行查看镜像摘要；展开分组查看详情。")
+
+    def _show(self, key: tuple[str, str] | None, title: str, summary: str,
+              sections: dict[str, tuple[str, str]]) -> None:
+        changed = key != self._detail_key
+        self._detail_key = key
+        heading = self.query_one("#image-detail-title", Static)
+        heading.display = bool(title)
+        self.app._set_text(heading, title)
+        self.app._set_text(self.query_one("#image-detail", Static), summary)
+        for group in self.query(Collapsible):
+            section_title, content = sections.get(group.id, ("", ""))
+            group.display = bool(section_title)
+            self.app._set_text(group, section_title, "title")
+            self.app._set_text(group.query_one("Contents > Static", Static), content)
+            if changed:
+                group.collapsed = True
+        if changed:
+            # Collapsible 本身也会请求滚动，最后回到新对象的摘要。
+            self.call_after_refresh(self.scroll_home, animate=False, immediate=True)
+
+    def show_empty(self, text: str) -> None:
+        self._show(None, "", text, {})
+
+    def show_image(self, item: ManagedImage, inventory: ImageInventory) -> None:
+        self._show(("image", item.image_id), message("镜像摘要 · {0} · {1}", message(IMAGE_KINDS[item.kind]), image_display_name(item)),
+                   image_summary(item, inventory), {
+                       "image-dependencies": (dependency_title(item), dependency_detail(item)),
+                       "image-metadata": (message("镜像信息 · 标签 {0} · 容器 {1}", len(item.tags), len(item.containers)),
+                                          image_metadata(item, inventory)),
+                       "image-diagnostics": (message("诊断信息 · 有警告" if inventory.warnings else "诊断信息"),
+                                             image_diagnostics(item, inventory)),
+                   })
+
+    def show_layer(self, layer: ImageLayer, inventory: ImageInventory) -> None:
+        self._show(("layer", layer.chain_id), message("层摘要"),
+                   message("层大小：{0} · 引用镜像：{1}", format_image_size(layer.size_bytes), len(layer.image_ids)), {
+                       "image-metadata": (message("引用镜像 · {0}", len(layer.image_ids)), layer_image_detail(layer, inventory)),
+                       "image-diagnostics": (message("诊断信息"), layer_diagnostics(layer)),
+                   })
+
+
 class ImageDeleteScreen(ConfirmActionScreen):
     """长标签清单可独立滚动，确认按钮在小终端仍保持可见。"""
 
@@ -244,6 +306,14 @@ def dependency_packages(item: ManagedImage) -> list[str]:
         item.python_dependencies, key=lambda pair: (order.get(pair[0], len(order)), pair[0]))]
 
 
+def dependency_title(item: ManagedImage) -> str:
+    if item.dependency_source == "unknown":
+        return message("依赖清单 · 未知")
+    if item.dependency_source == "inherited":
+        return message("依赖清单 · 无新增包")
+    return message("依赖清单 · Python {0} · 系统 {1}", len(item.python_dependencies), len(item.system_dependencies))
+
+
 def dependency_detail(item: ManagedImage) -> str:
     if item.dependency_source == "unknown":
         return message("本层依赖：未知（镜像身份、依赖锁或构建记录无法核验）。")
@@ -252,18 +322,23 @@ def dependency_detail(item: ManagedImage) -> str:
             message("本层依赖：无新增包，继承父镜像。"),
             message("本层添加模型文件；包依赖由运行环境提供。" if item.kind == "weights" else
                     "本层添加推理服务代码与运行清单；包依赖由运行环境提供。"),
-            message("依赖来源：已核对的构建步骤与父镜像身份。"),
         ))
     packages = dependency_packages(item)
     parts = [message("平台 Python 依赖（{0}，含基础镜像已有包）：\n{1}" if item.dependency_source == "platform-lock" else
-                     "本层新增 Python 依赖（{0}）：\n{1}", len(packages), ", ".join(packages) or message("无新增包"))]
+                     "本层新增 Python 依赖（{0}）：\n{1}", len(packages), "\n".join(packages) or message("无新增包"))]
     if item.system_dependencies:
         parts.append(message("本层系统安装制品（{0}）：\n{1}", len(item.system_dependencies),
-                             ", ".join(f"{name}={version}" for name, version in item.system_dependencies)))
+                             "\n".join(f"{name}={version}" for name, version in item.system_dependencies)))
     else:
         parts.append(message("系统包继承平台，本层无新增。"))
-    parts.append(message("依赖来源：与镜像身份匹配的锁文件；未执行实时包扫描。"))
-    return join_messages("\n", parts)
+    return join_messages("\n\n", parts)
+
+
+def dependency_source_detail(item: ManagedImage) -> str:
+    if item.dependency_source == "unknown":
+        return message("本层依赖：未知（镜像身份、依赖锁或构建记录无法核验）。")
+    return message("依赖来源：已核对的构建步骤与父镜像身份。" if item.dependency_source == "inherited" else
+                   "依赖来源：与镜像身份匹配的锁文件；未执行实时包扫描。")
 
 
 def filtered_images(inventory: ImageInventory, query: str, scope: str) -> tuple[ManagedImage, ...]:
@@ -290,7 +365,7 @@ def filtered_images(inventory: ImageInventory, query: str, scope: str) -> tuple[
     return tuple(items)
 
 
-def image_detail(item: ManagedImage, inventory: ImageInventory) -> str:
+def image_path(item: ManagedImage, inventory: ImageInventory) -> str:
     indexed = {image.image_id: image for image in inventory.images}
     def path_name(image):
         name = image_display_name(image, indexed.get(image.parent_id))
@@ -299,36 +374,52 @@ def image_detail(item: ManagedImage, inventory: ImageInventory) -> str:
         return join_messages("", (name, " ≈" if image.parent_source == "layer-prefix" else ""))
     path = [path_name(indexed[key]) for key in item.ancestor_ids if key in indexed]
     if item.parent_source == "missing":
-        path.append(item.parent_id[:19] + " (?)")
+        path.append(message("父镜像不在本地"))
     path.append(path_name(item))
-    sources = {"recorded": "构建记录", "metadata": "构建指纹与层前缀核验", "layer-prefix": "层前缀推断，未确认 FROM",
-               "missing": "父镜像不在本地", "ambiguous": "存在多个候选父镜像", "conflict": "父镜像记录与层链冲突",
-               "unknown": "本地父镜像未知"}
-    parts = [
-        message("继承路径：{0}", join_messages(" › ", path)),
-        dependency_detail(item),
+    return message("继承路径：{0}", join_messages(" › ", path))
+
+
+def image_summary(item: ManagedImage, inventory: ImageInventory) -> str:
+    return join_messages("\n", (
         message("完整大小：{0} · 继承：{1} · 本镜像新增：{2}", format_image_size(item.size_bytes),
                 format_image_size(item.inherited_bytes), format_image_size(item.added_bytes)),
-        message("删除预计释放：{0}", reclaimable_text(inventory, (item.image_id,))),
-    ]
-    if item.inherited_bytes is not None and item.size_bytes:
-        inherited_cells = min(30, round(30 * item.inherited_bytes / item.size_bytes))
-        parts.append(message("空间构成：{0}  █ 继承 / ░ 新增", "█" * inherited_cells + "░" * (30 - inherited_cells)))
-    parts.extend((
+        message("删除预计释放：{0} · 容器引用：{1}", reclaimable_text(inventory, (item.image_id,)), len(item.containers)),
+    ))
+
+
+def image_metadata(item: ManagedImage, inventory: ImageInventory) -> str:
+    return join_messages("\n\n", (
+        image_path(item, inventory),
         message("其它镜像共享：{0} · 仅当前镜像使用：{1}", format_image_size(item.shared_bytes), format_image_size(item.unique_bytes)),
-        message("父镜像依据：{0} · 后代：{1}", message(sources[item.parent_source]), len(item.descendant_ids)),
-        message("空间来源：{0}", message({"layers": "层链与已核验 history 字节数", "docker-df": "Docker df 近似值",
-                                         "": "未知"}[item.space_source])),
-        message("? 表示未知；释放范围受构建缓存与存储驱动影响。"),
-        message("镜像 ID：{0}", item.image_id),
-        message("类型：{0} · 完整大小：{1}（{2} bytes）", message(IMAGE_KINDS[item.kind]),
-                format_image_size(item.size_bytes), item.size_bytes),
         message("模型：{0} · 创建时间：{1}", item.model_id or "—", item.created or "—"),
         message("容器引用：{0}", ", ".join(item.containers) if item.containers else message("无")),
         message("全部标签：\n{0}", "\n".join(item.tags) if item.tags else message("无标签")),
     ))
+
+
+def image_diagnostics(item: ManagedImage, inventory: ImageInventory) -> str:
+    sources = {"recorded": "构建记录", "metadata": "构建指纹与层前缀核验", "layer-prefix": "层前缀推断，未确认 FROM",
+               "missing": "父镜像不在本地", "ambiguous": "存在多个候选父镜像", "conflict": "父镜像记录与层链冲突",
+               "unknown": "本地父镜像未知"}
+    identity = [message("镜像 ID：{0}", item.image_id)]
+    if item.parent_id:
+        identity.append(message("父镜像 ID：{0}", item.parent_id))
+    evidence = (
+        dependency_source_detail(item),
+        message("父镜像依据：{0} · 后代：{1}", message(sources[item.parent_source]), len(item.descendant_ids)),
+        message("空间来源：{0}", message({"layers": "层链与已核验 history 字节数", "docker-df": "Docker df 近似值",
+                                         "": "未知"}[item.space_source])),
+    )
+    space = [message("完整大小：{0} bytes", item.size_bytes)]
+    if item.inherited_bytes is not None and item.size_bytes:
+        inherited_cells = min(30, round(30 * item.inherited_bytes / item.size_bytes))
+        space.append(message("空间构成：{0}  █ 继承 / ░ 新增", "█" * inherited_cells + "░" * (30 - inherited_cells)))
+    space.extend((
+        message("? 表示未知；释放范围受构建缓存与存储驱动影响。"),
+    ))
+    parts = [join_messages("\n", identity), join_messages("\n", evidence), join_messages("\n", space)]
     parts.extend(message(warning) for warning in inventory.warnings)
-    return join_messages("\n", parts)
+    return join_messages("\n\n", parts)
 
 
 def reclaimable_text(inventory: ImageInventory, image_ids: tuple[str, ...]) -> str:
@@ -336,15 +427,17 @@ def reclaimable_text(inventory: ImageInventory, image_ids: tuple[str, ...]) -> s
     return message("未知") if value is None else "0 B" if value == 0 else message("0 B ～ 约 {0}", format_image_size(value))
 
 
-def layer_detail(layer: ImageLayer, inventory: ImageInventory) -> str:
+def layer_image_detail(layer: ImageLayer, inventory: ImageInventory) -> str:
     indexed = {item.image_id: item for item in inventory.images}
+    return message("使用此层的镜像：\n{0}", "\n\n".join(
+        f"{image_display_name(indexed[key])} · {key[7:19]}\n  {indexed[key].name}" for key in layer.image_ids))
+
+
+def layer_diagnostics(layer: ImageLayer) -> str:
     return join_messages("\n", (
         message("层内容 Diff ID：{0}", layer.diff_id),
         message("层链 Chain ID：{0}", layer.chain_id),
-        message("层大小：{0} · 引用镜像：{1}", format_image_size(layer.size_bytes), len(layer.image_ids)),
         message("相同 Diff ID 的不同父层链分开统计；引用包含筛选外镜像，按 image ID 去重。"),
-        message("使用此层的镜像：\n{0}", "\n".join(
-            f"{image_display_name(indexed[key])} · {key[7:19]}\n  {indexed[key].name}" for key in layer.image_ids)),
     ))
 
 
