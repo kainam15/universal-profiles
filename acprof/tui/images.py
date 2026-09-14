@@ -8,6 +8,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.reactive import var
 from textual.strip import Strip
+from rich.rule import Rule
 from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
@@ -187,6 +188,118 @@ class ImageTree(Tree[ManagedImage]):
                 self.move_cursor(node.children[0])
             else:
                 node.expand()
+
+
+class ImageWorkspace(Vertical):
+    """在可用空间内分配列表和详情高度，保留本次会话的手动值。"""
+
+    _detail_height: int | None = None
+
+    def on_resize(self) -> None:
+        self.query_one(ImageDetailResizeHandle).finish_resize()
+        self.call_after_refresh(self._apply_detail_height)
+
+    def _clamp_detail_height(self, height: int) -> int:
+        # 为列表保留三行、分隔条保留一行；短终端仍能独立滚动两侧。
+        return max(3, min(height, self.size.height - 4))
+
+    def set_detail_height(self, height: int | None) -> None:
+        self._detail_height = None if height is None else self._clamp_detail_height(height)
+        self._apply_detail_height()
+
+    def _apply_detail_height(self) -> None:
+        if not self.is_mounted or not self.size.height:
+            return
+        height = self._detail_height
+        if height is None:
+            height = 7 if self.app.has_class("short") else 9
+        # 缩窗只限制显示高度，不覆盖手动值，放大后可以恢复。
+        self.query_one(ImageDetailPanel).styles.height = self._clamp_detail_height(height)
+
+
+class ImageDetailResizeHandle(Static, can_focus=True):
+    """单行分隔条；使用屏幕坐标拖动，避免控件移动时位置跳变。"""
+
+    BINDINGS = [
+        Binding("up", "adjust(1)", show=False),
+        Binding("down", "adjust(-1)", show=False),
+        Binding("home", "reset_height", show=False),
+        Binding("escape", "cancel_resize", show=False),
+    ]
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__("↕ 拖动调整详情高度", markup=False, **kwargs)
+        self.tooltip = "上下拖动调整详情高度；聚焦后 ↑/↓ 微调，Home 恢复默认。本次会话保留。"
+        self._drag_origin: tuple[int, int] | None = None
+
+    def render(self) -> Rule:
+        return Rule(str(self.content), style="")
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if self.disabled or event.button != 1 or event.screen_offset not in self.region:
+            return
+        event.prevent_default()
+        event.stop()
+        self.focus(scroll_visible=False)
+        detail = self.parent.query_one(ImageDetailPanel)
+        self._drag_origin = (event.screen_y, detail.size.height)
+        self.capture_mouse()
+        self.add_class("-dragging")
+
+    def _resize_to(self, screen_y: int) -> None:
+        if self._drag_origin is not None:
+            origin_y, height = self._drag_origin
+            self.parent.set_detail_height(height + origin_y - screen_y)
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if self._drag_origin is not None:
+            event.prevent_default()
+            event.stop()
+            self._resize_to(event.screen_y)
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        if self._drag_origin is not None and event.button == 1:
+            event.prevent_default()
+            event.stop()
+            self._resize_to(event.screen_y)
+            self.finish_resize()
+
+    def on_click(self, event: events.Click) -> None:
+        event.prevent_default()
+        event.stop()
+
+    def finish_resize(self) -> None:
+        self._drag_origin = None
+        if self.app.mouse_captured is self:
+            self.release_mouse()
+        self.remove_class("-dragging")
+
+    def on_mouse_release(self) -> None:
+        self.finish_resize()
+
+    def on_hide(self) -> None:
+        self.finish_resize()
+
+    def on_unmount(self) -> None:
+        self.finish_resize()
+
+    def watch_disabled(self, disabled: bool) -> None:
+        super().watch_disabled(disabled)
+        if disabled:
+            self.finish_resize()
+
+    def action_adjust(self, delta: int) -> None:
+        if not self.disabled:
+            self.finish_resize()
+            self.parent.set_detail_height(self.parent.query_one(ImageDetailPanel).size.height + delta)
+
+    def action_reset_height(self) -> None:
+        if not self.disabled:
+            self.finish_resize()
+            self.parent.set_detail_height(None)
+
+    def action_cancel_resize(self) -> None:
+        self.finish_resize()
 
 
 class ImageDetailPanel(VerticalScroll):

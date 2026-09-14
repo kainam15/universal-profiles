@@ -581,7 +581,9 @@ def compose_settings_tab(app: AcprofTui) -> ComposeResult:
 
 
 def compose_images_tab(app: AcprofTui) -> ComposeResult:
-    from acprof.tui.images import IMAGE_HINT, ImageDetailPanel, ImageTable, ImageTree, ImageTreeHeader
+    from acprof.tui.images import (
+        IMAGE_HINT, ImageDetailPanel, ImageDetailResizeHandle, ImageTable, ImageTree, ImageTreeHeader, ImageWorkspace,
+    )
 
     with TabPane("镜像管理", id="images-tab"):
         with Vertical(id="image-panel"):
@@ -610,15 +612,17 @@ def compose_images_tab(app: AcprofTui) -> ComposeResult:
                         disabled=True,
                     ))
             yield app._localized_widget(Static(IMAGE_HINT, id="image-status", markup=False))
-            with ContentSwitcher(initial="image-tree-view", id="image-browser"):
-                with Vertical(id="image-tree-view"):
-                    yield app._localized_widget(ImageTreeHeader(
-                        id="image-tree-header", classes="image-control", show_cursor=False))
-                    yield ImageTree("", id="image-tree", classes="image-control")
-                for table in (
-                    ImageTable(id="image-table", classes="image-control", cursor_type="row",
-                               zebra_stripes=True, fixed_columns=1),
-                    ResizableDataTable(id="image-layer-table", classes="image-control", cursor_type="row", zebra_stripes=True),
-                ):
-                    yield app._localized_widget(table)
-            yield ImageDetailPanel(id="image-detail-scroll")
+            with ImageWorkspace(id="image-workspace"):
+                with ContentSwitcher(initial="image-tree-view", id="image-browser"):
+                    with Vertical(id="image-tree-view"):
+                        yield app._localized_widget(ImageTreeHeader(
+                            id="image-tree-header", classes="image-control", show_cursor=False))
+                        yield ImageTree("", id="image-tree", classes="image-control")
+                    for table in (
+                        ImageTable(id="image-table", classes="image-control", cursor_type="row",
+                                   zebra_stripes=True, fixed_columns=1),
+                        ResizableDataTable(id="image-layer-table", classes="image-control", cursor_type="row", zebra_stripes=True),
+                    ):
+                        yield app._localized_widget(table)
+                yield app._localized_widget(ImageDetailResizeHandle(id="image-detail-resize", classes="image-control"))
+                yield ImageDetailPanel(id="image-detail-scroll")

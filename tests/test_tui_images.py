@@ -63,6 +63,143 @@ class TuiImagesTests(unittest.IsolatedAsyncioTestCase):
     def make_app(self):
         return AcprofTui(RunConfig.smoke("demo/model"), settings_path=self.directory / "tui.json")
 
+    async def test_detail_boundary_drags_in_all_views_sizes_and_languages(self):
+        app = self.make_app()
+        async with app.run_test(size=(150, 45)) as pilot:
+            await self.load_images(app, pilot, view="tree")
+            browser = app.query_one("#image-browser")
+            detail = app.query_one("#image-detail-scroll")
+            before = len(self.docker.commands)
+            for size in ((80, 24), (120, 30), (150, 45)):
+                await pilot.resize_terminal(*size)
+                for language in ("zh", "en"):
+                    app.ui_preferences = replace(app.ui_preferences, language=language)
+                    app._apply_ui_preferences()
+                    await pilot.pause()
+                    for view in ("tree", "list", "layers"):
+                        with self.subTest(size=size, language=language, view=view):
+                            await pilot.click("#image-view-" + view)
+                            await pilot.pause()
+                            initial = detail.size.height
+                            browser_height = browser.size.height
+                            current = detail._detail_key
+                            start = (browser.region.x + browser.size.width // 2, browser.region.bottom)
+                            await drag(pilot, app.screen, start, 0, 2, release_click=True)
+                            self.assertEqual(detail.size.height, initial - 2,
+                                             "向下拖动分隔线应缩小详情区")
+                            self.assertEqual(browser.size.height, browser_height + 2)
+                            self.assertIsNone(app.mouse_captured)
+                            start = (start[0], browser.region.bottom)
+                            await drag(pilot, app.screen, start, 0, -2, release_click=True)
+                            self.assertEqual(detail.size.height, initial)
+                            self.assertEqual(browser.size.height, browser_height)
+                            self.assertEqual(detail._detail_key, current)
+                            self.assertFalse(app._selected_image_ids)
+                            self.assertLessEqual(detail.region.bottom, app.query_one("#image-panel").content_region.bottom)
+            self.assertEqual(len(self.docker.commands), before, "调整详情高度不能查询 Docker")
+
+    async def test_detail_resize_clamps_restores_height_and_preserves_reading_state(self):
+        app = self.make_app()
+        async with app.run_test(size=(150, 45)) as pilot:
+            await self.load_images(app, pilot)
+            browser = app.query_one("#image-browser")
+            detail = app.query_one("#image-detail-scroll")
+            initial = detail.size.height
+            handle = app.query_one("#image-detail-resize")
+            x = handle.region.x + handle.size.width // 2
+            await drag(pilot, app.screen, (x, handle.region.y), 0, -handle.region.y)
+            self.assertEqual(browser.size.height, 3, "拖出区域仍需保留列表表头和行")
+            expanded = detail.size.height
+            self.assertGreater(expanded, initial)
+            self.assertIsNone(app.mouse_captured)
+            await pilot.resize_terminal(80, 24)
+            await pilot.pause()
+            self.assertGreaterEqual(browser.size.height, 3)
+            self.assertGreaterEqual(detail.size.height, 3)
+            self.assertLessEqual(detail.region.bottom, app.query_one("#image-panel").content_region.bottom)
+            await pilot.resize_terminal(150, 45)
+            await pilot.pause()
+            self.assertEqual(detail.size.height, expanded, "窗口恢复后还原用户设置的高度")
+            await drag(pilot, app.screen, (x, handle.region.y), 0, app.size.height - 1 - handle.region.y)
+            self.assertEqual(detail.size.height, 3)
+            handle.focus()
+            await pilot.press("home", "up", "up")
+            await pilot.pause()
+            self.assertEqual(detail.size.height, initial + 2)
+            await pilot.press("down")
+            await pilot.pause()
+            self.assertEqual(detail.size.height, initial + 1)
+            diagnostics = app.query_one("#image-diagnostics", Collapsible)
+            diagnostics.collapsed = False
+            await pilot.pause()
+            detail.scroll_end(animate=False, immediate=True)
+            await pilot.pause()
+            offset = detail.scroll_y
+            self.assertGreater(offset, 0)
+            await drag(pilot, app.screen, (x, handle.region.y), 0, 2, release_click=True)
+            self.assertFalse(diagnostics.collapsed)
+            self.assertEqual(detail.scroll_y, offset, "拖动分隔条不应把详情滚回摘要")
+            height = detail.size.height
+            app.refresh_images()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            self.assertEqual(detail.size.height, height)
+            self.assertFalse(diagnostics.collapsed)
+            detail.focus()
+            await pilot.press("end")
+            await pilot.pause()
+            self.assertEqual(detail.scroll_y, detail.max_scroll_y, "调整高度后仍能滚动到末尾")
+            self.assertFalse(self.directory.joinpath("tui.json").exists(), "高度仅在本次会话保留")
+
+    async def test_detail_resize_releases_mouse_after_interruption(self):
+        app = self.make_app()
+        async with app.run_test(size=(120, 30)) as pilot:
+            await self.load_images(app, pilot)
+            handle = app.query_one("#image-detail-resize")
+            detail = app.query_one("#image-detail-scroll")
+            for interruption in ("escape", "capture_lost", "hidden", "measurement", "resize"):
+                with self.subTest(interruption=interruption):
+                    initial = detail.size.height
+                    await pilot.mouse_down(handle, offset=(10, 0))
+                    self.assertIs(app.mouse_captured, handle)
+                    before = len(self.docker.commands)
+                    app.refresh_images()
+                    await pilot.pause()
+                    self.assertEqual(len(self.docker.commands), before, "拖动期间暂停扫描")
+                    if interruption == "escape":
+                        await pilot.press("escape")
+                    elif interruption == "capture_lost":
+                        handle.release_mouse()
+                    elif interruption == "hidden":
+                        app.action_show_settings()
+                    elif interruption == "measurement":
+                        app._process_kind = "run"
+                        app._latest_snapshot = ProgressSnapshot(measurement_active=True)
+                        app._set_busy(True)
+                    else:
+                        await pilot.resize_terminal(150, 45)
+                    await pilot.pause()
+                    self.assertIsNone(app.mouse_captured)
+                    await pilot.hover(offset=(60, 5))
+                    await pilot.mouse_up(offset=(60, 5))
+                    if interruption == "measurement":
+                        self.assertTrue(handle.disabled)
+                        app._process_kind = ""
+                        app._latest_snapshot = ProgressSnapshot()
+                        app._set_busy(False)
+                    elif interruption == "hidden":
+                        await self.load_images(app, pilot)
+                    elif interruption == "resize":
+                        await pilot.resize_terminal(120, 30)
+                    await pilot.pause()
+                    self.assertEqual(detail.size.height, initial)
+                    start = (handle.region.x + 10, handle.region.y)
+                    await drag(pilot, app.screen, start, 0, 1)
+                    self.assertEqual(detail.size.height, initial - 1)
+                    handle.focus()
+                    await pilot.press("home")
+                    await pilot.pause()
+
     async def test_images_page_loads_automatically_only_after_opening(self):
         app = self.make_app()
         async with app.run_test(size=(80, 24)) as pilot:

@@ -80,6 +80,8 @@ ENGLISH: dict[str, str] = {
     "诊断信息": "Diagnostics",
     "诊断信息 · 有警告": "Diagnostics · Warnings",
     "选择一行查看镜像摘要；展开分组查看详情。": "Select a row for a summary; expand groups for details.",
+    "↕ 拖动调整详情高度": "↕ Drag to resize details",
+    "上下拖动调整详情高度；聚焦后 ↑/↓ 微调，Home 恢复默认。本次会话保留。": "Drag vertically to resize details; when focused, use ↑/↓ to adjust or Home to reset. Kept for this session.",
     "父镜像 ID：{0}": "Parent image ID: {0}",
     "完整大小：{0} bytes": "Full size: {0} bytes",
     "无新增包": "No new packages",
