@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from textual.widgets import Button, DataTable, Input, Select, Static, TabbedContent, TabPane
+from textual.widgets import Button, ContentSwitcher, DataTable, Input, Select, Static, TabbedContent, TabPane, Tree
 
 from acprof.tui.app import AcprofTui, PendingLaunch
 from acprof.tui.commands import RunConfig
@@ -52,7 +52,7 @@ class TuiImagesTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(app.query_one("#image-delete", Button).disabled)
             self.assertFalse(self.docker.commands)
 
-    async def load_images(self, app, pilot):
+    async def load_images(self, app, pilot, *, view="list"):
         await pilot.pause()
         app.action_show_images()
         await pilot.pause()
@@ -61,6 +61,98 @@ class TuiImagesTests(unittest.IsolatedAsyncioTestCase):
         await pilot.pause()
         self.assertFalse(app._is_busy())
         self.assertEqual(app.query_one("#main-tabs", TabbedContent).active, "images-tab")
+        if view == "list" and app.query("#image-view-list"):
+            await pilot.click("#image-view-list")
+            table = app.query_one("#image-table", DataTable)
+            if FINAL in table.rows:
+                table.move_cursor(row=table.get_row_index(FINAL))
+            await pilot.pause()
+
+    async def test_default_tree_and_layer_view_preserve_image_selection_without_queries(self):
+        app = self.make_app()
+        async with app.run_test(size=(120, 30)) as pilot:
+            await self.load_images(app, pilot, view="tree")
+            self.assertTrue(app.query("#image-tree"), "默认视图应展示可折叠的真实镜像树")
+            tree = app.query_one("#image-tree", Tree)
+            self.assertEqual(app.query_one("#image-browser", ContentSwitcher).current, "image-tree-view")
+            runtime = tree.root.children[0]
+            self.assertEqual(runtime.data.image_id, RUNTIME)
+            self.assertEqual(runtime.children[0].children[0].data.image_id, FINAL)
+            tree.move_cursor(runtime)
+            tree.focus()
+            await pilot.pause()
+            await pilot.press("left")
+            await pilot.pause()
+            self.assertFalse(runtime.is_expanded)
+            await pilot.press("right", "down", "down", "space")
+            await pilot.pause()
+            self.assertEqual(app._selected_image_ids, {FINAL})
+            detail = str(app.query_one("#image-detail", Static).content)
+            self.assertIn("继承路径", detail)
+            self.assertIn("10 B", detail)
+            before = len(self.docker.commands)
+            await pilot.click("#image-view-layers")
+            await pilot.pause()
+            layers = app.query_one("#image-layer-table", DataTable)
+            self.assertEqual(layers.row_count, 4)
+            self.assertIn("3", str(layers.get_row_at(0)))
+            self.assertTrue(app.query_one("#image-toggle", Button).disabled)
+            self.assertIn("acprof-runtime-audio", str(app.query_one("#image-detail", Static).content))
+            await pilot.click("#image-view-list")
+            await pilot.pause()
+            self.assertEqual(app._selected_image_ids, {FINAL})
+            table = app.query_one("#image-table", DataTable)
+            table.move_cursor(row=table.get_row_index(WEIGHTS))
+            await pilot.pause()
+            await pilot.click("#image-view-tree")
+            await pilot.pause()
+            self.assertEqual(tree.cursor_node.data.image_id, WEIGHTS)
+            self.assertEqual(len(self.docker.commands), before)
+
+    async def test_tree_search_keeps_ancestors_and_language_resize_keeps_collapse(self):
+        app = self.make_app()
+        async with app.run_test(size=(150, 45)) as pilot:
+            await self.load_images(app, pilot, view="tree")
+            self.assertTrue(app.query("#image-tree"), "搜索镜像时应保留祖先路径")
+            tree = app.query_one("#image-tree", Tree)
+            app.query_one("#image-search", Input).value = "code"
+            await pilot.pause()
+            self.assertEqual(len(app._visible_images), 1)
+            self.assertEqual(tree.root.children[0].data.image_id, RUNTIME)
+            self.assertEqual(tree.root.children[0].children[0].children[0].data.image_id, FINAL)
+            tree.root.children[0].collapse()
+            for size in ((80, 24), (120, 30)):
+                await pilot.resize_terminal(*size)
+                app.ui_preferences = replace(app.ui_preferences, language="en")
+                app._apply_ui_preferences()
+                await pilot.pause()
+                self.assertFalse(tree.root.children[0].is_expanded)
+                for selector in ("#image-view-tree", "#image-view-list", "#image-view-layers", "#image-delete"):
+                    button = app.query_one(selector, Button)
+                    self.assertGreater(button.region.height, 0)
+                    self.assertLessEqual(button.region.right, size[0], selector)
+
+    async def test_list_header_sorts_numeric_bytes_and_preserves_selection(self):
+        for image_id, size in ((RUNTIME, 90), (WEIGHTS, 100), (FINAL, 1000)):
+            self.docker.images[image_id]["Size"] = size
+        self.docker.layer_sizes.update(deps=70, weights=10, code=900)
+        app = self.make_app()
+        async with app.run_test(size=(150, 45)) as pilot:
+            await self.load_images(app, pilot)
+            table = app.query_one("#image-table", DataTable)
+            table.focus()
+            await pilot.pause()
+            await pilot.press("space")
+            await pilot.pause()
+            before = len(self.docker.commands)
+            offset = sum(column.get_render_width(table) for column in table.ordered_columns[:2]) + 1
+            for expected in ((RUNTIME, WEIGHTS, FINAL), (FINAL, WEIGHTS, RUNTIME)):
+                self.assertTrue(await pilot.click("#image-table", offset=(offset, 0)))
+                await pilot.pause()
+                self.assertEqual(tuple(item.image_id for item in app._visible_images), expected)
+                self.assertEqual(app._current_image().image_id, FINAL)
+                self.assertEqual(app._selected_image_ids, {FINAL})
+            self.assertEqual(len(self.docker.commands), before)
 
     async def test_filter_selection_details_and_language_work_at_all_sizes(self):
         for size in ((80, 24), (120, 30), (150, 45)):
@@ -125,7 +217,7 @@ class TuiImagesTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(120, 30)) as pilot:
             await self.load_images(app, pilot)
             table = app.query_one("#image-table", DataTable)
-            self.assertEqual(table.get_row(FINAL)[1].plain, "acprof-nlp-qwen--qwen2.5-0.5b")
+            self.assertEqual(table.get_cell(FINAL, "repository").plain, "acprof-nlp-qwen--qwen2.5-0.5b")
             table.move_cursor(row=table.get_row_index(FINAL))
             await pilot.pause()
             self.assertTrue(await pilot.click("#image-model"))

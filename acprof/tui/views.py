@@ -580,7 +580,7 @@ def compose_settings_tab(app: AcprofTui) -> ComposeResult:
 
 
 def compose_images_tab(app: AcprofTui) -> ComposeResult:
-    from acprof.tui.images import IMAGE_HINT, ImageTable
+    from acprof.tui.images import IMAGE_HINT, ImageTable, ImageTree
 
     with TabPane("镜像管理", id="images-tab"):
         with Vertical(id="image-panel"):
@@ -588,12 +588,18 @@ def compose_images_tab(app: AcprofTui) -> ComposeResult:
                 yield app._localized_widget(Input(
                     placeholder="搜索模型、标签或镜像 ID", id="image-search", classes="image-control",
                 ))
+                for label, view in (("镜像树", "tree"), ("镜像列表", "list"), ("层共享", "layers")):
+                    yield app._localized_widget(Button(
+                        label, id="image-view-" + view, classes="image-control image-view-button",
+                        variant="primary" if view == "tree" else "default",
+                    ))
+            with Horizontal(id="image-actions"):
                 yield app._localized_select(
                     (("AC-Prof 镜像", "acprof"), ("全部镜像", "all"), ("模型相关", "models"),
-                     ("公共依赖", "runtime"), ("无标签", "untagged")),
+                     ("公共依赖", "runtime"), ("公共基础", "base"), ("CPU", "cpu"),
+                     ("CUDA 12.4", "cu124"), ("CUDA 12.8", "cu128"), ("无标签", "untagged")),
                     value="acprof", allow_blank=False, id="image-scope", classes="image-control",
                 )
-            with Horizontal(id="image-actions"):
                 for label, widget_id in (("刷新", "image-refresh"), ("勾选/取消", "image-toggle"),
                                          ("选择同模型", "image-model"), ("清空选择", "image-clear"),
                                          ("删除所选", "image-delete")):
@@ -603,8 +609,17 @@ def compose_images_tab(app: AcprofTui) -> ComposeResult:
                         disabled=widget_id != "image-refresh",
                     ))
             yield app._localized_widget(Static(IMAGE_HINT, id="image-status", markup=False))
-            yield ImageTable(id="image-table", classes="image-control", cursor_type="row",
-                             zebra_stripes=True, fixed_columns=1)
+            with ContentSwitcher(initial="image-tree-view", id="image-browser"):
+                with Vertical(id="image-tree-view"):
+                    with Horizontal(id="image-tree-header"):
+                        yield app._localized_widget(Static("镜像依赖", id="image-tree-name", markup=False))
+                        for title in ("完整大小", "新增大小"):
+                            yield app._localized_widget(Static(title, classes="image-tree-size", markup=False))
+                        yield app._localized_widget(Static("容器", id="image-tree-uses", markup=False))
+                    yield ImageTree("", id="image-tree", classes="image-control")
+                yield ImageTable(id="image-table", classes="image-control", cursor_type="row",
+                                 zebra_stripes=True, fixed_columns=2)
+                yield DataTable(id="image-layer-table", classes="image-control", cursor_type="row", zebra_stripes=True)
             with VerticalScroll(id="image-detail-scroll"):
                 yield app._localized_widget(Static(
                     "选择一行查看全部标签、模型与容器引用。", id="image-detail", markup=False,

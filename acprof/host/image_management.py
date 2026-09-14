@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import os
 import re
@@ -34,6 +34,22 @@ class ManagedImage:
     containers: tuple[str, ...] = ()
     layers: tuple[str, ...] = ()
     acprof: bool = False
+    platform_id: str = ""
+    environment_id: str = ""
+    profiles: tuple[str, ...] = ()
+    platform_key: str = ""
+    environment_key: str = ""
+    model_files_key: str = ""
+    parent_id: str = ""
+    parent_source: str = "unknown"
+    ancestor_ids: tuple[str, ...] = ()
+    descendant_ids: tuple[str, ...] = ()
+    inherited_bytes: int | None = None
+    added_bytes: int | None = None
+    shared_bytes: int | None = None
+    unique_bytes: int | None = None
+    space_source: str = ""
+    layer_sizes: tuple[int | None, ...] = ()
 
     @property
     def name(self) -> str:
@@ -44,12 +60,33 @@ class ManagedImage:
     def model_key(self) -> str:
         return self.model_id.casefold().replace("/", "--")
 
+    @property
+    def display_name(self) -> str:
+        if self.kind == "runtime" and self.environment_id:
+            label = " / ".join(self.profiles) or "env-" + self.environment_id[:12]
+            if self.platform_id and self.platform_id not in label:
+                label += " · " + self.platform_id
+            return label
+        if self.model_id:
+            return self.model_id
+        return self.name.rsplit(":", 1)[0] if self.tags else self.name
+
+
+@dataclass(frozen=True)
+class ImageLayer:
+    chain_id: str
+    diff_id: str
+    size_bytes: int | None
+    image_ids: tuple[str, ...]
+
 
 @dataclass(frozen=True)
 class ImageInventory:
     connection: DockerConnection
     daemon_id: str
     images: tuple[ManagedImage, ...]
+    layers: tuple[ImageLayer, ...] = ()
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -127,7 +164,7 @@ def _kind(tags: tuple[str, ...], labels: dict) -> str:
     return "other" if tags else "untagged"
 
 
-def list_images(connection: DockerConnection | None = None) -> ImageInventory:
+def list_images(connection: DockerConnection | None = None, *, include_space: bool = True) -> ImageInventory:
     """按 ID 去重；大小沿用 Docker 的完整 Size，不累计共享层为独占空间。"""
     connection = connection or _connection()
     daemon_id = _run((*connection.arguments, "info", "--format", "{{.ID}}"))
@@ -162,6 +199,8 @@ def list_images(connection: DockerConnection | None = None) -> ImageInventory:
             model = next((value.partition("=")[2] for value in config.get("Env") or []
                           if value.startswith("MODEL_ID=")), "")
             kind = _kind(tags, labels)
+            env = dict(value.split("=", 1) for value in config.get("Env") or [] if "=" in value)
+            parent = (env.get("ACPROF_MODEL_IMAGE_ID", "") if kind == "model" else "") or row.get("Parent") or ""
             if not model and kind in {"model", "weights"}:
                 for tag in tags:
                     match = re.match(r"acprof-(?:weights-)?(?:audio|cv|nlp|diffusion|multimodal|structured|timeseries)-(.+):[^:]+$", tag)
@@ -172,12 +211,75 @@ def list_images(connection: DockerConnection | None = None) -> ImageInventory:
                 image_id, tags, size, str(row.get("Created") or ""), kind, model,
                 tuple(sorted(containers.get(image_id, []))), tuple(row.get("RootFS", {}).get("Layers", [])),
                 any(tag.startswith("acprof-") for tag in tags) or any(key.startswith("org.acprof.") for key in labels),
+                platform_id=str(labels.get("org.acprof.platform") or ""),
+                environment_id=str(labels.get("org.acprof.environment") or ""),
+                profiles=(str(labels["org.acprof.runtime-profile"]),) if labels.get("org.acprof.runtime-profile") else (),
+                platform_key=str(labels.get("org.acprof.platform-build-fingerprint") or ""),
+                environment_key=str(labels.get("org.acprof.environment-build-fingerprint") or ""),
+                model_files_key=str(labels.get("org.acprof.model-files-key") or ""),
+                parent_id=parent,
+                parent_source="recorded" if parent else "unknown",
             ))
     except (KeyError, ValueError, TypeError, AttributeError) as exc:
         raise ImageManagementError("Docker 返回了无效的镜像信息", str(exc)) from exc
     if set(ids) != {item.image_id for item in images}:
         raise ImageManagementError("Docker 镜像清单不完整，请刷新")
-    return ImageInventory(connection, daemon_id, tuple(sorted(images, key=lambda item: item.name)))
+    inventory = ImageInventory(connection, daemon_id, tuple(sorted(images, key=lambda item: item.name)))
+    if not include_space:
+        return inventory
+    # 仅手动刷新需要完整空间信息；删除前的身份核验不重复扫描 history。
+    from acprof.host.image_graph import describe_inventory
+    inventory = _read_space(inventory)
+    return describe_inventory(inventory)
+
+
+def _size_bytes(value: object) -> int | None:
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*(B|kB|MB|GB|TB)", str(value))
+    if not match:
+        return None
+    return round(float(match[1]) * {"B": 1, "kB": 1000, "MB": 10**6, "GB": 10**9, "TB": 10**12}[match[2]])
+
+
+def _read_space(inventory: ImageInventory) -> ImageInventory:
+    usage = {}
+    warnings = []
+    try:
+        rows = json.loads(_run((*inventory.connection.arguments, "system", "df", "-v", "--format", "{{json .Images}}")))
+        if not isinstance(rows, list):
+            raise ValueError("invalid disk usage")
+        usage = {row["ID"]: row for row in rows}
+    except (ImageManagementError, ValueError, KeyError, TypeError):
+        warnings.append("Docker 空间统计不可用；共享大小由可核验的层计算。")
+    images = []
+    for item in inventory.images:
+        sizes: tuple[int | None, ...] = (None,) * len(item.layers)
+        if item.layers:
+            try:
+                history = _run((*inventory.connection.arguments, "image", "history", "--no-trunc",
+                                "--human=false", "--format", '{"size":{{.Size}},"command":{{json .CreatedBy}}}', item.image_id))
+                rows = [json.loads(value) for value in history.splitlines()]
+                nonempty = []
+                for row in reversed(rows):
+                    size = row["size"]
+                    if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+                        raise ValueError("invalid history size")
+                    command = row["command"].split("#(nop)")[-1].strip().upper()
+                    metadata = re.match(r"^(ARG|ENV|LABEL|CMD|ENTRYPOINT|EXPOSE|USER|STOPSIGNAL|HEALTHCHECK|SHELL|VOLUME|ONBUILD)\b", command)
+                    if size or not metadata:
+                        nonempty.append(size)
+                # history 不提供 empty_layer。剔除已知元数据指令后，仅在层数/总量均吻合时
+                # 映射；WORKDIR/RUN 等真实零字节层保留，模糊历史仍显示未知。
+                if len(nonempty) == len(item.layers) and sum(nonempty) == item.size_bytes:
+                    sizes = nonempty
+            except (ImageManagementError, ValueError, KeyError, TypeError, AttributeError):
+                pass
+        row = usage.get(item.image_id, {})
+        shared, unique = _size_bytes(row.get("SharedSize")), _size_bytes(row.get("UniqueSize"))
+        images.append(replace(item, layer_sizes=tuple(sizes), shared_bytes=shared, unique_bytes=unique,
+                              space_source="docker-df" if shared is not None and unique is not None else ""))
+    if any(any(size is None for size in item.layer_sizes) for item in images):
+        warnings.append("部分层大小无法核验，显示未知；不会把缺失值当作零。")
+    return replace(inventory, images=tuple(images), warnings=tuple(warnings))
 
 
 def delete_images(inventory: ImageInventory, image_ids: tuple[str, ...]) -> tuple[ImageRemoval, ...]:
@@ -186,7 +288,7 @@ def delete_images(inventory: ImageInventory, image_ids: tuple[str, ...]) -> tupl
     selected = set(image_ids)
     if not selected or not selected <= previous.keys():
         raise ImageManagementError("请选择列表中的镜像")
-    current = list_images(inventory.connection)
+    current = list_images(inventory.connection, include_space=False)
     if current.daemon_id != inventory.daemon_id:
         raise ImageManagementError("Docker 环境已改变，请刷新后重新选择")
     indexed = {item.image_id: item for item in current.images}

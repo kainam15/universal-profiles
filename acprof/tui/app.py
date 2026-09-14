@@ -37,6 +37,7 @@ try:
         TabPane,
         TabbedContent,
         Tabs,
+        Tree,
     )
 except ModuleNotFoundError as exc:  # pragma: no cover - exercised before tests install deps
     if exc.name == "textual":
@@ -82,7 +83,7 @@ from acprof.host.image_management import (
 )
 from acprof.tui.images import (
     IMAGE_KINDS, ImageDeleteScreen, deletion_message, filtered_images,
-    format_image_size, image_detail, image_error,
+    format_image_size, image_detail, image_error, ImageTree, layer_detail, render_image_tree,
 )
 
 from acprof.tui.scrollbar import SolidScrollBarRender
@@ -189,6 +190,10 @@ class AcprofTui(BarCursorApp):
         self._image_operation = ""
         self._selected_image_ids: set[str] = set()
         self._visible_images: tuple[ManagedImage, ...] = ()
+        self._visible_image_layers = ()
+        self._image_view = "tree"
+        self._image_sort = ("name", False)
+        self._focused_image_id = ""
 
     def compose(self) -> ComposeResult:
         # A ticking clock would force periodic redraws during RAPL windows.
@@ -1567,6 +1572,11 @@ class AcprofTui(BarCursorApp):
         return self._is_busy() or self._check_running or self._latest_snapshot.measurement_active or self._pending_launch is not None
 
     def _current_image(self) -> ManagedImage | None:
+        if self._image_view == "layers":
+            return None
+        if self._image_view == "tree":
+            node = self.query_one("#image-tree", ImageTree).cursor_node
+            return node.data if node else None
         table = self.query_one("#image-table", DataTable)
         row = table.cursor_row
         return self._visible_images[row] if 0 <= row < len(self._visible_images) else None
@@ -1585,40 +1595,95 @@ class AcprofTui(BarCursorApp):
             return
         hidden = len(self._selected_image_ids - {item.image_id for item in self._visible_images})
         self._set_text(self.query_one("#image-status", Static), message(
-            "环境 {0} · 显示 {1}/{2} · 已选 {3}（筛选外 {4}）· 大小含共享层",
+            "环境 {0} · 匹配 {1}/{2} · 已选 {3}（筛选外 {4}）· ? 未知",
             self._image_inventory.connection.name, len(self._visible_images), len(self._image_inventory.images),
             len(self._selected_image_ids), hidden,
         ))
 
-    def _render_images(self, *, width: int | None = None) -> None:
+    def _render_images(self, *, width: int | None = None, current_id: str | None = None) -> None:
         table = self.query_one("#image-table", DataTable)
         current = self._current_image()
         self._visible_images = (() if self._image_inventory is None else filtered_images(
             self._image_inventory, self._input("image-search"), self._select("image-scope"),
         ))
+        sort_key, reverse = self._image_sort
+        key = {"name": lambda item: (item.display_name.casefold(), item.name),
+               "size": lambda item: item.size_bytes, "added": lambda item: item.added_bytes if item.added_bytes is not None else -1,
+               "containers": lambda item: len(item.containers), "repository": lambda item: item.name,
+               "tag": lambda item: item.name.rsplit(":", 1)[-1], "kind": lambda item: item.kind,
+               "parent": lambda item: item.parent_id}[sort_key]
+        self._visible_images = tuple(sorted(self._visible_images, key=key, reverse=reverse))
         table.clear(columns=True)
         reference_width = max(30, (self.size.width if width is None else width) - 44)
         tag_width = max(12, min(28, reference_width * 2 // 5))
         repository_width = max(18, min(75, reference_width - tag_width))
-        for title, key, column_width in (("✓", "selected", 3), ("Repository", "repository", repository_width),
-                                         ("Tag", "tag", tag_width),
-                                         ("类型", "kind", 8), ("完整大小", "size", 10), ("容器", "containers", 4)):
+        for title, key, column_width in (("✓", "selected", 2), ("环境 / 模型", "name", max(20, reference_width)),
+                                         ("完整大小", "size", 10), ("新增大小", "added", 10),
+                                         ("容器", "containers", 4), ("基于", "parent", 26),
+                                         ("类型", "kind", 8), ("Repository", "repository", repository_width),
+                                         ("Tag", "tag", tag_width)):
             table.add_column(Text(self.tr(title)), key=key, width=column_width)
+        indexed = {item.image_id: item for item in self._image_inventory.images} if self._image_inventory else {}
         for item in self._visible_images:
             repository, separator, tag = item.name.rpartition(":")
+            parent = indexed.get(item.parent_id)
             table.add_row(
                 Text("✓" if item.image_id in self._selected_image_ids else "—" if item.containers else "□"),
+                Text(item.display_name + " · " + item.image_id[7:13], overflow="ellipsis", no_wrap=True),
+                Text(format_image_size(item.size_bytes)), Text(format_image_size(item.added_bytes)),
+                Text(str(len(item.containers))), Text(parent.display_name if parent else "?", overflow="ellipsis", no_wrap=True),
+                Text(self.tr(IMAGE_KINDS[item.kind])),
                 Text(repository if separator else item.name, overflow="ellipsis", no_wrap=True),
                 Text(tag if separator else "—", overflow="ellipsis", no_wrap=True),
-                Text(self.tr(IMAGE_KINDS[item.kind])),
-                Text(format_image_size(item.size_bytes)), Text(str(len(item.containers))), key=item.image_id,
+                key=item.image_id,
             )
-        if current:
-            row = next((i for i, item in enumerate(self._visible_images) if item.image_id == current.image_id), 0)
-            table.move_cursor(row=row, column=0, animate=False)
+        if current_id is None:
+            current_id = current.image_id if current else self._focused_image_id
+        row = next((i for i, item in enumerate(self._visible_images) if item.image_id == current_id), 0)
+        table.move_cursor(row=row, column=0, animate=False)
+        render_image_tree(self.query_one("#image-tree", ImageTree), self._image_inventory, self._visible_images,
+                          self._selected_image_ids, current_id, self.tr, (width or self.size.width) - 6)
+        self._render_image_layers()
         self._image_selection_status()
         self._update_image_controls()
         self._show_image_detail()
+
+    def _render_image_layers(self) -> None:
+        table = self.query_one("#image-layer-table", DataTable)
+        current = self._visible_image_layers[table.cursor_row].chain_id if 0 <= table.cursor_row < len(self._visible_image_layers) else ""
+        shown = {item.image_id for item in self._visible_images}
+        self._visible_image_layers = tuple(sorted((layer for layer in self._image_inventory.layers
+            if shown.intersection(layer.image_ids)), key=lambda layer: (-len(layer.image_ids), -(layer.size_bytes or 0), layer.chain_id))) if self._image_inventory else ()
+        table.clear(columns=True)
+        for title, key, width in (("Layer / Diff ID", "diff", 23), ("层大小", "size", 12),
+                                  ("引用镜像", "refs", 10), ("Chain ID", "chain", 23)):
+            table.add_column(self.tr(title), key=key, width=width)
+        for layer in self._visible_image_layers:
+            table.add_row(Text(layer.diff_id, overflow="ellipsis", no_wrap=True), format_image_size(layer.size_bytes),
+                          str(len(layer.image_ids)), Text(layer.chain_id, overflow="ellipsis", no_wrap=True), key=layer.chain_id)
+        table.move_cursor(row=next((i for i, layer in enumerate(self._visible_image_layers) if layer.chain_id == current), 0), animate=False)
+
+    @on(Button.Pressed, "#image-view-tree, #image-view-list, #image-view-layers")
+    def image_view_changed(self, event: Button.Pressed) -> None:
+        if self._images_unavailable():
+            return
+        current = self._current_image()
+        if current:
+            self._focused_image_id = current.image_id
+        self._image_view = event.button.id.removeprefix("image-view-")
+        self.query_one("#image-browser", ContentSwitcher).current = {
+            "tree": "image-tree-view", "list": "image-table", "layers": "image-layer-table"}[self._image_view]
+        for view in ("tree", "list", "layers"):
+            self.query_one("#image-view-" + view, Button).variant = "primary" if view == self._image_view else "default"
+        self._render_images(current_id=self._focused_image_id)
+
+    @on(DataTable.HeaderSelected, "#image-table")
+    def sort_image_table(self, event: DataTable.HeaderSelected) -> None:
+        key = event.column_key.value
+        if self._images_unavailable() or key == "selected":
+            return
+        self._image_sort = (key, not self._image_sort[1] if self._image_sort[0] == key else False)
+        self._render_images()
 
     @on(Input.Changed, "#image-search")
     @on(Select.Changed, "#image-scope")
@@ -1627,13 +1692,25 @@ class AcprofTui(BarCursorApp):
             self._render_images()
 
     @on(DataTable.RowHighlighted, "#image-table")
+    @on(DataTable.RowHighlighted, "#image-layer-table")
+    @on(Tree.NodeHighlighted, "#image-tree")
     def _show_image_detail(self) -> None:
+        if self._image_view == "layers":
+            row = self.query_one("#image-layer-table", DataTable).cursor_row
+            layer = self._visible_image_layers[row] if 0 <= row < len(self._visible_image_layers) else None
+            self._set_text(self.query_one("#image-detail", Static), layer_detail(layer, self._image_inventory) if layer else
+                           "没有匹配的层；可调整筛选或点击刷新。")
+            self._update_image_controls()
+            return
         item = self._current_image()
-        self._set_text(self.query_one("#image-detail", Static), image_detail(item) if item else
+        if item:
+            self._focused_image_id = item.image_id
+        self._set_text(self.query_one("#image-detail", Static), image_detail(item, self._image_inventory) if item and self._image_inventory else
                        "没有匹配的镜像；可调整筛选或点击刷新。")
         self._update_image_controls()
 
     @on(DataTable.RowSelected, "#image-table")
+    @on(Tree.NodeSelected, "#image-tree")
     @on(Button.Pressed, "#image-toggle")
     def toggle_image_selection(self) -> None:
         if self._images_unavailable():
@@ -1648,11 +1725,7 @@ class AcprofTui(BarCursorApp):
             self._selected_image_ids.remove(item.image_id)
         else:
             self._selected_image_ids.add(item.image_id)
-        self.query_one("#image-table", DataTable).update_cell(
-            item.image_id, "selected", Text("✓" if item.image_id in self._selected_image_ids else "□"),
-        )
-        self._image_selection_status()
-        self._update_image_controls()
+        self._render_images()
 
     @on(Button.Pressed, "#image-clear")
     def clear_image_selection(self) -> None:

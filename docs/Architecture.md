@@ -63,6 +63,7 @@ flowchart TD
 | `dependency_images` | 平台与依赖环境的内容缓存、安装配方指纹、完整清单和标签核验；主构建及容器 CI 共用 |
 | `runtime_images` | profile/平台选择、模型层与代码层构建、父镜像绑定、运行清单及不可变 image ID |
 | `image_management` | 用户触发的 Docker 镜像清单、标签合并、容器引用检查及按确认清单删除；不参与采集 |
+| `image_graph` | 从镜像元数据、依赖锁身份与层链解析父子关系、逻辑名称、共享层和按选择集合去重的释放估算；不访问 Docker |
 | `runtime_validation` | 矩阵前的独立 CPU／GPU 完整推理验证及报告，不生成测量行 |
 | `input_plan` | 手动和自动尺度规划、规划用 probe、payload 物化与输入计划写入 |
 | `model_schema` | 任务输入输出描述与推理精度说明 |
@@ -138,7 +139,7 @@ dry-run、已有数据完整性判断、计划复用、备份和发布顺序沿�
 `reports` 用标准库校验已有统计/对照 JSON，并提供带单位和口径的表格数据；不加载 Textual 或采集依赖。
 统计页通过 `commands.build_stats_command` 启动既有 `stats.py`，沿用 App 的进程互斥、停止和日志流程；
 完成后在后台读取一次报告并更新表格。读取期间锁定启动入口，不定时扫描 CSV 或自动运行开销实验。
-`images` 提供镜像筛选、大小显示和可滚动的删除确认；`views` 构建镜像页，`app` 管理后台查询和删除的互斥状态。
+`images` 提供镜像树、筛选、空间详情、层引用和可滚动的删除确认；`views` 构建三个视图，`app` 管理切换、选择和后台操作的互斥状态。
 Docker 访问由标准库模块 `host.image_management` 执行，固定连接并复核 daemon ID、镜像 ID 和全部标签。
 打开页面、切换筛选和语言只操作内存中的清单；手动刷新和删除才访问 Docker，期间禁止启动实验。
 
