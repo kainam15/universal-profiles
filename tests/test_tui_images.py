@@ -694,6 +694,21 @@ class TuiImagesTests(unittest.IsolatedAsyncioTestCase):
                             self.assertEqual(header_offset(table, index)[0], start[0] - 5)
                             self.assertEqual(table.row_count, 3 if view == "list" else 4)
                             self.assertIsNone(app.mouse_captured)
+                            if view == "list":
+                                checkbox_edge = header_offset(table)
+                                name_edge = header_offset(table, 1)
+                                row_before = table.render_line(1)
+                                table.scroll_to(x=6, animate=False, force=True)
+                                await pilot.pause()
+                                self.assertEqual(header_offset(table), checkbox_edge)
+                                self.assertEqual(header_offset(table, 1)[0], name_edge[0] - 6,
+                                                 "环境 / 模型列应随数据横向滚动")
+                                self.assertEqual(table.render_line(1).crop(0, 3).text,
+                                                 row_before.crop(0, 3).text)
+                                self.assertEqual(table.render_line(1).crop(3, 23).text,
+                                                 row_before.crop(9, 29).text)
+                                table.scroll_to(x=0, animate=False, force=True)
+                                await pilot.pause()
                 self.assertEqual(len(self.docker.commands), commands)
 
     async def test_measurement_interrupts_drag_and_unlocks_afterwards(self):

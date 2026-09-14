@@ -617,7 +617,7 @@ def compose_images_tab(app: AcprofTui) -> ComposeResult:
                     yield ImageTree("", id="image-tree", classes="image-control")
                 for table in (
                     ImageTable(id="image-table", classes="image-control", cursor_type="row",
-                               zebra_stripes=True, fixed_columns=2),
+                               zebra_stripes=True, fixed_columns=1),
                     ResizableDataTable(id="image-layer-table", classes="image-control", cursor_type="row", zebra_stripes=True),
                 ):
                     yield app._localized_widget(table)
