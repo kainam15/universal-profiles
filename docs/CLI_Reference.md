@@ -30,6 +30,21 @@ TUI 保存实际使用的绝对路径，相对输入以项目根目录为基准�
 恢复路径不扫描目录、不读取 CSV、不检查文件存在性；实际读取摘要、绘图或补采时再验证。
 自动写入复用现有原子替换和错误隔离，保留已保存的 UI 偏好、实验默认参数及未涉及的历史字段。
 
+### TUI 终端颜色
+
+TUI 默认使用 `--color-system truecolor`，直接输出主题中的 RGB 颜色。默认“深海蓝”沿用
+VS Code 中的外观：背景 `#15232d`、输入框与面板 `#1c2e3b`、强调色 `#66b8c4`、文字 `#e2ebef`。
+全部主题均使用明确颜色，控件不依赖终端可重定义的 ANSI 基础色；原有主题选择及保存格式不变。
+
+Windows Terminal、VS Code 集成终端等支持真彩色的客户端，通过 SSH 运行时即使缺少
+`COLORTERM`，默认模式也保留 RGB 输出。颜色模式仅作用于 TUI 渲染器，不修改 shell 配置、
+环境变量或采集子进程的环境，也不启动终端探测或刷新定时器。
+
+确实只支持 256 色的终端可运行 `./acprof-tui --color-system 256`，颜色按扩展调色板近似，
+不能精确还原 RGB。`--color-system auto` 恢复 Textual 的环境检测：通常由 `TERM` 和
+`COLORTERM` 决定色深；显式设置的 `TEXTUAL_COLOR_SYSTEM` 也只在此模式下沿用。
+`NO_COLOR` 在所有模式下仍由 Textual 转为单色显示。颜色模式只影响本次启动，不写入 `tui.json`。
+
 ## CLI 参数
 
 以下参数表对应 `run.py`。示例命令见 [README](../README.md#运行正式实验)，

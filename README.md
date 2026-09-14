@@ -291,6 +291,10 @@ python run.py --help
 ./acprof-tui --model google-bert/bert-base-uncased --preset smoke
 ```
 
+默认以 RGB 真彩色显示，普通终端和 VS Code 使用相同的深海蓝配色；SSH 未传递 `COLORTERM`
+也不会自动降级。仅支持 256 色的终端可加 `--color-system 256`，需要环境自动检测时使用
+`--color-system auto`；具体行为见[终端颜色说明](docs/CLI_Reference.md#tui-终端颜色)。
+
 TUI 分为“实验配置”“运行监控”“绘图工具”“统计报告”“补采工具”和“设置”六页。实验页集中填写模型、资源矩阵和
 输入规模，提供三种预设及自动命令预览；底部固定显示环境检查、最大输入探测和开始采集按钮。
 表单会随终端宽度切换排列。监控页显示 case 级进度和日志；绘图页通过结果 CSV 读取摘要、生成图表，

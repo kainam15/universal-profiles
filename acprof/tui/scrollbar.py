@@ -27,7 +27,7 @@ class SolidScrollBarRender(ScrollBarRender):
         thickness: int = 1,
         vertical: bool = True,
         back_color: Color = Color.parse("#555555"),
-        bar_color: Color = Color.parse("bright_magenta"),
+        bar_color: Color = Color.parse("#66b8c4"),
     ) -> Segments:
         size = max(0, int(size))
         thickness = max(0, int(thickness))

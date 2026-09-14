@@ -22,9 +22,10 @@ class ThemePalette:
     def theme_kwargs(self) -> dict[str, str | bool]:
         values = asdict(self)
         values.pop("label")
-        return {**values, "accent": self.primary}
+        return {**values, "accent": self.primary, "ansi": False}
 
 
+# Explicit RGB palettes keep the VS Code appearance across terminal themes.
 # Keep the original IDs stable so saved preferences retain their appearance.
 THEME_CATALOG = (
     ThemePalette(

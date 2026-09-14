@@ -11,11 +11,12 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Sequence
+from typing import Literal, Sequence
 from uuid import uuid4
 
 try:
     from textual import events, on, work
+    from rich.console import Console
     from rich.text import Text
     from textual.app import ComposeResult
     from textual.binding import Binding
@@ -148,8 +149,25 @@ class AcprofTui(BarCursorApp):
 
     def __init__(
         self, initial_config: RunConfig | None = None, *, settings_path: Path | None = None,
+        color_system: Literal["truecolor", "256", "auto"] = "truecolor",
     ):
-        super().__init__()
+        super().__init__(ansi_color=False)
+        if color_system != "auto":
+            # SSH often omits COLORTERM even when the client supports RGB.
+            # Configure only this renderer; keep the subprocess environment intact.
+            self.console = Console(
+                color_system=color_system,
+                file=self.console.file,
+                markup=True,
+                highlight=False,
+                emoji=False,
+                legacy_windows=False,
+                force_terminal=True,
+                safe_box=False,
+                soft_wrap=False,
+                # Textual applies its own NO_COLOR filter to the whole frame.
+                no_color=False,
+            )
         self.animation_level = "none"
         self.settings_path = settings_path or default_settings_path(PROJECT_DIR)
         self._saved_settings, self._settings_warning = load_settings(

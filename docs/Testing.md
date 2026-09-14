@@ -38,6 +38,7 @@ git diff --check
 | 字段、能耗、资源与补采 | `tests/test_energy_cpu.py`、`tests/test_resource_usage.py`、`tests/test_posthoc.py` |
 | 页面、设置与焦点 | `tests/test_tui_layout_settings.py`、`tests/test_tui_interaction.py`、`tests/test_tui_input.py` |
 | 日志、语言与命令 | `tests/test_tui_log_view.py`、`tests/test_tui_i18n.py`、`tests/test_tui.py` |
+| 终端色深与 RGB 输出 | `tests/test_tui_colors.py`；检查缺失/空 `COLORTERM`、真彩色、256 色与自动检测 |
 | 统计报告、异步读取与计算 | `tests/test_tui_reports.py`、`tests/test_report_views.py`、`tests/test_uncertainty.py` |
 | Docker 镜像树、层空间、标签删除与采集互斥 | `tests/test_image_management.py`、`tests/test_tui_images.py` |
 | 表头拖动、固定列、滚动范围与鼠标释放 | `tests/test_tui_table_resize.py`、`tests/test_tui_all_tables.py`、`tests/test_tui_images.py` |
@@ -91,6 +92,9 @@ git diff --check
 页面切换、挂载和布局更新后等待框架处理事件，再判断点击和焦点，不用堆叠固定 `sleep` 掩盖竞态。
 
 Headless 能检查布局、键盘路径和输出状态；SVG、tmux 与真实 VS Code/SSH 终端是不同证据。
+颜色回归还需检查实际渲染器输出的 SGR 颜色序列：Textual 的 SVG 导出固定使用真彩色，
+单看 SVG 无法发现终端输出被降级为 256 色的问题。终端颜色变更覆盖输入选中、下拉菜单、
+确认按钮与深浅主题；PTY 输出仍不能代替用户客户端实际显示的验收。
 原生光标、剪贴板、闪烁和宿主快捷键路由只能在相应终端确认。交付注明实际验证环境；
 流程见 [TUI 回归 Skill](../.agents/skills/acprof-textual-regression/SKILL.md)，模块分工见[架构](Architecture.md#tui-与兼容维护)。
 

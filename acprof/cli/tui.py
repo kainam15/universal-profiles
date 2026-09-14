@@ -25,6 +25,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Initial form preset (overrides saved experiment defaults)",
     )
+    parser.add_argument(
+        "--color-system",
+        choices=("truecolor", "256", "auto"),
+        default="truecolor",
+        help="Terminal colors: RGB by default; use 256 for older terminals or auto for environment detection",
+    )
     return parser
 
 
@@ -32,7 +38,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
-        app = AcprofTui()
+        app = AcprofTui(color_system=args.color_system)
     except ValueError as exc:
         parser.error(str(exc))
     config = app.initial_config
