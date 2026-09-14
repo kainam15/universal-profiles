@@ -110,6 +110,42 @@ class DockerFixture:
         return [command for command in self.commands if "rm" in command]
 
 
+def dependency_images(docker, profile="moss-transformers560"):
+    from pathlib import Path
+    from acprof.host.dependency_images import platform_fingerprint
+    from acprof.runtime_profiles import ENVIRONMENTS, PLATFORMS, environment_id
+
+    root = Path(__file__).resolve().parents[1]
+    labels = {"org.acprof.platform": "cu128",
+              "org.acprof.platform-build-fingerprint": platform_fingerprint(PLATFORMS["cu128"])}
+    docker.images[RUNTIME] = image(RUNTIME, ["acprof-platform-cu128:test"], 100, ["os", "deps"],
+                                        labels={**labels, "org.acprof.image-kind": "platform"})
+    env = {**labels, "org.acprof.image-kind": "environment",
+           "org.acprof.environment": environment_id(ENVIRONMENTS[profile], root),
+           "org.acprof.environment-build-fingerprint": "environment-key"}
+    docker.images[WEIGHTS] = image(WEIGHTS, ["acprof-runtime-env:test"], 400,
+                                        ["os", "deps", "weights"], labels=env)
+    docker.images[FINAL] = image(FINAL, ["acprof-weights-multimodal-demo--model:test"], 410,
+                                      ["os", "deps", "weights", "code"], "demo/model",
+                                      {**env, "org.acprof.image-kind": "weights"})
+    docker.history_overrides[RUNTIME] = [
+        {"size": 80, "command": "RUN /bin/sh -c python /build/environment_tools.py platform # buildkit"},
+        {"size": 0, "command": "COPY requirements.lock expectation.json /opt/acprof/ # buildkit"},
+        {"size": 20, "command": "RUN /bin/sh -c python /build/environment_tools.py system /opt/acprof/system.lock # buildkit"},
+        {"size": 0, "command": "COPY system.lock /opt/acprof/system.lock # buildkit"},
+    ]
+    docker.history_overrides[WEIGHTS] = [
+        {"size": 300, "command": "RUN |2 ENVIRONMENT_ID=id ENVIRONMENT_BUILD_FINGERPRINT=key /bin/sh -c python /build/environment_tools.py environment # buildkit"},
+        {"size": 0, "command": "COPY requirements.lock expectation.json /opt/acprof/ # buildkit"},
+        *docker.history_overrides[RUNTIME],
+    ]
+    docker.history_overrides[FINAL] = [
+        {"size": 10, "command": 'RUN /bin/sh -c if [ -s /run/secrets/hf_token ]; then export HF_TOKEN="$(cat /run/secrets/hf_token)"; fi; python /opt/acprof/download_model.py # buildkit'},
+        {"size": 0, "command": "COPY acprof/container/download_model.py acprof/container/model_files.py /opt/acprof/ # buildkit"},
+        *docker.history_overrides[WEIGHTS],
+    ]
+
+
 class ImageManagementTests(unittest.TestCase):
     def setUp(self):
         self.docker = DockerFixture()
@@ -236,6 +272,47 @@ class ImageManagementTests(unittest.TestCase):
         runtime = next(item for item in list_images().images if item.image_id == RUNTIME)
         self.assertNotIn("nlp", runtime.display_name)
         self.assertIn("env-unknown", runtime.display_name)
+
+    def test_dependencies_show_locked_versions_and_exclude_inherited_packages(self):
+        dependency_images(self.docker)
+        indexed = {item.image_id: item for item in list_images().images}
+        platform, runtime, weights = (indexed[key] for key in (RUNTIME, WEIGHTS, FINAL))
+        self.assertEqual(getattr(platform, "dependency_source", ""), "platform-lock")
+        self.assertIn(("torch", "2.11.0+cu128"), platform.python_dependencies)
+        self.assertIn(("build-essential:amd64", "12.12"), platform.system_dependencies)
+        self.assertNotIn("base-files:amd64", dict(platform.system_dependencies), "不能把系统基础镜像已有包算成本层安装制品")
+        self.assertEqual(runtime.dependency_source, "environment-lock")
+        self.assertIn(("transformers", "5.6.0"), runtime.python_dependencies)
+        self.assertIn(("torchaudio", "2.11.0+cu128"), runtime.python_dependencies)
+        self.assertNotIn("torch", dict(runtime.python_dependencies))
+        self.assertEqual(runtime.system_dependencies, ())
+        self.assertEqual(weights.dependency_source, "inherited")
+        self.assertEqual(weights.python_dependencies, ())
+        self.assertFalse(any("run" in cmd or "create" in cmd for cmd in self.docker.commands))
+
+    def test_dependencies_never_use_current_profile_for_stale_or_unverified_images(self):
+        dependency_images(self.docker)
+        self.docker.images[RUNTIME]["Config"]["Labels"]["org.acprof.platform-build-fingerprint"] = "old-platform"
+        self.docker.images[WEIGHTS]["Config"]["Labels"]["org.acprof.environment"] = "old-environment"
+        for item in list_images().images:
+            self.assertEqual(getattr(item, "dependency_source", ""), "unknown")
+            self.assertEqual(item.python_dependencies, ())
+        dependency_images(self.docker)
+        # 继承已知标签后另装包的自定义镜像不能显示旧锁或“无新增”。
+        self.docker.history_overrides[FINAL].insert(0, {"size": 0, "command": "RUN pip install private-package"})
+        final = next(item for item in list_images().images if item.image_id == FINAL)
+        self.assertEqual(final.dependency_source, "unknown")
+
+    def test_dependencies_handle_missing_lock_and_failed_history_without_losing_inventory(self):
+        dependency_images(self.docker)
+        with patch("acprof.runtime_profiles.platform_identity", side_effect=OSError("lock missing")):
+            inventory = list_images()
+        self.assertEqual(len(inventory.images), 3)
+        self.assertTrue(all(getattr(item, "dependency_source", "") == "unknown" for item in inventory.images))
+        self.docker.history_overrides[WEIGHTS] = [{"size": 0, "command": None}]
+        indexed = {item.image_id: item for item in list_images().images}
+        self.assertEqual(indexed[WEIGHTS].dependency_source, "unknown")
+        self.assertEqual(indexed[FINAL].dependency_source, "unknown")
 
     def test_build_identity_beats_similar_prefix_and_conflicting_parent_is_rejected(self):
         self.docker.images[RUNTIME]["Config"]["Labels"] = {"org.acprof.environment-build-fingerprint": "env-fingerprint"}

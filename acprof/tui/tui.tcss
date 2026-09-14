@@ -215,11 +215,9 @@ Button:disabled, Button:disabled:hover, Button:disabled:focus, Button:disabled.-
 #image-status { height: auto; max-height: 3; color: $text-muted; overflow-y: auto; }
 #image-browser { height: 1fr; min-height: 3; }
 #image-tree-view, #image-table, #image-layer-table { height: 1fr; }
-#image-tree { height: 1fr; }
-#image-tree-header { height: 1; color: $text-muted; background: $panel; padding-right: 4; }
-#image-tree-name { width: 1fr; height: 1; }
-.image-tree-size { width: 11; height: 1; content-align: right middle; }
-#image-tree-uses { width: 4; height: 1; content-align: right middle; }
+#image-tree { height: 1fr; overflow-y: scroll; scrollbar-size: 1 1; }
+#image-tree > .image-tree--path { color: $block-cursor-background; text-style: bold; }
+#image-tree-header { height: 1; color: $text-muted; background: $panel; padding-right: 1; scrollbar-size: 0 0; }
 #image-detail-scroll { height: 10; border-top: solid $panel; }
 #image-detail { height: auto; color: $text-muted; }
 AcprofTui.short #image-detail-scroll { height: 5; }

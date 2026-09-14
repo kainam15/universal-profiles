@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.reactive import var
+from textual.strip import Strip
+from rich.segment import Segment
+from rich.style import Style
 from rich.text import Text
 from textual.widgets import Button, DataTable, Static, Tree
 
 from acprof.host.image_graph import reclaimable_image_bytes
 from acprof.host.image_management import ImageInventory, ImageLayer, ImageManagementError, ManagedImage
 from acprof.tui.i18n import join_messages, message
+from acprof.tui.table import ResizableDataTable
 from acprof.tui.views import ConfirmActionScreen
 
 
@@ -18,17 +24,149 @@ IMAGE_KINDS = {
     "base": "公共基础", "runtime": "运行依赖", "weights": "模型文件",
     "model": "推理服务", "debug": "调试镜像", "other": "其它镜像", "untagged": "无标签",
 }
-IMAGE_HINT = "点击刷新读取 Docker；←→ 折叠/展开，空格勾选，列表表头可排序。"
+IMAGE_HINT = "刷新读取 Docker；点行查看，点 □/☑ 勾选；空格切换，←→ 展开/折叠。"
+IMAGE_PLATFORMS = {"cpu": "CPU", "cu124": "CUDA 12.4", "cu128": "CUDA 12.8"}
+# 已知环境别名对应的版本来自依赖锁；不猜测其它名称中的数字含义。
+IMAGE_RUNTIME_NAMES = {
+    "moss-transformers560": "moss-transformers5.6.0",
+    "multimodal-transformers4576": "multimodal-transformers4.57.6",
+}
 
 
-class ImageTable(DataTable):
+class ImageTable(ResizableDataTable):
     BINDINGS = [Binding("space", "select_cursor", "勾选镜像", show=False)]
+
+    async def on_click(self, event: events.Click) -> None:
+        event.prevent_default()
+        event.stop()
+        if self.disabled or event.button != 1 or self._consume_resize_click(event):
+            return
+        # 保留原生表头、光标和滚动处理，禁止重复点当前行发出勾选事件。
+        with self.prevent(DataTable.RowSelected):
+            await super()._on_click(event)
+        meta = event.style.meta
+        if meta.get("column") == 0 and self.is_valid_row_index(meta.get("row", -1)) and not meta.get("out_of_bounds"):
+            self.action_select_cursor()
+
+
+class ImageTreeHeader(ResizableDataTable):
+    """树表头复用相同拖动交互，并与树的内容宽度和横向滚动同步。"""
+
+    tree: ImageTree | None = None
+    minimum_name_width = 6
+
+    def on_mount(self) -> None:
+        self.tree = self.parent.query_one(ImageTree)
+        self.tree.column_header = self
+        self.set_columns(self.size.width)
+
+    def minimum_column_width(self, key: str | None) -> int:
+        return self.minimum_name_width if key == "name" else 1
+
+    def set_columns(self, width: int) -> None:
+        self.clear(columns=True)
+        for title, key, size in (("镜像依赖", "name", max(15, width - 32)),
+                                 ("完整大小", "size", 10), ("新增大小", "added", 10), ("容器", "containers", 4)):
+            self.add_column(Text(self.app.tr(title)), key=key, width=size)
+
+    @on(ResizableDataTable.ColumnResized)
+    def resize_tree_columns(self, event: ResizableDataTable.ColumnResized) -> None:
+        event.stop()
+        if self.tree is not None:
+            self.tree.set_column_widths(tuple(column.get_render_width(self) for column in self.ordered_columns))
+
+    def watch_scroll_x(self, old_value: float, new_value: float) -> None:
+        super().watch_scroll_x(old_value, new_value)
+        if self.tree is not None and self.tree.scroll_x != new_value:
+            self.tree.scroll_to(x=new_value, animate=False, force=True)
 
 
 class ImageTree(Tree[ManagedImage]):
+    auto_expand = var(False)
+    COMPONENT_CLASSES = Tree.COMPONENT_CLASSES | {"image-tree--path"}
     BINDINGS = [Binding("space", "select_cursor", show=False),
                 Binding("left", "collapse_branch", show=False),
                 Binding("right", "expand_branch", show=False)]
+    column_header: ImageTreeHeader | None = None
+
+    def watch_cursor_line(self, previous_line: int, line: int) -> None:
+        super().watch_cursor_line(previous_line, line)
+        if previous_line != line:
+            # 原生 Tree 只刷新选中节点的子树；祖先连接线也需要更新。
+            self.refresh()
+
+    def render_line(self, y: int) -> Strip:
+        strip = super().render_line(y)
+        scroll_x, scroll_y = self.scroll_offset
+        line = y + scroll_y
+        # 复用 Textual 8.2.8 的标签位置，沿用折叠、隐藏根节点和滚动的布局。
+        region = self._get_label_region(line)
+        if region is None or not self.show_guides:
+            return strip
+        spans = [(0, region.x, self.get_component_rich_style("tree--guides", partial=True))]
+        node = self.cursor_node
+        while node is not None and node.parent is not None:
+            parent = node.parent
+            if parent is self.root and not self.show_root:
+                break
+            if parent.line < line <= node.line:
+                child_region = self._get_label_region(node.line)
+                if child_region is not None:
+                    x = child_region.x - self.guide_depth
+                    # 经过其它分支时只亮竖线；到路径节点才延伸横线。
+                    end = child_region.x - 1 if line == node.line else x + 1
+                    spans.append((x, end, self.get_component_rich_style("image-tree--path", partial=True)))
+                break
+            node = parent
+        for start, end, style in spans:
+            start, end = max(0, start - scroll_x), min(strip.cell_length, end - scroll_x)
+            if start < end:
+                strip = Strip.join((
+                    strip.crop(0, start),
+                    Strip(Segment.apply_style(strip.crop(start, end), post_style=style)),
+                    strip.crop(end),
+                ))
+        return strip
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.name_labels: dict[str, Text] = {}
+
+    def set_column_widths(self, widths: tuple[int, ...]) -> None:
+        def update(node, depth):
+            for child in node.children:
+                item = child.data
+                label = self.name_labels[item.image_id].copy()
+                label.truncate(max(4, widths[0] - depth * self.guide_depth - 2), overflow="ellipsis", pad=True)
+                for value, width in zip((format_image_size(item.size_bytes), format_image_size(item.added_bytes),
+                                         str(len(item.containers))), widths[1:]):
+                    cell = Text(value)
+                    cell.truncate(width - 2, overflow="ellipsis")
+                    cell.align("left", width - 2)
+                    label.append(" ")
+                    label.append(cell)
+                    label.append(" ")
+                child.set_label(label)
+                update(child, depth + 1)
+        update(self.root, 0)
+        # TreeNode.set_label 只刷新行；重算虚拟宽度后才能滚到新增的列区域。
+        self._invalidate()
+
+    def watch_scroll_x(self, old_value: float, new_value: float) -> None:
+        super().watch_scroll_x(old_value, new_value)
+        if self.column_header is not None and self.column_header.scroll_x != new_value:
+            self.column_header.scroll_to(x=new_value, animate=False, force=True)
+
+    async def on_click(self, event: events.Click) -> None:
+        event.prevent_default()
+        event.stop()
+        if self.disabled or event.button != 1:
+            return
+        meta = event.style.meta
+        if meta.get("toggle") or meta.get("image_checkbox"):
+            await super()._on_click(event)
+        elif "line" in meta:
+            self.cursor_line = meta["line"]
 
     def render_label(self, node, base_style, style):
         label = super().render_label(node, base_style, style)
@@ -81,6 +219,53 @@ def format_image_size(value: int | None) -> str:
     return f"{value} B"
 
 
+def image_display_name(item: ManagedImage, parent: ManagedImage | None = None) -> str:
+    """显示平台与依赖版本；树中父节点已说明的平台无需在子节点重复。"""
+    platform = IMAGE_PLATFORMS.get(item.platform_id, item.platform_id)
+    if item.kind == "base" and item.platform_id in IMAGE_PLATFORMS:
+        return platform
+    if item.kind == "runtime" and item.environment_id:
+        profiles = (profile.removesuffix("-" + item.platform_id) if item.platform_id else profile
+                    for profile in item.profiles)
+        label = " / ".join(IMAGE_RUNTIME_NAMES.get(profile, profile) for profile in profiles)
+        label = label or "env-" + item.environment_id[:12]
+        inherited = (parent is not None and parent.kind in {"base", "runtime"}
+                     and parent.platform_id == item.platform_id and item.platform_id in IMAGE_PLATFORMS)
+        return label + (" · " + platform if platform and not inherited else "")
+    return item.display_name
+
+
+def dependency_packages(item: ManagedImage) -> list[str]:
+    # 先显示辨识环境最有用的包；版本一律取已匹配的锁，不从 profile 名称猜测。
+    priority = ("torch", "diffusers", "transformers", "sentence-transformers", "torchvision",
+                "torchaudio", "librosa", "scikit-learn", "pandas", "numpy", "triton")
+    order = {name: index for index, name in enumerate(priority)}
+    return [f"{name}=={version}" for name, version in sorted(
+        item.python_dependencies, key=lambda pair: (order.get(pair[0], len(order)), pair[0]))]
+
+
+def dependency_detail(item: ManagedImage) -> str:
+    if item.dependency_source == "unknown":
+        return message("本层依赖：未知（镜像身份、依赖锁或构建记录无法核验）。")
+    if item.dependency_source == "inherited":
+        return join_messages("\n", (
+            message("本层依赖：无新增包，继承父镜像。"),
+            message("本层添加模型文件；包依赖由运行环境提供。" if item.kind == "weights" else
+                    "本层添加推理服务代码与运行清单；包依赖由运行环境提供。"),
+            message("依赖来源：已核对的构建步骤与父镜像身份。"),
+        ))
+    packages = dependency_packages(item)
+    parts = [message("平台 Python 依赖（{0}，含基础镜像已有包）：\n{1}" if item.dependency_source == "platform-lock" else
+                     "本层新增 Python 依赖（{0}）：\n{1}", len(packages), ", ".join(packages) or message("无新增包"))]
+    if item.system_dependencies:
+        parts.append(message("本层系统安装制品（{0}）：\n{1}", len(item.system_dependencies),
+                             ", ".join(f"{name}={version}" for name, version in item.system_dependencies)))
+    else:
+        parts.append(message("系统包继承平台，本层无新增。"))
+    parts.append(message("依赖来源：与镜像身份匹配的锁文件；未执行实时包扫描。"))
+    return join_messages("\n", parts)
+
+
 def filtered_images(inventory: ImageInventory, query: str, scope: str) -> tuple[ManagedImage, ...]:
     terms = query.casefold().replace("/", "--").split()
     items = []
@@ -97,8 +282,9 @@ def filtered_images(inventory: ImageInventory, query: str, scope: str) -> tuple[
             continue
         if scope == "base" and item.kind != "base":
             continue
-        haystack = " ".join((*item.tags, item.image_id, item.model_id, item.display_name,
-                             item.environment_id, item.platform_id, *item.profiles)).casefold().replace("/", "--")
+        haystack = " ".join((*item.tags, item.image_id, item.model_id, item.display_name, image_display_name(item),
+                             item.environment_id, item.platform_id, *item.profiles, *dependency_packages(item),
+                             *(f"{name}={version}" for name, version in item.system_dependencies))).casefold().replace("/", "--")
         if all(term in haystack for term in terms):
             items.append(item)
     return tuple(items)
@@ -107,7 +293,7 @@ def filtered_images(inventory: ImageInventory, query: str, scope: str) -> tuple[
 def image_detail(item: ManagedImage, inventory: ImageInventory) -> str:
     indexed = {image.image_id: image for image in inventory.images}
     def path_name(image):
-        name = image.display_name
+        name = image_display_name(image, indexed.get(image.parent_id))
         if image.model_id:
             name = join_messages(" · ", (message(IMAGE_KINDS[image.kind]), name))
         return join_messages("", (name, " ≈" if image.parent_source == "layer-prefix" else ""))
@@ -120,6 +306,7 @@ def image_detail(item: ManagedImage, inventory: ImageInventory) -> str:
                "unknown": "本地父镜像未知"}
     parts = [
         message("继承路径：{0}", join_messages(" › ", path)),
+        dependency_detail(item),
         message("完整大小：{0} · 继承：{1} · 本镜像新增：{2}", format_image_size(item.size_bytes),
                 format_image_size(item.inherited_bytes), format_image_size(item.added_bytes)),
         message("删除预计释放：{0}", reclaimable_text(inventory, (item.image_id,))),
@@ -157,7 +344,7 @@ def layer_detail(layer: ImageLayer, inventory: ImageInventory) -> str:
         message("层大小：{0} · 引用镜像：{1}", format_image_size(layer.size_bytes), len(layer.image_ids)),
         message("相同 Diff ID 的不同父层链分开统计；引用包含筛选外镜像，按 image ID 去重。"),
         message("使用此层的镜像：\n{0}", "\n".join(
-            f"{indexed[key].display_name} · {key[7:19]}\n  {indexed[key].name}" for key in layer.image_ids)),
+            f"{image_display_name(indexed[key])} · {key[7:19]}\n  {indexed[key].name}" for key in layer.image_ids)),
     ))
 
 
@@ -170,27 +357,35 @@ def render_image_tree(tree: ImageTree, inventory: ImageInventory | None, visible
             collect(child)
     collect(tree.root)
     tree.clear()
+    tree.name_labels.clear()
     tree.show_root = False
+    header = tree.screen.query_one("#image-tree-header", ImageTreeHeader)
+    header.minimum_name_width = max((len(item.ancestor_ids) * tree.guide_depth + 4 for item in visible), default=6)
+    header.set_columns(width)
     if inventory is None:
         return
     indexed = {item.image_id: item for item in inventory.images}
     matches = {item.image_id for item in visible}
     shown = matches | {key for item in visible for key in item.ancestor_ids}
     nodes = {}
-    for item in sorted((indexed[key] for key in shown), key=lambda item: (len(item.ancestor_ids), item.display_name, item.image_id)):
+    for item in sorted((indexed[key] for key in shown), key=lambda item: (len(item.ancestor_ids), image_display_name(item), item.image_id)):
         parent = nodes.get(item.parent_id, tree.root)
-        marker = "✓" if item.image_id in selected else "—" if item.containers else "□"
-        # 同名不同版本保留短 ID；原始 repo/tag 始终在详情和列表中可见。
-        logical = f"{tr(IMAGE_KINDS[item.kind])} · {item.display_name}" if item.model_id else item.display_name
+        marker = "☑" if item.image_id in selected else "—" if item.containers else "□"
+        # 同名镜像仍按 image ID 分别管理；完整 ID 在详情中查看。
+        logical = image_display_name(item, parent.data)
+        if item.model_id:
+            logical = f"{tr(IMAGE_KINDS[item.kind])} · {logical}"
         evidence = " ≈" if item.parent_source == "layer-prefix" else " ?" if item.parent_source in {"ambiguous", "missing", "conflict"} else ""
-        name = f"{marker} {logical}{evidence} · {item.image_id[7:13]}"
-        name_width = max(15, width - 28 - len(item.ancestor_ids) * tree.guide_depth)
+        name = f" {marker}  {logical}{evidence}"
         label = Text(name, style="dim" if item.image_id not in matches else "")
-        label.truncate(name_width, overflow="ellipsis", pad=True)
-        label.append(f" {format_image_size(item.size_bytes):>10} {format_image_size(item.added_bytes):>10} {len(item.containers):>3}")
+        # 复选框及左右各一格留白可点击，不覆盖箭头、名称或数值。
+        if not item.containers:
+            label.stylize(Style(meta={"image_checkbox": True}), 0, 3)
+        tree.name_labels[item.image_id] = label
         nodes[item.image_id] = parent.add(label, data=item, expand=previous.get(item.image_id, True))
     for node in nodes.values():
         node.allow_expand = bool(node.children)
+    tree.set_column_widths(tuple(column.get_render_width(header) for column in header.ordered_columns))
     target = nodes.get(current_id) or next(iter(nodes.values()), None)
     while target and target.parent is not tree.root and not target.parent.is_expanded:
         target = target.parent

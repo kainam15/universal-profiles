@@ -50,6 +50,10 @@ class ManagedImage:
     unique_bytes: int | None = None
     space_source: str = ""
     layer_sizes: tuple[int | None, ...] = ()
+    python_dependencies: tuple[tuple[str, str], ...] = ()
+    system_dependencies: tuple[tuple[str, str], ...] = ()
+    dependency_source: str = "unknown"
+    dependency_stage: str = ""
 
     @property
     def name(self) -> str:
@@ -229,8 +233,9 @@ def list_images(connection: DockerConnection | None = None, *, include_space: bo
         return inventory
     # 仅手动刷新需要完整空间信息；删除前的身份核验不重复扫描 history。
     from acprof.host.image_graph import describe_inventory
+    from acprof.host.image_dependencies import describe_dependencies
     inventory = _read_space(inventory)
-    return describe_inventory(inventory)
+    return describe_dependencies(describe_inventory(inventory))
 
 
 def _size_bytes(value: object) -> int | None:
@@ -241,6 +246,8 @@ def _size_bytes(value: object) -> int | None:
 
 
 def _read_space(inventory: ImageInventory) -> ImageInventory:
+    from acprof.host.image_dependencies import dependency_stage
+
     usage = {}
     warnings = []
     try:
@@ -253,11 +260,13 @@ def _read_space(inventory: ImageInventory) -> ImageInventory:
     images = []
     for item in inventory.images:
         sizes: tuple[int | None, ...] = (None,) * len(item.layers)
+        stage = ""
         if item.layers:
             try:
                 history = _run((*inventory.connection.arguments, "image", "history", "--no-trunc",
                                 "--human=false", "--format", '{"size":{{.Size}},"command":{{json .CreatedBy}}}', item.image_id))
                 rows = [json.loads(value) for value in history.splitlines()]
+                stage = dependency_stage(rows)
                 nonempty = []
                 for row in reversed(rows):
                     size = row["size"]
@@ -275,7 +284,7 @@ def _read_space(inventory: ImageInventory) -> ImageInventory:
                 pass
         row = usage.get(item.image_id, {})
         shared, unique = _size_bytes(row.get("SharedSize")), _size_bytes(row.get("UniqueSize"))
-        images.append(replace(item, layer_sizes=tuple(sizes), shared_bytes=shared, unique_bytes=unique,
+        images.append(replace(item, layer_sizes=tuple(sizes), shared_bytes=shared, unique_bytes=unique, dependency_stage=stage,
                               space_source="docker-df" if shared is not None and unique is not None else ""))
     if any(any(size is None for size in item.layer_sizes) for item in images):
         warnings.append("部分层大小无法核验，显示未知；不会把缺失值当作零。")

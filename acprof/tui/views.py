@@ -13,7 +13,6 @@ from textual.widgets import (
     Checkbox,
     Collapsible,
     ContentSwitcher,
-    DataTable,
     Label,
     ProgressBar,
     Static,
@@ -25,6 +24,7 @@ from acprof.tui.i18n import LANGUAGE_OPTIONS
 from acprof.tui.input import BarCursorInput as Input
 
 from acprof.tui.log import SelectableLog
+from acprof.tui.table import ResizableDataTable
 
 from acprof.tui.themes import THEME_OPTIONS
 
@@ -437,10 +437,10 @@ def compose_monitor_tab(app: AcprofTui) -> ComposeResult:
                 expanded_symbol=EXPANDED_SYMBOL,
                 id="matrix-board",
             )):
-                yield DataTable(
+                yield app._localized_widget(ResizableDataTable(
                     id="matrix-table",
                     show_cursor=False,
-                )
+                ))
             with LogPanel(id="log-panel"):
                 with Horizontal(id="log-toolbar"):
                     yield app._localized_widget(Static("日志", id="log-title", markup=False))
@@ -496,7 +496,8 @@ def compose_reports_tab(app: AcprofTui) -> ComposeResult:
                 "CSV / 目录：计算统计；JSON：查看报告。采集结束后操作。",
                 id="report-status", markup=False,
             ))
-            yield DataTable(id="report-table", cursor_type="row", zebra_stripes=True, fixed_columns=1)
+            yield app._localized_widget(ResizableDataTable(
+                id="report-table", cursor_type="row", zebra_stripes=True, fixed_columns=1))
             yield app._localized_widget(Static(
                 "表格可滚动；选择一行查看口径与数据来源。",
                 id="report-detail", markup=False,
@@ -580,13 +581,13 @@ def compose_settings_tab(app: AcprofTui) -> ComposeResult:
 
 
 def compose_images_tab(app: AcprofTui) -> ComposeResult:
-    from acprof.tui.images import IMAGE_HINT, ImageTable, ImageTree
+    from acprof.tui.images import IMAGE_HINT, ImageTable, ImageTree, ImageTreeHeader
 
     with TabPane("镜像管理", id="images-tab"):
         with Vertical(id="image-panel"):
             with Horizontal(id="image-filters"):
                 yield app._localized_widget(Input(
-                    placeholder="搜索模型、标签或镜像 ID", id="image-search", classes="image-control",
+                    placeholder="搜索模型、依赖、标签或镜像 ID", id="image-search", classes="image-control",
                 ))
                 for label, view in (("镜像树", "tree"), ("镜像列表", "list"), ("层共享", "layers")):
                     yield app._localized_widget(Button(
@@ -611,15 +612,15 @@ def compose_images_tab(app: AcprofTui) -> ComposeResult:
             yield app._localized_widget(Static(IMAGE_HINT, id="image-status", markup=False))
             with ContentSwitcher(initial="image-tree-view", id="image-browser"):
                 with Vertical(id="image-tree-view"):
-                    with Horizontal(id="image-tree-header"):
-                        yield app._localized_widget(Static("镜像依赖", id="image-tree-name", markup=False))
-                        for title in ("完整大小", "新增大小"):
-                            yield app._localized_widget(Static(title, classes="image-tree-size", markup=False))
-                        yield app._localized_widget(Static("容器", id="image-tree-uses", markup=False))
+                    yield app._localized_widget(ImageTreeHeader(
+                        id="image-tree-header", classes="image-control", show_cursor=False))
                     yield ImageTree("", id="image-tree", classes="image-control")
-                yield ImageTable(id="image-table", classes="image-control", cursor_type="row",
-                                 zebra_stripes=True, fixed_columns=2)
-                yield DataTable(id="image-layer-table", classes="image-control", cursor_type="row", zebra_stripes=True)
+                for table in (
+                    ImageTable(id="image-table", classes="image-control", cursor_type="row",
+                               zebra_stripes=True, fixed_columns=2),
+                    ResizableDataTable(id="image-layer-table", classes="image-control", cursor_type="row", zebra_stripes=True),
+                ):
+                    yield app._localized_widget(table)
             with VerticalScroll(id="image-detail-scroll"):
                 yield app._localized_widget(Static(
                     "选择一行查看全部标签、模型与容器引用。", id="image-detail", markup=False,

@@ -40,6 +40,7 @@ git diff --check
 | 日志、语言与命令 | `tests/test_tui_log_view.py`、`tests/test_tui_i18n.py`、`tests/test_tui.py` |
 | 统计报告、异步读取与计算 | `tests/test_tui_reports.py`、`tests/test_report_views.py`、`tests/test_uncertainty.py` |
 | Docker 镜像树、层空间、标签删除与采集互斥 | `tests/test_image_management.py`、`tests/test_tui_images.py` |
+| 表头拖动、固定列、滚动范围与鼠标释放 | `tests/test_tui_table_resize.py`、`tests/test_tui_all_tables.py`、`tests/test_tui_images.py` |
 
 以上是定位入口，不是每次必须运行的清单。先用 `rg --files tests` 查实际受影响的测试；新改动、失败或未解决问题才需要扩大或重复验证。
 
@@ -85,6 +86,7 @@ git diff --check
 
 使用 `unittest.IsolatedAsyncioTestCase`、Textual `run_test()` / `Pilot` 和临时 `settings_path`。
 尺寸覆盖用户报告的场景，并按布局变更检查 `80×24`、`120×30`、`150×45` 及运行中 resize。
+镜像树路径高亮检查最终屏幕的连接线颜色，覆盖点击、方向键、折叠、搜索、失焦和中英文/深浅主题切换，防止祖先线未重绘或其它分支误亮。
 页面切换、挂载和布局更新后等待框架处理事件，再判断点击和焦点，不用堆叠固定 `sleep` 掩盖竞态。
 
 Headless 能检查布局、键盘路径和输出状态；SVG、tmux 与真实 VS Code/SSH 终端是不同证据。
@@ -137,6 +139,13 @@ profiler 调研了 [NVIDIA nsight-python](https://github.com/NVIDIA/nsight-pytho
 已在项目使用的 Textual 8.2.8 中验证；不增加表格库或统计依赖。
 窗口统计调用既有 CLI，JSON 读取在后台执行；只在用户操作和任务完成时更新表格，采集期间禁止启动，
 避免给正式窗口增加轮询或统计计算。回归覆盖三种终端尺寸、中英文切换、失败恢复、原 CSV 不变及测量互斥。
+
+表头拖动复用 [Textual DataTable](https://github.com/Textualize/textual/blob/v8.2.8/src/textual/widgets/_data_table.py)
+的列元数据、渲染与鼠标捕获。沿用官方维护的 MIT 依赖，无额外包、后台轮询或测量窗口内的诊断。
+当前 8.2.8 没有公开的列宽 setter；兼容逻辑集中在 `tui/table.py`，调整列宽时清理渲染缓存并更新虚拟尺寸。
+升级 Textual 时需运行拖动回归，覆盖中英文 cell 宽度、固定列与横向滚动、表头点击排序、释放后的 Click、
+拖出表格、禁用/隐藏/清空时的鼠标释放，以及三种终端尺寸下的会话列宽保留和采集锁定。
+资源矩阵与报告页覆盖数据更新、报告重建和语言切换；镜像树另检查父子行的大小、未知值和容器数量与表头左对齐、横向滚动同步和折叠状态保留。
 
 ## 文档与 Skill 检查
 

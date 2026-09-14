@@ -71,6 +71,7 @@ from acprof.tui.i18n import (
 from acprof.tui.input import BarCursorApp, BarCursorInput as Input
 
 from acprof.tui.log import SelectableLog
+from acprof.tui.table import ResizableDataTable
 
 from acprof.tui.progress import ProgressSnapshot, RunProgressTracker
 from acprof.tui.reports import ReportView, read_report
@@ -83,7 +84,7 @@ from acprof.host.image_management import (
 )
 from acprof.tui.images import (
     IMAGE_KINDS, ImageDeleteScreen, deletion_message, filtered_images,
-    format_image_size, image_detail, image_error, ImageTree, layer_detail, render_image_tree,
+    format_image_size, image_detail, image_display_name, image_error, ImageTree, layer_detail, render_image_tree,
 )
 
 from acprof.tui.scrollbar import SolidScrollBarRender
@@ -331,8 +332,7 @@ class AcprofTui(BarCursorApp):
                     table.update_cell(row, "status", self.tr(source))
             if self._report_view is not None:
                 self._render_report_view()
-            if self._image_inventory is not None:
-                self._render_images()
+            self._render_images()
 
     def _apply_ui_preferences(self) -> None:
         self._apply_language()
@@ -733,6 +733,8 @@ class AcprofTui(BarCursorApp):
         # make the visible settings differ from the running subprocess.
         if busy:
             self._cancel_preview_timer()
+        for table in self.query(ResizableDataTable):
+            table.resize_enabled = not (busy or self._latest_snapshot.measurement_active)
         for widget in self.query(
             ".config-control, #run-preset, .ui-preference, .profile-tool, .report-control, .image-control, "
             "#save-run-default, #restore-ui-defaults, #save-ui-settings"
@@ -1607,7 +1609,7 @@ class AcprofTui(BarCursorApp):
             self._image_inventory, self._input("image-search"), self._select("image-scope"),
         ))
         sort_key, reverse = self._image_sort
-        key = {"name": lambda item: (item.display_name.casefold(), item.name),
+        key = {"name": lambda item: (image_display_name(item).casefold(), item.name),
                "size": lambda item: item.size_bytes, "added": lambda item: item.added_bytes if item.added_bytes is not None else -1,
                "containers": lambda item: len(item.containers), "repository": lambda item: item.name,
                "tag": lambda item: item.name.rsplit(":", 1)[-1], "kind": lambda item: item.kind,
@@ -1617,7 +1619,7 @@ class AcprofTui(BarCursorApp):
         reference_width = max(30, (self.size.width if width is None else width) - 44)
         tag_width = max(12, min(28, reference_width * 2 // 5))
         repository_width = max(18, min(75, reference_width - tag_width))
-        for title, key, column_width in (("✓", "selected", 2), ("环境 / 模型", "name", max(20, reference_width)),
+        for title, key, column_width in (("☑", "selected", 1), ("环境 / 模型", "name", max(20, reference_width)),
                                          ("完整大小", "size", 10), ("新增大小", "added", 10),
                                          ("容器", "containers", 4), ("基于", "parent", 26),
                                          ("类型", "kind", 8), ("Repository", "repository", repository_width),
@@ -1628,10 +1630,10 @@ class AcprofTui(BarCursorApp):
             repository, separator, tag = item.name.rpartition(":")
             parent = indexed.get(item.parent_id)
             table.add_row(
-                Text("✓" if item.image_id in self._selected_image_ids else "—" if item.containers else "□"),
-                Text(item.display_name + " · " + item.image_id[7:13], overflow="ellipsis", no_wrap=True),
+                Text("☑" if item.image_id in self._selected_image_ids else "—" if item.containers else "□"),
+                Text(image_display_name(item) + " · " + item.image_id[7:13], overflow="ellipsis", no_wrap=True),
                 Text(format_image_size(item.size_bytes)), Text(format_image_size(item.added_bytes)),
-                Text(str(len(item.containers))), Text(parent.display_name if parent else "?", overflow="ellipsis", no_wrap=True),
+                Text(str(len(item.containers))), Text(image_display_name(parent) if parent else "?", overflow="ellipsis", no_wrap=True),
                 Text(self.tr(IMAGE_KINDS[item.kind])),
                 Text(repository if separator else item.name, overflow="ellipsis", no_wrap=True),
                 Text(tag if separator else "—", overflow="ellipsis", no_wrap=True),
@@ -1898,7 +1900,8 @@ class AcprofTui(BarCursorApp):
         table = self.query_one("#report-table", DataTable)
         cursor, scroll = table.cursor_coordinate, table.scroll_offset
         table.clear(columns=True)
-        table.add_columns(*(Text(self.tr(column)) for column in view.columns))
+        for column in view.columns:
+            table.add_column(Text(self.tr(column)), key=str(column))
         for index, row in enumerate(view.rows):
             table.add_row(*(Text(self.tr(cell)) for cell in row.cells), key=str(index))
         table.move_cursor(row=min(cursor.row, max(0, len(view.rows) - 1)), column=cursor.column, scroll=False)
