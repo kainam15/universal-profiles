@@ -24,7 +24,7 @@ IMAGE_KINDS = {
     "base": "公共基础", "runtime": "运行依赖", "weights": "模型文件",
     "model": "推理服务", "debug": "调试镜像", "other": "其它镜像", "untagged": "无标签",
 }
-IMAGE_HINT = "刷新读取 Docker；点行查看，点 □/☑ 勾选；空格切换，←→ 展开/折叠。"
+IMAGE_HINT = "清单自动刷新；点行查看，点 □/☑ 勾选；空格切换，←→ 展开/折叠。"
 IMAGE_PLATFORMS = {"cpu": "CPU", "cu124": "CUDA 12.4", "cu128": "CUDA 12.8"}
 # 已知环境别名对应的版本来自依赖锁；不猜测其它名称中的数字含义。
 IMAGE_RUNTIME_NAMES = {
@@ -442,7 +442,8 @@ def layer_diagnostics(layer: ImageLayer) -> str:
 
 
 def render_image_tree(tree: ImageTree, inventory: ImageInventory | None, visible: tuple[ManagedImage, ...],
-                      selected: set[str], current_id: str, tr, width: int) -> None:
+                      selected: set[str], current_id: str, tr, width: int, *, preserve_scroll: bool = False) -> None:
+    offset = tree.scroll_offset
     previous = {}
     def collect(node):
         for child in node.children:
@@ -484,6 +485,8 @@ def render_image_tree(tree: ImageTree, inventory: ImageInventory | None, visible
         target = target.parent
     # 新节点要等 Textual 完成行布局，才有可用于 move_cursor 的行号。
     tree.call_after_refresh(tree.move_cursor, target)
+    if preserve_scroll:
+        tree.call_after_refresh(tree.scroll_to, x=offset.x, y=offset.y, animate=False, immediate=True, force=True)
 
 
 def deletion_message(inventory: ImageInventory, image_ids: tuple[str, ...]) -> str:

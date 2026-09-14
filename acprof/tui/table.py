@@ -54,12 +54,13 @@ class ResizableDataTable(DataTable):
         return super().clear(columns=columns)
 
     def _header_boundaries(self) -> Iterator[tuple[int, int, ColumnKey]]:
-        """返回可见边界的 cell 坐标；固定列不随横向滚动移动。"""
+        """返回相邻列间可见边界的 cell 坐标；固定列不随横向滚动移动。"""
         columns = self.ordered_columns
         right = self._row_label_column_width
         fixed_width = right + sum(column.get_render_width(self) for column in columns[:self.fixed_columns])
         viewport_width = self.scrollable_content_region.width
-        for index, column in enumerate(columns):
+        # 末列右沿没有相邻列，不绘制手柄，也不参与拖动命中。
+        for index, column in enumerate(columns[:-1]):
             left = right
             right += column.get_render_width(self)
             x = right - 1

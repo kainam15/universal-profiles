@@ -601,13 +601,13 @@ def compose_images_tab(app: AcprofTui) -> ComposeResult:
                      ("CUDA 12.4", "cu124"), ("CUDA 12.8", "cu128"), ("无标签", "untagged")),
                     value="acprof", allow_blank=False, id="image-scope", classes="image-control",
                 )
-                for label, widget_id in (("刷新", "image-refresh"), ("勾选/取消", "image-toggle"),
+                for label, widget_id in (("勾选/取消", "image-toggle"),
                                          ("选择同模型", "image-model"), ("清空选择", "image-clear"),
                                          ("删除所选", "image-delete")):
                     yield app._localized_widget(Button(
                         label, id=widget_id, classes="image-control",
                         variant="error" if widget_id == "image-delete" else "default",
-                        disabled=widget_id != "image-refresh",
+                        disabled=True,
                     ))
             yield app._localized_widget(Static(IMAGE_HINT, id="image-status", markup=False))
             with ContentSwitcher(initial="image-tree-view", id="image-browser"):

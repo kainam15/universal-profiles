@@ -25,7 +25,8 @@ class AllTablesTests(unittest.IsolatedAsyncioTestCase):
         self.directory = Path(temporary.name)
         self.docker = DockerFixture()
         for context in (patch.dict(os.environ, {}, clear=True),
-                        patch("acprof.host.image_management.subprocess.run", side_effect=self.docker.run)):
+                        patch("acprof.host.image_management.subprocess.run", side_effect=self.docker.run),
+                        patch.object(AcprofTui, "IMAGE_REFRESH_INTERVAL", 3600)):
             context.start()
             self.addCleanup(context.stop)
 
@@ -85,7 +86,6 @@ class AllTablesTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             app.action_show_images()
             await pilot.pause()
-            await pilot.click("#image-refresh")
             await app.workers.wait_for_complete()
             await pilot.pause()
             tree = app.query_one("#image-tree", Tree)
@@ -104,7 +104,6 @@ class AllTablesTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             app.action_show_images()
             await pilot.pause()
-            await pilot.click("#image-refresh")
             await app.workers.wait_for_complete()
             await pilot.pause()
             tree = app.query_one("#image-tree", Tree)
@@ -149,10 +148,8 @@ class AllTablesTests(unittest.IsolatedAsyncioTestCase):
                 app._render_report_view()
                 app.action_show_images()
                 await pilot.pause()
-                await pilot.click("#image-refresh")
                 await app.workers.wait_for_complete()
                 await pilot.pause()
-                commands = len(self.docker.commands)
                 for language in ("zh", "en"):
                     app.ui_preferences = replace(app.ui_preferences, language=language)
                     app._apply_ui_preferences()
@@ -167,6 +164,9 @@ class AllTablesTests(unittest.IsolatedAsyncioTestCase):
                         with self.subTest(size=size, language=language, table=selector):
                             app._activate_tab(tab)
                             await pilot.pause()
+                            await app.workers.wait_for_complete()
+                            await pilot.pause()
+                            commands = len(self.docker.commands)
                             if view:
                                 self.assertTrue(await pilot.click("#image-view-" + view))
                             table = app.query_one(selector, DataTable)
@@ -176,4 +176,13 @@ class AllTablesTests(unittest.IsolatedAsyncioTestCase):
                             self.assertEqual(table.columns[column.key].width, width + delta)
                             self.assertIn("本次会话" if language == "zh" else "this session", table.tooltip)
                             self.assertIsNone(app.mouse_captured)
-                self.assertEqual(len(self.docker.commands), commands)
+                            table.scroll_to(x=table.max_scroll_x, animate=False, force=True)
+                            await pilot.pause()
+                            edge = sum(item.get_render_width(table) for item in table.ordered_columns) - 1
+                            edge -= table.scroll_offset.x
+                            self.assertLess(edge, table.scrollable_content_region.width)
+                            self.assertNotEqual(table.render_line(0).crop(edge, edge + 1).text, "│",
+                                                "末列右侧不能出现拖动手柄")
+                            table.scroll_to(x=0, animate=False, force=True)
+                            await pilot.pause()
+                            self.assertEqual(len(self.docker.commands), commands)

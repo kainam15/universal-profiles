@@ -59,6 +59,39 @@ async def drag(pilot, table, start, dx, dy=0, *, release_click=False):
 
 
 class ResizableTableTests(unittest.IsolatedAsyncioTestCase):
+    async def test_last_header_edge_cannot_resize_and_keeps_header_clicks(self):
+        for layout in ("wide", "scrolled", "single"):
+            with self.subTest(layout=layout):
+                app = TableApp()
+                async with app.run_test(size=(80, 24)) as pilot:
+                    table = app.query_one(ResizableDataTable)
+                    if layout == "wide":
+                        table.styles.width = 72
+                    elif layout == "single":
+                        table.clear(columns=True)
+                        table.add_column("中文名称", width=10, key="name")
+                        table.add_row("模型名称")
+                    await pilot.pause()
+                    if layout == "scrolled":
+                        table.scroll_to(x=table.max_scroll_x, animate=False, force=True)
+                        await pilot.pause()
+                    columns = table.ordered_columns
+                    widths = tuple(column.get_render_width(table) for column in columns)
+                    edge = sum(widths) - 1 - table.scroll_offset.x
+                    inset = table.content_region.offset - table.region.offset
+                    start = (inset.x + edge, inset.y)
+                    await pilot.mouse_down(table, offset=start)
+                    self.assertIsNone(app.mouse_captured, "末列右沿不能捕获鼠标调整宽度")
+                    await pilot.hover(table, offset=(start[0] - 4, start[1]))
+                    await pilot.mouse_up(table, offset=(start[0] - 4, start[1]))
+                    await pilot.pause()
+                    self.assertEqual(tuple(column.get_render_width(table) for column in columns), widths)
+                    self.assertNotEqual(table.render_line(0).crop(edge, edge + 1).text, "│")
+                    if layout == "single":
+                        self.assertNotIn("│", table.render_line(0).text)
+                    await pilot.click(table, offset=start)
+                    self.assertEqual(app.headers, [columns[-1].key.value])
+
     async def test_drag_updates_rendered_cells_and_scroll_extent(self):
         app = TableApp()
         async with app.run_test(size=(80, 24)) as pilot:
@@ -158,6 +191,7 @@ class ResizableTableTests(unittest.IsolatedAsyncioTestCase):
                     table.display = True
                     if interruption == "clear":
                         table.add_column("中文名称", width=10, key="name")
+                        table.add_column("Size", width=12, key="size")
                     await pilot.pause()
                     await pilot.hover(table, offset=header_offset(table))
                     self.assertEqual(table.columns["name"].width, 10)
@@ -170,17 +204,19 @@ class ResizableTableTests(unittest.IsolatedAsyncioTestCase):
             table = app.query_one(ResizableDataTable)
             table.clear(columns=True)
             table.add_column("中文名称", key="name")
-            table.add_row("模型名称较长")
+            table.add_column("Size", width=4, key="size")
+            table.add_row("模型名称较长", "1")
             await pilot.pause()
             await drag(pilot, table, header_offset(table), -4)
             self.assertEqual(table.columns["name"].width, 8)
             table.clear(columns=True)
             table.add_column("Name", key="name", width=20)
-            table.add_row("much longer content than the manually sized column")
+            table.add_column("Size", width=4, key="size")
+            table.add_row("much longer content than the manually sized column", "1")
             await pilot.pause()
             self.assertEqual(table.columns["name"].width, 8)
-            self.assertEqual(table.virtual_size.width, 10)
-            self.assertEqual(len(table.columns), 1)
+            self.assertEqual(table.virtual_size.width, 16)
+            self.assertEqual(len(table.columns), 2)
 
     async def test_oversized_fixed_column_can_be_shrunk_after_terminal_resize(self):
         app = TableApp()

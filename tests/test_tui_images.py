@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from dataclasses import replace
+import asyncio
 import os
 import tempfile
 import unittest
@@ -13,7 +14,7 @@ from textual.widgets import Button, Collapsible, ContentSwitcher, DataTable, Inp
 from acprof.tui.app import AcprofTui, PendingLaunch
 from acprof.tui.commands import RunConfig
 from acprof.tui.progress import ProgressSnapshot
-from acprof.host.image_management import ImageManagementError, ManagedImage
+from acprof.host.image_management import ImageManagementError, ManagedImage, list_images
 from acprof.tui.images import filtered_images, image_metadata, image_display_name, layer_image_detail
 from test_image_management import DockerFixture, FINAL, RUNTIME, WEIGHTS, dependency_images, image
 from test_tui_table_resize import drag, header_offset
@@ -54,29 +55,35 @@ class TuiImagesTests(unittest.IsolatedAsyncioTestCase):
         environment = patch.dict(os.environ, {}, clear=True)
         environment.start()
         self.addCleanup(environment.stop)
+        # 定时刷新单独验证；其它交互测试不依赖机器运行速度。
+        interval = patch.object(AcprofTui, "IMAGE_REFRESH_INTERVAL", 3600)
+        interval.start()
+        self.addCleanup(interval.stop)
 
     def make_app(self):
         return AcprofTui(RunConfig.smoke("demo/model"), settings_path=self.directory / "tui.json")
 
-    async def test_images_page_is_reachable_without_automatic_docker_queries(self):
+    async def test_images_page_loads_automatically_only_after_opening(self):
         app = self.make_app()
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             tabs = app.query_one("#main-tabs", TabbedContent)
             self.assertIn("images-tab", [pane.id for pane in tabs.query(TabPane)],
                           "用户应能从 TUI 进入 Docker 镜像管理")
+            self.assertFalse(self.docker.commands)
             field = app.query_one("#slash-command", Input)
             field.value = "/images"
             field.focus()
             await pilot.pause()
             await pilot.press("enter")
             await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
             self.assertEqual(tabs.active, "images-tab")
-            self.assertEqual(app.query_one("#image-table", DataTable).row_count, 0)
-            self.assertFalse(list(app.workers), "打开页面不能自动查询 Docker")
-            self.assertFalse(app.query_one("#image-refresh", Button).disabled)
+            self.assertEqual(app.query_one("#image-table", DataTable).row_count, 3)
+            self.assertFalse(app.query("#image-refresh"))
             self.assertTrue(app.query_one("#image-delete", Button).disabled)
-            self.assertFalse(self.docker.commands)
+            self.assertTrue(self.docker.commands)
 
     async def test_detail_summary_separates_packages_and_diagnostics_with_interactive_folds(self):
         dependency_images(self.docker, profile="nlp-cu128")
@@ -246,8 +253,8 @@ class TuiImagesTests(unittest.IsolatedAsyncioTestCase):
         await pilot.pause()
         app.action_show_images()
         await pilot.pause()
-        self.assertTrue(await pilot.click("#image-refresh"))
         await app.workers.wait_for_complete()
+        app._image_refresh_timer.pause()
         await pilot.pause()
         self.assertFalse(app._is_busy())
         self.assertEqual(app.query_one("#main-tabs", TabbedContent).active, "images-tab")
@@ -652,14 +659,14 @@ class TuiImagesTests(unittest.IsolatedAsyncioTestCase):
             await pilot.click("#image-view-tree")
             await pilot.click("#image-view-list")
             self.assertEqual(app._selected_image_ids, {FINAL})
-            await pilot.click("#image-refresh")
+            app.refresh_images()
             await app.workers.wait_for_complete()
             await pilot.pause()
             self.assertEqual(table.columns["name"].width, 64)
             self.assertEqual(layers.columns["diff"].width, 18)
             self.assertEqual(len(table.columns), 9)
             self.assertEqual(len(layers.columns), 4)
-            self.assertFalse(app._selected_image_ids, "刷新后按现有规则重新勾选")
+            self.assertEqual(app._selected_image_ids, {FINAL}, "自动刷新保留有效勾选")
         restarted = self.make_app()
         async with restarted.run_test(size=(120, 30)) as pilot:
             await self.load_images(restarted, pilot)
@@ -743,7 +750,7 @@ class TuiImagesTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(app.query_one("#image-search", Input).value, "demo/model")
                     self.assertEqual(app.query_one("#image-delete", Button).label.plain, "Delete")
                     self.assertIn("All tags", str(app.query_one("#image-metadata-detail", Static).content))
-                    for selector in ("#image-search", "#image-scope", "#image-refresh", "#image-model",
+                    for selector in ("#image-search", "#image-scope", "#image-toggle", "#image-model",
                                      "#image-clear", "#image-delete", "#image-table"):
                         widget = app.query_one(selector)
                         self.assertGreater(widget.region.height, 0, selector)
@@ -827,22 +834,193 @@ class TuiImagesTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(app._is_busy())
             self.assertFalse(app.query_one("#start-run", Button).disabled)
 
-    async def test_read_failure_clears_old_selection_and_refresh_can_recover(self):
+    async def test_read_failure_keeps_inventory_and_selection_until_refresh_recovers(self):
         app = self.make_app()
         async with app.run_test(size=(120, 30)) as pilot:
             await self.load_images(app, pilot)
             await pilot.click("#image-toggle")
             await pilot.pause()
             with patch("acprof.tui.app.list_images", side_effect=ImageManagementError("无法执行 Docker", "permission denied")):
-                await pilot.click("#image-refresh")
+                app.refresh_images()
                 await app.workers.wait_for_complete()
                 await pilot.pause()
-            self.assertEqual(app.query_one("#image-table", DataTable).row_count, 0)
-            self.assertFalse(app._selected_image_ids)
+            self.assertEqual(app.query_one("#image-table", DataTable).row_count, 3)
+            self.assertEqual(app._selected_image_ids, {FINAL})
             self.assertIn("permission denied", str(app.query_one("#image-status", Static).content))
             self.assertTrue(app.query_one("#image-delete", Button).disabled)
             self.assertFalse(app._is_busy())
+            app.refresh_images()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            self.assertEqual(app.query_one("#image-table", DataTable).row_count, 3)
+            self.assertNotIn("permission denied", str(app.query_one("#image-status", Static).content))
+            self.assertFalse(app.query_one("#image-delete", Button).disabled)
+
+    async def test_timer_updates_visible_inventory_without_user_action(self):
+        app = self.make_app()
+        app.IMAGE_REFRESH_INTERVAL = 0.1
+        async with app.run_test(size=(120, 30)) as pilot:
             await self.load_images(app, pilot)
+            refreshed = asyncio.Event()
+            loop = asyncio.get_running_loop()
+            extra = "sha256:" + "d" * 64
+            self.docker.images[extra] = image(extra, ["acprof-runtime-new:env"], 120, ["new"])
+
+            def read():
+                inventory = list_images()
+                loop.call_soon_threadsafe(refreshed.set)
+                return inventory
+
+            with patch("acprof.tui.app.list_images", side_effect=read):
+                app._image_refresh_timer.reset()
+                await asyncio.wait_for(refreshed.wait(), timeout=3)
+                await app.workers.wait_for_complete()
+                app._image_refresh_timer.pause()
+                await pilot.pause()
+            self.assertEqual(app.query_one("#image-table", DataTable).row_count, 4)
+            self.assertIn(extra, app.query_one("#image-table", DataTable).rows)
+
+    async def test_background_page_and_confirmation_do_not_scan(self):
+        app = self.make_app()
+        async with app.run_test(size=(120, 30)) as pilot:
+            await self.load_images(app, pilot)
+            await pilot.click("#image-toggle")
+            app.action_show_settings()
+            await pilot.pause()
+            with patch("acprof.tui.app.list_images") as read:
+                app.refresh_images()
+                await pilot.pause()
+                read.assert_not_called()
+                self.assertEqual(app.query_one("#main-tabs", TabbedContent).active, "settings-tab")
+            app.action_show_images()
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            await pilot.click("#image-delete")
+            await pilot.pause()
+            with patch("acprof.tui.app.list_images") as read:
+                app.refresh_images()
+                await pilot.pause()
+                read.assert_not_called()
+            await pilot.press("escape")
+            await pilot.pause()
+            self.assertEqual(app._selected_image_ids, {FINAL})
+
+    async def test_refresh_keeps_focus_selection_and_scrolled_list(self):
+        for number in range(30):
+            key = f"sha256:{number:064x}"
+            self.docker.images[key] = image(key, [f"acprof-runtime-extra-{number:02}:env"], 200, ["extra"])
+        app = self.make_app()
+        async with app.run_test(size=(120, 30)) as pilot:
+            await self.load_images(app, pilot)
+            table = app.query_one("#image-table", DataTable)
+            table.move_cursor(row=25)
+            table.focus()
+            await pilot.pause()
+            await pilot.press("space")
+            await pilot.pause()
+            selected = set(app._selected_image_ids)
+            current = app._current_image().image_id
+            table.scroll_to(x=12, y=20, animate=False, force=True)
+            await pilot.pause()
+            offset = table.scroll_offset
+            # 清单在读取期间变化时，搜索/勾选等交互仍可使用。
+            self.docker.images[RUNTIME]["Size"] += 1
+            with patch.object(app, "_execute_image_refresh") as read:
+                app.refresh_images()
+                app.refresh_images()
+                await pilot.pause()
+                read.assert_called_once()
+                self.assertIs(app.focused, table)
+                self.assertFalse(table.disabled)
+                self.assertFalse(app.query_one("#image-search", Input).disabled)
+                app._show_images(list_images())
+            await pilot.pause()
+            self.assertIs(app.focused, table)
+            self.assertEqual(app._current_image().image_id, current)
+            self.assertEqual(app._selected_image_ids, selected)
+            self.assertEqual(table.scroll_offset, offset)
+
+    async def test_refresh_drops_only_selections_with_changed_identity_or_references(self):
+        app = self.make_app()
+        async with app.run_test(size=(120, 30)) as pilot:
+            await self.load_images(app, pilot)
+            await pilot.click("#image-model")
+            self.docker.images[FINAL]["RepoTags"].append("acprof-extra:new")
+            app.refresh_images()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            self.assertEqual(app._selected_image_ids, {WEIGHTS})
+            self.docker.containers["used"] = dict(Image=WEIGHTS, Name="/new-user", State=dict(Status="exited"))
+            app.refresh_images()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            self.assertFalse(app._selected_image_ids)
+            app.query_one("#image-table", DataTable).move_cursor(row=0)
+            await pilot.click("#image-model")
+            self.assertEqual(app._selected_image_ids, {FINAL})
+            self.docker.daemon_id = "another-daemon"
+            app.refresh_images()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            self.assertFalse(app._selected_image_ids)
+
+    async def test_refresh_preserves_tree_and_detail_folds(self):
+        app = self.make_app()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.load_images(app, pilot, view="tree")
+            tree = app.query_one("#image-tree", Tree)
+            tree.focus()
+            await pilot.press("left")
+            await pilot.pause()
+            root = tree.cursor_node.data.image_id
+            metadata = app.query_one("#image-metadata", Collapsible)
+            metadata.collapsed = False
+            tree.scroll_to(x=3, animate=False, force=True)
+            await pilot.pause()
+            offset = tree.scroll_offset
+            self.docker.images[FINAL]["Size"] += 1
+            app.refresh_images()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            self.assertEqual(tree.cursor_node.data.image_id, root)
+            self.assertFalse(tree.cursor_node.is_expanded)
+            self.assertFalse(metadata.collapsed)
+            self.assertEqual(tree.scroll_offset, offset)
+            current_node = tree.cursor_node
+            app.refresh_images()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            self.assertIs(tree.cursor_node, current_node, "清单未变时不重建树")
+
+    async def test_auto_refresh_pauses_during_measurement_and_resumes_after_failure(self):
+        app = self.make_app()
+        app.IMAGE_REFRESH_INTERVAL = 0.1
+        async with app.run_test(size=(120, 30)) as pilot:
+            await self.load_images(app, pilot)
+            app._process_kind = "run"
+            app._set_busy(True)
+            app._consume_process_line("", ProgressSnapshot(measurement_active=True), False)
+            commands = len(self.docker.commands)
+            # 等待超过刷新间隔，确认实际计时回调不会读取 Docker。
+            await pilot.pause(0.3)
+            self.assertEqual(len(self.docker.commands), commands)
+            self.assertFalse(app._image_refresh_timer._active.is_set())
+            refreshed = asyncio.Event()
+            loop = asyncio.get_running_loop()
+
+            def read():
+                inventory = list_images()
+                loop.call_soon_threadsafe(refreshed.set)
+                return inventory
+
+            with patch("acprof.tui.app.list_images", side_effect=read):
+                app._process_finished("run", 1, None, "test failure")
+                await asyncio.wait_for(refreshed.wait(), timeout=3)
+                await app.workers.wait_for_complete()
+                app._image_refresh_timer.pause()
+                await pilot.pause()
+            self.assertFalse(app._latest_snapshot.measurement_active)
             self.assertEqual(app.query_one("#image-table", DataTable).row_count, 3)
 
     async def test_measurement_and_image_operations_are_mutually_exclusive(self):

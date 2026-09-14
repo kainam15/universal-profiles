@@ -146,6 +146,7 @@ class AcprofTui(BarCursorApp):
     ]
 
     CSS_PATH = Path(__file__).with_name("tui.tcss")
+    IMAGE_REFRESH_INTERVAL = 5.0
 
     def __init__(
         self, initial_config: RunConfig | None = None, *, settings_path: Path | None = None,
@@ -207,6 +208,8 @@ class AcprofTui(BarCursorApp):
         self._stats_report_path: Path | None = None
         self._image_inventory: ImageInventory | None = None
         self._image_operation = ""
+        self._image_refresh_timer = None
+        self._image_refresh_error = ""
         self._selected_image_ids: set[str] = set()
         self._visible_images: tuple[ManagedImage, ...] = ()
         self._visible_image_layers = ()
@@ -252,6 +255,9 @@ class AcprofTui(BarCursorApp):
         table.add_column("GPU", key="gpu")
         table.add_column(self.tr("状态"), key="status")
         self.query_one("#model", Input).focus()
+        self._image_refresh_timer = self.set_interval(
+            self.IMAGE_REFRESH_INTERVAL, self.refresh_images, pause=True,
+        )
         if self._settings_warning:
             self.notify(self._settings_warning, title="设置读取提示", severity="warning", timeout=8)
 
@@ -259,7 +265,7 @@ class AcprofTui(BarCursorApp):
         # App.size can still refer to the previous frame while Resize is
         # dispatched. Use the event's new dimensions for responsive classes.
         self._update_responsive_layout(event.size)
-        if (self._form_ready and self._image_inventory is not None and not self._images_unavailable()
+        if (self._form_ready and self._image_inventory is not None and not self._images_unavailable(allow_refresh=True)
                 and self.query_one("#main-tabs", TabbedContent).active == "images-tab"):
             self._render_images(width=event.size.width)
 
@@ -752,12 +758,15 @@ class AcprofTui(BarCursorApp):
         if busy:
             self._cancel_preview_timer()
         for table in self.query(ResizableDataTable):
-            table.resize_enabled = not (busy or self._latest_snapshot.measurement_active)
+            refreshing_image = self._image_operation == "refresh" and table.has_class("image-control")
+            table.resize_enabled = not ((busy and not refreshing_image) or self._latest_snapshot.measurement_active)
         for widget in self.query(
-            ".config-control, #run-preset, .ui-preference, .profile-tool, .report-control, .image-control, "
+            ".config-control, #run-preset, .ui-preference, .profile-tool, .report-control, "
             "#save-run-default, #restore-ui-defaults, #save-ui-settings"
         ):
             widget.disabled = busy
+        for widget in self.query(".image-control"):
+            widget.disabled = (busy and self._image_operation != "refresh") or self._latest_snapshot.measurement_active
         for selector in (
             "#start-run",
             "#probe-largest",
@@ -771,7 +780,8 @@ class AcprofTui(BarCursorApp):
         self.query_one("#stop-run", Button).disabled = not busy or self._report_loading or bool(self._image_operation)
         if not busy:
             self.set_input_cursor_blink_enabled(True)
-            self._update_image_controls()
+        self._update_image_controls()
+        self._sync_image_refresh_timer()
 
     def _activate_tab(self, tab_id: str) -> None:
         if self.screen.maximized is not None:
@@ -891,6 +901,7 @@ class AcprofTui(BarCursorApp):
     def _confirmed_launch(self, confirmed: bool | None) -> None:
         pending = self._pending_launch
         self._pending_launch = None
+        self._sync_image_refresh_timer()
         if not confirmed or pending is None:
             return
         self._launch(pending)
@@ -1179,6 +1190,7 @@ class AcprofTui(BarCursorApp):
             was_measuring = self._latest_snapshot.measurement_active
             self._latest_snapshot = snapshot
             self.set_input_cursor_blink_enabled(not snapshot.measurement_active)
+            self._sync_image_refresh_timer()
             if self._elapsed_timer is not None:
                 if snapshot.measurement_active:
                     self._elapsed_timer.pause()
@@ -1374,6 +1386,7 @@ class AcprofTui(BarCursorApp):
         self._active_command = ()
         self._process_kind = ""
         self._stop_requested = False
+        self._sync_image_refresh_timer()
         if kind == "stats":
             report_path, self._stats_report_path = self._stats_report_path, None
             if returncode == 0 and not launch_error and report_path is not None:
@@ -1460,6 +1473,7 @@ class AcprofTui(BarCursorApp):
             sniff_iface=self._input("sniff-iface"),
         )
         self._check_running = True
+        self._sync_image_refresh_timer()
         # Disabling a focused button first moves focus to another control in
         # the old pane, which queues a request to reactivate that pane.
         self._activate_tab("monitor-tab")
@@ -1483,6 +1497,7 @@ class AcprofTui(BarCursorApp):
         error: str,
     ) -> None:
         self._check_running = False
+        self._sync_image_refresh_timer()
         if not self._is_busy():
             self.query_one("#quick-check", Button).disabled = False
         log = self.query_one("#run-log", SelectableLog)
@@ -1588,8 +1603,25 @@ class AcprofTui(BarCursorApp):
     def action_show_images(self) -> None:
         self._activate_tab("images-tab")
 
-    def _images_unavailable(self) -> bool:
-        return self._is_busy() or self._check_running or self._latest_snapshot.measurement_active or self._pending_launch is not None
+    @on(TabbedContent.TabActivated, "#main-tabs")
+    def image_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        if event.pane.id == "images-tab":
+            self.refresh_images()
+        self._sync_image_refresh_timer()
+
+    def _sync_image_refresh_timer(self) -> None:
+        if self._image_refresh_timer is None:
+            return
+        if (not self._form_ready or self._images_unavailable()
+                or self.query_one("#main-tabs", TabbedContent).active != "images-tab"):
+            self._image_refresh_timer.pause()
+        else:
+            # 从上一轮扫描完成后计时，慢查询不会排队或重叠。
+            self._image_refresh_timer.reset()
+
+    def _images_unavailable(self, *, allow_refresh: bool = False) -> bool:
+        busy = self._is_busy() and not (allow_refresh and self._image_operation == "refresh")
+        return busy or self._check_running or self._latest_snapshot.measurement_active or self._pending_launch is not None
 
     def _current_image(self) -> ManagedImage | None:
         if self._image_view == "layers":
@@ -1602,15 +1634,21 @@ class AcprofTui(BarCursorApp):
         return self._visible_images[row] if 0 <= row < len(self._visible_images) else None
 
     def _update_image_controls(self) -> None:
-        busy = self._images_unavailable()
+        busy = self._images_unavailable(allow_refresh=True)
         current = self._current_image()
-        self.query_one("#image-refresh", Button).disabled = busy
         self.query_one("#image-toggle", Button).disabled = busy or current is None or bool(current.containers)
         self.query_one("#image-model", Button).disabled = busy or current is None or not current.model_key or not current.acprof
         self.query_one("#image-clear", Button).disabled = busy or not self._selected_image_ids
-        self.query_one("#image-delete", Button).disabled = busy or not self._selected_image_ids
+        self.query_one("#image-delete", Button).disabled = (
+            self._images_unavailable() or bool(self._image_refresh_error) or not self._selected_image_ids
+        )
 
     def _image_selection_status(self) -> None:
+        if self._image_refresh_error:
+            self._set_text(self.query_one("#image-status", Static), message(
+                "镜像读取失败，将自动重试：{0}", self._image_refresh_error,
+            ))
+            return
         if self._image_inventory is None:
             return
         hidden = len(self._selected_image_ids - {item.image_id for item in self._visible_images})
@@ -1620,8 +1658,13 @@ class AcprofTui(BarCursorApp):
             len(self._selected_image_ids), hidden,
         ))
 
-    def _render_images(self, *, width: int | None = None, current_id: str | None = None) -> None:
+    def _render_images(self, *, width: int | None = None, current_id: str | None = None,
+                       preserve_scroll: bool = False) -> None:
         table = self.query_one("#image-table", DataTable)
+        offsets = [(widget, widget.scroll_offset) for widget in (
+            table, self.query_one("#image-layer-table", DataTable),
+            self.query_one("#image-detail-scroll", ImageDetailPanel),
+        )] if preserve_scroll else []
         current = self._current_image()
         self._visible_images = (() if self._image_inventory is None else filtered_images(
             self._image_inventory, self._input("image-search"), self._select("image-scope"),
@@ -1660,15 +1703,19 @@ class AcprofTui(BarCursorApp):
         if current_id is None:
             current_id = current.image_id if current else self._focused_image_id
         row = next((i for i, item in enumerate(self._visible_images) if item.image_id == current_id), 0)
-        table.move_cursor(row=row, column=0, animate=False)
+        table.move_cursor(row=row, column=0, animate=False, scroll=not preserve_scroll)
         render_image_tree(self.query_one("#image-tree", ImageTree), self._image_inventory, self._visible_images,
-                          self._selected_image_ids, current_id, self.tr, (width or self.size.width) - 6)
-        self._render_image_layers()
+                          self._selected_image_ids, current_id, self.tr, (width or self.size.width) - 6,
+                          preserve_scroll=preserve_scroll)
+        self._render_image_layers(preserve_scroll=preserve_scroll)
         self._image_selection_status()
         self._update_image_controls()
         self._show_image_detail()
+        for widget, offset in offsets:
+            widget.call_after_refresh(widget.scroll_to, x=offset.x, y=offset.y,
+                                      animate=False, immediate=True, force=True)
 
-    def _render_image_layers(self) -> None:
+    def _render_image_layers(self, *, preserve_scroll: bool = False) -> None:
         table = self.query_one("#image-layer-table", DataTable)
         current = self._visible_image_layers[table.cursor_row].chain_id if 0 <= table.cursor_row < len(self._visible_image_layers) else ""
         shown = {item.image_id for item in self._visible_images}
@@ -1681,11 +1728,12 @@ class AcprofTui(BarCursorApp):
         for layer in self._visible_image_layers:
             table.add_row(Text(layer.diff_id, overflow="ellipsis", no_wrap=True), format_image_size(layer.size_bytes),
                           str(len(layer.image_ids)), Text(layer.chain_id, overflow="ellipsis", no_wrap=True), key=layer.chain_id)
-        table.move_cursor(row=next((i for i, layer in enumerate(self._visible_image_layers) if layer.chain_id == current), 0), animate=False)
+        table.move_cursor(row=next((i for i, layer in enumerate(self._visible_image_layers) if layer.chain_id == current), 0),
+                          animate=False, scroll=not preserve_scroll)
 
     @on(Button.Pressed, "#image-view-tree, #image-view-list, #image-view-layers")
     def image_view_changed(self, event: Button.Pressed) -> None:
-        if self._images_unavailable():
+        if self._images_unavailable(allow_refresh=True):
             return
         current = self._current_image()
         if current:
@@ -1700,7 +1748,7 @@ class AcprofTui(BarCursorApp):
     @on(DataTable.HeaderSelected, "#image-table")
     def sort_image_table(self, event: DataTable.HeaderSelected) -> None:
         key = event.column_key.value
-        if self._images_unavailable() or key == "selected":
+        if self._images_unavailable(allow_refresh=True) or key == "selected":
             return
         self._image_sort = (key, not self._image_sort[1] if self._image_sort[0] == key else False)
         self._render_images()
@@ -1708,7 +1756,7 @@ class AcprofTui(BarCursorApp):
     @on(Input.Changed, "#image-search")
     @on(Select.Changed, "#image-scope")
     def image_filter_changed(self) -> None:
-        if self._form_ready and not self._images_unavailable():
+        if self._form_ready and not self._images_unavailable(allow_refresh=True):
             self._render_images()
 
     @on(DataTable.RowHighlighted, "#image-table")
@@ -1722,7 +1770,7 @@ class AcprofTui(BarCursorApp):
             if layer and self._image_inventory:
                 detail.show_layer(layer, self._image_inventory)
             else:
-                detail.show_empty("没有匹配的层；可调整筛选或点击刷新。")
+                detail.show_empty("没有匹配的层；可调整筛选，清单会自动刷新。")
             self._update_image_controls()
             return
         item = self._current_image()
@@ -1731,14 +1779,14 @@ class AcprofTui(BarCursorApp):
         if item and self._image_inventory:
             detail.show_image(item, self._image_inventory)
         else:
-            detail.show_empty("没有匹配的镜像；可调整筛选或点击刷新。")
+            detail.show_empty("没有匹配的镜像；可调整筛选，清单会自动刷新。")
         self._update_image_controls()
 
     @on(DataTable.RowSelected, "#image-table")
     @on(Tree.NodeSelected, "#image-tree")
     @on(Button.Pressed, "#image-toggle")
     def toggle_image_selection(self) -> None:
-        if self._images_unavailable():
+        if self._images_unavailable(allow_refresh=True):
             return
         item = self._current_image()
         if item is None:
@@ -1754,14 +1802,14 @@ class AcprofTui(BarCursorApp):
 
     @on(Button.Pressed, "#image-clear")
     def clear_image_selection(self) -> None:
-        if not self._images_unavailable():
+        if not self._images_unavailable(allow_refresh=True):
             self._selected_image_ids.clear()
             self._render_images()
 
     @on(Button.Pressed, "#image-model")
     def select_model_images(self) -> None:
         item = self._current_image()
-        if self._images_unavailable() or item is None or not item.model_key or self._image_inventory is None:
+        if self._images_unavailable(allow_refresh=True) or item is None or not item.model_key or self._image_inventory is None:
             return
         self._selected_image_ids = {
             candidate.image_id for candidate in self._image_inventory.images
@@ -1779,12 +1827,15 @@ class AcprofTui(BarCursorApp):
         self._set_text(self.query_one("#image-status", Static), status)
         self._set_busy(True)
 
-    @on(Button.Pressed, "#image-refresh")
     def refresh_images(self) -> None:
-        if self._images_unavailable():
-            self.notify("请等待当前任务完成", severity="warning")
+        if (not self._form_ready or len(self.screen_stack) != 1 or self._images_unavailable()
+                or self.query_one("#main-tabs", TabbedContent).active != "images-tab"
+                or self.mouse_captured is not None):
             return
-        self._begin_image_operation("refresh", "正在读取 Docker 镜像与容器引用……")
+        self._image_operation = "refresh"
+        if self._image_inventory is None and not self._image_refresh_error:
+            self._set_text(self.query_one("#image-status", Static), "正在读取 Docker 镜像与容器引用……")
+        self._set_busy(True)
         self._execute_image_refresh()
 
     @work(thread=True, group="images", exclusive=True, exit_on_error=False)
@@ -1795,19 +1846,35 @@ class AcprofTui(BarCursorApp):
             inventory, error = None, image_error(exc)
         self.call_from_thread(self._show_images, inventory, error)
 
-    def _show_images(self, inventory: ImageInventory | None, error: str = "") -> None:
+    def _show_images(self, inventory: ImageInventory | None, error: str = "", *, clear_selection: bool = False) -> None:
+        previous = self._image_inventory
+        previous_selection = set(self._selected_image_ids)
+        if clear_selection:
+            # 一次明确删除操作结束后，下一次删除仍需重新勾选。
+            self._selected_image_ids.clear()
         self._image_operation = ""
-        self._image_inventory = inventory
-        # 刷新后重新选择，避免用户把刷新前的标签/环境当成本次删除目标。
-        self._selected_image_ids.clear()
-        self._render_images()
+        self._image_refresh_error = error
+        if inventory is not None:
+            old_images = {item.image_id: item for item in previous.images} if previous else {}
+            if previous and (previous.connection, previous.daemon_id) == (inventory.connection, inventory.daemon_id):
+                self._selected_image_ids.intersection_update(
+                    item.image_id for item in inventory.images
+                    if not item.containers and item.image_id in old_images
+                    and item.tags == old_images[item.image_id].tags
+                )
+            else:
+                self._selected_image_ids.clear()
+            self._image_inventory = inventory
+        if self._image_inventory != previous or self._selected_image_ids != previous_selection:
+            self._render_images(preserve_scroll=previous is not None)
+        else:
+            self._image_selection_status()
         self._set_busy(self._is_busy())
-        if error:
-            self._set_text(self.query_one("#image-status", Static), message("镜像读取失败：{0}", error))
 
     @on(Button.Pressed, "#image-delete")
     def request_delete_images(self) -> None:
-        if self._images_unavailable() or self._image_inventory is None or not self._selected_image_ids:
+        if (self._images_unavailable() or self._image_refresh_error
+                or self._image_inventory is None or not self._selected_image_ids):
             return
         inventory, ids = self._image_inventory, tuple(sorted(self._selected_image_ids))
         self._begin_image_operation("confirm", "请核对待删除镜像及全部标签。")
@@ -1844,7 +1911,7 @@ class AcprofTui(BarCursorApp):
         self.call_from_thread(self._image_delete_finished, current, outcomes, error)
 
     def _image_delete_finished(self, inventory: ImageInventory | None, outcomes: tuple[ImageRemoval, ...], error: str) -> None:
-        self._show_images(inventory)
+        self._show_images(inventory, error, clear_selection=True)
         successful = sum(item.success for item in outcomes)
         result = message("已处理 {0} 个镜像，失败 {1} 个；操作详情见运行监控日志。", successful, len(outcomes) - successful)
         if error:
@@ -2172,6 +2239,8 @@ class AcprofTui(BarCursorApp):
         """Best-effort guard against leaving collectors behind on normal exit."""
         self._form_ready = False
         self._cancel_preview_timer()
+        if self._image_refresh_timer is not None:
+            self._image_refresh_timer.stop()
         with self._process_lock:
             process = self._process
         if process is None or process.poll() is not None:

@@ -1,4 +1,4 @@
-"""按实际 image ID 管理 Docker 镜像；所有查询由用户操作触发。"""
+"""按实际 image ID 管理 Docker 镜像；调用方负责与采集互斥。"""
 
 from __future__ import annotations
 
