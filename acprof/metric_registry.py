@@ -208,6 +208,7 @@ _DECLARATIONS = (
     Metric('cold_start_s', 's', 'docker_and_server', 'container_startup'),
     Metric('status', 'text', 'protocol', 'row', kind='text'),
     Metric('error', 'text', 'protocol', 'row', kind='text'),
+    Metric('workload_contract', 'JSON', 'handler', 'actual_request', kind='text'),
 )
 METRICS = MappingProxyType({metric.name: metric for metric in _DECLARATIONS})
 if len(METRICS) != len(_DECLARATIONS):

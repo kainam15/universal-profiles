@@ -183,7 +183,3 @@ class StructuredHandler(BaseHandler):
 
     def get_scale_metadata(self, model_ctx: Dict[str, Any], raw_input: Dict[str, Any]) -> Dict[str, Any]:
         return {"feature_dim": model_ctx["feature_dim"], "model_format": model_ctx["backend"]}
-
-
-HandlerRegistry.register("structured", "torchscript", StructuredHandler)
-HandlerRegistry.register("structured", "skops", StructuredHandler)

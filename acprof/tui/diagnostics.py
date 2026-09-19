@@ -14,7 +14,8 @@ from typing import Callable, Sequence
 
 from acprof.host.env_utils import load_project_env
 
-from acprof.monitors.perf_mips import MIPSProfilingError, resolve_perf_command_prefix
+from acprof.capabilities import Capability, measurement_requested
+from acprof.host.preflight import probe_cpu_energy, probe_perf_instructions
 
 from acprof.tui.commands import RunConfig, _csv_values
 
@@ -26,6 +27,7 @@ class PreflightCheck:
     label: str
     status: str
     detail: str
+    capability_status: str = ""
 
 
 def _completed_command(
@@ -47,18 +49,9 @@ def _completed_command(
 def _readable_rapl_paths(
     powercap_root: str | os.PathLike[str] = "/sys/class/powercap",
 ) -> list[str]:
-    """Find top-level RAPL counters without following cyclic sysfs links."""
-    paths: list[str] = []
-    try:
-        for entry in os.scandir(powercap_root):
-            if entry.name.count(":") != 1:
-                continue
-            energy_path = os.path.join(entry.path, "energy_uj")
-            if os.path.isfile(energy_path) and os.access(energy_path, os.R_OK):
-                paths.append(energy_path)
-    except OSError:
-        pass
-    return sorted(paths)
+    """Use the production package-domain reader, including real read checks."""
+    from acprof.monitors.energy_cpu import _discover_rapl_domains
+    return sorted(domain.energy_path for domain in _discover_rapl_domains(os.fspath(powercap_root)))
 
 
 def quick_preflight(
@@ -143,13 +136,13 @@ def quick_preflight(
             detail = message('Docker 检查失败：{0}', exc)
         checks.append(PreflightCheck(message('本机 Docker'), status, detail))
 
-    for tool in ("tcpdump", "tshark"):
+    for tool in (("tcpdump", "tshark") if measurement_requested(config.profiling_mode, "packet_latency") else ()):
         path = shutil.which(tool)
         checks.append(
             PreflightCheck(tool, "ok" if path else "fail", path or message('未安装'))
         )
 
-    ip_cli = shutil.which("ip")
+    ip_cli = shutil.which("ip") if measurement_requested(config.profiling_mode, "packet_latency") else None
     if ip_cli:
         try:
             iface = command_runner(
@@ -165,40 +158,38 @@ def quick_preflight(
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             checks.append(PreflightCheck(message('抓包网卡'), "fail", str(exc)))
-    else:
+    elif measurement_requested(config.profiling_mode, "packet_latency"):
         checks.append(PreflightCheck(message('抓包网卡'), "fail", message('未找到 ip 命令')))
+    else:
+        checks.append(PreflightCheck(message('抓包网卡'), "ok", "not_requested (basic)", "not_requested"))
 
-    # sysfs powercap entries contain cyclic ``device``/``subsystem`` symlinks;
-    # never recurse through them.  The production monitor likewise inspects
-    # only top-level package domains (exactly one colon in intel-rapl:N).
-    rapl_paths = _readable_rapl_paths()
+    rapl = probe_cpu_energy() if measurement_requested(config.profiling_mode, "cpu_energy") else Capability("not_requested", "basic", "profiling_mode")
     checks.append(
         PreflightCheck(
             "CPU RAPL",
-            "ok" if rapl_paths else "fail",
-            rapl_paths[0] if rapl_paths else message('没有可读 energy_uj'),
+            "ok" if rapl.status.value in {"available", "not_requested"} else "fail",
+            f"{rapl.status.value}: {rapl.detail}", rapl.status.value,
         )
     )
 
-    try:
-        # Match run.py's local environment precedence without keeping stale
-        # file credentials in the long-lived TUI process after this check.
-        probe_environ = os.environ.copy()
-        load_project_env(
-            project_dir if project_dir is not None else Path(__file__).resolve().parents[2],
-            environ=probe_environ,
-        )
-        prefix = resolve_perf_command_prefix(env=probe_environ)
-    except (MIPSProfilingError, OSError, UnicodeError, subprocess.TimeoutExpired) as exc:
-        checks.append(PreflightCheck("perf instructions", "fail", str(exc)))
-    else:
+    # Do not retain .env.local credentials in the long-lived TUI process.
+    probe_environ = os.environ.copy()
+    load_project_env(
+        project_dir if project_dir is not None else Path(__file__).resolve().parents[2],
+        environ=probe_environ,
+    )
+    perf = probe_perf_instructions(env=probe_environ) if measurement_requested(config.profiling_mode, "cpu_instructions") else Capability("not_requested", "basic", "profiling_mode")
+    if perf.status.value == "available":
+        prefix = perf.evidence["command_prefix"]
         if prefix[0] != "sudo":
             detail = message('普通用户 perf 可用，已读到 instructions 计数')
         elif "-S" in prefix:
             detail = message('sudo perf 可用（已配置凭据），已读到 instructions 计数')
         else:
             detail = message('sudo perf 可用（无需交互输入），已读到 instructions 计数')
-        checks.append(PreflightCheck("perf instructions", "ok", detail))
+        checks.append(PreflightCheck("perf instructions", "ok", detail, perf.status.value))
+    else:
+        checks.append(PreflightCheck("perf instructions", "ok" if perf.status.value == "not_requested" else "fail", f"{perf.status.value}: {perf.detail}", perf.status.value))
 
     if "on" in _csv_values(config.gpus.lower()):
         nvidia_smi = shutil.which("nvidia-smi")

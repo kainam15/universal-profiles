@@ -12,34 +12,40 @@ RESULT_PREFIX = "ACPROF_RUNTIME_VALIDATION="
 
 
 def validate(payload: dict) -> dict:
-    import torch
-    from acprof.container.handlers import HandlerRegistry, resolve_model_source
+    from acprof.container.handlers import HandlerRegistry, load_handler, resolve_model_source
+    from acprof.container.execution import configured_execution
+    from acprof.extensions import get_extension
 
     use_gpu = os.getenv("USE_GPU", "0") == "1"
-    if use_gpu and not torch.cuda.is_available():
-        raise RuntimeError("请求 GPU 验证，但容器内 CUDA 不可用")
-    device = "cuda" if use_gpu else "cpu"
-    torch.set_num_threads(max(1, int(os.getenv("TORCH_NUM_THREADS", "1"))))
+    execution, device = configured_execution(
+        os.environ["TASK_FAMILY"], os.environ["RUNTIME_BACKEND"], use_gpu=use_gpu,
+        threads=max(1, int(os.getenv("TORCH_NUM_THREADS", "1"))),
+        adapter=os.getenv("ACPROF_MODEL_ADAPTER", "family-default"),
+    )
     handler = HandlerRegistry.get(os.environ["TASK_FAMILY"], os.environ["RUNTIME_BACKEND"])
-    context = handler.load(
+    context = load_handler(handler,
         resolve_model_source(os.environ["MODEL_ID"]), os.environ["TASK_TYPE"],
         os.environ["RUNTIME_BACKEND"], device, os.environ["MODEL_REVISION"],
     )
+    context["_validation_entrypoint"] = get_extension(
+        os.environ["TASK_FAMILY"], os.environ["RUNTIME_BACKEND"],
+        adapter=os.getenv("ACPROF_MODEL_ADAPTER", "family-default"),
+        task=os.environ["TASK_TYPE"],
+    ).validation_entrypoint
     processed = handler.preprocess(context, payload)
-    with torch.inference_mode():
+    with execution.inference_context():
         output = handler.predict(context, processed)
     response = handler.postprocess(context, output)
-    if not isinstance(response, dict) or not response:
-        raise ValueError("postprocess 必须返回非空 JSON object")
-    # The same JSON transport contract as Flask /predict, without an HTTP server.
-    json.dumps(response, allow_nan=False)
-    if response.get("error"):
-        raise ValueError(f"模型响应包含 error: {response['error']}")
+    validation = handler.validate_output(context, payload, processed, output, response)
+    for layer in ('protocol', 'task'):
+        if not isinstance(validation, dict) or not isinstance(validation.get(layer), dict) or validation[layer].get('status') != 'verified':
+            raise ValueError(f'{layer} validation must be verified before profiling: {validation!r}')
     return {
         "status": "ok", "device": device,
-        "dtype": str(getattr(context.get("model"), "dtype", "unknown")),
+        "dtype": str(getattr(context.get("model"), "dtype", context.get("dtype", "unknown"))),
         "attention_implementation": context.get("attention_implementation", "model_default"),
-        "torch_version": torch.__version__, "cuda_runtime": torch.version.cuda,
+        **execution.metadata(), "validation": validation,
+        "workload_contract": validation["workload_contract"],
         "adapter": type(handler).__name__, "response": response,
         "effective_input_scale": processed.get("_effective_input_scale") if isinstance(processed, dict) else None,
     }

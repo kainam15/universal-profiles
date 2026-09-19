@@ -22,8 +22,8 @@ class LockCompilerTests(unittest.TestCase):
                 "urllib.request.urlopen", side_effect=AssertionError("check accessed network"),
             ):
                 result = check_catalog(root)
-            self.assertEqual(result["profiles"], 22)
-            self.assertEqual(len(result["environments"]), 20)
+            self.assertEqual(result["profiles"], 23)
+            self.assertEqual(len(result["environments"]), 21)
             self.assertEqual(before, {path: hashlib.sha256(path.read_bytes()).hexdigest()
                                       for path in root.rglob("*") if path.is_file()})
 

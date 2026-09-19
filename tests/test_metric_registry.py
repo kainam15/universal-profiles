@@ -8,8 +8,14 @@ from acprof.config import CSV_FIELDS
 
 class MetricRegistryTests(unittest.TestCase):
     def test_historical_field_order_is_unchanged(self):
-        self.assertEqual(hashlib.sha256(json.dumps(CSV_FIELDS).encode()).hexdigest(),
+        historical_fields = [name for name in CSV_FIELDS if name != 'workload_contract']
+        self.assertEqual(hashlib.sha256(json.dumps(historical_fields).encode()).hexdigest(),
                          "1422b14ebaa48586573923cea2d33f615e6dc180d099cdf773678f453e3268f3")
+
+    def test_workload_contract_is_additive_text_not_a_numeric_metric(self):
+        from acprof.metric_registry import NUMERIC_FIELDS
+        self.assertIn('workload_contract', CSV_FIELDS)
+        self.assertNotIn('workload_contract', NUMERIC_FIELDS)
 
     def test_consumers_share_registry_without_changing_tool_completeness(self):
         from acprof.metric_registry import CSV_FIELDS as registry_fields, tool_fields

@@ -30,7 +30,7 @@ def configure_runtime_profile(task_info: Any) -> RuntimeProfile:
     from acprof.runtime_profiles import DEFAULT_PROFILES, PLATFORMS, PROFILES
 
     profile = select_runtime_profile(task_info)
-    if profile.adapter == "family-default":
+    if profile.adapter == "family-default" and profile.environment.platform.torch_version:
         index = _select_nlp_torch_index_url().rstrip("/")
         variant = index.rsplit("/", 1)[-1]
         if index != f"https://download.pytorch.org/whl/{variant}" or variant not in {"cu128", "cu124", "cpu"}:
@@ -57,7 +57,7 @@ def request_fingerprint(task_info: Any, project_dir: str | Path = PROJECT_ROOT) 
     overrides = {
         key: os.environ.get(key, "").strip()
         for key in ("ACPROF_NLP_TORCH_INDEX_URL", "ACPROF_NLP_TORCH_SPEC")
-    } if profile.adapter == "family-default" else {}
+    } if profile.adapter == "family-default" and profile.environment.platform.torch_version else {}
     logical_profile = profile.to_dict()
     logical_profile["environment"] = environment_id(profile.environment, root)
     digest = hashlib.sha256(json.dumps({
@@ -70,6 +70,7 @@ def request_fingerprint(task_info: Any, project_dir: str | Path = PROJECT_ROOT) 
         "model_download_policy": download_policy(task_info),
     }, sort_keys=True).encode())
     paths = sorted((root / "acprof").rglob("*.py"))
+    paths += sorted((root / "acprof" / "extensions").glob("*/manifest.json"))
     paths += [root / "dockerfiles" / name for name in ("runtime-model.Dockerfile", "runtime-final.Dockerfile")]
     for path in paths:
         digest.update(str(path.relative_to(root)).encode())

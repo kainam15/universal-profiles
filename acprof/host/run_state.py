@@ -128,7 +128,9 @@ class RunState:
             self.lock.__enter__()
             if resume:
                 self.data = load_run_state(self.directory)
-                if self.data.get("options") != options:
+                previous_options = {"profiling_mode": "full", **self.data.get("options", {})}
+                current_options = {"profiling_mode": "full", **options}
+                if previous_options != current_options:
                     raise RunStateError("恢复参数与原实验不一致；请使用原命令加 --resume，或选择新输出目录")
                 if self.data.get("host") != host_identity(project_dir):
                     raise RunStateError("恢复时主机、Python 依赖或 AC-Prof 源码已变化；请使用新输出目录")

@@ -55,9 +55,9 @@ Agent 从 [AGENTS.md](AGENTS.md) 读取全局约束，再按目录和任务读�
 - 当前用户可以直接访问 `unix:///var/run/docker.sock`，无需使用 `sudo docker`。
 - Host 使用统一 cgroup v2；`/sys/fs/cgroup/cgroup.controllers` 必须存在。
 - Hugging Face Hub 可访问；私有或 gated 模型还需要 `HF_TOKEN`。
-- Linux RAPL powercap 可读。
-- Linux `perf` 可以访问硬件 `instructions` 事件。
-- `tcpdump`、`tshark` 和本机 Docker bridge 可用。
+- `full` 模式要求 Linux RAPL powercap 可读。
+- `full` 模式要求 Linux `perf` 可以访问硬件 `instructions` 事件。
+- `full` 模式要求 `tcpdump`、`tshark` 和本机 Docker bridge 可用。
 - 运行 `--gpus on` 时，还需要 NVIDIA driver 和 NVIDIA Container Toolkit。
 
 先确认 Docker 指向本机 daemon：
@@ -100,8 +100,8 @@ source .venv/bin/activate
 python -m pip install --require-hashes -r requirements.lock
 ```
 
-容器运行依赖由独立的平台和完整制品锁管理：保留 7 个任务族、22 个逻辑 profile，当前共享为
-20 个依赖环境。镜像按需构建和复用；只读检查可运行 `python scripts/compile_locks.py --check`，
+容器运行依赖由独立的平台和完整制品锁管理：保留 7 个任务族，23 个逻辑 profile 共享为
+21 个依赖环境，其中 `onnxruntime-cpu` 完全不安装 Torch。镜像按需构建和复用；只读检查可运行 `python scripts/compile_locks.py --check`，
 分层及锁更新命令见[运行兼容](docs/Runtime_Compatibility.md#当前配置)。
 
 私有或 gated 模型可在项目根目录创建 `.env.local`：
@@ -149,6 +149,24 @@ results/smoke/google-bert--bert-base-uncased/
 ├── collection_history.json
 └── input_scale_plan.json
 ```
+
+### 无 Torch 的 ONNX Runtime CPU 示例
+
+`basic` 只采集 application latency、吞吐、容器 CPU 和内存；仍要求原生 Linux、本机 Docker、
+cgroup v2。RAPL、perf、抓包不参与此模式，结果明确记录模式和能力状态。默认 `full` 保留原有严格条件。
+
+```bash
+.venv/bin/python run.py --model Ritual-Net/iris-classification \
+  --task tabular-classification --backend onnxruntime \
+  --workload-spec examples/onnxruntime/iris.json --input-scales 1 \
+  --cpus 1 --mems 1 --gpus off --batch-size 1 \
+  --warmup 0 --repeat 1 --repeat-in-window 1 \
+  --profiling-mode basic --compute-profile-tool none --execution-profile-tool none \
+  --notify none --output-dir results/onnx-basic
+```
+
+此模型输入固定为 `[1,4]`，更大的输入或 batch 会明确拒绝。模型 revision 会解析并写入结果；
+任务 sanity check 不等于分类准确率评测。接口与声明格式见[扩展声明](docs/Runtime_Compatibility.md#扩展声明与按需加载)。
 
 ### 4. 生成图表
 

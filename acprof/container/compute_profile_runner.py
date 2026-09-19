@@ -15,9 +15,11 @@ from typing import Any, Dict, Optional
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
-import torch
+from acprof.container.handlers import HandlerRegistry, load_handler, resolve_model_source
+from acprof.container.execution import configured_execution
 
-from acprof.container.handlers import HandlerRegistry, resolve_model_source
+# Populated only for explicitly selected Torch/NVIDIA profiling paths.
+torch = None
 
 
 def _find_payload(payload_file: str, input_scale: float) -> Dict[str, Any]:
@@ -108,7 +110,7 @@ class _ITTControl:
 
 
 def _cuda_synchronize() -> None:
-    if torch.cuda.is_available():
+    if torch is not None and torch.cuda.is_available():
         torch.cuda.synchronize()
 
 
@@ -150,7 +152,7 @@ def _gpu_metadata() -> Dict[str, Any]:
         "gpu_compute_capability": "",
         "gpu_sm_count": None,
     }
-    if not torch.cuda.is_available():
+    if torch is None or not torch.cuda.is_available():
         return metadata
     try:
         capability = torch.cuda.get_device_capability()
@@ -226,6 +228,7 @@ def _load_options_for_profile_mode(
 
 
 def main() -> None:
+    global torch
     parser = argparse.ArgumentParser()
     parser.add_argument("--payload-file", required=True)
     parser.add_argument("--input-scale", required=True, type=float)
@@ -251,19 +254,29 @@ def main() -> None:
     task_type = os.getenv("TASK_TYPE", os.getenv("PIPELINE_TAG", "text-generation"))
     runtime_backend = os.getenv("RUNTIME_BACKEND", "transformers_pipeline")
     use_gpu = int(os.getenv("USE_GPU", "0"))
-    device = "cuda" if use_gpu and torch.cuda.is_available() else "cpu"
     torch_threads = int(os.getenv("TORCH_NUM_THREADS", "0") or "0")
-    if torch_threads > 0:
-        torch.set_num_threads(torch_threads)
+    execution, device = configured_execution(
+        task_family, runtime_backend, use_gpu=bool(use_gpu), threads=torch_threads,
+        adapter=os.getenv("ACPROF_MODEL_ADAPTER", "family-default"),
+    )
 
     handler = HandlerRegistry.get(task_family, runtime_backend)
     load_options = _load_options_for_profile_mode(args.profile_mode)
     torch_eager_mode = load_options is not None
+    if torch_eager_mode or args.profile_mode == "gpu":
+        from acprof.extensions import get_extension
+        declaration = get_extension(task_family, runtime_backend,
+                                    adapter=os.getenv("ACPROF_MODEL_ADAPTER", "family-default"))
+        capability = "torch_profiler_eager" if torch_eager_mode else "ncu"
+        if declaration.measurement.get(capability) == "unsupported":
+            raise ValueError(f"unsupported profiler={capability} backend={runtime_backend}")
+        import torch as selected_torch
+        torch = selected_torch
     t_load = time.perf_counter()
     handler_load_kwargs: Dict[str, Any] = {}
     if load_options is not None:
         handler_load_kwargs["load_options"] = load_options
-    model_ctx = handler.load(
+    model_ctx = load_handler(handler,
         model_source,
         task_type,
         runtime_backend,
@@ -279,15 +292,14 @@ def main() -> None:
     payload = _find_payload(args.payload_file, args.input_scale)
     processed = handler.preprocess(model_ctx, payload)
 
-    with torch.inference_mode():
+    with execution.inference_context():
         warmup_output = handler.predict(model_ctx, processed)
-        # Validate the same output contract as /predict before capture. This
-        # catches missing modalities or silently changed image/video geometry
-        # without adding postprocessing to the gated inference capture windows.
-        # Whole-process tools such as Massif still include this warmup phase.
+        # Preserve the ordinary warmup and its postprocess guards. Full output
+        # validation runs in a separate runtime_validate container before this
+        # process starts, so whole-process tools such as Massif cannot count it.
         handler.postprocess(model_ctx, warmup_output)
         del warmup_output
-        _cuda_synchronize()
+        execution.synchronize()
 
         repeat = max(1, int(args.repeat))
         if torch_eager_mode:

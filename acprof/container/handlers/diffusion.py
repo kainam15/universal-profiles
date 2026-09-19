@@ -722,6 +722,3 @@ class DiffusionHandler(BaseHandler):
         if task in {"image-to-image", "image-to-video"}:
             metadata["prompt_consumed"] = "prompt" in _pipeline_parameters(model_ctx.get("pipeline"))
         return metadata
-
-
-HandlerRegistry.register("diffusion", "diffusers", DiffusionHandler)

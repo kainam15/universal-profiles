@@ -11,6 +11,7 @@ import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from acprof.config import DEFAULT_COMPUTE_PROFILE_TOOL
+from acprof.capabilities import declared_profiler_error
 from acprof.host.detect import TaskInfo
 from acprof.host.profiler_common import (
     _base_docker_cmd,
@@ -1020,8 +1021,13 @@ def _safe_profile_tool(
     entries: List[Dict[str, Any]],
     repeat: int,
     callback: Any,
+    task_info: Optional[TaskInfo] = None,
 ) -> Dict[str, Any]:
     try:
+        if task_info is not None:
+            error = declared_profiler_error(task_info, tool)
+            if error:
+                return _failed_tool_profile(tool=tool, entries=entries, repeat=repeat, error=error)
         return callback()
     except Exception as exc:
         return _failed_tool_profile(
@@ -1107,7 +1113,11 @@ def collect_compute_profile_plan(
     resume_existing_ncu_profiles: bool = False,
     progress_callback: Optional[ProfilerProgressCallback] = None,
 ) -> str:
-    """Collect or synthesize compute profiles and write a plan file."""
+    """Collect or synthesize compute profiles and write a plan file.
+
+    The calling CLI must run isolated runtime validation before collection.
+    This internal planner does not repeat output validation inside profilers.
+    """
     os.makedirs(output_dir, exist_ok=True)
     tool_mode = (
         compute_profile_tool or DEFAULT_COMPUTE_PROFILE_TOOL
@@ -1148,12 +1158,12 @@ def collect_compute_profile_plan(
         os.makedirs(profile_root, exist_ok=True)
     advisor_bin = (
         _find_executable(advisor_root, ("advisor", "advixe-cl"))
-        if collect_advisor_cpu
+        if collect_advisor_cpu and not declared_profiler_error(task_info, "intel_advisor")
         else None
     )
     ncu_bin = (
         _find_executable(ncu_root, ("ncu", "nv-nsight-cu-cli"))
-        if collect_ncu_gpu
+        if collect_ncu_gpu and not declared_profiler_error(task_info, NCU_TOOL)
         else None
     )
     max_cpu, max_mem = _default_compute_profile_resources(
@@ -1167,6 +1177,7 @@ def collect_compute_profile_plan(
         if collect_advisor_cpu:
             started_at = time.perf_counter()
             cpu_tools["intel_advisor"] = _safe_profile_tool(
+                task_info=task_info,
                 tool="intel_advisor",
                 entries=entries,
                 repeat=advisor_repeat,
@@ -1192,6 +1203,7 @@ def collect_compute_profile_plan(
         if collect_torch_cpu:
             started_at = time.perf_counter()
             cpu_tools[TORCH_PROFILER_TOOL] = _safe_profile_tool(
+                task_info=task_info,
                 tool=TORCH_PROFILER_TOOL,
                 entries=entries,
                 repeat=torch_profiler_repeat,
@@ -1222,6 +1234,7 @@ def collect_compute_profile_plan(
         if collect_torch_gpu:
             started_at = time.perf_counter()
             gpu_tools[TORCH_PROFILER_TOOL] = _safe_profile_tool(
+                task_info=task_info,
                 tool=TORCH_PROFILER_TOOL,
                 entries=entries,
                 repeat=torch_profiler_repeat,
@@ -1247,6 +1260,7 @@ def collect_compute_profile_plan(
         if collect_ncu_gpu:
             started_at = time.perf_counter()
             gpu_tools[NCU_TOOL] = _safe_profile_tool(
+                task_info=task_info,
                 tool=NCU_TOOL,
                 entries=entries,
                 repeat=ncu_repeat,

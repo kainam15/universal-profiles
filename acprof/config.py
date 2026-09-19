@@ -3,155 +3,13 @@
 from dataclasses import dataclass, field
 from typing import List, Dict, Any
 
-# ─────────────────────────────────────────────
-# Pipeline Tag → Task Family 映射
-# ─────────────────────────────────────────────
-PIPELINE_TAG_TO_FAMILY: Dict[str, str] = {
-    # NLP
-    "text-generation": "nlp",
-    "text2text-generation": "nlp",
-    "text-classification": "nlp",
-    "token-classification": "nlp",
-    "question-answering": "nlp",
-    "summarization": "nlp",
-    "translation": "nlp",
-    "fill-mask": "nlp",
-    "feature-extraction": "nlp",
-    "zero-shot-classification": "nlp",
-    "sentence-similarity": "nlp",
-    "table-question-answering": "nlp",
-    "text-ranking": "nlp",
-    "conversational": "nlp",
-    # CV
-    "image-classification": "cv",
-    "object-detection": "cv",
-    "image-segmentation": "cv",
-    "depth-estimation": "cv",
-    "image-to-text": "cv",
-    "zero-shot-image-classification": "cv",
-    "image-feature-extraction": "cv",
-    "zero-shot-object-detection": "cv",
-    "mask-generation": "cv",
-    "keypoint-detection": "cv",
-    "video-classification": "cv",
-    # Diffusion / generative vision
-    "text-to-image": "diffusion",
-    "image-text-to-image": "diffusion",
-    "image-text-to-video": "diffusion",
-    "image-to-image": "diffusion",
-    "image-to-video": "diffusion",
-    "text-to-video": "diffusion",
-    "video-to-video": "diffusion",
-    "unconditional-image-generation": "diffusion",
-    "text-to-3d": "diffusion",
-    "image-to-3d": "diffusion",
-    # Multimodal understanding, retrieval and mixed output
-    "audio-text-to-text": "multimodal",
-    "image-text-to-text": "multimodal",
-    "visual-question-answering": "multimodal",
-    "document-question-answering": "multimodal",
-    "video-text-to-text": "multimodal",
-    "visual-document-retrieval": "multimodal",
-    "any-to-any": "multimodal",
-    # Audio
-    "automatic-speech-recognition": "audio",
-    "audio-classification": "audio",
-    "text-to-speech": "audio",
-    "text-to-audio": "audio",
-    "audio-to-audio": "audio",
-    "voice-activity-detection": "audio",
-    # Structured data and offline policy inference
-    "tabular-classification": "structured",
-    "tabular-regression": "structured",
-    "reinforcement-learning": "structured",
-    "robotics": "structured",
-    "graph-ml": "structured",
-    # Time-series
-    "time-series-forecasting": "timeseries",
-}
+# 保留公共常量名称；任务、后端与架构声明统一由 extension manifests 提供。
+from acprof.extensions import CATALOG
 
-# ─────────────────────────────────────────────
-# Library → Runtime Backend 映射
-# ─────────────────────────────────────────────
-LIBRARY_TO_BACKEND: Dict[str, str] = {
-    "transformers": "transformers_pipeline",
-    "sentence-transformers": "transformers_pipeline",
-    "chronos": "chronos",
-    "diffusers": "diffusers",
-    "timm": "transformers_model",
-    "sklearn": "skops",
-    "skops": "skops",
-}
-
+PIPELINE_TAG_TO_FAMILY: Dict[str, str] = dict(CATALOG.task_families)
+LIBRARY_TO_BACKEND: Dict[str, str] = dict(CATALOG.library_backends)
+ARCHITECTURE_TO_TASK: Dict[str, str] = dict(CATALOG.architecture_tasks)
 DEFAULT_BACKEND = "transformers_pipeline"
-
-# ─────────────────────────────────────────────
-# Architecture → Pipeline Tag 推断（Level 2 检测兜底）
-# ─────────────────────────────────────────────
-ARCHITECTURE_TO_TASK: Dict[str, str] = {
-    # Match multimodal architectures before generic LM / QA suffixes.
-    "Qwen2AudioForConditionalGeneration": "audio-text-to-text",
-    "Qwen2_5OmniForConditionalGeneration": "any-to-any",
-    "Qwen2VLForConditionalGeneration": "image-text-to-text",
-    "Qwen2_5_VLForConditionalGeneration": "image-text-to-text",
-    "Qwen3VLForConditionalGeneration": "image-text-to-text",
-    "Qwen3VLMoeForConditionalGeneration": "image-text-to-text",
-    "Qwen3OmniMoeForConditionalGeneration": "any-to-any",
-    "LlavaForConditionalGeneration": "image-text-to-text",
-    "LlavaNextForConditionalGeneration": "image-text-to-text",
-    "LlavaOnevisionForConditionalGeneration": "image-text-to-text",
-    "LlavaNextVideoForConditionalGeneration": "video-text-to-text",
-    "Idefics2ForConditionalGeneration": "image-text-to-text",
-    "Idefics3ForConditionalGeneration": "image-text-to-text",
-    "SmolVLMForConditionalGeneration": "image-text-to-text",
-    "MllamaForConditionalGeneration": "image-text-to-text",
-    "PaliGemmaForConditionalGeneration": "image-text-to-text",
-    "Gemma3ForConditionalGeneration": "image-text-to-text",
-    "Gemma3nForConditionalGeneration": "image-text-to-text",
-    "ColPaliForRetrieval": "visual-document-retrieval",
-    "ColQwen2ForRetrieval": "visual-document-retrieval",
-    "ViltForQuestionAnswering": "visual-question-answering",
-    "BlipForQuestionAnswering": "visual-question-answering",
-    "LayoutLMForQuestionAnswering": "document-question-answering",
-    "LayoutLMv2ForQuestionAnswering": "document-question-answering",
-    "LayoutLMv3ForQuestionAnswering": "document-question-answering",
-    # Specific vision generation names must precede ForConditionalGeneration.
-    "BlipForConditionalGeneration": "image-to-text",
-    "Blip2ForConditionalGeneration": "image-to-text",
-    "InstructBlipForConditionalGeneration": "image-to-text",
-    "VisionEncoderDecoderModel": "image-to-text",
-    "OwlViTForObjectDetection": "zero-shot-object-detection",
-    "Owlv2ForObjectDetection": "zero-shot-object-detection",
-    "GroundingDinoForObjectDetection": "zero-shot-object-detection",
-    "SamModel": "mask-generation",
-    "Sam2Model": "mask-generation",
-    "ForKeypointDetection": "keypoint-detection",
-    "ForPoseEstimation": "keypoint-detection",
-    "ForVideoClassification": "video-classification",
-    "ForUniversalSegmentation": "image-segmentation",
-    "ForInstanceSegmentation": "image-segmentation",
-    "ForCausalLM": "text-generation",
-    "TapasForQuestionAnswering": "table-question-answering",
-    "VitsModel": "text-to-speech",
-    "BarkModel": "text-to-audio",
-    "MusicgenForConditionalGeneration": "text-to-audio",
-    "SpeechT5ForTextToSpeech": "text-to-speech",
-    "EncodecModel": "audio-to-audio",
-    "DacModel": "audio-to-audio",
-    "ForMaskedLM": "fill-mask",
-    "ForSequenceClassification": "text-classification",
-    "ForTokenClassification": "token-classification",
-    "ForQuestionAnswering": "question-answering",
-    "ForSeq2SeqLM": "text2text-generation",
-    "ForConditionalGeneration": "text2text-generation",
-    "ForImageClassification": "image-classification",
-    "ForObjectDetection": "object-detection",
-    "ForSemanticSegmentation": "image-segmentation",
-    "ForDepthEstimation": "depth-estimation",
-    "ForAudioClassification": "audio-classification",
-    "ForCTC": "automatic-speech-recognition",
-    "ForSpeechSeq2Seq": "automatic-speech-recognition",
-}
 
 # ─────────────────────────────────────────────
 # 各任务族的输入缩放维度
@@ -247,6 +105,8 @@ READY_POLL_INTERVAL_S = 0.1
 from acprof.metric_registry import CSV_FIELDS, GPU_RUNTIME_STATE_FIELDS
 
 STATIC_META_FIELDS = [
+    "profiling_mode",
+    "capability_report",
     "schema_version",
     "model_name",
     "model_revision",

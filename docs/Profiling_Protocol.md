@@ -23,6 +23,54 @@
 - 输入计划、`input_scale_plan_sha256`、workload 素材与模型 revision 必须一致；派生字段复用已有采样，不额外发起请求。
 - 静态对象描述与采集过程来源分开保存；补采和修复记录进入 `collection_history.json`，保留原始备份和可回溯信息。
 
+## Profiling mode 与能力证据
+
+`profiling_mode=full` 为默认，保留原有 native Linux、本机 Docker、cgroup v2、RAPL、硬件 instructions
+和抓包要求。`basic` 仍需前三项，仅要求 application latency、throughput、容器 CPU/memory；
+能耗、PMU、packet latency 不请求、不启动、数值保持 `nan`。两种模式不能混作同一画像。
+Torch、NCU、Massif、Nsys 仍是显式选择的额外工具，`full` 不意味着自动开启全部工具。
+
+`capability_report.json` 保存统一的 execution/measurement 对象：`available`（已声明或预检可用）、
+`verified`（有当前运行证据）、`unsupported`、`permission_denied`、`not_requested`、`unavailable`、`error`。
+每项含 source、detail 和 evidence，运行时验证关联 environment ID。声明不能直接标 verified；
+实测缺值不能标零。合法的零值仍是数值，不是能力状态。
+
+`static_meta.json.capability_report` 保存矩阵前的冻结快照，保护恢复时的准备产物身份；
+独立 `capability_report.json` 在采集结束后补充实际 CSV/profiler 证据。
+它记录主采集收尾时的能力快照；后续 posthoc 补采的状态以对应 profiler plan、CSV error 和
+`collection_history.json` 为准，当前不会自动改写该主采集快照。
+`requested_measurements_complete` 表示所请求项目是否具备证据；`collection_complete` 表示采集行完成且成功；
+`full_profile_complete` 仅在 full 且上述两者满足时成立。工具 permission denied 或输出全为未知数值不能标完整。
+主矩阵仍可保留其它成功指标与失败计划；成功测量行缺少当前模式的必需指标时，保存诊断并以失败退出。
+
+模式参与实验恢复身份；旧参数中缺失模式解释为历史默认 full，历史结果不会凭空补出能力证据。
+新增 `profiling_mode`、`capability_report` 是 static schema v7 的可选字段，旧 v7 文件继续可读。
+
+## Workload Contract
+
+输入计划 schema v2 增加 `scenario: {"type": "serial"}`；当前只实现串行请求，不实现并发／到达率调度。
+资源条件仍来自矩阵 CPU/memory/GPU 字段，输入来自物化计划，场景单独声明。
+
+每次 `/predict` 响应包含 `workload_contract` schema v1，保存 task、batch、scenario、计划尺度、实际尺度，
+以及各任务可获得的实际输入／输出形状、计数和生成参数。窗口结束后 CSV 文本列 `workload_contract`
+序列化本行已完成请求的摘要：`request_count` 保存总请求数，`variants` 保存各不同 contract 及其 `count`。
+相同事实在窗口结束后合并，避免快速模型的重复 JSON 超过 CSV 单字段限制；不同输出数量保留分布，
+不把它们简单改写成计划上限。这是工作量计数，不保存请求时间顺序。
+未知事实为 JSON `null` 并保留可用性说明，旧 CSV 缺此扩展列继续可读，不补造历史 workload。
+
+文本的 `max_output_tokens` 是请求上限，`actual_output_tokens` 来自真实生成 token ID；
+计数排除 causal prompt／已知 decoder-start，包含终止 EOS，排除 EOS 后 padding。
+`actual_output_tokens_per_sequence` 和 stop reason 保留单序列事实。`output_token_count` 原有的文本重分词
+口径保持不变，不能与生成步骤计数混用。无法取得 token ID 时实际计数为 null，不能用最大长度代替。
+音频记录时长、采样率、声道；`processor_input_duration` 是送入处理器的波形时长，
+处理器 padding/chunk 后的 `processed_duration` 无法观察时为 null，不能用原始时长替代。
+图像记录原始尺寸、可观察的 processor tensor shape；
+多模态分别记录 text/image/audio/video，不能用单一尺度代替全部模态。处理器内部尺寸不可观察时明确未知。
+
+完整 raw output 的类型、shape、finite、必需字段、实际尺度和 JSON serialization 校验只在独立验证阶段执行，
+不在正式测量窗口重新扫描张量。主请求继续执行既有 Handler 预处理和输出约束，附加轻量工作量摘要。
+任务 sanity 不等于完整 accuracy benchmark。
+
 ## 输出文件
 
 输出目录为 `<output-dir>/<model-dir>/`；模型 ID 中的 `/` 替换为 `--`。

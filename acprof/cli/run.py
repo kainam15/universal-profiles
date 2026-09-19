@@ -9,6 +9,7 @@ Usage:
 from __future__ import annotations
 
 import csv
+import json
 from dataclasses import dataclass, replace
 import math
 import os
@@ -19,6 +20,11 @@ import time
 from pathlib import Path
 
 from acprof.config import SCALING_DIMENSIONS
+from acprof.capabilities import (
+    measurement_requested, measurement_report, apply_extension,
+    apply_runtime_validation, apply_profiler_plan, apply_collection_result,
+    Capability, CapabilityReport, missing_required_measurements,
+)
 from acprof.host.env_utils import bootstrap_project_env
 from acprof.host.run_state import RunState, RunStateError, load_run_state, run_options
 from acprof.host.preflight import (
@@ -27,6 +33,7 @@ from acprof.host.preflight import (
     require_result_cgroup_compatibility,
     require_native_docker,
     require_cpu_energy_prerequisites,
+    require_mips_prerequisites,
 )
 from acprof.cli.run_args import build_parser as _build_parser
 from acprof.host.collection_history import (
@@ -45,7 +52,6 @@ from acprof.host.packet_capture import (
 )
 from acprof.host.profiler_progress import ProfilerProgress
 from acprof.host.task_support import TaskSupportError, require_task_support
-from acprof.monitors.perf_mips import require_mips_prerequisites
 from acprof.notifications import (
     NotificationConfigError,
     NotificationError,
@@ -586,14 +592,17 @@ def _run_main():
     cgroup_version = require_cgroup_prerequisites()
     cgroup_collection_mode = "strict_v2"
 
-    try:
-        require_packet_latency_prerequisites(sniff_iface=args.sniff_iface)
-    except PacketLatencyError as exc:
-        print(f"\n[sniff][ERROR] {exc}", file=sys.stderr)
-        sys.exit(1)
-
-    require_cpu_energy_prerequisites()
-    require_mips_prerequisites()
+    preflight_measurements = {}
+    if measurement_requested(args.profiling_mode, "packet_latency"):
+        try:
+            require_packet_latency_prerequisites(sniff_iface=args.sniff_iface)
+        except PacketLatencyError as exc:
+            print(f"\n[sniff][ERROR] {exc}", file=sys.stderr)
+            sys.exit(1)
+    if measurement_requested(args.profiling_mode, "cpu_energy"):
+        preflight_measurements["cpu_energy"] = require_cpu_energy_prerequisites()
+    if measurement_requested(args.profiling_mode, "cpu_instructions"):
+        preflight_measurements["cpu_instructions"] = require_mips_prerequisites()
 
     # ── Step 1: Detect task ──
     print("=" * 60)
@@ -622,6 +631,7 @@ def _run_main():
     print(f"  Revision: {task_info.model_revision}")
     print(f"  Detected: {task_info.detection_method}")
     print(f"  Cgroup:   {cgroup_version} (mode={cgroup_collection_mode})")
+    print(f"  Profiling mode: {args.profiling_mode}")
 
     output_dir = os.path.join(
         PROJECT_DIR,
@@ -645,6 +655,7 @@ def _run_main():
     from acprof.host.orchestrator import merge_all_csvs, run_matrix
     from acprof.host.static_metadata import (
         collect_static_meta,
+        enrich_static_meta,
         enrich_static_meta_from_input_plan,
         enrich_static_meta_from_compute_plan,
         enrich_static_meta_from_execution_plan,
@@ -715,6 +726,10 @@ def _run_main():
         _update_run_notification_plan(model_id=task_info.model_id, output_dir=output_dir,
                                       total_cases=total_cases)
         print(f"[resume] 恢复实验 {run_state.data['run_id']}，复用原镜像和输入计划")
+        saved_meta = json.loads(Path(static_meta_json).read_text())
+        capability_report = CapabilityReport.from_dict(saved_meta.get("capability_report", {
+            "profiling_mode": args.profiling_mode,
+        }))
     else:
         task_info.model_download_policy = args.model_download_policy
         try:
@@ -742,7 +757,16 @@ def _run_main():
             cgroup_collection_mode=cgroup_collection_mode,
             compute_profile_enabled=not compute_profile_disabled,
             execution_profile_enabled=args.execution_profile_tool != "none",
+            profiling_mode=args.profiling_mode,
         )
+        capability_report = measurement_report(
+            args.profiling_mode, gpu_modes=gpu_list, compute_tool=args.compute_profile_tool,
+            execution_tool=args.execution_profile_tool,
+        )
+        capability_report.measurement.update({name: item for name, item in preflight_measurements.items() if isinstance(item, Capability)})
+        from acprof.extensions import select_extension
+        apply_extension(capability_report, select_extension(task_info))
+        static_meta = enrich_static_meta(static_meta, {"capability_report": capability_report.to_dict()})
         write_static_meta_json(static_meta, static_meta_json)
         write_collection_history_json(
             empty_collection_history(),
@@ -780,6 +804,10 @@ def _run_main():
                 task_info=task_info, image_info=image_info, planned=planned_input_scales,
                 cpu_list=cpu_list, mem_list=mem_list, gpu_list=gpu_list, output_dir=output_dir,
                 timeout_seconds=args.request_timeout_seconds,
+            )
+            apply_runtime_validation(
+                capability_report, validation,
+                environment_id=image_info.runtime_environment.get("environment_id", ""),
             )
             static_meta = enrich_static_meta(static_meta, {"runtime_validation": validation})
             write_static_meta_json(static_meta, static_meta_json)
@@ -879,6 +907,16 @@ def _run_main():
                     f"{exc}"
                 )
 
+        for plan_path, source in ((compute_profile_plan_file, "compute_profile_plan"),
+                                  (execution_profile_plan_file, "execution_profile_plan")):
+            if plan_path and Path(plan_path).is_file():
+                apply_profiler_plan(capability_report, json.loads(Path(plan_path).read_text()), source=source)
+        static_meta = enrich_static_meta(static_meta, {"capability_report": capability_report.to_dict()})
+        write_static_meta_json(static_meta, static_meta_json)
+        from acprof.artifacts import atomic_write_json
+        atomic_write_json(Path(output_dir) / "capability_report.json", capability_report.to_dict())
+        if not capability_report.to_dict()["requested_measurements_complete"]:
+            print("[capability][WARN] 所请求的 profiler 尚有缺失或失败；详见 capability_report.json，不视为完整画像。")
         run_state.bind_runtime(task_info, image_info, planned_input_scales,
                                compute_profile_plan_file, execution_profile_plan_file)
 
@@ -939,6 +977,7 @@ def _run_main():
             ),
             prune_startup_oom=args.prune_startup_oom,
             run_state=run_state,
+            profiling_mode=args.profiling_mode,
         )
     except PacketLatencyError as exc:
         print(f"\n[sniff][ERROR] {exc}", file=sys.stderr)
@@ -954,11 +993,26 @@ def _run_main():
     if csv_paths:
         final_csv = os.path.join(output_dir, "result_all.csv")
         merge_all_csvs(csv_paths, final_csv, expected=run_state.expected())
+        with open(final_csv, newline="", encoding="utf-8") as stream:
+            collected_rows = list(csv.DictReader(stream))
+        apply_collection_result(capability_report, collected_rows)
+        from acprof.artifacts import atomic_write_json
+        # static_meta is the immutable pre-matrix snapshot used by resume.
+        # Publish final measurement evidence in its dedicated sidecar.
+        atomic_write_json(Path(output_dir) / "capability_report.json", capability_report.to_dict())
+        missing = missing_required_measurements(capability_report, collected_rows)
+        if missing:
+            print(f"[capability][ERROR] {args.profiling_mode} 必需指标缺少有效测量：{', '.join(missing)}。"
+                  "能力报告和 CSV 已保留；本次画像失败。", file=sys.stderr)
+            sys.exit(1)
         run_state.finish(final_csv)
         _cleanup_intermediate_results(csv_paths, output_dir, final_csv)
         elapsed = _format_elapsed(time.perf_counter() - start_time)
         print(f"\n{'='*60}")
         print(f"Profiling complete!")
+        print(f"  Profiling mode:   {args.profiling_mode}")
+        if not capability_report.to_dict()["requested_measurements_complete"]:
+            print("  [WARN] 请求指标存在缺失；能力报告保留具体状态，结果不标记为完整画像。")
         print(f"  Static meta:      {static_meta_json}")
         print(f"  Collection log:   {collection_history_json}")
         if args.prune_startup_oom:

@@ -12,7 +12,6 @@ SERVER_PROCESS_STARTED_PERF = time.perf_counter()
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
-import torch
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -30,7 +29,9 @@ USE_GPU = int(os.getenv("USE_GPU", "0"))
 # ─────────────────────────────────────────────
 # Load handler and model
 # ─────────────────────────────────────────────
-from acprof.container.handlers import HandlerRegistry, resolve_model_source  # noqa: E402
+from acprof.container.handlers import HandlerRegistry, load_handler, resolve_model_source  # noqa: E402
+from acprof.container.execution import configured_execution  # noqa: E402
+from acprof.workloads.contract import workload_contract  # noqa: E402
 
 handler = HandlerRegistry.get(TASK_FAMILY, RUNTIME_BACKEND)
 MODEL_SOURCE = resolve_model_source(MODEL_ID, os.getenv("MODEL_LOCAL_PATH"))
@@ -38,11 +39,11 @@ MODEL_SOURCE = resolve_model_source(MODEL_ID, os.getenv("MODEL_LOCAL_PATH"))
 # This is an explicit, existing-startup-path CUDA initialization.  It adds no
 # inference request and makes CUDA setup separable from model loading.
 t_cuda_init_start = time.perf_counter()
-if USE_GPU and torch.cuda.is_available():
-    torch.cuda.init()
-    device = "cuda"
-else:
-    device = "cpu"
+execution, device = configured_execution(
+    TASK_FAMILY, RUNTIME_BACKEND, use_gpu=bool(USE_GPU),
+    threads=int(os.getenv("TORCH_NUM_THREADS", "0") or "0"),
+    adapter=os.getenv("ACPROF_MODEL_ADAPTER", "family-default"),
+)
 t_cuda_init_end = time.perf_counter()
 cuda_init_s = t_cuda_init_end - t_cuda_init_start if USE_GPU else 0.0
 
@@ -58,7 +59,7 @@ server_setup_s = max(
     0.0,
     t_load_start - SERVER_PROCESS_STARTED_PERF - cuda_init_s,
 )
-model_ctx = handler.load(MODEL_SOURCE, TASK_TYPE, RUNTIME_BACKEND, device, MODEL_REVISION)
+model_ctx = load_handler(handler, MODEL_SOURCE, TASK_TYPE, RUNTIME_BACKEND, device, MODEL_REVISION)
 t_load_end = time.perf_counter()
 MODEL_LOAD_COMPLETED_AT = time.time()
 load_time_s = t_load_end - t_load_start
@@ -115,9 +116,10 @@ def predict():
     data = _request_json_body()
     try:
         processed = handler.preprocess(model_ctx, data)
-        with torch.inference_mode():
+        with execution.inference_context():
             output = handler.predict(model_ctx, processed)
         result = handler.postprocess(model_ctx, output)
+        result["workload_contract"] = workload_contract(model_ctx, data, processed, result)
         metadata = _extract_probe_metadata(processed)
         effective_input_scale = metadata.get("effective_input_scale")
         if effective_input_scale is not None:

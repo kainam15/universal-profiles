@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "extensions": [
+    {
+      "extension_id": "onnxruntime-cpu",
+      "family": "structured",
+      "runtime": "onnxruntime",
+      "backends": [
+        "onnxruntime"
+      ],
+      "tasks": [
+        "tabular-classification",
+        "tabular-regression"
+      ],
+      "handler_entrypoint": "acprof.container.handlers.onnxruntime:ONNXRuntimeHandler",
+      "validation_entrypoint": "acprof.container.validation:validate_output",
+      "execution_entrypoint": "",
+      "environments": {
+        "cpu": "onnxruntime-cpu"
+      },
+      "execution": {
+        "cpu": "available",
+        "cuda": "unsupported",
+        "batch": "available",
+        "streaming": "unsupported"
+      },
+      "measurement": {
+        "latency": "available",
+        "torch_profiler_eager": "unsupported",
+        "gpu_power": "unsupported",
+        "gpu_flops": "unsupported",
+        "ncu": "unsupported",
+        "nsys": "unsupported"
+      },
+      "dtypes": [
+        "FP32"
+      ],
+      "input_modalities": [
+        "tabular"
+      ],
+      "environment": "onnxruntime-cpu",
+      "profile": "onnxruntime-cpu"
+    }
+  ],
+  "library_backends": {
+    "onnx": "onnxruntime",
+    "onnxruntime": "onnxruntime"
+  },
+  "backend_rules": [
+    {
+      "family": "structured",
+      "libraries": [
+        "onnx",
+        "onnxruntime"
+      ],
+      "backend": "onnxruntime"
+    }
+  ]
+}

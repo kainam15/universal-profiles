@@ -54,15 +54,40 @@ class RuntimeProfileRegressionTests(unittest.TestCase):
         self.assertEqual(select_runtime_profile(task).profile_id, "multimodal-transformers4576")
 
     def test_another_model_adapter_can_select_its_own_runtime(self):
+        from acprof.extensions import CATALOG, ExtensionCatalog
         profile = RuntimeProfile("example-runtime", "multimodal", PROFILES["multimodal-transformers4576"].environment, "example-adapter")
         task = dataclasses.replace(
             moss_task(), model_id="Example/Custom", pipeline_tag="image-text-to-text",
             model_config={"model_type": "example_arch"},
         )
-        with patch.dict(PROFILES, {profile.profile_id: profile}), patch.dict(
-            ARCHITECTURE_PROFILES, {"example_arch": profile.profile_id},
+        catalog = ExtensionCatalog()
+        declaration = dataclasses.replace(CATALOG.get_extension("multimodal", "transformers_model"),
+            extension_id="example", adapter="example-adapter", model_types=("example_arch",),
+            profile=profile.profile_id)
+        catalog.add(declaration)
+        with patch.dict(PROFILES, {profile.profile_id: profile}), patch(
+            "acprof.runtime_profiles.select_extension", catalog.select_extension,
         ):
             self.assertIs(select_runtime_profile(task), profile)
+
+    def test_architecture_profile_selection_uses_backend_not_lossy_compatibility_view(self):
+        from acprof.extensions import CATALOG, ExtensionCatalog
+        catalog = ExtensionCatalog()
+        profiles = {}
+        for backend in ("first", "second"):
+            declaration = dataclasses.replace(CATALOG.get_extension("nlp", "transformers_model"),
+                extension_id=backend, backends=(backend,), adapter=backend, model_types=("shared_arch",),
+                profile=backend + "-runtime")
+            catalog.add(declaration)
+            profiles[declaration.profile] = RuntimeProfile(declaration.profile, "nlp",
+                PROFILES["nlp-cpu"].environment, backend, task_types=("text-generation",),
+                model_types=("shared_arch",), backends=(backend,))
+        task = TaskInfo("owner/checkpoint", "text-generation", "nlp", "first", "custom", "fixed", "manual",
+                        model_config={"model_type": "shared_arch"})
+        with patch.dict(PROFILES, profiles), patch.dict(ARCHITECTURE_PROFILES, {"shared_arch": "second-runtime"}), patch(
+            "acprof.runtime_profiles.select_extension", catalog.select_extension,
+        ):
+            self.assertIs(select_runtime_profile(task), profiles["first-runtime"])
 
     def test_legacy_torch_override_invalidates_cached_image(self):
         task = dataclasses.replace(moss_task(), model_id="Example/NLP", task_family="nlp", pipeline_tag="text-generation")
@@ -84,6 +109,21 @@ class RuntimeProfileRegressionTests(unittest.TestCase):
             self.assertNotEqual(original, changed)
             lock.write_text(lock.read_text().replace("transformers-5.6.0-", "transformers-5.6.1-"))
             self.assertNotEqual(changed, request_fingerprint(moss_task(), root))
+
+    def test_manifest_only_change_invalidates_service_but_not_environment_identity(self):
+        from acprof.runtime_profiles import environment_id
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            copy_dependency_tree(root)
+            path = root / 'acprof/extensions/test/manifest.json'
+            path.parent.mkdir(parents=True)
+            path.write_text('{"schema_version": 1, "extensions": []}\n')
+            environment = select_runtime_profile(moss_task()).environment
+            locked = environment_id(environment, root)
+            original = request_fingerprint(moss_task(), root)
+            path.write_text('{"schema_version": 1, "extensions": [], "reviewed": true}\n')
+            self.assertNotEqual(original, request_fingerprint(moss_task(), root))
+            self.assertEqual(locked, environment_id(environment, root))
 
     def test_posthoc_rejects_image_from_another_build(self):
         from acprof.host.runtime_images import FINGERPRINT_LABEL

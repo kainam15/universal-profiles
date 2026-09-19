@@ -9,6 +9,7 @@ from acprof.dependency_locks import (
     content_digest, package_versions, read_python_lock, read_system_lock,
     require_parent_subset, system_lock_identity,
 )
+from acprof.extensions import CATALOG, select_extension
 
 
 MOSS_MODEL_ID = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
@@ -28,14 +29,33 @@ MOSS_PROMPT = (
 @dataclass(frozen=True)
 class PlatformSpec:
     platform_id: str
-    torch_version: str
-    torch_index_url: str
-    requirements_lock: str
+    # 保留旧位置参数与身份；新平台只需声明 Python、系统与基础安装工具。
+    torch_version: str | None = None
+    torch_index_url: str | None = None
+    requirements_lock: str = ""
     python_base_image: str = PYTHON_BASE_IMAGE
     python_version: str = "3.10.21"
     architecture: str = "linux/amd64"
     python_target: str = "x86_64-manylinux_2_28"
     system_lock: str = "dockerfiles/locks/system-trixie-amd64.json"
+
+    def __post_init__(self) -> None:
+        if not self.requirements_lock:
+            raise ValueError("平台必须声明完整 requirements lock")
+        if bool(self.torch_version) != bool(self.torch_index_url):
+            raise ValueError("旧 Torch 平台必须同时声明 torch_version 和 torch_index_url")
+
+
+@dataclass(frozen=True)
+class RuntimeSpec:
+    """运行时及其分发包约束；不是另一个执行 adapter。"""
+    type: str
+    version: str
+    package: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.type or not self.version:
+            raise ValueError("runtime 必须声明 type 和精确 version")
 
 
 @dataclass(frozen=True)
@@ -44,6 +64,11 @@ class DependencyEnvironment:
     platform: PlatformSpec
     requirements_lock: str
     requirements_inputs: tuple[str, ...] = ()
+    runtime: RuntimeSpec | None = None
+
+    @property
+    def runtime_type(self) -> str:
+        return self.runtime.type if self.runtime else ("torch" if self.platform.torch_version else "")
 
 
 @dataclass(frozen=True)
@@ -70,6 +95,9 @@ PLATFORMS = {
                       f"dockerfiles/locks/platform-{key}.txt")
     for key, version in (("cpu", "2.11.0+cpu"), ("cu124", "2.6.0+cu124"), ("cu128", "2.11.0+cu128"))
 }
+PLATFORMS["python-cpu"] = PlatformSpec(
+    "python-cpu", requirements_lock="dockerfiles/locks/platform-python-cpu.txt",
+)
 
 # 名称只是环境声明的引用键；缓存身份取决于完整锁内容。
 ENVIRONMENTS = {}
@@ -99,6 +127,10 @@ for _name, _platform, _inputs in (
         _name, PLATFORMS[_platform], f"dockerfiles/locks/{_name}.txt",
         tuple(f"dockerfiles/requirements/{item}.in" for item in _inputs),
     )
+ENVIRONMENTS["onnxruntime-cpu"] = DependencyEnvironment(
+    "onnxruntime-cpu", PLATFORMS["python-cpu"], "dockerfiles/locks/onnxruntime-cpu.txt",
+    ("dockerfiles/requirements/onnxruntime.in",), RuntimeSpec("onnxruntime", "1.23.2"),
+)
 
 PROFILES = {}
 for _name, _family, _environment in (
@@ -113,11 +145,19 @@ for _name, _family, _environment in (
     ("multimodal-transformers4576", "multimodal", "multimodal-transformers4576"),
 ):
     PROFILES[_name] = RuntimeProfile(_name, _family, ENVIRONMENTS[_environment])
+_moss_extension = CATALOG.get_extension("multimodal", "transformers_model", MOSS_ADAPTER)
 PROFILES["moss-transformers560"] = RuntimeProfile(
     "moss-transformers560", "multimodal", ENVIRONMENTS["moss-transformers560"], MOSS_ADAPTER,
     gpu_dtype="BF16", trust_remote_code=True,
-    task_types=("audio-text-to-text",), model_types=("moss_transcribe_diarize",),
+    task_types=_moss_extension.tasks, model_types=_moss_extension.model_types, backends=_moss_extension.backends,
 )
+for _extension in CATALOG.extensions.values():
+    if _extension.profile and _extension.profile not in PROFILES:
+        PROFILES[_extension.profile] = RuntimeProfile(
+            _extension.profile, _extension.family, ENVIRONMENTS[_extension.environment],
+            _extension.adapter, gpu_dtype=_extension.dtypes[0],
+            task_types=_extension.tasks, model_types=_extension.model_types, backends=_extension.backends,
+        )
 DEFAULT_PROFILES = {
     (profile.family, profile.environment.platform.platform_id): profile.profile_id
     for profile in PROFILES.values() if profile.adapter == "family-default"
@@ -131,12 +171,15 @@ def platform_identity(platform: PlatformSpec, project_dir) -> dict:
     if system["base_image"] != platform.python_base_image or platform.architecture != "linux/" + system["architecture"]:
         raise ValueError("平台与 system lock 的基础镜像或架构不符")
     packages = read_python_lock(root / platform.requirements_lock)
-    if package_versions(packages).get("torch") != platform.torch_version:
+    if platform.torch_version and package_versions(packages).get("torch") != platform.torch_version:
         raise ValueError("平台 Torch 版本与依赖 lock 不符")
-    return {"schema_version": 1, "python_base_image": platform.python_base_image,
+    identity = {"schema_version": 1, "python_base_image": platform.python_base_image,
             "python_version": platform.python_version, "architecture": platform.architecture,
-            "python_target": platform.python_target, "torch_index_url": platform.torch_index_url,
+            "python_target": platform.python_target,
             "system": system_lock_identity(system), "packages": packages}
+    if platform.torch_version:
+        identity["torch_index_url"] = platform.torch_index_url
+    return identity
 
 
 def environment_identity(environment: DependencyEnvironment, project_dir) -> dict:
@@ -144,49 +187,45 @@ def environment_identity(environment: DependencyEnvironment, project_dir) -> dic
     platform = platform_identity(environment.platform, project_dir)
     packages = read_python_lock(Path(project_dir) / environment.requirements_lock)
     require_parent_subset(platform["packages"], packages)
+    if environment.runtime is not None:
+        from acprof.dependency_locks import normalized_name
+        runtime = environment.runtime
+        package = normalized_name(runtime.package or runtime.type)
+        if package_versions(packages).get(package) != runtime.version:
+            raise ValueError(f"Runtime {runtime.type} 要求 {package}=={runtime.version}，与依赖 lock 不符")
+    # 运行时角色不改变已锁定制品集合；同一完整环境可供不同执行器复用。
     return {"schema_version": 1, "platform": platform, "packages": packages}
 
 
 def environment_id(environment: DependencyEnvironment, project_dir) -> str:
     return content_digest(environment_identity(environment, project_dir))
-# 同架构 checkpoint 可复用适配器；任务标签本身不授予架构兼容性。
-ARCHITECTURE_PROFILES = {"moss_transcribe_diarize": "moss-transformers560"}
-MODEL_PROFILES = {MOSS_MODEL_ID.lower(): "moss-transformers560"}
+# 旧名称仅供读取兼容；实际路由使用包含 backend/task 的 extension 声明。
+ARCHITECTURE_PROFILES = {model_type: extension.profile for extension in CATALOG.extensions.values()
+                         if extension.profile for model_type in extension.model_types}
+MODEL_PROFILES = {model_id.lower(): extension.profile for extension in CATALOG.extensions.values()
+                  if extension.profile for model_id in extension.model_ids}
 
 
 def select_runtime_profile(task_info: Any) -> RuntimeProfile:
-    config = getattr(task_info, "model_config", {}) or {}
-    model_type = str(config.get("model_type") or "")
-    profile_id = (
-        ARCHITECTURE_PROFILES.get(model_type)
-        or MODEL_PROFILES.get(task_info.model_id.lower())
-    )
-    if profile_id:
-        profile = PROFILES[profile_id]
+    extension = select_extension(task_info)
+    if extension.profile:
+        profile = PROFILES.get(extension.profile)
+        if profile is None:
+            raise ValueError(f"No registered runtime for extension {extension.extension_id!r}: {extension.profile}")
         if (
             task_info.task_family != profile.family
             or (profile.task_types and task_info.pipeline_tag not in profile.task_types)
             or task_info.runtime_backend not in profile.backends
+            or extension.adapter != profile.adapter
         ):
             raise ValueError(
                 f"Runtime {profile.profile_id!r} does not support "
                 f"{task_info.task_family}/{task_info.pipeline_tag}/{task_info.runtime_backend}"
             )
-        if model_type and profile.model_types and model_type not in profile.model_types:
-            raise ValueError("Model metadata does not match its registered runtime architecture")
+        explicit = getattr(task_info, "runtime_profile_id", "")
+        if explicit and explicit != profile.profile_id:
+            raise ValueError(f"Runtime {explicit!r} does not match extension {extension.extension_id!r}")
         return profile
-    if task_info.task_family == "multimodal":
-        supported = {
-            "audio-text-to-text": {"qwen2_audio", "qwen2_5_omni"},
-            "any-to-any": {"qwen2_5_omni"},
-            "visual-document-retrieval": {"colpali", "colqwen2"},
-        }.get(task_info.pipeline_tag)
-        if model_type and supported is not None and model_type not in supported:
-            raise ValueError(
-                f"No registered runtime/adapter for {task_info.pipeline_tag} architecture {model_type!r}"
-            )
-        if (config.get("auto_map") or {}).get("AutoConfig") and not supported:
-            raise ValueError("Custom multimodal architecture requires a registered runtime/adapter")
     family = task_info.task_family
     default = DEFAULT_PROFILES.get((family, "cu128"), "")
     selected = getattr(task_info, "runtime_profile_id", "") or default
@@ -197,5 +236,8 @@ def select_runtime_profile(task_info: Any) -> RuntimeProfile:
 
 
 def default_model_adapter(model_id: str) -> str:
-    profile_id = MODEL_PROFILES.get(model_id.lower())
-    return PROFILES[profile_id].adapter if profile_id else "family-default"
+    adapters = {extension.adapter for extension in CATALOG.extensions.values()
+                if model_id.lower() in {value.lower() for value in extension.model_ids}}
+    if len(adapters) > 1:
+        raise ValueError("Model has multiple backend adapters; select the runtime first and pass model_adapter explicitly")
+    return next(iter(adapters), "family-default")

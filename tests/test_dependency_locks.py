@@ -12,8 +12,17 @@ from runtime_fixture import ROOT, copy_dependency_tree
 
 class DependencyLockTests(unittest.TestCase):
     def task(self, family='nlp'):
-        return TaskInfo(model_id='example/model', model_revision='a' * 40, pipeline_tag='fill-mask',
-                        task_family=family, runtime_backend='transformers_pipeline',
+        task, backend = {
+            'nlp': ('fill-mask', 'transformers_pipeline'),
+            'cv': ('image-classification', 'transformers_model'),
+            'audio': ('automatic-speech-recognition', 'transformers_pipeline'),
+            'diffusion': ('text-to-image', 'diffusers'),
+            'structured': ('tabular-regression', 'skops'),
+            'timeseries': ('time-series-forecasting', 'chronos'),
+            'multimodal': ('image-text-to-text', 'transformers_model'),
+        }[family]
+        return TaskInfo(model_id='example/model', model_revision='a' * 40, pipeline_tag=task,
+                        task_family=family, runtime_backend=backend,
                         library_name='transformers', detection_method='test')
 
     def test_lock_comments_do_not_change_dependency_cache_identity(self):

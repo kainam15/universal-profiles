@@ -61,7 +61,8 @@ Windows Terminal、VS Code 集成终端等支持真彩色的客户端，通过 S
 | `--model` | required | Hugging Face model ID，例如 `google-bert/bert-base-uncased`。 |
 | `--task` | auto | 覆盖 `pipeline_tag`，例如 `fill-mask`、`text-generation`。 |
 | `--task-family` | auto | 覆盖任务族：`nlp`、`cv`、`audio`、`timeseries`、`diffusion`、`multimodal`、`structured`。 |
-| `--backend` | auto | 覆盖 runtime backend，例如 `transformers_pipeline`、`chronos`、`diffusers`。 |
+| `--backend` | auto | 覆盖声明清单中的 runtime backend，例如 `transformers_pipeline`、`chronos`、`diffusers`、`onnxruntime`。 |
+| `--profiling-mode` | `full` | `full` 保留 RAPL、perf 和 packet latency 必需条件；`basic` 仅要求 application latency、吞吐、容器 CPU/内存，跳过能耗、PMU、抓包。两者均要求原生 Linux、本机 Docker 和 cgroup v2。 |
 | `--cpus` | `1,2,4,8` | CPU core 限制列表。 |
 | `--mems` | `2,4,8,16` | Memory cap GB 列表。 |
 | `--gpus` | `off,on` | GPU mode 列表。`on` 会用 Docker `--gpus all`。 |

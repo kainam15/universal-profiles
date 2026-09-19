@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "task": "tabular-classification",
+  "feature_dim": 4,
+  "input_scales": [1],
+  "seed": 12345,
+  "provenance": {
+    "source": "synthetic",
+    "generator": "python_random_uniform",
+    "model_id": "Ritual-Net/iris-classification",
+    "model_revision": "273d867c65e8e5fa5c64c23dcf19738282452beb",
+    "model_license": "bsd-3-clause",
+    "model_url": "https://huggingface.co/Ritual-Net/iris-classification",
+    "purpose": "Fixed [1,4] ONNX CPU runtime profiling; synthetic inputs are not an Iris accuracy evaluation."
+  }
+}

@@ -741,8 +741,3 @@ class AudioHandler(BaseHandler):
             "task": task_type,
             "output_type": "unknown",
         }
-
-
-HandlerRegistry.register("audio", "transformers_pipeline", AudioHandler)
-HandlerRegistry.register("audio", "transformers_model", AudioHandler)
-HandlerRegistry.register("audio", "torchscript", AudioHandler)

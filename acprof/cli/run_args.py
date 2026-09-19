@@ -63,6 +63,10 @@ Examples:
     parser.set_defaults(prune_startup_oom=True)
 
     # Experiment parameters
+    parser.add_argument(
+        "--profiling-mode", choices=("full", "basic"), default="full",
+        help="full requires packet latency, RAPL and perf (default); basic measures application latency, throughput, CPU and memory",
+    )
     parser.add_argument("--batch-size", type=int, default=1, help="Batch size")
     parser.add_argument("--warmup", type=int, default=2, help="Warmup iterations")
     parser.add_argument("--repeat", type=int, default=5, help="Measurement repeat count")

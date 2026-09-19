@@ -121,10 +121,13 @@ def resolve(uv, inputs, output, platform, pins):
         constraint = directory / "constraints.txt"
         constraint.write_text("".join(f"{name}=={version}\n" for name, version in sorted(pins.items())))
         target = directory / "pylock.toml"
-        subprocess.run([uv, "pip", "compile", *map(str, inputs), "--constraint", str(constraint),
+        command = [uv, "pip", "compile", *map(str, inputs), "--constraint", str(constraint),
                         "--python-version", platform.python_version, "--python-platform", platform.python_target,
-                        "--torch-backend", platform.platform_id, "--only-binary", ":all:",
-                        "--format", "pylock.toml", "--no-header", "--output-file", str(target)],
+                        "--only-binary", ":all:",
+                        "--format", "pylock.toml", "--no-header", "--output-file", str(target)]
+        if platform.torch_version:
+            command += ["--torch-backend", platform.platform_id]
+        subprocess.run(command,
                        cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
         records = wheel_records(tomllib.loads(target.read_text()), platform)
         for name, version in package_versions(records).items():
@@ -168,8 +171,10 @@ def main(argv=None):
         platform_pins = package_versions(read_python_lock(ROOT / platform.requirements_lock))
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "platform.in"
-            source.write_text("".join(f"{name}=={platform_pins[name]}\n"
-                                      for name in ("torch", "pip", "wheel", "packaging", "setuptools")))
+            base_packages = ("pip", "wheel", "packaging", "setuptools")
+            if platform.torch_version:
+                base_packages = ("torch", *base_packages)
+            source.write_text("".join(f"{name}=={platform_pins[name]}\n" for name in base_packages))
             resolve(args.uv, [source], ROOT / platform.requirements_lock, platform, platform_pins)
         for environment in ENVIRONMENTS.values():
             if environment.platform.platform_id != key:

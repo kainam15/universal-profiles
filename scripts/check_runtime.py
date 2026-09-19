@@ -33,20 +33,24 @@ def main(argv=None):
     selection.add_argument("--profile", choices=PROFILES)
     parser.add_argument("--variant", choices=("cpu", "cu124", "cu128"), default="cpu")
     parser.add_argument("--build-only", action="store_true", help="仅构建并核验完整依赖清单，不宣称模型接口验证通过")
+    parser.add_argument("--test-pattern", action="append", help="覆盖任务族默认接口测试，可重复指定扩展测试文件模式")
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args(argv)
+    if args.build_only and args.test_pattern:
+        parser.error("--build-only 不运行接口测试，不能与 --test-pattern 同用")
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
     if any(output.iterdir()):
         parser.error("验证输出目录必须为空")
     name = args.profile or DEFAULT_PROFILES[(args.family, args.variant)]
     profile = PROFILES[name]
-    if profile.adapter != "family-default" and not args.build_only:
+    if profile.adapter != "family-default" and not args.build_only and not args.test_pattern:
         parser.error("自定义 adapter 请通过主流程独立 runtime validation 验证；此入口可用 --build-only 核验依赖")
     started = time.perf_counter()
     result = {"schema_version": 1, "family": profile.family, "profile": profile.to_dict(),
               "validation_scope": "dependencies" if args.build_only else "offline_cpu_interfaces",
-              "device": None if args.build_only else "cpu", "successful": False}
+              "device": None if args.build_only else "cpu", "successful": False,
+              "test_patterns": [] if args.build_only else list(args.test_pattern or PATTERNS[profile.family])}
     try:
         result["environment_id"] = environment_id(profile.environment, ROOT)
         image = prepare_environment_image(profile.environment, ROOT)
@@ -69,7 +73,7 @@ def main(argv=None):
         subprocess.run([*command, image_id, "python", "-m", "pip", "check"], check=True)
         run_command = [*command, image_id, "python", "scripts/run_tests.py",
                        "--require-no-skips", "--report", "/evidence/tests.json"]
-        for pattern in PATTERNS[profile.family]:
+        for pattern in result["test_patterns"]:
             run_command += ["--pattern", pattern]
         code = subprocess.run(run_command, cwd=ROOT).returncode
         result["successful"] = code == 0

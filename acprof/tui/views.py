@@ -272,6 +272,12 @@ def compose_run_tab(app: AcprofTui) -> ComposeResult:
                         classes="config-control",
                     ))
 
+                    yield app._localized_widget(Label("画像模式"))
+                    yield app._localized_select(
+                        (("完整（RAPL / perf / 抓包）", "full"), ("基础（延迟 / CPU / 内存）", "basic")),
+                        value=app.initial_config.profiling_mode,
+                        allow_blank=False, id="profiling-mode", classes="config-control",
+                    )
                     yield app._localized_widget(Label("计算分析器"))
                     yield app._localized_select(
                         (

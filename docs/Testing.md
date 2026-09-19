@@ -47,7 +47,7 @@ git diff --check
 
 `test_runtime_image_build.py` 在 Docker 边界模拟环境中验证四层构建、跨 profile 的环境共享、
 模型 commit、Torch 来源、BuildKit secret、标签错配、额外包、输入变化及构建失败停止。
-环境身份测试覆盖 22 个 profile / 20 个环境、两组精确共享及 cu128 的版本差异；注释、锁文件名
+环境身份测试覆盖原有 22 个 profile / 20 个环境的身份稳定性、新增无 Torch 环境、两组精确共享及 cu128 的版本差异；注释、锁文件名
 和条目顺序不影响身份，版本、制品、来源、平台和系统锁影响身份。配方变化改变构建缓存，业务
 代码变化只重建服务层。它们不能替代实际容器构建与推理验证。
 
@@ -82,6 +82,18 @@ git diff --check
 指定输出锁。具体命令见[当前配置](Runtime_Compatibility.md#当前配置)。
 
 源代码、模型权重和依赖层保持分离，CPU 容器测试不下载 Hub 模型，不代替真实 GPU/PMU/抓包实验。
+
+### 无 Torch 运行时验收
+
+```bash
+.venv/bin/python scripts/check_runtime.py --profile onnxruntime-cpu \
+  --test-pattern test_onnx_runtime_optional.py --output-dir internal-testing/onnx-runtime
+```
+
+`--test-pattern` 可重复并覆盖 family 默认用例，不改变生产任务选择；报告记录实际测试范围。
+`examples/onnxruntime/smoke.py` 在无 Torch 环境生成 IR10 小型线性图，以独立已知数值核验
+load/preprocess/predict/postprocess/validate，并测试固定 shape 拒绝。真实矩阵使用 README 的 Iris 示例，
+核对独立 runtime validation、模式、镜像与锁、CSV 覆盖和 capability report；单元测试不启动真实实验。
 
 ## TUI 与终端证据
 

@@ -52,6 +52,8 @@ class StaticMeta:
     image_name: str = ""
     runtime_environment: Dict[str, Any] = field(default_factory=dict)
     runtime_validation: Dict[str, Any] = field(default_factory=dict)
+    profiling_mode: str = "full"
+    capability_report: Dict[str, Any] = field(default_factory=dict)
     cgroup_version: str = "unknown"
     cgroup_collection_mode: str = "unknown"
     host_mem_total_bytes: Optional[int] = None
@@ -684,15 +686,21 @@ def collect_static_meta(
     cgroup_collection_mode: str = "unknown",
     compute_profile_enabled: bool = True,
     execution_profile_enabled: bool = False,
+    profiling_mode: str = "full",
 ) -> StaticMeta:
     """Collect static metadata for the current model/image pair."""
-    cpu_power_source, vcpu_power_method = _cpu_power_metadata()
+    from acprof.capabilities import measurement_requested
+    cpu_power_source, vcpu_power_method = (
+        _cpu_power_metadata() if measurement_requested(profiling_mode, "cpu_energy")
+        else ("not_requested", "not_requested")
+    )
     cpu_governor, cpu_boost = _cpu_frequency_policy_metadata()
     host_swap = _host_swap_metadata()
     docker_storage = _docker_storage_metadata()
     input_format, output_format = _model_io_formats(task_info)
     static_meta = StaticMeta(
         model_name=task_info.model_id,
+        profiling_mode=profiling_mode,
         model_revision=task_info.model_revision,
         parameter_count=task_info.parameter_count,
         parameter_bytes=task_info.parameter_bytes,

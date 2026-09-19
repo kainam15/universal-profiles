@@ -14,8 +14,9 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from acprof.extensions import CATALOG
+
 from acprof.config import (
-    ARCHITECTURE_TO_TASK,
     DEFAULT_BACKEND,
     LIBRARY_TO_BACKEND,
     PIPELINE_TAG_TO_FAMILY,
@@ -398,16 +399,7 @@ def _detect_from_config(
     if not architectures:
         return None
 
-    pipeline_tag = "audio-text-to-text" if config_data.get("model_type") == "moss_transcribe_diarize" else None
-    for arch in architectures:
-        if pipeline_tag:
-            break
-        for suffix, task in ARCHITECTURE_TO_TASK.items():
-            if arch.endswith(suffix):
-                pipeline_tag = task
-                break
-        if pipeline_tag:
-            break
+    pipeline_tag = CATALOG.infer_task(architectures, str(config_data.get("model_type") or ""))
 
     if not pipeline_tag:
         _record_failure(
@@ -493,19 +485,8 @@ def detect_task(
         info.detection_method = "manual"
 
     if not override_backend:
-        if info.task_family == "structured":
-            info.runtime_backend = "skops" if info.library_name in {"sklearn", "skops"} else "torchscript"
-        elif info.pipeline_tag == "sentence-similarity":
-            info.runtime_backend = "sentence_transformers"
-        elif info.pipeline_tag == "text-ranking":
-            info.runtime_backend = "cross_encoder"
-        elif info.pipeline_tag == "voice-activity-detection":
-            info.runtime_backend = "torchscript"
-        elif info.pipeline_tag == "audio-to-audio":
-            info.runtime_backend = "transformers_model"
-        elif info.task_family == "diffusion" and info.library_name in {"", "unknown", "diffusers"}:
-            info.runtime_backend = "diffusers"
-        elif info.task_family == "multimodal" and info.runtime_backend == "transformers_pipeline":
-            info.runtime_backend = "transformers_model"
+        info.runtime_backend = CATALOG.default_backend(
+            info.pipeline_tag, info.task_family, info.library_name, info.runtime_backend,
+        )
 
     return info

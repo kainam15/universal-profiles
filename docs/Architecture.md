@@ -29,7 +29,10 @@ AC-Prof 的命令入口负责参数和调度，业务模块按输入规划、运
 | `acprof/config.py` | 共享配置、任务尺度及 CSV/静态元数据字段协议 |
 | `acprof/artifacts.py`、`acprof/result_csv.py` | 原子产物发布、CSV 结构与测量唯一键校验；不初始化采集依赖 |
 | `acprof/pixel_metrics.py` | 像素计数和能耗/延迟归一化的纯计算，由 client、packet 和 plotting 共用 |
-| `acprof/runtime_profiles.py` | 运行环境、依赖锁与模型适配器的声明和元数据路由 |
+| `acprof/runtime_profiles.py` | 平台、依赖环境、逻辑 profile 与锁身份；从扩展声明读取路由 |
+| `acprof/extensions/` | 标准库 JSON 声明目录，统一任务、架构、backend、入口与声明能力 |
+| `acprof/capabilities.py` | execution / measurement 状态、验证证据和画像完整性报告 |
+| `acprof/container/validation.py`、`acprof/workloads/contract.py` | 窗口外输出验证与实际请求工作量摘要 |
 
 ## 入口与依赖方向
 
@@ -95,10 +98,13 @@ flowchart TD
 界面刷新、绘图、通知与额外文件操作继续位于正式测量窗口之外。
 
 `runtime_profiles` 是标准库声明层，分别登记 `RuntimeProfile`、`PlatformSpec`、`DependencyEnvironment`；
-7 个任务族和 22 个逻辑 profile 保留，当前映射至 20 个依赖环境。`dependency_locks` 规范化和验证
+7 个任务族和原有 22 个逻辑 profile 保留，新增 ONNX 后共 23 个 profile、21 个依赖环境。`dependency_locks` 规范化和验证
 制品锁，环境内容身份独立于 profile、adapter、模型及业务代码。主机检测只读元数据；handler 注册表
-供 server、输入规划和 profiler 共用。
-`host.dependency_images` 构建固定 Python/系统/Torch 平台及其各依赖环境分支；`host.runtime_images`
+供 server、输入规划和 profiler 共用。`extensions/*/manifest.json` 同时提供 config 映射、任务支持、
+profile 和延迟入口，读取声明不导入推理框架；声明文件参与服务镜像指纹。
+`container.execution` 只加载所选声明的可选执行模块；Torch 上下文位于 `torch_execution`。
+无执行模块时采用 CPU/nullcontext，复用同一个 `BaseHandler`，不增加平行适配器层次。
+`host.dependency_images` 构建固定 Python/系统平台及其依赖环境分支；旧 Torch 平台保持原锁和身份；`host.runtime_images`
 绑定模型与最终服务代码的构建身份。镜像是按需缓存，不为每个 profile 强制保留一个镜像。
 `scripts/compile_locks.py` 复用固定 uv 解析目标 wheel；`scripts/compile_system_lock.py` 在隔离基础容器
 中解析 Debian Snapshot。普通构建仅消费锁，`--check` 只读校验锁及映射。

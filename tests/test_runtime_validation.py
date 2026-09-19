@@ -148,6 +148,7 @@ class RuntimeValidationTests(unittest.TestCase):
                 tag='sha256:' + 'b' * 64, runtime_environment={'build_fingerprint': 'build'},
             )))
             stack.enter_context(patch('acprof.host.static_metadata.collect_static_meta', return_value=SimpleNamespace()))
+            stack.enter_context(patch('acprof.host.static_metadata.enrich_static_meta', return_value=SimpleNamespace()))
             stack.enter_context(patch('acprof.host.static_metadata.enrich_static_meta_from_input_plan', return_value=SimpleNamespace()))
             stack.enter_context(patch('acprof.host.static_metadata.write_static_meta_json'))
             stack.enter_context(patch('acprof.host.input_plan.plan_input_scales', return_value=PlannedInputScales(
@@ -157,11 +158,15 @@ class RuntimeValidationTests(unittest.TestCase):
                 'acprof.host.runtime_validation.validate_runtime', side_effect=RuntimeError('adapter load failed'),
             ))
             matrix = stack.enter_context(patch('acprof.host.orchestrator.run_matrix'))
+            compute = stack.enter_context(patch('acprof.host.compute_profile.collect_compute_profile_plan'))
+            execution = stack.enter_context(patch('acprof.host.execution_profile.collect_execution_profile_plan'))
             with self.assertRaises(SystemExit) as exited:
                 run.main()
             self.assertEqual(exited.exception.code, 1)
             validation.assert_called_once()
             matrix.assert_not_called()
+            compute.assert_not_called()
+            execution.assert_not_called()
             self.assertFalse(list(Path(temporary).rglob('*.csv')))
 
 

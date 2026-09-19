@@ -54,6 +54,7 @@ from acprof.host.execution_profile_plan import (
 )
 
 from acprof.host import client_metrics as _client_metrics
+from acprof.workloads.contract import summarize_workload_contracts
 from acprof.pixel_metrics import pixel_counts_from_metadata, pixel_rate_metrics
 from acprof.host.client_metrics import (
     CPU_METRIC_FIELDS,
@@ -137,6 +138,8 @@ IDLE_DIAG_PATH = os.getenv("IDLE_DIAG_PATH", "").strip()
 CLIENT_ERROR_PATH = os.getenv("CLIENT_ERROR_PATH", "").strip()
 IDLE_DEBUG_TRACE_INTERVAL_S = float(os.getenv("IDLE_DEBUG_TRACE_INTERVAL_S", "0.1"))
 USE_MIPS = os.getenv("USE_MIPS", "").strip().lower() in {"1", "true", "yes", "on"}
+from acprof.capabilities import measurement_requested, require_profiling_mode
+PROFILING_MODE = require_profiling_mode(os.getenv("PROFILING_MODE", "full"))
 
 _FIRST_PREDICT_APP_S = float("nan")
 
@@ -466,6 +469,7 @@ def _one_request(scale_value: float, req_id: str, payload_override: Optional[Dic
         "output_length": _to_float_or_nan(resp.get("output_length")),
         "output_token_count": _to_float_or_nan(resp.get("output_token_count")),
         "task_param": _canonical_task_param(payload),
+        "workload_contract": resp.get("workload_contract"),
     }
 
 
@@ -935,12 +939,15 @@ def main() -> None:
     global _FIRST_PREDICT_APP_S
     _FIRST_PREDICT_APP_S = float("nan")
 
-    if USE_ENERGY and energy_mod is None:
+    if PROFILING_MODE == "basic" and resource_usage_mod is None:
+        raise RuntimeError("basic profiling requires the container CPU and memory collector")
+
+    if measurement_requested(PROFILING_MODE, "gpu_power", gpu=USE_ENERGY) and energy_mod is None:
         raise EnergyAbort(
             "GPU energy monitoring is required for gpu_mode=on but NVML/pynvml is unavailable. "
             "Install nvidia-ml-py, verify NVIDIA driver access, or rerun with --gpus off."
         )
-    if USE_MIPS and perf_mips_mod is None:
+    if measurement_requested(PROFILING_MODE, "cpu_instructions") and USE_MIPS and perf_mips_mod is None:
         raise MIPSAbort(
             "MIPS profiling is enabled but perf_mips.py could not be imported."
         )
@@ -1059,19 +1066,20 @@ def main() -> None:
                     request_payload_bytes_values: List[float] = []
                     output_length_values: List[float] = []
                     output_token_count_values: List[float] = []
+                    workload_contracts: List[Dict[str, Any]] = []
                     gpu_monitor_started = False
                     cpu_monitor_started = False
                     resource_usage_monitor_started = False
                     mips_monitor_started = False
                     try:
-                        if USE_ENERGY and (energy_mod is not None):
+                        if measurement_requested(PROFILING_MODE, "gpu_power", gpu=USE_ENERGY) and energy_mod is not None:
                             gpu_monitor = energy_mod.GPUEnergyMonitor(
                                 sample_hz=SAMPLE_HZ,
                                 idle_seconds=IDLE_SECONDS,
                                 device_index=DEVICE_INDEX,
                             )
 
-                        if cpu_energy_mod is not None:
+                        if measurement_requested(PROFILING_MODE, "cpu_energy") and cpu_energy_mod is not None:
                             cpu_monitor = cpu_energy_mod.CPUEnergyMonitor(
                                 sample_hz=SAMPLE_HZ,
                                 idle_seconds=IDLE_SECONDS,
@@ -1088,7 +1096,7 @@ def main() -> None:
                                 device_index=DEVICE_INDEX,
                             )
 
-                        if USE_MIPS:
+                        if measurement_requested(PROFILING_MODE, "cpu_instructions") and USE_MIPS:
                             mips_monitor = perf_mips_mod.PerfMIPSMonitor(CONTAINER_NAME)
 
                         if gpu_monitor is not None or cpu_monitor is not None:
@@ -1149,6 +1157,7 @@ def main() -> None:
                             output_token_count_values.append(
                                 _to_float_or_nan(out.get("output_token_count"))
                             )
+                            workload_contracts.append(out.get("workload_contract"))
                             request_task_param = out.get("task_param")
                             if (
                                 request_task_param is not None
@@ -1225,6 +1234,14 @@ def main() -> None:
                             actual_repeat_in_window,
                         )
                     if resource_usage_result is not None:
+                        if PROFILING_MODE == "basic":
+                            if _resource_usage_err:
+                                raise RuntimeError(f"required CPU/memory measurement failed: {_resource_usage_err}")
+                            if not all(math.isfinite(value) for value in (
+                                resource_usage_result.container_cpu_util_avg_pct,
+                                resource_usage_result.container_mem_usage_avg_bytes,
+                            )):
+                                raise RuntimeError("required CPU/memory measurement unavailable")
                         resource_usage_metrics = _resource_usage_metrics_from_result(
                             resource_usage_result,
                             actual_repeat_in_window,
@@ -1336,6 +1353,7 @@ def main() -> None:
                         if executed_task_param is not None
                         else _canonical_task_param(payload_override)
                     ),
+                    "workload_contract": json.dumps(summarize_workload_contracts(workload_contracts), ensure_ascii=False, allow_nan=False, separators=(",", ":")),
                     "output_length_avg": _fmt_float(output_length_avg),
                     "output_token_count_avg": _fmt_float(
                         output_token_count_avg

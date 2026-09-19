@@ -1,0 +1,621 @@
+{
+  "schema_version": 1,
+  "extensions": [
+    {
+      "extension_id": "torch-nlp",
+      "family": "nlp",
+      "runtime": "torch",
+      "backends": [
+        "transformers_pipeline",
+        "transformers_model",
+        "sentence_transformers",
+        "cross_encoder"
+      ],
+      "tasks": [
+        "text-generation",
+        "text2text-generation",
+        "text-classification",
+        "token-classification",
+        "question-answering",
+        "summarization",
+        "translation",
+        "fill-mask",
+        "feature-extraction",
+        "zero-shot-classification",
+        "sentence-similarity",
+        "table-question-answering",
+        "text-ranking",
+        "conversational"
+      ],
+      "handler_entrypoint": "acprof.container.handlers.nlp:NLPHandler",
+      "validation_entrypoint": "acprof.container.validation:validate_output",
+      "execution_entrypoint": "acprof.container.torch_execution",
+      "environments": {
+        "cpu": "nlp-cpu",
+        "cu124": "nlp-cu124",
+        "cu128": "nlp-cu128"
+      },
+      "execution": {
+        "cpu": "available",
+        "cuda": "available",
+        "batch": "available",
+        "streaming": "unsupported"
+      },
+      "measurement": {
+        "latency": "available",
+        "torch_profiler_eager": "available"
+      },
+      "dtypes": [
+        "FP32",
+        "FP16"
+      ],
+      "input_modalities": [
+        "text"
+      ],
+      "backend_tasks": {
+        "sentence_transformers": [
+          "sentence-similarity"
+        ],
+        "cross_encoder": [
+          "text-ranking"
+        ]
+      }
+    },
+    {
+      "extension_id": "torch-cv",
+      "family": "cv",
+      "runtime": "torch",
+      "backends": [
+        "transformers_pipeline",
+        "transformers_model"
+      ],
+      "tasks": [
+        "image-classification",
+        "object-detection",
+        "image-segmentation",
+        "depth-estimation",
+        "image-to-text",
+        "zero-shot-image-classification",
+        "image-feature-extraction",
+        "zero-shot-object-detection",
+        "mask-generation",
+        "keypoint-detection",
+        "video-classification"
+      ],
+      "handler_entrypoint": "acprof.container.handlers.cv:CVHandler",
+      "validation_entrypoint": "acprof.container.validation:validate_output",
+      "execution_entrypoint": "acprof.container.torch_execution",
+      "environments": {
+        "cpu": "cv-cpu",
+        "cu124": "cv-cu124",
+        "cu128": "cv-cu128"
+      },
+      "execution": {
+        "cpu": "available",
+        "cuda": "available",
+        "batch": "unsupported",
+        "streaming": "unsupported"
+      },
+      "measurement": {
+        "latency": "available",
+        "torch_profiler_eager": "available"
+      },
+      "dtypes": [
+        "FP32",
+        "FP16"
+      ],
+      "input_modalities": [
+        "image",
+        "video",
+        "text"
+      ]
+    },
+    {
+      "extension_id": "torch-audio",
+      "family": "audio",
+      "runtime": "torch",
+      "backends": [
+        "transformers_pipeline",
+        "transformers_model",
+        "torchscript"
+      ],
+      "tasks": [
+        "automatic-speech-recognition",
+        "audio-classification",
+        "text-to-speech",
+        "text-to-audio",
+        "audio-to-audio",
+        "voice-activity-detection"
+      ],
+      "handler_entrypoint": "acprof.container.handlers.audio:AudioHandler",
+      "validation_entrypoint": "acprof.container.validation:validate_output",
+      "execution_entrypoint": "acprof.container.torch_execution",
+      "environments": {
+        "cpu": "audio-cpu",
+        "cu124": "audio-cu124",
+        "cu128": "audio-cu128"
+      },
+      "execution": {
+        "cpu": "available",
+        "cuda": "available",
+        "batch": "unsupported",
+        "streaming": "unsupported"
+      },
+      "measurement": {
+        "latency": "available",
+        "torch_profiler_eager": "available"
+      },
+      "dtypes": [
+        "FP32",
+        "FP16"
+      ],
+      "input_modalities": [
+        "audio",
+        "text"
+      ],
+      "backend_tasks": {
+        "torchscript": [
+          "voice-activity-detection"
+        ],
+        "transformers_pipeline": [
+          "automatic-speech-recognition",
+          "audio-classification",
+          "text-to-speech",
+          "text-to-audio",
+          "audio-to-audio"
+        ],
+        "transformers_model": [
+          "automatic-speech-recognition",
+          "audio-classification",
+          "text-to-speech",
+          "text-to-audio",
+          "audio-to-audio"
+        ]
+      }
+    },
+    {
+      "extension_id": "torch-timeseries",
+      "family": "timeseries",
+      "runtime": "torch",
+      "backends": [
+        "chronos"
+      ],
+      "tasks": [
+        "time-series-forecasting"
+      ],
+      "handler_entrypoint": "acprof.container.handlers.timeseries:ChronosHandler",
+      "validation_entrypoint": "acprof.container.validation:validate_output",
+      "execution_entrypoint": "acprof.container.torch_execution",
+      "environments": {
+        "cpu": "timeseries-cpu",
+        "cu124": "timeseries-cu124",
+        "cu128": "timeseries-cu128"
+      },
+      "execution": {
+        "cpu": "available",
+        "cuda": "available",
+        "batch": "available",
+        "streaming": "unsupported"
+      },
+      "measurement": {
+        "latency": "available",
+        "torch_profiler_eager": "available"
+      },
+      "dtypes": [
+        "FP32",
+        "FP16"
+      ],
+      "input_modalities": [
+        "timeseries"
+      ]
+    },
+    {
+      "extension_id": "torch-timeseries-legacy",
+      "family": "timeseries",
+      "runtime": "torch",
+      "backends": [
+        "transformers_pipeline"
+      ],
+      "tasks": [],
+      "handler_entrypoint": "acprof.container.handlers.timeseries:TimeseriesTransformersHandler",
+      "validation_entrypoint": "acprof.container.validation:validate_output",
+      "execution_entrypoint": "acprof.container.torch_execution",
+      "environments": {
+        "cpu": "timeseries-cpu",
+        "cu124": "timeseries-cu124",
+        "cu128": "timeseries-cu128"
+      },
+      "execution": {
+        "cpu": "available",
+        "cuda": "available",
+        "batch": "available",
+        "streaming": "unsupported"
+      },
+      "measurement": {
+        "latency": "available",
+        "torch_profiler_eager": "available"
+      },
+      "dtypes": [
+        "FP32",
+        "FP16"
+      ],
+      "input_modalities": [
+        "timeseries"
+      ],
+      "unsupported_reason": "时间序列预测适配 Chronos／Chronos-Bolt；模型须兼容 --backend chronos。Transformers 没有通用预测 pipeline。"
+    },
+    {
+      "extension_id": "torch-diffusion",
+      "family": "diffusion",
+      "runtime": "torch",
+      "backends": [
+        "diffusers"
+      ],
+      "tasks": [
+        "text-to-image",
+        "image-text-to-image",
+        "image-text-to-video",
+        "image-to-image",
+        "image-to-video",
+        "text-to-video",
+        "video-to-video",
+        "unconditional-image-generation",
+        "text-to-3d",
+        "image-to-3d"
+      ],
+      "handler_entrypoint": "acprof.container.handlers.diffusion:DiffusionHandler",
+      "validation_entrypoint": "acprof.container.validation:validate_output",
+      "execution_entrypoint": "acprof.container.torch_execution",
+      "environments": {
+        "cpu": "diffusion-cpu",
+        "cu124": "diffusion-cu124",
+        "cu128": "diffusion-cu128"
+      },
+      "execution": {
+        "cpu": "available",
+        "cuda": "available",
+        "batch": "available",
+        "streaming": "unsupported"
+      },
+      "measurement": {
+        "latency": "available",
+        "torch_profiler_eager": "available"
+      },
+      "dtypes": [
+        "FP32",
+        "FP16"
+      ],
+      "input_modalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "task_execution": {
+        "image-text-to-image": {
+          "batch": "unsupported"
+        },
+        "image-text-to-video": {
+          "batch": "unsupported"
+        },
+        "image-to-image": {
+          "batch": "unsupported"
+        },
+        "image-to-video": {
+          "batch": "unsupported"
+        },
+        "text-to-video": {
+          "batch": "unsupported"
+        },
+        "video-to-video": {
+          "batch": "unsupported"
+        },
+        "unconditional-image-generation": {
+          "batch": "unsupported"
+        },
+        "text-to-3d": {
+          "batch": "unsupported"
+        },
+        "image-to-3d": {
+          "batch": "unsupported"
+        }
+      }
+    },
+    {
+      "extension_id": "torch-multimodal",
+      "family": "multimodal",
+      "runtime": "torch",
+      "backends": [
+        "transformers_pipeline",
+        "transformers_model"
+      ],
+      "tasks": [
+        "audio-text-to-text",
+        "image-text-to-text",
+        "visual-question-answering",
+        "document-question-answering",
+        "video-text-to-text",
+        "visual-document-retrieval",
+        "any-to-any"
+      ],
+      "handler_entrypoint": "acprof.container.handlers.multimodal:MultimodalHandler",
+      "validation_entrypoint": "acprof.container.validation:validate_output",
+      "execution_entrypoint": "acprof.container.torch_execution",
+      "environments": {
+        "cpu": "audio-cpu",
+        "cu124": "audio-cu124",
+        "cu128": "multimodal-transformers4576"
+      },
+      "execution": {
+        "cpu": "available",
+        "cuda": "available",
+        "batch": "unsupported",
+        "streaming": "unsupported"
+      },
+      "measurement": {
+        "latency": "available",
+        "torch_profiler_eager": "available"
+      },
+      "dtypes": [
+        "FP32",
+        "FP16"
+      ],
+      "input_modalities": [
+        "text",
+        "image",
+        "audio",
+        "video"
+      ],
+      "architecture_constraints": {
+        "audio-text-to-text": [
+          "qwen2_audio",
+          "qwen2_5_omni"
+        ],
+        "any-to-any": [
+          "qwen2_5_omni"
+        ],
+        "visual-document-retrieval": [
+          "colpali",
+          "colqwen2"
+        ]
+      },
+      "require_registered_custom_architecture": true
+    },
+    {
+      "extension_id": "torch-moss",
+      "family": "multimodal",
+      "runtime": "torch",
+      "backends": [
+        "transformers_pipeline",
+        "transformers_model"
+      ],
+      "tasks": [
+        "audio-text-to-text"
+      ],
+      "handler_entrypoint": "acprof.container.handlers.moss:MossTranscribeDiarizeHandler",
+      "validation_entrypoint": "acprof.container.validation:validate_output",
+      "execution_entrypoint": "acprof.container.torch_execution",
+      "environments": {},
+      "execution": {
+        "cpu": "available",
+        "cuda": "available",
+        "batch": "unsupported",
+        "streaming": "unsupported"
+      },
+      "measurement": {
+        "latency": "available",
+        "torch_profiler_eager": "available"
+      },
+      "dtypes": [
+        "FP32",
+        "BF16"
+      ],
+      "input_modalities": [
+        "text",
+        "audio"
+      ],
+      "adapter": "moss-transcribe-diarize",
+      "model_types": [
+        "moss_transcribe_diarize"
+      ],
+      "model_ids": [
+        "OpenMOSS-Team/MOSS-Transcribe-Diarize"
+      ],
+      "profile": "moss-transformers560",
+      "environment": "moss-transformers560"
+    },
+    {
+      "extension_id": "torch-structured",
+      "family": "structured",
+      "runtime": "torch",
+      "backends": [
+        "torchscript"
+      ],
+      "tasks": [
+        "tabular-classification",
+        "tabular-regression",
+        "reinforcement-learning",
+        "robotics",
+        "graph-ml"
+      ],
+      "handler_entrypoint": "acprof.container.handlers.structured:StructuredHandler",
+      "validation_entrypoint": "acprof.container.validation:validate_output",
+      "execution_entrypoint": "acprof.container.torch_execution",
+      "environments": {
+        "cpu": "structured-cpu",
+        "cu124": "structured-cu124",
+        "cu128": "structured-cu128"
+      },
+      "execution": {
+        "cpu": "available",
+        "cuda": "available",
+        "batch": "available",
+        "streaming": "unsupported"
+      },
+      "measurement": {
+        "latency": "available",
+        "torch_profiler_eager": "available"
+      },
+      "dtypes": [
+        "FP32",
+        "FP16"
+      ],
+      "input_modalities": [
+        "tabular"
+      ]
+    },
+    {
+      "extension_id": "skops-structured",
+      "family": "structured",
+      "runtime": "skops",
+      "backends": [
+        "skops"
+      ],
+      "tasks": [
+        "tabular-classification",
+        "tabular-regression"
+      ],
+      "handler_entrypoint": "acprof.container.handlers.structured:StructuredHandler",
+      "validation_entrypoint": "acprof.container.validation:validate_output",
+      "execution_entrypoint": "",
+      "environments": {
+        "cpu": "structured-cpu",
+        "cu124": "structured-cu124",
+        "cu128": "structured-cu128"
+      },
+      "execution": {
+        "cpu": "available",
+        "cuda": "unsupported",
+        "batch": "available",
+        "streaming": "unsupported"
+      },
+      "measurement": {
+        "latency": "available",
+        "torch_profiler_eager": "unsupported"
+      },
+      "dtypes": [
+        "FP32"
+      ],
+      "input_modalities": [
+        "tabular"
+      ]
+    }
+  ],
+  "architecture_tasks": {
+    "Qwen2AudioForConditionalGeneration": "audio-text-to-text",
+    "Qwen2_5OmniForConditionalGeneration": "any-to-any",
+    "Qwen2VLForConditionalGeneration": "image-text-to-text",
+    "Qwen2_5_VLForConditionalGeneration": "image-text-to-text",
+    "Qwen3VLForConditionalGeneration": "image-text-to-text",
+    "Qwen3VLMoeForConditionalGeneration": "image-text-to-text",
+    "Qwen3OmniMoeForConditionalGeneration": "any-to-any",
+    "LlavaForConditionalGeneration": "image-text-to-text",
+    "LlavaNextForConditionalGeneration": "image-text-to-text",
+    "LlavaOnevisionForConditionalGeneration": "image-text-to-text",
+    "LlavaNextVideoForConditionalGeneration": "video-text-to-text",
+    "Idefics2ForConditionalGeneration": "image-text-to-text",
+    "Idefics3ForConditionalGeneration": "image-text-to-text",
+    "SmolVLMForConditionalGeneration": "image-text-to-text",
+    "MllamaForConditionalGeneration": "image-text-to-text",
+    "PaliGemmaForConditionalGeneration": "image-text-to-text",
+    "Gemma3ForConditionalGeneration": "image-text-to-text",
+    "Gemma3nForConditionalGeneration": "image-text-to-text",
+    "ColPaliForRetrieval": "visual-document-retrieval",
+    "ColQwen2ForRetrieval": "visual-document-retrieval",
+    "ViltForQuestionAnswering": "visual-question-answering",
+    "BlipForQuestionAnswering": "visual-question-answering",
+    "LayoutLMForQuestionAnswering": "document-question-answering",
+    "LayoutLMv2ForQuestionAnswering": "document-question-answering",
+    "LayoutLMv3ForQuestionAnswering": "document-question-answering",
+    "BlipForConditionalGeneration": "image-to-text",
+    "Blip2ForConditionalGeneration": "image-to-text",
+    "InstructBlipForConditionalGeneration": "image-to-text",
+    "VisionEncoderDecoderModel": "image-to-text",
+    "OwlViTForObjectDetection": "zero-shot-object-detection",
+    "Owlv2ForObjectDetection": "zero-shot-object-detection",
+    "GroundingDinoForObjectDetection": "zero-shot-object-detection",
+    "SamModel": "mask-generation",
+    "Sam2Model": "mask-generation",
+    "ForKeypointDetection": "keypoint-detection",
+    "ForPoseEstimation": "keypoint-detection",
+    "ForVideoClassification": "video-classification",
+    "ForUniversalSegmentation": "image-segmentation",
+    "ForInstanceSegmentation": "image-segmentation",
+    "ForCausalLM": "text-generation",
+    "TapasForQuestionAnswering": "table-question-answering",
+    "VitsModel": "text-to-speech",
+    "BarkModel": "text-to-audio",
+    "MusicgenForConditionalGeneration": "text-to-audio",
+    "SpeechT5ForTextToSpeech": "text-to-speech",
+    "EncodecModel": "audio-to-audio",
+    "DacModel": "audio-to-audio",
+    "ForMaskedLM": "fill-mask",
+    "ForSequenceClassification": "text-classification",
+    "ForTokenClassification": "token-classification",
+    "ForQuestionAnswering": "question-answering",
+    "ForSeq2SeqLM": "text2text-generation",
+    "ForConditionalGeneration": "text2text-generation",
+    "ForImageClassification": "image-classification",
+    "ForObjectDetection": "object-detection",
+    "ForSemanticSegmentation": "image-segmentation",
+    "ForDepthEstimation": "depth-estimation",
+    "ForAudioClassification": "audio-classification",
+    "ForCTC": "automatic-speech-recognition",
+    "ForSpeechSeq2Seq": "automatic-speech-recognition"
+  },
+  "model_type_tasks": {
+    "moss_transcribe_diarize": "audio-text-to-text"
+  },
+  "library_backends": {
+    "transformers": "transformers_pipeline",
+    "sentence-transformers": "transformers_pipeline",
+    "chronos": "chronos",
+    "diffusers": "diffusers",
+    "timm": "transformers_model",
+    "sklearn": "skops",
+    "skops": "skops"
+  },
+  "backend_rules": [
+    {
+      "family": "structured",
+      "libraries": [
+        "sklearn",
+        "skops"
+      ],
+      "backend": "skops"
+    },
+    {
+      "family": "structured",
+      "backend": "torchscript"
+    },
+    {
+      "task": "sentence-similarity",
+      "backend": "sentence_transformers"
+    },
+    {
+      "task": "text-ranking",
+      "backend": "cross_encoder"
+    },
+    {
+      "task": "voice-activity-detection",
+      "backend": "torchscript"
+    },
+    {
+      "task": "audio-to-audio",
+      "backend": "transformers_model"
+    },
+    {
+      "family": "diffusion",
+      "libraries": [
+        "",
+        "unknown",
+        "diffusers"
+      ],
+      "backend": "diffusers"
+    },
+    {
+      "family": "multimodal",
+      "current": "transformers_pipeline",
+      "backend": "transformers_model"
+    }
+  ]
+}

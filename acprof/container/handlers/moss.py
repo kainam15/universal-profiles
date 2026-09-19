@@ -62,7 +62,3 @@ class MossTranscribeDiarizeHandler(MultimodalHandler):
             with torch.autocast("cuda", dtype=model_ctx["model"].dtype):
                 return super().predict(model_ctx, processed_input)
         return super().predict(model_ctx, processed_input)
-
-
-for _backend in ("transformers_model", "transformers_pipeline"):
-    HandlerRegistry.register_adapter(MOSS_ADAPTER, "multimodal", _backend, MossTranscribeDiarizeHandler)

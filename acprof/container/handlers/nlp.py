@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
+from numbers import Integral
 from typing import Any, Dict, Optional, Tuple
 
 from acprof.container.handlers import (
@@ -17,6 +19,46 @@ _GENERATIVE_TASKS = {
     "text-generation", "text2text-generation", "summarization",
     "translation", "conversational",
 }
+
+
+def _token_rows(value: Any) -> list[list[int]]:
+    value = value.tolist() if callable(getattr(value, "tolist", None)) else value
+    if not isinstance(value, (list, tuple)) or not value:
+        return []
+    if all(isinstance(token, Integral) for token in value):
+        return [[int(token) for token in value]]
+    return [row for child in value for row in _token_rows(child)]
+
+
+def _actual_input_tokens(prepared: Any) -> Optional[int]:
+    mask = prepared.get("attention_mask")
+    rows = _token_rows(mask if mask is not None else prepared.get("input_ids"))
+    return (sum(sum(row) if mask is not None else len(row) for row in rows) if rows else None)
+
+
+def _generation_evidence(generated: Any, config: Any, *, prompt_length: int = 0,
+                         encoder_decoder: bool = False, max_new_tokens: Any = None,
+                         input_tokens: Optional[int] = None) -> Dict[str, Any]:
+    eos = getattr(config, "eos_token_id", None)
+    eos_ids = {int(value) for value in (eos if isinstance(eos, (list, tuple)) else [eos])
+               if isinstance(value, Integral)}
+    start = getattr(config, "decoder_start_token_id", None)
+    counts, reasons = [], []
+    for row in _token_rows(generated):
+        if encoder_decoder and not isinstance(start, Integral):
+            continue
+        row = row[1:] if encoder_decoder and row and isinstance(start, Integral) and row[0] == start else row
+        if not encoder_decoder:
+            row = row[prompt_length:]
+        end = next((index + 1 for index, token in enumerate(row) if token in eos_ids), None)
+        counts.append(end if end is not None else len(row))
+        reasons.append("eos" if end is not None else "length" if
+                       isinstance(max_new_tokens, Integral) and len(row) == max_new_tokens else None)
+    return {"actual_output_tokens": sum(counts) if counts else None,
+            "actual_output_tokens_per_sequence": counts or None,
+            "actual_input_tokens": input_tokens,
+            "stop_reason": reasons[0] if reasons and len(set(reasons)) == 1 else None,
+            "stop_reason_per_sequence": reasons or None}
 
 
 class NLPHandler(BaseHandler):
@@ -280,13 +322,69 @@ class NLPHandler(BaseHandler):
                     if tokenizer.pad_token_id is None and tokenizer.eos_token is not None:
                         tokenizer.pad_token = tokenizer.eos_token
                         pipe.generation_config.pad_token_id = tokenizer.eos_token_id
-        return {
+        context = {
             "pipeline": pipe,
             "task_type": task_type,
             "device": device,
             "model_revision": model_revision or "main",
             "load_options": dict(load_options or {}),
         }
+        self._observe_generation(context)
+        return context
+
+    @staticmethod
+    def _observe_generation(model_ctx: Dict[str, Any]) -> None:
+        """Observe existing CPU pipeline values; serial scenario, no extra inference/tokenization."""
+        pipe = model_ctx["pipeline"]
+        if model_ctx["task_type"] not in _GENERATIVE_TASKS or not all(
+            callable(getattr(pipe, name, None)) for name in ("preprocess", "postprocess")
+        ):
+            return
+        state = model_ctx["_generation_observation"] = {"inputs": [], "outputs": []}
+        preprocess, postprocess = pipe.preprocess, pipe.postprocess
+
+        def observe_input(*args, **kwargs):
+            prepared = preprocess(*args, **kwargs)
+            if isinstance(prepared, Mapping):
+                state["inputs"].append({key: prepared.get(key) for key in ("input_ids", "attention_mask")})
+            return prepared
+
+        def observe_output(outputs, *args, **kwargs):
+            if isinstance(outputs, Mapping):
+                state["outputs"].append({key: outputs.get(key) for key in ("generated_sequence", "output_ids", "input_ids")})
+            return postprocess(outputs, *args, **kwargs)
+
+        pipe.preprocess, pipe.postprocess = observe_input, observe_output
+
+    @staticmethod
+    def _observed_generation(model_ctx: Dict[str, Any]) -> Dict[str, Any]:
+        state = model_ctx.get("_generation_observation", {})
+        pipe = model_ctx["pipeline"]
+        config = getattr(pipe, "generation_config", getattr(getattr(pipe, "model", None), "generation_config", None))
+        encoder_decoder = bool(getattr(getattr(getattr(pipe, "model", None), "config", None), "is_encoder_decoder", False))
+        inputs = [_actual_input_tokens(value) for value in state.get("inputs", [])]
+        counts, reasons = [], []
+        complete = len(state.get("outputs", [])) == state.get("batch_size")
+        for output in state.get("outputs", []):
+            prompt = output.get("input_ids")
+            if not encoder_decoder and prompt is None:
+                complete = False
+                continue
+            prompt_length = int(prompt.shape[-1]) if getattr(prompt, "shape", None) is not None else 0
+            generated = output.get("output_ids") if encoder_decoder else output.get("generated_sequence")
+            evidence = _generation_evidence(generated, config, prompt_length=prompt_length,
+                                           encoder_decoder=encoder_decoder, max_new_tokens=state.get("budget"))
+            if evidence["actual_output_tokens_per_sequence"] is None:
+                complete = False
+            counts.extend(evidence["actual_output_tokens_per_sequence"] or [])
+            reasons.extend(evidence["stop_reason_per_sequence"] or [])
+        if not complete:
+            counts, reasons = [], []
+        return {"actual_input_tokens": sum(inputs) if inputs and None not in inputs and len(inputs) == state.get("batch_size") else None,
+                "actual_output_tokens": sum(counts) if counts else None,
+                "actual_output_tokens_per_sequence": counts or None,
+                "stop_reason": reasons[0] if reasons and len(set(reasons)) == 1 else None,
+                "stop_reason_per_sequence": reasons or None}
 
     @staticmethod
     def _batch_size(raw_input: Dict[str, Any]) -> int:
@@ -506,6 +604,9 @@ class NLPHandler(BaseHandler):
                         multi_label=bool(params.get("multi_label", False)), **batch_kwargs)
         if task_type in _GENERATIVE_TASKS:
             max_new_tokens = params.get("max_new_tokens", 64)
+            state = model_ctx.get("_generation_observation")
+            if state is not None:
+                state.update(inputs=[], outputs=[], budget=max_new_tokens, batch_size=batch_size)
             return pipe(
                 inputs,
                 max_new_tokens=max_new_tokens,
@@ -539,10 +640,5 @@ class NLPHandler(BaseHandler):
                                   "sentence-similarity": "similarity", "text-ranking": "ranking",
                                   "feature-extraction": "embedding"}.get(task_type, "label")),
             "n_results": n_results,
+            **(self._observed_generation(model_ctx) if task_type in _GENERATIVE_TASKS else {}),
         }
-
-
-HandlerRegistry.register("nlp", "transformers_pipeline", NLPHandler)
-HandlerRegistry.register("nlp", "transformers_model", NLPHandler)
-HandlerRegistry.register("nlp", "sentence_transformers", NLPHandler)
-HandlerRegistry.register("nlp", "cross_encoder", NLPHandler)

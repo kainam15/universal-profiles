@@ -127,6 +127,7 @@ class CVHandler(BaseHandler):
             if image.size != (side, side):
                 raise ValueError("input_scale does not match the actual image resolution")
         return {"_effective_input_scale": float(scale), "_truncated_by_limit": False,
+                "_original_resolution": list(image.size),
                 "_probe_reason": "raw image resolution verified; processor may resize or pad internally"}
 
     def preprocess(self, model_ctx: Dict[str, Any], raw_input: Dict[str, Any]) -> Any:
@@ -326,7 +327,3 @@ class CVHandler(BaseHandler):
             "output_type": output_type,
             "n_results": n_results,
         }
-
-
-HandlerRegistry.register("cv", "transformers_pipeline", CVHandler)
-HandlerRegistry.register("cv", "transformers_model", CVHandler)

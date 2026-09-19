@@ -28,6 +28,7 @@ from acprof.host.detect import TaskInfo
 from acprof.host.compute_profile_plan import NCU_ERROR_FIELD, TORCH_ERROR_FIELD
 from acprof.pixel_metrics import PIXEL_COUNT_FIELDS, PIXEL_RATE_SOURCES
 from acprof.monitors.perf_mips import MIPS_EXIT_CODE
+from acprof.capabilities import measurement_requested, require_profiling_mode
 from acprof.host.docker_runtime import (
     ImageInfo,
     _sanitize_model_id,
@@ -279,8 +280,10 @@ def run_single_case(
     compute_profile_plan_file: Optional[str] = None,
     execution_profile_plan_file: Optional[str] = None,
     require_packet_latency: bool = True,
+    profiling_mode: str = "full",
 ) -> str:
     """Run one profiling case and return result CSV path."""
+    require_profiling_mode(profiling_mode)
     request_timeout_seconds = float(request_timeout_seconds)
     if (
         request_timeout_seconds <= 0.0
@@ -346,11 +349,12 @@ def run_single_case(
     case_incomplete = False
     completed_rows_before_failure = 0
     incomplete_case_reason = ""
+    require_packet_latency = require_packet_latency and measurement_requested(profiling_mode, "packet_latency")
     sniff_runtime = _resolve_packet_latency_runtime(
         project_dir=project_dir,
         pcap_file=pcap_file,
         sniff_iface=sniff_iface,
-    )
+    ) if measurement_requested(profiling_mode, "packet_latency") else None
 
     try:
         if sniff_runtime is not None:
@@ -374,7 +378,10 @@ def run_single_case(
                 raise _packet_latency_error(
                     "tcpdump/tshark runtime could not be resolved"
                 )
-            print("[sniff] tcpdump/tshark unavailable, skipping packet-level latency")
+            if measurement_requested(profiling_mode, "packet_latency"):
+                print("[sniff] tcpdump/tshark unavailable, skipping packet-level latency")
+            else:
+                print(f"[sniff] packet_latency=not_requested (profiling_mode={profiling_mode})")
 
         print("[case] Running workload...")
         scales_str = input_scales or serialize_input_scales(
@@ -404,7 +411,8 @@ def run_single_case(
             "OUT_CSV": out_csv,
             "CASE_NAME": case_name,
             "CONTAINER_NAME": container_name,
-            "USE_MIPS": "1",
+            "USE_MIPS": "1" if measurement_requested(profiling_mode, "cpu_instructions") else "0",
+            "PROFILING_MODE": profiling_mode,
             "SAMPLE_HZ": str(sample_hz),
             "IDLE_SECONDS": str(idle_seconds),
             "IDLE_COOLDOWN_SECONDS": str(idle_cooldown_seconds),
@@ -581,7 +589,7 @@ def run_single_case(
                         ignore_error_rows=case_incomplete,
                     )
 
-        if not case_incomplete or completed_rows_before_failure > 0:
+        if measurement_requested(profiling_mode, "cpu_energy") and (not case_incomplete or completed_rows_before_failure > 0):
             _check_case_cpu_idle_power_stable(
                 out_csv,
                 ignore_error_rows=case_incomplete,
@@ -1055,6 +1063,7 @@ def run_matrix(
     progress_callback: Optional[Callable[[MatrixProgress], None]] = None,
     prune_startup_oom: bool = False,
     run_state=None,
+    profiling_mode: str = "full",
 ) -> List[str]:
     """Sweep all resource combinations, optionally pruning proven startup OOMs.
 
@@ -1064,6 +1073,7 @@ def run_matrix(
     the exact same collection protocol as an unpruned run.
     """
     request_timeout_seconds = float(request_timeout_seconds)
+    require_profiling_mode(profiling_mode)
     if (
         request_timeout_seconds <= 0.0
         or not math.isfinite(request_timeout_seconds)
@@ -1194,6 +1204,7 @@ def run_matrix(
                         input_scale_plan_file=input_scale_plan_file,
                         compute_profile_plan_file=compute_profile_plan_file,
                         execution_profile_plan_file=execution_profile_plan_file,
+                        profiling_mode=profiling_mode,
                     )
 
                     if (

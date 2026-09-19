@@ -1,8 +1,8 @@
 # 模型运行环境与适配器
 
 AC-Prof 按模型选择逻辑 profile 和 adapter，profile 引用完整依赖环境，Docker 镜像缓存该环境的构建结果。
-7 个任务族负责输入、调用和输出协议；平台负责 Python、系统依赖和 Torch/CUDA 组合。
-不同依赖环境从共同的 Torch 平台分叉，主机只负责检测、规划和测量。
+7 个任务族负责输入、调用和输出协议；平台负责 Python、OS/架构和系统依赖。
+运行时由依赖环境声明；旧 Torch/CUDA 平台继续复用，`python-cpu` 平台不要求 Torch。主机只负责检测、规划和测量。
 本文命令均从仓库根目录执行；示例资源配置不表示当前机器可用容量。
 
 新增模型适配或调整镜像依赖时查阅本文。任务支持范围由[本文的任务目录](#任务支持范围)维护，
@@ -22,7 +22,7 @@ AC-Prof 按模型选择逻辑 profile 和 adapter，profile 引用完整依赖�
 flowchart LR
     model[模型 ID 和 config 元数据] --> route[运行环境及 adapter 注册表]
     route --> env[完整依赖环境]
-    platform[平台：Python / 系统锁 / Torch] --> deps[依赖环境镜像缓存]
+    platform[平台：Python / 系统锁；旧 Torch 平台兼容] --> deps[依赖环境镜像缓存]
     env --> deps
     deps --> weights[固定 commit 的模型层]
     weights --> code[适配代码和环境清单]
@@ -39,14 +39,15 @@ flowchart LR
 | `moss-transformers560` | MOSS 官方模型 ID，或 `model_type=moss_transcribe_diarize` | Transformers 5.6.0；`moss-transcribe-diarize` adapter |
 | `<family>-cu128` / `<family>-cu124` | NLP、CV、Audio、Diffusion、Structured、Timeseries | 完整依赖锁；Torch 2.11.0 / 2.6.0，保留对应任务族接口 |
 | `<family>-cpu` | 显式 CPU 索引或容器 CI | CPU wheel；同样使用完整依赖锁 |
+| `onnxruntime-cpu` | structured 的 ONNX dense tabular 接口 | ORT 1.23.2、NumPy；无 Torch，CPU float32 |
 
 [`runtime_profiles.py`](../acprof/runtime_profiles.py) 使用标准库声明三个独立对象：
 
 | 对象 | 声明内容 |
 | --- | --- |
-| `RuntimeProfile` / `PROFILES` | 名称、任务族、adapter、模型/backend 约束、dtype、环境引用；保留 22 个 profile。 |
-| `PlatformSpec` / `PLATFORMS` | Linux amd64、固定 Python 基础镜像 digest、Python 3.10.21、系统锁和 Torch 闭包。CPU / cu128 为 Torch 2.11.0，cu124 为 2.6.0。 |
-| `DependencyEnvironment` / `ENVIRONMENTS` | 平台引用及完整 Python 制品锁；当前有 20 个唯一环境。名称仅用于引用，不决定内容身份。 |
+| `RuntimeProfile` / `PROFILES` | 名称、任务族、adapter、模型/backend 约束、dtype、环境引用；保留原 22 个 profile，新增 ONNX 后共 23 个。 |
+| `PlatformSpec` / `PLATFORMS` | Linux amd64、固定 Python 基础镜像 digest、Python 3.10.21、系统锁；Torch 字段可省略。旧 CPU / cu128 为 Torch 2.11.0，cu124 为 2.6.0。 |
+| `DependencyEnvironment` / `ENVIRONMENTS` | 平台引用及完整 Python 制品锁；当前有 21 个唯一环境；可用 `RuntimeSpec(type, version, package)` 核验运行时包的锁版本。名称仅用于引用，不决定内容身份。 |
 
 `audio-cpu` 与 `multimodal-transformers4576-cpu` 共享 `audio-cpu` 环境；cu124 的对应两个
 profile 共享 `audio-cu124` 环境。cu128 的 audio 使用 `tqdm==4.70.1`，原生 multimodal 使用
@@ -54,10 +55,11 @@ profile 共享 `audio-cu124` 环境。cu128 的 audio 使用 `tqdm==4.70.1`，�
 同族可有多个环境，不同族可共享环境；环境和 profile 数量均不要求长期保留同等数量的镜像。
 
 完整锁位于 [`dockerfiles/locks`](../dockerfiles/locks)，源约束位于
-[`dockerfiles/requirements`](../dockerfiles/requirements)。平台的 `platform-*.txt` 仅包含 Torch
-必需依赖闭包和基础安装工具；Flask、torchvision、torchaudio、NumPy、Pillow 等由环境完整锁声明。
+[`dockerfiles/requirements`](../dockerfiles/requirements)。旧平台的 `platform-*.txt` 包含 Torch
+必需依赖闭包和基础安装工具；`platform-python-cpu.txt` 只有基础安装工具。Flask、torchvision、torchaudio、NumPy、Pillow 等由环境完整锁声明。
 每个包固定一个适用于目标 Python/ABI/架构的 wheel URL 和 SHA256，包括 pip、setuptools、wheel
-及其依赖。各环境直接继承 Torch 平台，不通过升级另一个环境来构建。
+及其依赖。各环境直接继承所声明的平台，不通过升级另一个环境来构建。原有 20 个环境的规范化内容身份保持不变，
+新运行时角色声明不改变相同完整包集的身份；缺少包或锁版本不一致会失败。
 
 系统锁 [`system-trixie-amd64.json`](../dockerfiles/locks/system-trixie-amd64.json) 固定基础镜像、
 Debian `20260912T203535Z` 和安全仓库 `20260912T113611Z` 的实际 snapshot URL、签名索引摘要、
@@ -89,6 +91,35 @@ uv 0.12.13；生成目标 wheel 锁需要 Python 3.11+ 的 `tomllib`，只读检
 支持任务标签不等于支持所有 checkpoint。已知不兼容的架构在任务预检退出；未登记的自定义
 架构不会自动安装其 requirements 或执行主机端模型代码。通过静态检查的模型仍须完成实际
 推理验证；CPU、GPU、dtype 和每种 profiler 的支持分别判断。
+
+## 扩展声明与按需加载
+
+`acprof/extensions/*/manifest.json` 是共享声明目录，标准库 JSON loader 在主机与容器读取，
+不导入 Handler 或可选依赖。每条声明包含 ID、任务族、任务／架构匹配、backend/runtime、
+profile/environment 引用、CPU/CUDA、dtype、输入模态、batch、streaming、measurement 状态、
+Handler 和 validator 的 `module:callable` 入口。可选 `execution_entrypoint` 提供运行时上下文；
+空值采用 CPU/nullcontext，Torch 声明指向 `container.torch_execution`。
+声明只描述能力，实际执行仍由 `BaseHandler.load → preprocess → predict → postprocess` 完成。
+
+内置 profile 的环境变体由声明的 `environments` 映射选择。已有架构的新 checkpoint 通常只需模型配置；
+新的架构在已有任务协议下增加 Handler／manifest／validator；新 backend 再增加完整依赖环境和锁。
+不同任务协议仍需相应 workload 与输出描述；声明不能让不兼容模型自动变为兼容。
+`RuntimeProfile`、`DependencyEnvironment`、模型 snapshot 和执行 Handler 各有自己的身份。
+
+注册默认拒绝重复 `(family, backend)`／adapter key；错误包含原、新实现和来源模块。
+`register(..., override=True)` 才允许替换。`_auto_register()` 只登记入口字符串，选中时才导入和构造。
+未选 backend 缺依赖不影响启动；选中的 backend 在导入或模型加载失败时保留原始 exception chain，
+分别报告未注册、依赖缺失、模块导入失败、Handler 初始化失败与不支持。
+
+`onnxruntime-cpu` 支持单个 float32 `[rows, feature_dim]` 输入及一个 dense numeric tensor 输出，
+任务为 `tabular-classification`／`tabular-regression`。可使用 snapshot 中唯一的 `*.onnx`，
+或 `acprof_model.json` 指定 `schema_version=1`、`format=onnxruntime`、`task`、`model_file` 和可选 `feature_dim`。
+多个输入／输出、GPU、非 float32 输入及不匹配的固定 batch 明确拒绝；不会逐行拆开请求冒充模型 batch。
+ORT 固定为 1.23.2 以匹配 Python 3.10，运行环境不安装 Torch。完整 wheel 与系统制品仍用现有锁和严格包集校验。
+
+构建期与测量前的运行时验证继续独立于正式窗口。`validate_output` 可由 manifest 声明或 Handler override
+提供，覆盖协议与少量任务 sanity；它不证明准确率或全部 profiler 兼容。实际工作量见
+[Workload Contract](Profiling_Protocol.md#workload-contract)。
 
 ## MOSS 的执行约定
 
@@ -326,15 +357,26 @@ Docker 查询只在上述空闲窗口执行，不增加正式测量窗口内的�
 
 | 边界 | 契约与实现入口 |
 | --- | --- |
-| 环境路由 | [`runtime_profiles.py`](../acprof/runtime_profiles.py) 的 `PROFILES` 声明 adapter、环境引用、`task_types`、`model_types` 和 `backends`；`ENVIRONMENTS` / `PLATFORMS` 声明依赖；`ARCHITECTURE_PROFILES` / `MODEL_PROFILES` 关联架构或模型。 |
-| 任务支持 | `host/detect.py`、`host/task_support.py` 与 `config.py` 的检测、任务和尺度定义一致；仅移除预检限制不构成适配。 |
-| 推理接口 | 已满足协议时使用 `family-default`；自定义实现由 `HandlerRegistry.register_adapter(name, family, backend, HandlerClass)` 注册，并在 `_auto_register` 导入。 |
-| 输入输出 | `BaseHandler` 维持四阶段接口；模型提示词、参数和尺度经 workload/输入计划传递，输出与 `host/model_schema.py` 一致。 |
+| 环境路由 | `acprof/extensions/*/manifest.json` 声明 adapter、环境/profile 引用、task、model_type 和 backend；[`runtime_profiles.py`](../acprof/runtime_profiles.py) 的 `ENVIRONMENTS` / `PLATFORMS` 与精确锁描述实际依赖。架构和模型映射由声明派生。 |
+| 任务支持 | `host/detect.py`、`host/task_support.py` 与 `config.py` 共用 manifest；新任务协议还须补充对应 workload 的物化与尺度处理，不能仅移除预检限制。 |
+| 推理接口 | 已满足协议时使用 `family-default`；自定义实现由 manifest 的 `handler_entrypoint` 按需导入；程序注册 `register_adapter` 仍可用，重复 key 默认拒绝，覆盖必须显式 `override=True`。 |
+| 输入输出 | `BaseHandler` 保留四阶段接口，增加仅在窗口外调用的 `validate_output`；模型提示词、参数和尺度经 workload/输入计划传递，输出与 `host/model_schema.py` 一致。 |
 | 依赖和验证 | 精确锁对应目标 Python/CUDA 容器并通过 `pip check`；CPU、GPU、dtype 与 profiler 分别声明支持，普通推理验证不证明工具兼容。 |
+
+`ARCHITECTURE_PROFILES` / `MODEL_PROFILES` 保留为派生的兼容读取视图；直接修改它们不再改变路由。
+开发扩展应迁移到 manifest。运行时选择同时匹配 architecture、family、backend 与 task，
+同一 architecture 的多个 backend 不再依靠全局单键覆盖决定。
 
 当前 loader 的设备、模态和 profiler 边界在下方任务章节维护；新的行为须同时满足[采集协议](Profiling_Protocol.md#协议不变量)。
 
 ## 参考实现与取舍
+
+本轮扩展机制参考 [pluggy](https://github.com/pytest-dev/pluggy) 的显式注册冲突检测（MIT）、
+[vLLM](https://github.com/vllm-project/vllm/blob/main/docs/contributing/model/registration.md) 的字符串入口延迟加载
+（Apache-2.0），使用 [ONNX Runtime 官方 CPU API](https://onnxruntime.ai/docs/api/python/api_summary.html)（MIT）。
+这些上游有持续维护；这里只借鉴模式，不复制大块代码，不引入 pluggy/vLLM 运行依赖，也不扫描模型安装插件。
+声明解析、导入和完整验证在测量前完成。每请求的实际工作量摘要属于当前响应协议，有小量固定序列化成本；
+不把它当作零开销，也不重算或重新发送推理请求。
 
 依赖解析继续使用 [uv](https://github.com/astral-sh/uv) 0.12.13（MIT / Apache-2.0），
 复用其目标平台解析和制品哈希；分层缓存复用 [BuildKit](https://github.com/moby/buildkit)

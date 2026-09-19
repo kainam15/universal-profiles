@@ -620,6 +620,7 @@ class AcprofTui(BarCursorApp):
             idle_seconds=self._input("idle-seconds"),
             idle_cooldown_seconds=self._input("idle-cooldown-seconds"),
             compute_profile_tool=self._select("compute-profile-tool"),
+            profiling_mode=self._select("profiling-mode"),
             execution_profile_tool=self._select("execution-profile-tool"),
             sniff_iface=self._input("sniff-iface"),
             notify=self._select("notify"),
@@ -668,6 +669,7 @@ class AcprofTui(BarCursorApp):
                         "task-family": config.task_family,
                         "gpus": config.gpus,
                         "compute-profile-tool": config.compute_profile_tool,
+                        "profiling-mode": config.profiling_mode,
                         "execution-profile-tool": config.execution_profile_tool,
                         "notify": config.notify,
                     }.items():
@@ -1469,6 +1471,7 @@ class AcprofTui(BarCursorApp):
         # matrix, so they remain usable on a freshly configured machine.
         config = RunConfig(
             model="preflight-only",
+            profiling_mode=self._select("profiling-mode"),
             gpus=self._select("gpus"),
             sniff_iface=self._input("sniff-iface"),
         )
@@ -1612,8 +1615,11 @@ class AcprofTui(BarCursorApp):
     def _sync_image_refresh_timer(self) -> None:
         if self._image_refresh_timer is None:
             return
+        # A queued worker/form callback may run after Screen children have
+        # unmounted, before App.on_unmount clears _form_ready.
+        tabs = self.query("#main-tabs")
         if (not self._form_ready or self._images_unavailable()
-                or self.query_one("#main-tabs", TabbedContent).active != "images-tab"):
+                or not tabs or tabs.first(TabbedContent).active != "images-tab"):
             self._image_refresh_timer.pause()
         else:
             # 从上一轮扫描完成后计时，慢查询不会排队或重叠。

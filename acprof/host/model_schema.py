@@ -369,6 +369,10 @@ def _model_io_formats(task_info: TaskInfo) -> Tuple[Dict[str, Any], Dict[str, An
         "transport": "HTTP",
         "media_type": "application/json",
     }
+    output_properties["workload_contract"] = {
+        "type": "object",
+        "description": "Actual request workload, separate from resource limits; schema_version=1, serial scenario.",
+    }
     input_format = {
         **common,
         "method": "POST",

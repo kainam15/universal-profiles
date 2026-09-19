@@ -33,12 +33,15 @@ class ComputeProfileRunnerITTTests(unittest.TestCase):
         fake_handlers.resolve_model_source = (
             lambda model_id, model_path=None: model_path or model_id
         )
+        fake_handlers.load_handler = lambda handler, *args, **kwargs: handler.load(*args, **kwargs)
         sys.modules.pop("acprof.container.compute_profile_runner", None)
         with patch.dict(
             sys.modules,
             {"torch": fake_torch, "acprof.container.handlers": fake_handlers},
         ):
-            return importlib.import_module("acprof.container.compute_profile_runner")
+            runner = importlib.import_module("acprof.container.compute_profile_runner")
+        runner.torch = fake_torch
+        return runner
 
     def test_itt_control_prefers_advisor_injected_collector_environment(self):
         runner = self._import_runner()
@@ -155,6 +158,9 @@ class ComputeProfileRunnerITTTests(unittest.TestCase):
                     raise ValueError("pipeline video frame count differs from requested num_frames")
                 return {"output_type": "video", "video_frame_count": 17}
 
+            def validate_output(self, *_args):
+                raise AssertionError('full validation must run in the separate preflight process')
+
         @contextmanager
         def profiler(*_args, **_kwargs):
             events.append("capture_start")
@@ -167,6 +173,9 @@ class ComputeProfileRunnerITTTests(unittest.TestCase):
 
         stdout = io.StringIO()
         with ExitStack() as stack:
+            stack.enter_context(patch.dict(sys.modules, {"torch": runner.torch}))
+            execution = types.SimpleNamespace(inference_context=nullcontext, synchronize=lambda: None)
+            stack.enter_context(patch.object(runner, "configured_execution", return_value=(execution, "cpu")))
             stack.enter_context(patch.dict(runner.os.environ, {"MODEL_ID": "local/tiny"}, clear=True))
             stack.enter_context(patch.object(sys, "argv", [
                 "compute_profile_runner", "--payload-file", "unused.json",
@@ -195,7 +204,7 @@ class ComputeProfileRunnerITTTests(unittest.TestCase):
                 self.assertEqual(events, ["load", "preprocess", "predict", "postprocess"])
                 self.assertEqual(stdout.getvalue(), "")
 
-    def test_warmup_validates_once_before_capture_without_extra_inference(self):
+    def test_warmup_postprocess_does_not_repeat_full_validation_under_profiler(self):
         for mode in ("cpu", "gpu", "torch_eager_cpu"):
             with self.subTest(mode=mode):
                 events = []

@@ -196,3 +196,4 @@
 | `cold_start_s` | `s` | `docker_and_server` | `container_startup` | `all` | `number` |
 | `status` | `text` | `protocol` | `row` | `all` | `text` |
 | `error` | `text` | `protocol` | `row` | `all` | `text` |
+| `workload_contract` | `JSON` | `handler` | `actual_request` | `all` | `text` |

@@ -55,7 +55,7 @@ class VisionIntegrationTests(unittest.TestCase):
                     require_task_support(task_info(task), batch_size=2)
         info = task_info("video-classification")
         info.runtime_backend = "diffusers"
-        with self.assertRaisesRegex(TaskSupportError, "Transformers"):
+        with self.assertRaisesRegex(TaskSupportError, "transformers_model"):
             require_task_support(info)
 
     def test_specific_vision_architectures_do_not_use_generic_detection(self):

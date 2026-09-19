@@ -170,7 +170,3 @@ class TimeseriesTransformersHandler(BaseHandler):
 
     def postprocess(self, model_ctx: Dict[str, Any], raw_output: Any) -> Dict[str, Any]:
         raise ValueError("use the Chronos handler for time-series-forecasting")
-
-
-HandlerRegistry.register("timeseries", "chronos", ChronosHandler)
-HandlerRegistry.register("timeseries", "transformers_pipeline", TimeseriesTransformersHandler)

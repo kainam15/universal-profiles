@@ -33,7 +33,10 @@ class RunRecoveryTests(unittest.TestCase):
         path = self.directory / f'result_case_org--model_{kwargs["cpu"]}c_4g_off.csv'
         row = dict.fromkeys(CSV_FIELDS, "nan")
         row.update(cpu_cores=str(kwargs["cpu"]), mem_cap_gb="4", gpu_mode="off",
-                   input_scale="64", warmup="0", repeat_idx="0", status="ok", error="")
+                   input_scale="64", warmup="0", repeat_idx="0", status="ok", error="",
+                   latency_app_s="0.1", latency_s="0.09", throughput_samples_per_s="10",
+                   container_cpu_util_avg_pct="0", container_mem_usage_avg_bytes="1024",
+                   cpu_energy_total_j="1", vcpu_energy_total_j="0", cpu_instructions_per_request="0")
         with path.open("a", newline="") as stream:
             writer = csv.DictWriter(stream, fieldnames=CSV_FIELDS)
             if path.stat().st_size == 0:
@@ -92,6 +95,36 @@ class RunRecoveryTests(unittest.TestCase):
             self.invoke()
         self.assertEqual(metadata.read_bytes(), original)
         self.assertEqual(self.calls, [])
+
+    def assert_missing_required_measurements_rejected(self, mode):
+        def missing_memory(**kwargs):
+            path = Path(self.write_case(**kwargs))
+            with path.open() as stream:
+                rows = list(csv.DictReader(stream))
+            if kwargs["cpu"] == 2:
+                rows[-1]["container_mem_usage_avg_bytes"] = "nan"
+            with path.open("w", newline="") as stream:
+                writer = csv.DictWriter(stream, fieldnames=CSV_FIELDS)
+                writer.writeheader()
+                writer.writerows(rows)
+            return str(path)
+        with self.assertRaises(SystemExit) as caught:
+            self.invoke("--profiling-mode", mode, case=missing_memory)
+        self.assertEqual(caught.exception.code, 1)
+        report = json.loads((self.directory / "capability_report.json").read_text())
+        self.assertEqual(report["measurement"]["container_memory"]["status"], "unavailable")
+        self.assertFalse(report["full_profile_complete"])
+        self.assertTrue((self.directory / "result_all.csv").is_file())
+        self.assertEqual(len(list(self.directory.glob("result_case_*.csv"))), 2)
+        state = json.loads((self.directory / "run_state.json").read_text())
+        self.assertEqual(state["status"], "failed")
+        self.assertEqual(state["artifacts"]["static_meta.json"], hashlib.sha256((self.directory / "static_meta.json").read_bytes()).hexdigest())
+
+    def test_full_rejects_required_measurement_missing_after_preflight(self):
+        self.assert_missing_required_measurements_rejected("full")
+
+    def test_basic_rejects_required_measurement_missing_after_preflight(self):
+        self.assert_missing_required_measurements_rejected("basic")
 
     def test_resume_keeps_completed_case_and_restarts_interrupted_case(self):
         def interrupted(**kwargs):

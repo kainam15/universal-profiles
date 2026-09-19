@@ -20,6 +20,49 @@ from acprof.host.compute_profile_plan import TORCH_LOGICAL_MFLOP_FIELD
 
 
 class PosthocProfileTests(unittest.TestCase):
+    def test_posthoc_validates_workload_in_separate_container_before_profiler(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_fixture(root)
+            context = host_posthoc_context.load_result_context(root)
+            context.static_meta['runtime_environment'] = {'build_fingerprint': 'fixed'}
+            with patch('acprof.host.preflight.require_native_linux_host'), patch(
+                'acprof.host.preflight.require_native_docker',
+            ), patch('acprof.host.docker_runtime.require_image_identity'), patch(
+                'acprof.host.runtime_validation.validate_runtime', return_value={'status': 'ok'},
+            ) as validate:
+                host_posthoc_plans._validate_profiler_runtime(context, gpu_modes=['off'])
+            kwargs = validate.call_args.kwargs
+            self.assertEqual(kwargs['gpu_list'], ['off'])
+            self.assertEqual(kwargs['image_info'].tag, context.image_tag)
+            self.assertEqual(kwargs['planned'].plan_file, str(context.input_scale_plan_path))
+            self.assertEqual(Path(kwargs['output_dir']), root / 'posthoc_profiles' / 'runtime_validation')
+
+    def test_posthoc_runtime_failure_and_oom_stop_before_profiler_or_result_write(self):
+        for validation_result in (RuntimeError('invalid task output'), {'status': 'resource_limited'}):
+            with self.subTest(result=validation_result), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                self._write_fixture(root)
+                path = root / host_posthoc_context.STATIC_META_NAME
+                metadata = json.loads(path.read_text())
+                metadata['runtime_environment'] = {'build_fingerprint': 'fixed'}
+                path.write_text(json.dumps(metadata))
+                before = {name: (root / name).read_bytes() for name in ('static_meta.json', 'result_all.csv')}
+                with patch('acprof.host.posthoc.service.find_active_processes', return_value=[]), patch(
+                    'acprof.host.preflight.require_native_linux_host',
+                ), patch('acprof.host.preflight.require_native_docker'), patch(
+                    'acprof.host.docker_runtime.require_image_identity',
+                ), patch('acprof.host.runtime_validation.validate_runtime',
+                         side_effect=validation_result if isinstance(validation_result, Exception) else None,
+                         return_value=validation_result) as validate, patch(
+                    'acprof.host.posthoc.service._collect_execution_plan',
+                ) as collect, self.assertRaisesRegex(host_posthoc_context.PosthocError, 'validation|验证'):
+                    posthoc.run_posthoc(root, tools='massif', force_reprofile=True)
+                collect.assert_not_called()
+                validate.assert_called_once()
+                self.assertEqual(validate.call_args.kwargs['gpu_list'], ['off'])
+                self.assertEqual(before, {name: (root / name).read_bytes() for name in before})
+
     def test_load_context_uses_image_id_and_preserves_runtime_binding(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -634,6 +677,7 @@ class PosthocProfileTests(unittest.TestCase):
             self.assertEqual(set(summary.collected_tools), {"ncu", "nsys"})
             self.assertIn("massif", summary.skipped_tools)
             validate_runtime.assert_called_once()
+            self.assertEqual(validate_runtime.call_args.kwargs['gpu_modes'], ['on'])
             collect_compute.assert_called_once()
             self.assertEqual(collect_compute.call_args.kwargs["tool"], "ncu")
             collect_execution.assert_called_once()

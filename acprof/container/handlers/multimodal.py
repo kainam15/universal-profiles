@@ -263,22 +263,28 @@ class MultimodalHandler(BaseHandler):
                     raise ValueError(f"{task} does not accept {key}")
         image = self._image(sample["image_base64"]) if "image_base64" in sample else None
         media_scales = {}
+        modality_facts = {"text": {"characters": len(text)}}
         if image is not None:
             if image.width != image.height:
                 raise ValueError("resolution_px requires a square image")
             media_scales["resolution_px"] = float(image.width)
+            modality_facts["images"] = {"count": 1, "original_resolution": list(image.size),
+                                         "original_pixels": image.width * image.height,
+                                         "processed_shape": None, "processed_shape_status": "unavailable"}
         if task in _QA_TASKS:
             explicit_generation_params = {"max_new_tokens", "do_sample"}.intersection(
                 raw_input.get("params", {})
             )
             if not model_ctx["pipeline"].model.can_generate() and explicit_generation_params:
                 raise ValueError("generation params are inapplicable to a classification/extractive QA model")
-            return {**self._preprocess_qa(model_ctx, sample, image, params), **self._scale_metadata(raw_input, media_scales)}
+            return {**self._preprocess_qa(model_ctx, sample, image, params),
+                    "_workload": {"input": modality_facts}, **self._scale_metadata(raw_input, media_scales)}
         processor, model = model_ctx["processor"], model_ctx["model"]
         if task == "visual-document-retrieval":
             return {
                 "query_inputs": _to_device(processor.process_queries(text=[text], return_tensors="pt"), model),
                 "document_inputs": _to_device(processor.process_images(images=[image], return_tensors="pt"), model),
+                "_workload": {"input": modality_facts},
                 **self._scale_metadata(raw_input, media_scales),
             }
         content, media_kwargs = [], {}
@@ -300,6 +306,9 @@ class MultimodalHandler(BaseHandler):
             if not model_ctx.get("audio_chunking") and isinstance(max_samples, int) and audio.size > max_samples:
                 raise ValueError(f"audio exceeds processor limit ({max_samples / rate:g}s); truncation is not allowed")
             media_scales["duration_s"] = audio.size / rate
+            modality_facts["audio"] = {"audio_seconds": audio.size / rate, "sample_rate": rate,
+                                        "channels": 1, "processor_input_duration": audio.size / rate,
+                                        "processed_duration": None, "processed_duration_status": "unavailable"}
             content.append({"type": "audio"})
             media_kwargs.update(audio=[audio], sampling_rate=rate)
         if "video_frames_base64" in sample:
@@ -315,8 +324,21 @@ class MultimodalHandler(BaseHandler):
             content.append({"type": "video"})
             media_kwargs.update(videos=[np.stack(decoded)], fps=float(fps))
             media_scales["frame_count"] = float(len(frames))
+            modality_facts["video"] = {"frame_count": len(frames), "fps": float(fps),
+                                        "original_resolution": [int(decoded[0].shape[1]), int(decoded[0].shape[0])]}
         content.append({"type": "text", "text": text})
         inputs = self._generation_inputs(model_ctx, content, media_kwargs)
+        from acprof.container.handlers.nlp import _actual_input_tokens
+
+        actual_input_tokens = _actual_input_tokens(inputs)
+        modality_facts["text"].update(tokens=actual_input_tokens, token_scope="model_input_including_modality_and_special_tokens")
+        for modality, keys in (("images", ("pixel_values", "image_pixel_values")),
+                               ("video", ("pixel_values_videos", "video_pixel_values", "pixel_values")),
+                               ("audio", ("input_features", "audio_values", "audio_features"))):
+            if modality in modality_facts:
+                tensor = next((inputs[key] for key in keys if key in inputs), None)
+                modality_facts[modality]["processed_shape"] = list(tensor.shape) if hasattr(tensor, "shape") else None
+                modality_facts[modality]["processed_shape_status"] = "available" if hasattr(tensor, "shape") else "unavailable"
         inputs = _to_device(inputs, model)
         if "input_ids" not in inputs:
             raise ValueError("multimodal processor did not return input_ids")
@@ -329,6 +351,8 @@ class MultimodalHandler(BaseHandler):
                 raise ValueError(f"processor discarded the requested {modality} modality")
         return {
             "inputs": inputs, "prompt_length": int(inputs["input_ids"].shape[-1]),
+            "actual_input_tokens": actual_input_tokens,
+            "_workload": {"input": modality_facts},
             "params": params, **self._scale_metadata(raw_input, media_scales),
         }
 
@@ -427,7 +451,9 @@ class MultimodalHandler(BaseHandler):
                     generated = model.generate(**processed_input["inputs"], **params)
             else:
                 generated = model.generate(**processed_input["inputs"], **params)
-            return {"generated": generated, "prompt_length": processed_input["prompt_length"]}
+            return {"generated": generated, "prompt_length": processed_input["prompt_length"],
+                    "actual_input_tokens": processed_input.get("actual_input_tokens"),
+                    "max_new_tokens": processed_input["params"].get("max_new_tokens")}
 
     @staticmethod
     def _text_summary(tokenizer: Any, texts: list[str]) -> Dict[str, Any]:
@@ -486,6 +512,18 @@ class MultimodalHandler(BaseHandler):
             }
         if hasattr(generated, "sequences"):
             generated = generated.sequences
+        if callable(getattr(generated, "detach", None)):
+            generated = generated.detach().cpu()
+        from acprof.container.handlers.nlp import _generation_evidence
+
+        model = model_ctx["model"]
+        generation_model = getattr(model, "thinker", model) if mode == "omni" else model
+        evidence = _generation_evidence(
+            generated, getattr(generation_model, "generation_config", getattr(model, "config", None)),
+            prompt_length=raw_output["prompt_length"],
+            encoder_decoder=bool(getattr(model.config, "is_encoder_decoder", False)),
+            max_new_tokens=raw_output.get("max_new_tokens"), input_tokens=raw_output.get("actual_input_tokens"),
+        )
         if not getattr(model_ctx["model"].config, "is_encoder_decoder", False):
             generated = generated[:, raw_output["prompt_length"]:]
         processor = model_ctx["processor"]
@@ -495,13 +533,10 @@ class MultimodalHandler(BaseHandler):
         return {
             **result, "output_type": "text_audio" if mode == "omni" else "text", "texts": texts,
             **self._text_summary(getattr(processor, "tokenizer", None), texts), **audio_summary,
+            **evidence,
         }
 
     def get_scale_metadata(self, model_ctx: Dict[str, Any], raw_input: Dict[str, Any]) -> Dict[str, Any]:
         processor = model_ctx.get("processor")
         rate = getattr(getattr(processor, "feature_extractor", None), "sampling_rate", None)
         return {"sampling_rate": rate} if isinstance(rate, int) and rate > 0 else {}
-
-
-HandlerRegistry.register("multimodal", "transformers_model", MultimodalHandler)
-HandlerRegistry.register("multimodal", "transformers_pipeline", MultimodalHandler)

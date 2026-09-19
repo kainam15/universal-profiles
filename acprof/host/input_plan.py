@@ -81,6 +81,7 @@ def _write_scale_plan_file(
         "pipeline_tag": task_info.pipeline_tag,
         "workload": dict(workload or {}),
         "model_constraints": dict(model_constraints or {}),
+        "scenario": {"type": "serial"},
         "entries": entries,
     }
     with open(path, "w", encoding="utf-8") as f:

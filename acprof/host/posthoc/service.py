@@ -174,7 +174,14 @@ def run_posthoc(
                 continue
 
             if not runtime_validated:
-                _validate_profiler_runtime(context)
+                _validate_profiler_runtime(
+                    context,
+                    gpu_modes=[
+                        mode for mode in ("off", "on")
+                        if context.cases_for_mode(mode)
+                        and any(mode in TOOL_GPU_MODES[item] for item in needed)
+                    ],
+                )
                 runtime_validated = True
             print(f"[profile][{tool}] Collecting isolated profiler probes...")
             if tool in {"torch", "ncu"}:

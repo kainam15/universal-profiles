@@ -174,6 +174,12 @@ mean/median 聚合，默认仅纳入 `status=ok` 且 `warmup=0` 的行。
 - `latency_s` 是 packet-level 计时，需要完整完成 `tcpdump` capture、`acprof.packet.sniff_parse_pcap` parse、`acprof.packet.merge_packet_latency` merge。
 - 当前默认行为是严格模式：如果无法保证 `latency_s` 有值，`run.py` 会退出，不继续 merge 最终结果。
 
+`workload_contract` 是新增的 JSON 文本列，不参与数值聚合。每行保存已完成请求的实际工作量摘要，
+以 `request_count` 和 `variants[{count, contract}]` 保留请求数量与不同工作量的分布；不保存请求顺序。
+其 generation 上限与实际 token 数、图像和音频模态的区别见[Workload Contract](Profiling_Protocol.md#workload-contract)。
+`basic` 使用 `latency_app_s` 和相应 application 分布指标；`latency_s` 仍专指 packet latency，不能互相替填。
+分析能耗／PMU 时先核对模式和[能力证据](Profiling_Protocol.md#profiling-mode-与能力证据)，缺失数值继续为 `nan`。
+
 ## 图表与延迟拟合产物
 
 ### 只读审计

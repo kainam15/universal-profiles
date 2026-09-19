@@ -932,7 +932,11 @@ def collect_execution_profile_plan(
     resume_existing_profiles: bool = False,
     progress_callback: Optional[ProfilerProgressCallback] = None,
 ) -> str:
-    """Collect sampled probes and expand them to a full resource-grid plan."""
+    """Collect sampled probes and expand them to a full resource-grid plan.
+
+    The calling CLI must run isolated runtime validation before collection.
+    This internal planner does not repeat output validation inside profilers.
+    """
     normalized_tool_mode = (tool_mode or "both").strip().lower()
     if normalized_tool_mode not in EXECUTION_PROFILE_TOOL_MODES:
         raise ValueError(
@@ -1032,9 +1036,10 @@ def collect_execution_profile_plan(
             )
 
     derived_image: Optional[str] = None
-    massif_error = ""
+    from acprof.capabilities import declared_profiler_error
+    massif_error = declared_profiler_error(task_info, MASSIF_TOOL) if collect_massif else ""
     massif_version = "unknown"
-    if collect_massif:
+    if collect_massif and not massif_error:
         try:
             derived_image = require_execution_image(image_tag, MASSIF_TOOL)
         except Exception as exc:
@@ -1047,9 +1052,9 @@ def collect_execution_profile_plan(
     nsys_bin: Optional[str] = None
     nsys_mount_root: Optional[str] = None
     nsys_profile_image = image_tag
-    nsys_error = ""
+    nsys_error = declared_profiler_error(task_info, NSYS_TOOL) if collect_nsys else ""
     nsys_version = "unknown"
-    if collect_nsys:
+    if collect_nsys and not nsys_error:
         try:
             nsys_bin = _find_nsys_executable(nsys_root)
         except Exception as exc:

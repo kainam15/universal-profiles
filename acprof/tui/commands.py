@@ -107,6 +107,7 @@ class RunConfig:
     idle_seconds: float = DEFAULT_IDLE_SECONDS
     idle_cooldown_seconds: float = DEFAULT_IDLE_COOLDOWN_SECONDS
     compute_profile_tool: str = DEFAULT_COMPUTE_PROFILE_TOOL
+    profiling_mode: str = "full"
     execution_profile_tool: str = "none"
     sniff_iface: str = "docker0"
     notify: str = "auto"
@@ -236,6 +237,8 @@ class RunConfig:
             errors.append(message('任务族必须是 nlp/cv/audio/timeseries/diffusion/multimodal/structured'))
         if self.compute_profile_tool not in COMPUTE_PROFILE_TOOLS:
             errors.append(message('无效的计算分析器'))
+        if self.profiling_mode not in {"full", "basic"}:
+            errors.append(message('无效的画像模式'))
         if self.execution_profile_tool not in EXECUTION_PROFILE_TOOLS:
             errors.append(message('无效的执行分析器'))
         if self.notify not in NOTIFY_MODES:
@@ -330,6 +333,8 @@ def build_run_command(
         _format_number(config.idle_cooldown_seconds),
         "--compute-profile-tool",
         config.compute_profile_tool,
+        "--profiling-mode",
+        config.profiling_mode,
         "--execution-profile-tool",
         config.execution_profile_tool,
         "--sniff-iface",

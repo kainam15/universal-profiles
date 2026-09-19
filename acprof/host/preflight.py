@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from acprof.capabilities import Capability, CapabilityStatus, capability_from_error
+
 
 PROJECT_DIR = str(Path(__file__).resolve().parents[2])
 NATIVE_DOCKER_SOCKET = "/var/run/docker.sock"
@@ -271,30 +273,56 @@ def require_native_docker() -> None:
         _exit_docker_desktop()
 
 
-def require_cpu_energy_prerequisites() -> None:
-    """Exit early when CPU/vCPU energy profiling cannot be collected."""
+def probe_cpu_energy() -> Capability:
+    """Reuse the production detector, retaining the reason for missing counters."""
     try:
         from acprof.monitors import energy_cpu
-
-        cpu_power_source = energy_cpu.detect_cpu_power_source()
-        vcpu_power_method = energy_cpu.detect_vcpu_power_method()
+        source = energy_cpu.detect_cpu_power_source()
+        method = energy_cpu.detect_vcpu_power_method()
+        if source == "rapl" and method == "rapl_cgroup_cpu_share":
+            return Capability("available", source="rapl_probe", evidence={
+                "cpu_power_source": source, "vcpu_power_method": method,
+            })
+        for entry in Path("/sys/class/powercap").glob("*:*"):
+            if entry.name.count(":") == 1 and (entry / "energy_uj").exists():
+                try:
+                    (entry / "energy_uj").read_text()
+                except PermissionError as exc:
+                    return capability_from_error(exc, source="rapl_probe")
+        return Capability("unavailable", f"cpu_power_source={source}, vcpu_power_method={method}", "rapl_probe")
     except Exception as exc:
-        print(
-            "[cpu-energy][ERROR] CPU/vCPU energy profiling is required, but "
-            f"AC-Prof could not run the CPU energy detector: {exc}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        return capability_from_error(exc, source="rapl_probe")
 
-    if cpu_power_source == "rapl" and vcpu_power_method == "rapl_cgroup_cpu_share":
-        return
+
+def probe_perf_instructions(*, env=None) -> Capability:
+    from acprof.monitors.perf_mips import resolve_perf_command_prefix
+    try:
+        prefix = resolve_perf_command_prefix(env=env)
+    except Exception as exc:
+        return capability_from_error(exc, source="perf_probe")
+    return Capability("available", source="perf_probe", evidence={"command_prefix": prefix})
+
+
+def require_mips_prerequisites() -> Capability:
+    from acprof.monitors.perf_mips import _friendly_mips_error
+    result = probe_perf_instructions()
+    if result.status != CapabilityStatus.AVAILABLE:
+        print(_friendly_mips_error(result.detail), file=sys.stderr)
+        raise SystemExit(1)
+    return result
+
+
+def require_cpu_energy_prerequisites() -> Capability:
+    """Exit early when CPU/vCPU energy profiling cannot be collected."""
+    result = probe_cpu_energy()
+    if result.status == CapabilityStatus.AVAILABLE:
+        return result
 
     print(
         "[cpu-energy][ERROR] CPU/vCPU energy profiling is required, but AC-Prof "
         "cannot read the Linux RAPL powercap counters needed for CPU package "
         "energy and estimated vCPU energy.\n\n"
-        f"Detected: cpu_power_source={cpu_power_source}, "
-        f"vcpu_power_method={vcpu_power_method}\n\n"
+        f"Detected: status={result.status.value}, {result.detail}\n\n"
         "Common cause on Linux: /sys/class/powercap/intel-rapl:*/energy_uj "
         "exists but is only readable by root.\n\n"
         "Check current permissions:\n"

@@ -24,8 +24,8 @@ class EnvironmentIdentityTests(unittest.TestCase):
         self.env = ENVIRONMENTS['audio-cpu']
 
     def test_profiles_share_exact_environments_without_merging_near_matches(self):
-        self.assertEqual(len(PROFILES), 22)
-        self.assertEqual(len({environment_id(p.environment, ROOT) for p in PROFILES.values()}), 20)
+        self.assertEqual(len(PROFILES), 23)
+        self.assertEqual(len({environment_id(p.environment, ROOT) for p in PROFILES.values()}), 21)
         for variant in ('cpu', 'cu124'):
             self.assertIs(PROFILES['audio-' + variant].environment,
                           PROFILES['multimodal-transformers4576-' + variant].environment)

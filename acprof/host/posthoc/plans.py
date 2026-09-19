@@ -5,6 +5,7 @@ import copy
 import math
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from typing import (
     Any,
     Dict,
@@ -30,6 +31,7 @@ from acprof.host.compute_profile_plan import (
 from acprof.host.execution_profile_plan import find_execution_profile_entry
 from acprof.host.posthoc.context import (
     COMPUTE_PLAN_METRIC_FIELDS,
+    POSTHOC_DIRNAME,
     PROJECT_DIR,
     PosthocError,
     ResultContext,
@@ -235,10 +237,14 @@ def _find_reusable_execution_plan(
     return None
 
 
-def _validate_profiler_runtime(context: ResultContext) -> None:
-    # Post-hoc collection deliberately skips packet, RAPL, perf, and workload
-    # preflights.  It only needs the same native Docker daemon and model image.
+def _validate_profiler_runtime(
+    context: ResultContext, *, gpu_modes: Optional[List[str]] = None,
+) -> None:
+    # Validate outputs in a separate container before any profiler starts;
+    # whole-process profilers must not include validation allocations.
     from acprof.host.preflight import require_native_docker, require_native_linux_host
+    from acprof.host.docker_runtime import ImageInfo
+    from acprof.host.runtime_validation import validate_runtime
 
     require_native_linux_host()
     require_native_docker()
@@ -249,19 +255,46 @@ def _validate_profiler_runtime(context: ResultContext) -> None:
             require_image_identity(context.image_tag, context.static_meta.get("runtime_environment") or {})
         except RuntimeError as exc:
             raise PosthocError(str(exc)) from exc
-        return
-    result = subprocess.run(
-        ["docker", "image", "inspect", context.image_tag],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=30,
-    )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "image not found").strip()
+    else:
+        result = subprocess.run(
+            ["docker", "image", "inspect", context.image_tag],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "image not found").strip()
+            raise PosthocError(
+                f"required model image is unavailable: {context.image_tag}: {detail}"
+            )
+
+    modes = gpu_modes if gpu_modes is not None else [
+        mode for mode in ("off", "on") if context.cases_for_mode(mode)
+    ]
+    cases = [case for case in context.resource_cases if case[2] in modes]
+    if not cases:
+        raise PosthocError("runtime validation has no applicable resource cases")
+    try:
+        report = validate_runtime(
+            task_info=context.task_info,
+            image_info=ImageInfo(
+                tag=context.image_tag,
+                runtime_environment=context.static_meta.get("runtime_environment") or {},
+            ),
+            planned=SimpleNamespace(plan_file=str(context.input_scale_plan_path)),
+            cpu_list=sorted({case[0] for case in cases}),
+            mem_list=sorted({case[1] for case in cases}),
+            gpu_list=modes,
+            output_dir=str(context.result_dir / POSTHOC_DIRNAME / "runtime_validation"),
+        )
+    except (RuntimeError, OSError, ValueError) as exc:
+        raise PosthocError(f"runtime validation failed before post-hoc profiling: {exc}") from exc
+    if report.get("status") != "ok":
         raise PosthocError(
-            f"required model image is unavailable: {context.image_tag}: {detail}"
+            "runtime validation was not verified; post-hoc profiling stopped "
+            f"(status={report.get('status', 'unknown')})"
         )
 
 
