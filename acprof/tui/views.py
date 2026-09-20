@@ -1,4 +1,4 @@
-"""保留既有控件树的 TUI 页面构建和独立控件。"""
+"""TUI 页面布局、公共控件与确认弹窗。"""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from textual.widgets import (
     Static,
     TabPane,
 )
+from textual.widgets.button import ButtonVariant
 
 from acprof.tui.i18n import LANGUAGE_OPTIONS
 
@@ -88,11 +89,15 @@ class ConfirmActionScreen(ModalScreen[bool]):
     }
     """
 
-    def __init__(self, title: str, message: str, confirm_label: str = "确认"):
+    def __init__(
+        self, title: str, message: str, confirm_label: str = "确认", *,
+        variant: ButtonVariant = "primary",
+    ):
         super().__init__()
         self.dialog_title = title
         self.message = message
         self.confirm_label = confirm_label
+        self.confirm_variant = variant
 
     def compose(self) -> ComposeResult:
         tr = self.app.tr
@@ -104,7 +109,7 @@ class ConfirmActionScreen(ModalScreen[bool]):
                 yield Button(
                     tr(self.confirm_label),
                     id="confirm-yes",
-                    variant="warning",
+                    variant=self.confirm_variant,
                 )
 
     @on(Button.Pressed, "#confirm-yes")
@@ -131,9 +136,11 @@ class LogPanel(Vertical):
 
 def compose_run_tab(app: AcprofTui) -> ComposeResult:
     with TabPane("实验配置", id="run-tab"):
+        with Vertical(classes="page-header"):
+            yield app._localized_widget(Static("配置实验", id="run-title", classes="page-title"))
+            yield app._localized_widget(Static("", id="config-summary", classes="page-summary", markup=False))
         with ContentSwitcher(initial="run-form", id="experiment-pages"):
             with VerticalScroll(id="run-form", classes="pane-scroll"):
-                yield app._localized_widget(Static("配置实验", classes="section-title"))
                 with Grid(classes="form-grid"):
                     yield app._localized_widget(Label("模型 ID"))
                     yield app._localized_widget(Input(
@@ -196,8 +203,6 @@ def compose_run_tab(app: AcprofTui) -> ComposeResult:
                         classes="config-control",
                     ))
 
-                yield app._localized_widget(Static("", id="config-summary", markup=False))
-
                 with app._localized_widget(Collapsible(
                     title="完整命令（自动更新）",
                     collapsed=True,
@@ -213,7 +218,6 @@ def compose_run_tab(app: AcprofTui) -> ComposeResult:
                     ))
 
             with VerticalScroll(id="advanced-form", classes="pane-scroll"):
-                yield app._localized_widget(Static("采集参数", classes="section-title"))
                 with Grid(classes="form-grid"):
                     yield app._localized_widget(Label("Batch size"))
                     yield app._localized_widget(Input(
@@ -414,8 +418,8 @@ def compose_run_tab(app: AcprofTui) -> ComposeResult:
 
 def compose_monitor_tab(app: AcprofTui) -> ComposeResult:
     with TabPane("运行监控", id="monitor-tab"):
-        with Vertical(classes="pane-scroll"):
-            with Grid(id="status-grid"):
+        with Vertical(id="monitor-panel"):
+            with Grid(id="status-grid", classes="page-header"):
                 yield app._localized_widget(Static("阶段", classes="status-label"))
                 yield app._localized_widget(Static("等待", id="status-stage", markup=False))
                 yield app._localized_widget(Static("运行时间", classes="status-label"))
@@ -448,7 +452,7 @@ def compose_monitor_tab(app: AcprofTui) -> ComposeResult:
                     show_cursor=False,
                 ))
             with LogPanel(id="log-panel"):
-                with Horizontal(id="log-toolbar"):
+                with Horizontal(id="log-toolbar", classes="action-bar"):
                     yield app._localized_widget(Static("日志", id="log-title", markup=False))
                     yield app._localized_widget(Button("复制选区", id="copy-log", classes="log-tool"))
                     yield app._localized_widget(Button("回到最新", id="follow-log", classes="log-tool"))
@@ -472,35 +476,37 @@ def compose_monitor_tab(app: AcprofTui) -> ComposeResult:
 
 def compose_plot_tab(app: AcprofTui) -> ComposeResult:
     with TabPane("绘图工具", id="plot-tab"):
-        with VerticalScroll(classes="pane-scroll"):
-            yield app._localized_widget(Static("已有结果", classes="section-title"))
+        with Vertical(classes="page-header"):
+            yield app._localized_widget(Static("绘图工具", classes="page-title"))
+            yield app._localized_widget(Static(
+                "读取结果 CSV，查看摘要或生成图表。", classes="page-summary", markup=False,
+            ))
+        with VerticalScroll(id="plot-body", classes="pane-scroll"):
             with Grid(classes="form-grid tool-form-grid"):
                 yield app._localized_widget(Label("结果 CSV"))
                 yield app._localized_widget(Input(app._saved_settings.last_result_csv, id="result-csv"))
-            with Horizontal(classes="button-row"):
-                yield app._localized_widget(Button("读取摘要", id="summarize-results"))
-                yield app._localized_widget(Button("生成图表", id="plot-results", variant="primary"))
             yield app._localized_widget(Static(
                 "选择或完成一次实验后，这里会显示结果摘要。",
                 id="result-summary",
                 markup=False,
             ))
+        with Horizontal(id="plot-actions", classes="action-bar"):
+            yield app._localized_widget(Button("读取摘要", id="summarize-results"))
+            yield app._localized_widget(Button("生成图表", id="plot-results", variant="primary"))
 
 
 def compose_reports_tab(app: AcprofTui) -> ComposeResult:
     with TabPane("统计报告", id="reports-tab"):
+        with Vertical(classes="page-header"):
+            yield app._localized_widget(Static("统计报告", classes="page-title"))
+            yield app._localized_widget(Static(
+                "CSV / 目录：计算统计；JSON：查看报告。采集结束后操作。",
+                id="report-status", classes="page-summary", markup=False,
+            ))
         with Vertical(id="report-panel"):
             yield app._localized_widget(Input(
                 app._saved_settings.last_result_csv, id="report-source", classes="report-control",
                 placeholder="实验目录、结果 CSV 或报告 JSON 路径",
-            ))
-            with Horizontal(id="report-actions"):
-                yield app._localized_widget(Button("当前结果", id="report-current", classes="report-control"))
-                yield app._localized_widget(Button("计算统计", id="report-calculate", classes="report-control", variant="primary"))
-                yield app._localized_widget(Button("查看报告", id="report-open", classes="report-control"))
-            yield app._localized_widget(Static(
-                "CSV / 目录：计算统计；JSON：查看报告。采集结束后操作。",
-                id="report-status", markup=False,
             ))
             yield app._localized_widget(ResizableDataTable(
                 id="report-table", cursor_type="row", zebra_stripes=True, fixed_columns=1))
@@ -508,16 +514,22 @@ def compose_reports_tab(app: AcprofTui) -> ComposeResult:
                 "表格可滚动；选择一行查看口径与数据来源。",
                 id="report-detail", markup=False,
             ))
+        with Horizontal(id="report-actions", classes="action-bar"):
+            yield app._localized_widget(Button("当前结果", id="report-current", classes="report-control"))
+            yield Static("", classes="action-spacer")
+            yield app._localized_widget(Button("查看报告", id="report-open", classes="report-control"))
+            yield app._localized_widget(Button("计算统计", id="report-calculate", classes="report-control", variant="primary"))
 
 
 def compose_profile_tab(app: AcprofTui) -> ComposeResult:
     with TabPane("补采工具", id="profile-tab"):
-        with VerticalScroll(classes="pane-scroll"):
-            yield app._localized_widget(Static("已有结果补采", classes="section-title"))
+        with Vertical(classes="page-header"):
+            yield app._localized_widget(Static("已有结果补采", classes="page-title"))
             yield app._localized_widget(Static(
                 "补采计划与执行日志会显示在“运行监控”页。",
-                classes="page-hint", markup=False,
+                classes="page-summary", markup=False,
             ))
+        with VerticalScroll(id="profile-body", classes="pane-scroll"):
             with Grid(classes="form-grid tool-form-grid"):
                 yield app._localized_widget(Label("结果目录"))
                 yield app._localized_widget(Input(app._saved_settings.last_result_dir, id="result-dir"))
@@ -537,19 +549,20 @@ def compose_profile_tab(app: AcprofTui) -> ComposeResult:
                             classes="option-checkbox profile-tool",
                             tooltip=tooltip,
                         ))
-            with Horizontal(classes="button-row"):
-                yield app._localized_widget(Button("补采计划（dry-run）", id="profile-dry-run"))
-                yield app._localized_widget(Button("执行补采", id="profile-run", variant="warning"))
+        with Horizontal(id="profile-actions", classes="action-bar"):
+            yield app._localized_widget(Button("补采计划（dry-run）", id="profile-dry-run"))
+            yield app._localized_widget(Button("执行补采", id="profile-run", variant="warning"))
 
 
 def compose_settings_tab(app: AcprofTui) -> ComposeResult:
     with TabPane("设置", id="settings-tab"):
-        with VerticalScroll(classes="pane-scroll"):
-            yield app._localized_widget(Static("显示与日志", classes="section-title"))
+        with Vertical(classes="page-header"):
+            yield app._localized_widget(Static("显示与日志", classes="page-title"))
             yield app._localized_widget(Static(
                 "修改立即生效，点击保存后下次启动沿用。",
-                classes="page-hint", markup=False,
+                id="settings-status", classes="page-summary", markup=False,
             ))
+        with VerticalScroll(id="settings-body", classes="pane-scroll"):
             with Grid(classes="form-grid"):
                 yield app._localized_widget(Label("界面语言"))
                 yield app._localized_select(
@@ -580,7 +593,6 @@ def compose_settings_tab(app: AcprofTui) -> ComposeResult:
                     id="ui-command-bar", classes="ui-preference option-checkbox",
                 ))
             yield app._localized_widget(Static("", id="settings-location", classes="page-hint", markup=False))
-        yield app._localized_widget(Static("", id="settings-status", markup=False))
         with Horizontal(id="settings-actions", classes="action-bar"):
             yield app._localized_widget(Button("恢复界面默认", id="restore-ui-defaults"))
             yield app._localized_widget(Button("保存设置", id="save-ui-settings", variant="primary"))
@@ -592,8 +604,17 @@ def compose_images_tab(app: AcprofTui) -> ComposeResult:
     )
 
     with TabPane("镜像管理", id="images-tab"):
+        with Vertical(id="image-header", classes="page-header"):
+            yield app._localized_widget(Static("镜像管理", classes="page-title"))
+            yield app._localized_widget(Static(IMAGE_HINT, id="image-status", classes="page-summary", markup=False))
         with Vertical(id="image-panel"):
             with Horizontal(id="image-filters"):
+                yield app._localized_select(
+                    (("AC-Prof 镜像", "acprof"), ("全部镜像", "all"), ("模型相关", "models"),
+                     ("公共依赖", "runtime"), ("公共基础", "base"), ("CPU", "cpu"),
+                     ("CUDA 12.4", "cu124"), ("CUDA 12.8", "cu128"), ("无标签", "untagged")),
+                    value="acprof", allow_blank=False, id="image-scope", classes="image-control",
+                )
                 yield app._localized_widget(Input(
                     placeholder="搜索模型、依赖、标签或镜像 ID", id="image-search", classes="image-control",
                 ))
@@ -602,22 +623,6 @@ def compose_images_tab(app: AcprofTui) -> ComposeResult:
                         label, id="image-view-" + view, classes="image-control image-view-button",
                         variant="primary" if view == "tree" else "default",
                     ))
-            with Horizontal(id="image-actions"):
-                yield app._localized_select(
-                    (("AC-Prof 镜像", "acprof"), ("全部镜像", "all"), ("模型相关", "models"),
-                     ("公共依赖", "runtime"), ("公共基础", "base"), ("CPU", "cpu"),
-                     ("CUDA 12.4", "cu124"), ("CUDA 12.8", "cu128"), ("无标签", "untagged")),
-                    value="acprof", allow_blank=False, id="image-scope", classes="image-control",
-                )
-                for label, widget_id in (("勾选/取消", "image-toggle"),
-                                         ("选择同模型", "image-model"), ("清空选择", "image-clear"),
-                                         ("删除所选", "image-delete")):
-                    yield app._localized_widget(Button(
-                        label, id=widget_id, classes="image-control",
-                        variant="error" if widget_id == "image-delete" else "default",
-                        disabled=True,
-                    ))
-            yield app._localized_widget(Static(IMAGE_HINT, id="image-status", markup=False))
             with ImageWorkspace(id="image-workspace"):
                 with ContentSwitcher(initial="image-tree-view", id="image-browser"):
                     with Vertical(id="image-tree-view"):
@@ -632,3 +637,11 @@ def compose_images_tab(app: AcprofTui) -> ComposeResult:
                         yield app._localized_widget(table)
                 yield app._localized_widget(ImageDetailResizeHandle(id="image-detail-resize", classes="image-control"))
                 yield ImageDetailPanel(id="image-detail-scroll")
+        with Horizontal(id="image-actions", classes="action-bar"):
+            for label, widget_id in (("勾选/取消", "image-toggle"),
+                                     ("选择同模型", "image-model"), ("清空选择", "image-clear")):
+                yield app._localized_widget(Button(label, id=widget_id, classes="image-control", disabled=True))
+            yield Static("", classes="action-spacer")
+            yield app._localized_widget(Button(
+                "删除所选", id="image-delete", classes="image-control", variant="error", disabled=True,
+            ))

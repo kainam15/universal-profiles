@@ -398,6 +398,7 @@ class AcprofTui(BarCursorApp):
         self.ui_preferences = preferences
         self._apply_ui_preferences()
         self._set_text(self.query_one('#settings-status', Static), '已应用 · 点击保存设置可在下次启动时沿用')
+        self.query_one('#settings-status').set_classes('page-summary stage-running')
 
     @on(Button.Pressed, "#restore-ui-defaults")
     def restore_ui_defaults(self) -> None:
@@ -413,6 +414,7 @@ class AcprofTui(BarCursorApp):
         self.ui_preferences = defaults
         self._apply_ui_preferences()
         self._set_text(self.query_one('#settings-status', Static), '界面已恢复默认 · 点击保存设置可保留')
+        self.query_one('#settings-status').set_classes('page-summary stage-running')
 
     def _save_settings(self, *, remember_run: bool) -> None:
         if self._is_busy():
@@ -432,6 +434,7 @@ class AcprofTui(BarCursorApp):
         except (OSError, ValueError, TuiConfigError) as exc:
             self.notify(error_message(exc), title="设置未保存", severity="error")
             self._set_text(self.query_one('#settings-status', Static), '保存失败 · 请检查配置或文件权限')
+            self.query_one('#settings-status').set_classes('page-summary stage-error')
             return
         self._saved_settings = settings
         self._settings_warning = ""
@@ -439,6 +442,7 @@ class AcprofTui(BarCursorApp):
         message = "已记住当前实验配置" if remember_run else "界面设置已保存"
         if not remember_run:
             self._set_text(self.query_one('#settings-status', Static), message)
+            self.query_one('#settings-status').set_classes('page-summary stage-success')
         self.notify(message, timeout=3)
 
     @on(Button.Pressed, "#save-ui-settings")
@@ -458,6 +462,7 @@ class AcprofTui(BarCursorApp):
         pages = self.query_one("#experiment-pages", ContentSwitcher)
         show_advanced = pages.current != "advanced-form"
         pages.current = "advanced-form" if show_advanced else "run-form"
+        self._set_text(self.query_one("#run-title", Static), "采集参数" if show_advanced else "配置实验")
         self._set_text(
             self.query_one("#open-run-settings", Button),
             "返回基本配置" if show_advanced else "高级参数", "label",
@@ -1020,6 +1025,7 @@ class AcprofTui(BarCursorApp):
 
     _STAGE_CSS_CLASS = {
         "等待": "stage-idle",
+        "服务就绪": "stage-success",
         "已完成": "stage-success",
         "探测完成": "stage-success",
         "找到最低可用内存": "stage-success",
@@ -1414,6 +1420,7 @@ class AcprofTui(BarCursorApp):
                 "将先向整个采集进程组发送 SIGINT，允许容器和监控器清理；"
                 "超时后才会升级为 SIGTERM。已写入的 case 结果不会删除。",
                 "终止任务",
+                variant="error",
             ),
             self._confirmed_stop,
         )
@@ -2137,6 +2144,7 @@ class AcprofTui(BarCursorApp):
                     format_command(command, project_dir=PROJECT_DIR),
                 )),
                 "执行补采",
+                variant="warning",
             ),
             self._confirmed_launch,
         )

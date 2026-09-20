@@ -58,6 +58,7 @@ def translate(source: str, language: str) -> str:
 
 
 ENGLISH: dict[str, str] = {
+    "读取结果 CSV，查看摘要或生成图表。": "Read a result CSV to review the summary or generate plots.",
     "镜像管理": "Images",
     "镜像树": "Tree",
     "镜像依赖": "Image tree",

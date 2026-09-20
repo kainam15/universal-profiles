@@ -44,7 +44,10 @@ Tab.-active { color: $accent; text-style: bold; }
 Tabs:focus Tab.-active { color: $background; background: $accent; }
 Underline { color: $accent; }
 
-.pane-scroll { padding: 0 2; }
+.page-header { height: auto; padding: 0 2; margin-bottom: 1; }
+.page-title { height: 1; color: $foreground; text-style: bold; }
+.page-summary { height: auto; max-height: 2; color: $text-muted; overflow-y: auto; }
+.pane-scroll { padding: 0 2; height: 1fr; }
 .section-title {
     text-style: bold;
     color: $text;
@@ -75,14 +78,7 @@ SelectCurrent { background: $surface; border: tall $panel; }
 Select:focus > SelectCurrent { border: tall $accent; }
 
 #preset-hint { height: 3; content-align: left middle; color: $text-muted; }
-#config-summary {
-    height: auto;
-    min-height: 2;
-    border-left: thick $accent;
-    padding: 0 1;
-    margin: 1 0;
-    color: $text-muted;
-}
+#config-summary { color: $text-muted; }
 #command-details { height: auto; margin-bottom: 1; border: none; background: $surface; padding: 0; }
 #command-preview { height: auto; max-height: 8; overflow-y: auto; padding: 0 1; }
 #science-note { height: auto; color: $text-muted; margin-top: 1; }
@@ -103,46 +99,43 @@ Button {
     background: transparent;
     background-tint: transparent;
     tint: transparent;
-    border: round $secondary;
-    color: $text;
+    border: round $foreground 60%;
+    color: $foreground;
     text-style: none;
 }
 Button.-primary { text-style: bold; }
 Button:hover, Button:focus {
-    border: round $accent;
-    color: $accent;
+    border: round $foreground;
+    color: $foreground;
     text-style: bold underline;
 }
-Button.-primary, Button.-primary:focus {
+Button.-primary, Button.-primary:focus, Button.-primary:hover {
     border: round $primary;
     color: $primary;
 }
-Button.-success, Button.-success:focus {
+Button.-success, Button.-success:focus, Button.-success:hover {
     border: round $success;
     color: $success;
 }
-Button.-warning, Button.-warning:focus {
+Button.-warning, Button.-warning:focus, Button.-warning:hover {
     border: round $warning;
     color: $warning;
 }
-Button.-error, Button.-error:focus {
+Button.-error, Button.-error:focus, Button.-error:hover {
     border: round $error;
     color: $error;
 }
-Button.-primary:hover, Button.-success:hover, Button.-warning:hover, Button.-error:hover {
-    border: round $foreground;
-    color: $foreground;
-}
 Button.-active { text-style: bold underline; }
 Button:disabled, Button:disabled:hover, Button:disabled:focus, Button:disabled.-active {
-    border: round $secondary;
-    color: $text;
+    border: round $ui-disabled;
+    color: $ui-disabled;
     text-style: none;
-    opacity: 45%;
+    opacity: 65%;
 }
 .action-bar Button { margin-left: 1; }
 #open-run-settings { margin-left: 0; width: 18; }
-#action-spacer { width: 1fr; }
+#action-spacer, .action-spacer { width: 1fr; }
+.action-bar Button:first-child { margin-left: 0; }
 .button-row { height: auto; margin: 1 0; }
 .button-row Button { margin-right: 1; }
 
@@ -151,6 +144,10 @@ Button:disabled, Button:disabled:hover, Button:disabled:focus, Button:disabled.-
 .option-checkbox > .toggle--button { color: $text-muted; background: $panel; }
 .option-checkbox.-on > .toggle--button { color: $background; background: $accent; }
 .option-checkbox:focus { border: tall $accent; }
+.option-checkbox:disabled { color: $ui-disabled; }
+.option-checkbox:disabled > .toggle--button { color: $ui-disabled; background: $panel; }
+Input:disabled { color: $ui-disabled; border: tall $ui-disabled; }
+Select:disabled > SelectCurrent { color: $ui-disabled; border: tall $ui-disabled; }
 #profile-tools {
     grid-size: 2;
     grid-columns: 1fr 1fr;
@@ -160,8 +157,11 @@ Button:disabled, Button:disabled:hover, Button:disabled:focus, Button:disabled.-
 #profile-tools .option-checkbox { width: 1fr; margin-right: 0; }
 #profile-tools .option-checkbox > .toggle--button { color: $panel; }
 #profile-tools .option-checkbox.-on > .toggle--button { color: $background; }
+#profile-tools .option-checkbox:disabled > .toggle--button { color: $ui-disabled; background: $panel; }
 .settings-options { height: auto; margin: 1 0; }
-#settings-status { height: auto; min-height: 1; padding: 0 2; color: $accent; }
+#settings-status.stage-running { color: $accent; }
+#settings-status.stage-success { color: $success; }
+#settings-status.stage-error { color: $error; }
 #saved-run-summary { height: auto; border-left: thick $accent; padding: 0 1; margin-bottom: 1; }
 
 #status-grid {
@@ -169,24 +169,24 @@ Button:disabled, Button:disabled:hover, Button:disabled:focus, Button:disabled.-
     grid-columns: 12 1fr 12 1fr;
     grid-gutter: 0 1;
     height: auto;
-    padding: 0 1;
-    margin-top: 1;
+    padding: 0 2;
+    margin: 0;
     background: $surface;
 }
 #status-grid .status-label { color: $text-muted; }
 #status-detail { height: 1; text-overflow: ellipsis; }
-#case-progress { margin-top: 1; }
-#log-panel { height: 1fr; min-height: 5; padding: 0; }
-#log-toolbar { height: 3; }
+#case-progress { margin: 1 2 0 2; }
+#log-panel { width: 100%; height: 1fr; min-height: 5; padding: 0; }
+#log-toolbar { height: 4; }
 #log-title { width: 1fr; height: 3; content-align: left middle; text-style: bold; color: $accent; }
 #log-toolbar Button {
     min-width: 12;
     padding: 0;
     margin-left: 1;
 }
-#log-hint { height: 1; color: $text-muted; text-overflow: ellipsis; }
+#log-hint { height: 1; margin: 0 2; color: $text-muted; text-overflow: ellipsis; }
 #restore-log { display: none; }
-#log-panel.-maximized { padding: 0 1; }
+#log-panel.-maximized { padding: 0; }
 #log-panel.-maximized #expand-log { display: none; }
 #log-panel.-maximized #restore-log { display: block; }
 #run-log {
@@ -194,25 +194,22 @@ Button:disabled, Button:disabled:hover, Button:disabled:focus, Button:disabled.-
     min-height: 3;
     border: round $panel;
     padding: 0 1;
+    margin: 0 2;
     background: $surface;
 }
 #run-log:focus { border: round $accent; }
 #run-log .text-area--selection { background: $accent; color: $background; }
 #result-summary { height: auto; min-height: 5; background: $surface; padding: 1; margin-top: 1; }
 #report-panel { padding: 0 2; height: 1fr; }
-#report-actions { height: 3; }
-#report-actions Button { margin-right: 1; min-width: 14; }
-#report-status { height: auto; max-height: 3; margin: 1 0; color: $text-muted; }
 #report-table { height: 1fr; min-height: 3; }
 #report-detail { height: auto; max-height: 4; margin-top: 1; color: $text-muted; overflow-y: auto; }
 
-#image-panel { padding: 0 1; height: 1fr; }
-#image-filters, #image-actions { height: 3; }
-#image-scope { width: 18; margin-right: 1; }
-#image-actions Button { min-width: 7; width: auto; margin-right: 1; padding: 0 1; }
+#image-panel { padding: 0 2; height: 1fr; }
+#image-filters { height: 3; }
+#image-scope { width: 24; margin-right: 1; }
+#image-actions Button { min-width: 7; width: auto; padding: 0 1; }
 .image-view-button { min-width: 9; width: auto; padding: 0 1; margin-left: 1; }
 #image-search { width: 1fr; min-width: 10; }
-#image-status { height: auto; max-height: 3; color: $text-muted; overflow-y: auto; }
 #image-workspace { height: 1fr; min-height: 7; overflow: hidden; }
 #image-browser { height: 1fr; min-height: 3; }
 #image-tree-view, #image-table, #image-layer-table { height: 1fr; }
@@ -233,13 +230,13 @@ Button:disabled, Button:disabled:hover, Button:disabled:focus, Button:disabled.-
 #image-detail-scroll CollapsibleTitle { padding: 0; }
 #image-detail-scroll Collapsible > Contents { padding: 1 1 1 3; }
 #image-diagnostics { color: $text-muted; }
-AcprofTui.narrow #image-actions Button { min-width: 7; padding: 0; margin-right: 0; }
-#matrix-board { margin-top: 1; border: none; padding: 0; }
+AcprofTui.narrow #image-actions Button { min-width: 7; padding: 0; }
+#matrix-board { margin: 1 2 0 2; border: none; padding: 0; }
 #matrix-board > Contents { padding: 0 1; }
 #matrix-table { height: auto; max-height: 12; }
 .stage-idle { color: $text-muted; }
 .stage-running { color: $accent; text-style: bold; }
-.stage-measuring { color: $warning; text-style: bold; }
+.stage-measuring { color: $accent; text-style: bold; }
 .stage-success { color: $success; text-style: bold; }
 .stage-error { color: $error; text-style: bold; }
 
@@ -261,10 +258,14 @@ AcprofTui.short #bottom-panel { height: 3; }
 AcprofTui.short #slash-command-bar { height: 3; padding: 0 2; }
 AcprofTui.short #bottom-panel.command-hidden { height: 0; }
 AcprofTui.short .section-title { margin: 0 0 1 0; }
+AcprofTui.short .page-header { margin-bottom: 0; }
 AcprofTui.short #matrix-table { max-height: 3; }
-AcprofTui.short #report-status { margin: 0; }
 AcprofTui.short #report-detail { max-height: 3; margin-top: 0; }
-AcprofTui.short #status-grid { padding: 0 1; margin-top: 0; }
 AcprofTui.short #case-progress { margin-top: 0; }
 AcprofTui.short #matrix-board { margin-top: 0; }
 AcprofTui.short #confirm-dialog { padding: 0 2; }
+/* Keep the image detail groups visible alongside the fixed footer at 80x24. */
+AcprofTui.narrow.short #image-header { layout: horizontal; }
+AcprofTui.narrow.short #image-header .page-title { width: 8; margin-right: 1; }
+AcprofTui.narrow.short #image-status { width: 1fr; }
+AcprofTui.narrow.short #image-detail { margin-bottom: 0; }
