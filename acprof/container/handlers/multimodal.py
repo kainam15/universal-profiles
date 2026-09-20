@@ -13,6 +13,9 @@ import binascii
 import io
 import inspect
 import math
+from pathlib import Path
+import tempfile
+import wave
 from collections.abc import Mapping
 from typing import Any, Dict, Optional
 
@@ -108,6 +111,7 @@ class MultimodalHandler(BaseHandler):
         config = transformers.AutoConfig.from_pretrained(model_source, **source_kwargs)
         model_type = str(config.model_type)
         mode = "generate"
+        model_kwargs = {}
         if task_type == "any-to-any":
             if model_type != "qwen2_5_omni":
                 raise ValueError(
@@ -116,15 +120,16 @@ class MultimodalHandler(BaseHandler):
                 )
             class_name, mode = "Qwen2_5OmniForConditionalGeneration", "omni"
         elif task_type == "audio-text-to-text":
-            class_name = {
-                "qwen2_audio": "Qwen2AudioForConditionalGeneration",
-                "qwen2_5_omni": "Qwen2_5OmniThinkerForConditionalGeneration",
-            }.get(model_type)
-            if class_name is None:
+            from acprof.model_resolution import audio_text_loader
+
+            selection = audio_text_loader(transformers.__version__, config.to_dict())
+            if selection is None:
                 raise ValueError(
                     f"unsupported audio-text-to-text architecture {model_type!r}; "
-                    "expected qwen2_audio or qwen2_5_omni"
+                    f"no native text-output Auto interface in transformers=={transformers.__version__}"
                 )
+            class_name, config_key = selection
+            model_kwargs["config"] = getattr(config, config_key) if config_key else config
         elif task_type == "visual-document-retrieval":
             class_name = {"colpali": "ColPaliForRetrieval", "colqwen2": "ColQwen2ForRetrieval"}.get(model_type)
             if class_name is None:
@@ -137,7 +142,7 @@ class MultimodalHandler(BaseHandler):
             class_name = "AutoModelForImageTextToText"
         model_class = getattr(transformers, class_name, None)
         if model_class is None:
-            raise RuntimeError(f"{class_name} is unavailable; rebuild the multimodal image with transformers==4.57.6")
+            raise RuntimeError(f"{class_name} is unavailable; rebuild the selected locked multimodal environment")
         processor = transformers.AutoProcessor.from_pretrained(model_source, **source_kwargs)
         if task_type == "video-text-to-text" and "videos" not in inspect.signature(processor.__call__).parameters:
             raise ValueError(f"architecture {model_type!r} has no native video processor")
@@ -145,6 +150,7 @@ class MultimodalHandler(BaseHandler):
             model_source, **source_kwargs,
             device_map="cpu" if device == "cpu" else "auto", torch_dtype=dtype,
             **attention_options.get("model_kwargs", {}),
+            **model_kwargs,
             **({"enable_audio_output": True} if mode == "omni" else {}),
         )
         model.eval()
@@ -348,6 +354,11 @@ class MultimodalHandler(BaseHandler):
         ):
             if present and not keys.intersection(inputs):
                 raise ValueError(f"processor discarded the requested {modality} modality")
+        if "audio_base64" in sample and not any(
+            hasattr(inputs.get(key), "shape") and math.prod(inputs[key].shape) > 0
+            for key in ("input_features", "audio_values", "audio_features")
+        ):
+            raise ValueError("processor returned empty audio features")
         return {
             "inputs": inputs, "prompt_length": int(inputs["input_ids"].shape[-1]),
             "actual_input_tokens": actual_input_tokens,
@@ -358,6 +369,38 @@ class MultimodalHandler(BaseHandler):
     def _generation_inputs(self, model_ctx, content, media_kwargs):
         processor = model_ctx["processor"]
         messages = [{"role": "user", "content": content}]
+        if model_ctx["task_type"] == "audio-text-to-text":
+            # A local WAV message is supported by both ProcessorMixin and
+            # native tokenizers (e.g. Mistral), including those without Jinja.
+            # Materialize only during preprocessing; predict reuses tensors.
+            with tempfile.TemporaryDirectory(prefix="acprof-audio-") as directory:
+                path = str(Path(directory) / "input.wav")
+                with wave.open(path, "wb") as wav:
+                    wav.setnchannels(1)
+                    wav.setsampwidth(2)
+                    wav.setframerate(media_kwargs["sampling_rate"])
+                    wav.writeframes((media_kwargs["audio"][0] * 32768).astype("<i2").tobytes())
+                messages[0]["content"] = [
+                    {**item, "path": path} if item["type"] == "audio" else item for item in content
+                ]
+                parameters = inspect.signature(processor.apply_chat_template).parameters
+                options = {"padding": True, "audio_kwargs": {"sampling_rate": media_kwargs["sampling_rate"]}}
+                if "processor_kwargs" in parameters:
+                    processing = {"processor_kwargs": options, "add_generation_prompt": True}
+                elif "chat_template" in parameters:
+                    # Older ProcessorMixin separates media loading from feature
+                    # extraction; both must see the validated sample rate.
+                    processing = {**options, "sampling_rate": media_kwargs["sampling_rate"], "add_generation_prompt": True}
+                else:
+                    # Native tokenizers format their own generation prompt and
+                    # reject Jinja kwargs; the WAV header carries the sample rate.
+                    processing = {}
+                inputs = processor.apply_chat_template(
+                    messages, tokenize=True, return_dict=True, return_tensors="pt", **processing,
+                )
+            if not isinstance(inputs, Mapping):
+                raise ValueError("native audio chat processor must return a tensor mapping")
+            return inputs
         if model_ctx.get("model_type") == "qwen2_5_omni":
             messages.insert(0, {"role": "system", "content": [{"type": "text", "text": _OMNI_SYSTEM_PROMPT}]})
         if not getattr(processor, "chat_template", None):

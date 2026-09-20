@@ -112,6 +112,10 @@ git diff --check
 样例验证真实加载与推理；audio 和 multimodal 在同一作业共享一个 CPU 依赖环境，仍分别执行测试。
 网络在容器测试期间关闭。CI Actions 固定为已核验的 commit SHA，作业只授予仓库读取权限。
 另有 `nlp-transformers560-cpu` 矩阵项运行新版原生架构与图像 processor 测试，避免主机缺少推理依赖的 skip 掩盖环境回归。
+两个 Transformers 版本线均执行 `test_audio_generation_runtime.py`：保存小型原生模型 snapshot，
+再经过共享 Auto 加载、原生音频消息、真实 `generate` 和输出验证；逐参数核对加载权重，防止
+组合模型的前缀处理丢失权重。4.57.6 验证 Voxtral/Qwen2 Audio；5.6.0 另验证 Omni 文本子模型。
+这些随机权重验证接口，不证明完整 checkpoint 的容量、质量或正式 profiling 指标。
 
 本地入口：
 
@@ -121,6 +125,7 @@ git diff --check
 .venv/bin/python scripts/check_runtime.py --family audio --variant cpu --output-dir internal-testing/audio-runtime
 .venv/bin/python scripts/check_runtime.py --profile moss-transformers560 --build-only --output-dir internal-testing/moss-dependencies
 .venv/bin/python scripts/check_runtime.py --profile nlp-transformers560-cpu --test-pattern test_transformers5_runtime.py --output-dir internal-testing/transformers5-runtime
+.venv/bin/python scripts/check_runtime.py --profile multimodal-transformers560-cpu --test-pattern test_audio_generation_runtime.py --output-dir internal-testing/audio-generation-runtime
 .venv/bin/python scripts/render_metric_reference.py --check
 ```
 

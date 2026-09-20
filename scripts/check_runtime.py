@@ -22,7 +22,7 @@ PATTERNS = {
     "diffusion": ("test_diffusion_runtime.py",),
     "structured": ("test_structured_runtime.py",),
     "timeseries": ("test_timeseries_runtime.py",),
-    "multimodal": ("test_multimodal_runtime.py", "test_multimodal_generation_runtime.py"),
+    "multimodal": ("test_multimodal_runtime.py", "test_multimodal_generation_runtime.py", "test_audio_generation_runtime.py"),
 }
 RUNTIME_PATTERNS = {"onnxruntime": ("test_onnx_runtime_optional.py", "test_onnx_tasks_runtime.py",
                                     "test_request_completion.py", "test_onnx_server_runtime.py",

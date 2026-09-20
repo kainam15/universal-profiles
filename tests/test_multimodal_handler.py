@@ -125,15 +125,16 @@ class MultimodalHandlerTests(unittest.TestCase):
             with self.subTest(fps=fps), self.assertRaisesRegex(ValueError, 'fps'):
                 self.handler.preprocess(self.ctx, request)
 
-    def test_audio_uses_native_audio_argument_and_validates_rate(self):
+    def test_audio_uses_native_message_and_validates_rate(self):
         self.ctx.update(task_type='audio-text-to-text', model_type='qwen2_audio')
         self.processor.feature_extractor.sampling_rate = 16000
         self.processor.return_value['input_features'] = np.ones((1, 8, 10))
+        self.processor.apply_chat_template.return_value = self.processor.return_value
         request = {'samples': [{'text': 'Describe the sound.', 'audio_base64': audio_payload(), 'sampling_rate': 16000}]}
         self.handler.preprocess(self.ctx, request)
-        kwargs = self.processor.call_args.kwargs
-        self.assertEqual(kwargs['audio'][0].shape, (160,))
-        self.assertEqual(kwargs['sampling_rate'], 16000)
+        kwargs = self.processor.apply_chat_template.call_args.kwargs
+        self.assertTrue(kwargs['tokenize'])
+        self.processor.assert_not_called()
         request['samples'][0]['sampling_rate'] = 8000
         with self.assertRaisesRegex(ValueError, 'WAV header'):
             self.handler.preprocess(self.ctx, request)
@@ -273,8 +274,11 @@ class MultimodalHandlerTests(unittest.TestCase):
 
     def test_unimplemented_architecture_never_falls_back_to_text_generation(self):
         transformers = types.ModuleType('transformers')
+        transformers.__version__ = '4.57.6'
         transformers.AutoConfig = Mock()
-        transformers.AutoConfig.from_pretrained.return_value = types.SimpleNamespace(model_type='some_custom_model')
+        transformers.AutoConfig.from_pretrained.return_value = types.SimpleNamespace(
+            model_type='some_custom_model', to_dict=lambda: {'model_type': 'some_custom_model'},
+        )
         transformers.AutoProcessor = Mock()
         with patch.dict(sys.modules, {'transformers': transformers}):
             for task in ('any-to-any', 'audio-text-to-text', 'visual-document-retrieval'):

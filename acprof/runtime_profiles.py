@@ -192,7 +192,7 @@ def _native_compatible(task_info: Any, profile: RuntimeProfile) -> bool | None:
     version = _transformers_version(profile.environment)
     if not version:
         return None
-    return supports_transformers_task(version, task_info.pipeline_tag, str(config.get("model_type") or ""))
+    return supports_transformers_task(version, task_info.pipeline_tag, str(config.get("model_type") or ""), config)
 
 
 def profile_for_platform(profile: RuntimeProfile, platform: str) -> RuntimeProfile:

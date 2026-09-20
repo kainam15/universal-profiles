@@ -374,10 +374,6 @@
         "video"
       ],
       "architecture_constraints": {
-        "audio-text-to-text": [
-          "qwen2_audio",
-          "qwen2_5_omni"
-        ],
         "any-to-any": [
           "qwen2_5_omni"
         ],

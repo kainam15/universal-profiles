@@ -111,7 +111,7 @@ jobs:
             python scripts/check_runtime.py --family "$family" --variant cpu --output-dir "evidence/$family" || runtime_check_status=1
           done
           if [ -n "${{ matrix.profile }}" ]; then
-            python scripts/check_runtime.py --profile "${{ matrix.profile }}" --test-pattern test_transformers5_runtime.py --output-dir evidence/transformers5 || runtime_check_status=1
+            python scripts/check_runtime.py --profile "${{ matrix.profile }}" --test-pattern test_transformers5_runtime.py --test-pattern test_audio_generation_runtime.py --output-dir evidence/transformers5 || runtime_check_status=1
           fi
           exit "$runtime_check_status"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

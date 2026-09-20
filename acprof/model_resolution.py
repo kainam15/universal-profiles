@@ -42,7 +42,36 @@ def transformers_support(version: str) -> dict:
     return data["mappings"]
 
 
-def supports_transformers_task(version: str, task: str, model_type: str) -> bool | None:
+def audio_text_loader(version: str, config: dict) -> tuple[str, str | None] | None:
+    """Select a native text-output Auto interface, shared by preflight and load.
+
+    Composite models may expose a separately registered multimodal text head.
+    Select that head without instantiating speech synthesis components. Never
+    select a plain language submodel, which would discard the audio encoder.
+    """
+    mappings = transformers_support(version)
+    model_type = config.get("model_type")
+    for operation, auto_class in (
+        ("SEQ_TO_SEQ_CAUSAL_LM", "AutoModelForSeq2SeqLM"),
+        ("IMAGE_TEXT_TO_TEXT", "AutoModelForImageTextToText"),
+    ):
+        if model_type in mappings.get(f"MODEL_FOR_{operation}_MAPPING_NAMES", {}):
+            return auto_class, None
+    if model_type not in mappings.get("MODEL_FOR_MULTIMODAL_LM_MAPPING_NAMES", {}):
+        return None
+    multimodal = mappings.get("MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES", {})
+    text_heads = [key for key, value in config.items()
+                  if isinstance(value, dict) and value.get("model_type") in multimodal]
+    if len(text_heads) == 1:
+        return "AutoModelForImageTextToText", text_heads[0]
+    return None
+
+
+def supports_transformers_task(
+    version: str, task: str, model_type: str, model_config: dict | None = None,
+) -> bool | None:
+    if task == "audio-text-to-text" and model_type:
+        return audio_text_loader(version, model_config or {"model_type": model_type}) is not None
     if not model_type or task not in _TASK_MAPPINGS:
         return None
     mappings = transformers_support(version)
@@ -66,7 +95,7 @@ def resolve_model_interface(task_info: Any) -> dict:
     if backend in {"transformers_model", "transformers_pipeline", "sentence_transformers", "cross_encoder"}:
         # Unknown ecosystem tags may still wrap a registered native checkpoint;
         # accept actual native metadata, never an unrelated task tag alone.
-        native = any(supports_transformers_task(version, task_info.pipeline_tag, str(config.get("model_type", "")))
+        native = any(supports_transformers_task(version, task_info.pipeline_tag, str(config.get("model_type", "")), config)
                      for version in ("4.57.6", "5.6.0"))
         if library not in {"", "unknown", "transformers", "sentence-transformers", "timm"} and not native and extension.adapter == "family-default":
             raise ValueError(f"library {library!r} has no shared {backend} interface; select a registered backend")

@@ -112,6 +112,13 @@ CPU/CUDA 平台切换保留所选版本线。该候选选择目前面向 Transfo
 Sentence Transformers/CrossEncoder 继续使用其既有 4.57.6 环境；自定义 `auto_map` 由扩展与容器验证。
 Auto 中存在类不保证 processor、pipeline、dtype 或所有 profiler 兼容。
 
+`audio-text-to-text` 的预检与容器加载共用 `model_resolution.audio_text_loader`，依据相同版本的
+Auto 注册表选择 `AutoModelForSeq2SeqLM` 或 `AutoModelForImageTextToText`。对于组合模型，
+可选择 config 中唯一已注册的多模态文本子模型；不会抽取普通语言模型而丢失音频编码器。
+例如 Voxtral、Qwen2 Audio 使用 4.57.6 的共享 Seq2Seq Auto 接口；Qwen2.5 Omni 的文本子模型
+通过 5.6.0 的 Auto 接口加载，不实例化 Talker。没有匹配或子模型选择有歧义时拒绝，
+不轮流尝试加载模型类。原生架构的候选资格不再由音频模型名称名单决定。
+
 更新版本时，用 [`export_transformers_support.py`](../scripts/export_transformers_support.py) 对固定 tag 的
 `src/transformers/models/auto/modeling_auto.py` 执行受限 AST 解析，记录源码 URL/SHA256：
 
@@ -674,7 +681,7 @@ CV 可使用 `--workload-spec` 指定图片、视频帧、候选标签、姿态�
 
 | Hugging Face 任务 | 后端 / 任务族 | 适配范围与默认输入尺度 |
 | --- | --- | --- |
-| `audio-text-to-text` | Transformers / `multimodal` | Qwen2 Audio、Qwen2.5 Omni Thinker、MOSS-Transcribe-Diarize；真实语音＋文字；1、2、5、10 秒 |
+| `audio-text-to-text` | Transformers / `multimodal` | 原生 Auto 文本生成模型及其音频 chat processor，如 Voxtral、Qwen2 Audio、Qwen2.5 Omni Thinker；MOSS 保留独立 adapter；真实语音＋文字；1、2、5、10 秒 |
 | `image-text-to-text` | Transformers / `multimodal` | `AutoModelForImageTextToText` 支持且带 chat template 的原生模型；224、336、448 像素输入边长 |
 | `image-text-to-image` | Diffusers / `diffusion` | 原生同时接收 `image` 和 `prompt` 的图像编辑／Img2Img pipeline；128–512 像素输出边长 |
 | `image-text-to-video` | Diffusers / `diffusion` | 原生同时接收图像和文本的 CogVideoX、Wan 等 I2V pipeline；方形帧，默认固定 17 帧 |
@@ -683,6 +690,21 @@ CV 可使用 `--workload-spec` 指定图片、视频帧、候选标签、姿态�
 | `video-text-to-text` | Transformers / `multimodal` | 同时支持视频 processor 和图文生成 Auto 类的模型；2、4、8 帧，固定 2 FPS |
 | `visual-document-retrieval` | Transformers / `multimodal` | ColPali、ColQwen2；每次编码一个 query 和一页文档，再计算 MaxSim 分数 |
 | `any-to-any` | Transformers / `multimodal` | Qwen2.5 Omni 的文字／图像／音频／视频输入 → 文字＋音频输出；默认输入为语音＋文字 |
+
+共享音频输入先校验单声道 PCM WAV、采样率和处理器长度上限，再把音频与文字一起交给
+`processor.apply_chat_template(tokenize=True, return_dict=True)`。音频采用临时本地 WAV 消息，
+可同时供通用 `ProcessorMixin` 和原生 tokenizer 消费；临时文件在预处理结束或异常时删除，
+`predict` 只复用张量执行 `generate`。模板及 processor 参数按方法公开签名传递，
+不要求所有原生 processor 都有 Jinja `chat_template`，不把已生成的音频模板再当纯文本编码。
+返回值必须包含 `input_ids` 和非空音频特征；输出继续通过既有文本生成证据与 `validate_output` 验证。
+
+实现参考官方 [Auto 注册表](https://github.com/huggingface/transformers/blob/v5.6.0/src/transformers/models/auto/modeling_auto.py)、
+[Voxtral processor](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/models/voxtral/processing_voxtral.py)
+和 [mistral-common](https://github.com/mistralai/mistral-common)。沿用上游 Apache-2.0 的原生接口，
+不引入另一套推理引擎；在 4.57.6 多模态和 5.6.0 共享环境固定 `mistral-common[audio]==1.11.7`，
+其传递依赖进入 CPU/cu124/cu128 的精确锁，已有包不随之升级。额外 WAV 物化和特征提取计入
+预处理，不进入仅推理计时。架构能加载仍不表示设备容量足够，例如 Voxtral-24B 的完整权重
+不适合在 8 GB 显存上按当前半精度默认设置运行；量化与 offload 不是本次新增能力。
 
 实际 Hub 标签 `image-to-image`、`image-to-video` 也会接入 Diffusers 适配。显式的 `image-text-to-image`／`image-text-to-video` 任务要求模型同时接收文字和图像条件；`image-to-video` 也可使用无文本的原生 pipeline。模型如需要非方形输出、更大的分辨率、不同帧数或额外组件，需要满足其自身约束；仅采用上述官方原生 pipeline 转换，不执行 Diffusers 自定义远程代码。
 
