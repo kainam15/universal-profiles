@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from acprof.artifacts import atomic_write_json
 from acprof.result_csv import expected_measurements, read_result_csv
+from acprof.runtime_settings import runtime_environment
 
 
 RUN_STATE_NAME = "run_state.json"
@@ -62,6 +63,9 @@ def run_options(args) -> dict:
     inherited = ("AUTO_WARMUP_REQUESTS", "SLOW_LATENCY_THRESHOLD_S", "IDLE_DEBUG_TRACE_INTERVAL_S",
                  "DEVICE_INDEX", "CUDA_VISIBLE_DEVICES", "OMP_NUM_THREADS", "MKL_NUM_THREADS")
     options["measurement_environment"] = {name: os.environ.get(name) for name in inherited}
+    # New options only enter pre-execution identity when explicitly requested.
+    # Absent defaults retain the old serialized options; no observed values enter here.
+    options["measurement_environment"].update(runtime_environment())
     if options.get("workload_spec"):
         path = Path(options["workload_spec"]).expanduser().resolve()
         options["workload_spec"] = str(path)

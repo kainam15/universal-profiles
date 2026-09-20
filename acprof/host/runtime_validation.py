@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from acprof.container.runtime_validate import RESULT_PREFIX
+from acprof.runtime_settings import runtime_docker_env_args
 
 
 def validate_runtime(
@@ -55,6 +56,8 @@ def validate_runtime(
                 "-e", f"RUNTIME_BACKEND={task_info.runtime_backend}",
                 "-e", f"USE_GPU={int(mode == 'on')}",
                 "-e", f"TORCH_NUM_THREADS={max(cpu_list)}",
+                "-e", f"ACPROF_REQUEST_TIMEOUT_S={timeout_seconds:g}",
+                *runtime_docker_env_args(),
                 *hf_offline_docker_env_args(),
             ]
             if mode == "on":

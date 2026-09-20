@@ -16,12 +16,16 @@ def main(argv=None):
     parser.add_argument("--metrics", action="store_true", help="输出指标登记表 JSON")
     parser.add_argument("--require-complete", action="store_true", help="要求有 complete 状态及完整计划")
     parser.add_argument("--require-ok", action="store_true", help="要求所有正式行成功且至少有一行")
+    parser.add_argument("--compare", type=Path, help="只读比较另一组结果的输入、资源、质量约束与测量口径")
+    parser.add_argument("--require-comparable", action="store_true", help="要求 --compare 的全部比较条件已知且一致")
     args = parser.parse_args(argv)
     if args.metrics:
         print(json.dumps([metric.to_dict() for metric in METRICS.values()], ensure_ascii=False, indent=2))
         return 0
     if args.source is None:
         parser.error("请提供结果目录或 CSV")
+    if args.require_comparable and args.compare is None:
+        parser.error("--require-comparable 需要 --compare")
     report = audit_result(args.source)
     passed = report["valid"]
     if args.require_complete:
@@ -29,6 +33,12 @@ def main(argv=None):
     if args.require_ok:
         counts = report["counts"]
         passed = passed and counts["formal_ok"] > 0 and counts["formal_ok"] == counts["rows"] - counts["warmup"]
+    if args.compare is not None:
+        from acprof.analysis.comparison import compare_results
+        report["comparison"] = compare_results(args.source, args.compare)
+        passed = passed and report["comparison"]["valid"]
+        if args.require_comparable:
+            passed = passed and report["comparison"]["status"] == "compatible"
     report["accepted"] = bool(passed)
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False))
@@ -41,6 +51,10 @@ def main(argv=None):
             print(f"[{issue['severity']}] {issue['message']}")
         if report["missing_metrics"]:
             print(f"{len(report['missing_metrics'])} 个数值字段存在缺失；使用 --json 查看有证据支持的原因。")
+        if "comparison" in report:
+            print(f"比较条件：{report['comparison']['status']}；不表示模型质量已验证。")
+            for name, condition in report["comparison"]["conditions"].items():
+                print(f"  {name}: {condition['status']}")
     return 0 if passed else 1
 
 

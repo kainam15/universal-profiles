@@ -278,6 +278,7 @@ def _probe_memory_candidate(
             image_info=image_info,
             container_name=container_name,
             log_prefix="[largest-probe]",
+            request_timeout_seconds=timeout_seconds,
         )
         phase = "request"
         print("[largest-probe] Running one largest-scale request...")

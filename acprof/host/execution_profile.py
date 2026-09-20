@@ -281,6 +281,10 @@ def _without_compute_thread_env(cmd: Sequence[str]) -> List[str]:
                 continue
         filtered.append(value)
         index += 1
+    # The old quota-derived profiler default is removed above. An explicit
+    # legacy request must still match the normal server, just like generic settings.
+    if filtered and 'TORCH_NUM_THREADS' in os.environ:
+        filtered = _docker_env(filtered, 'TORCH_NUM_THREADS', os.environ['TORCH_NUM_THREADS'])
     return filtered
 
 

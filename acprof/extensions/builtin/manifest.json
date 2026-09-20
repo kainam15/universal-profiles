@@ -4,6 +4,7 @@
     {
       "extension_id": "torch-nlp",
       "family": "nlp",
+      "workload_entrypoint": "acprof.workloads.nlp:NLPWorkloadGenerator",
       "runtime": "torch",
       "backends": [
         "transformers_pipeline",
@@ -64,6 +65,7 @@
     {
       "extension_id": "torch-cv",
       "family": "cv",
+      "workload_entrypoint": "acprof.workloads.cv:CVWorkloadGenerator",
       "runtime": "torch",
       "backends": [
         "transformers_pipeline",
@@ -113,6 +115,7 @@
     {
       "extension_id": "torch-audio",
       "family": "audio",
+      "workload_entrypoint": "acprof.workloads.audio:AudioWorkloadGenerator",
       "runtime": "torch",
       "backends": [
         "transformers_pipeline",
@@ -176,6 +179,7 @@
     {
       "extension_id": "torch-timeseries",
       "family": "timeseries",
+      "workload_entrypoint": "acprof.workloads.timeseries:TimeseriesWorkloadGenerator",
       "runtime": "torch",
       "backends": [
         "chronos"
@@ -212,6 +216,7 @@
     {
       "extension_id": "torch-timeseries-legacy",
       "family": "timeseries",
+      "workload_entrypoint": "acprof.workloads.timeseries:TimeseriesWorkloadGenerator",
       "runtime": "torch",
       "backends": [
         "transformers_pipeline"
@@ -247,6 +252,7 @@
     {
       "extension_id": "torch-diffusion",
       "family": "diffusion",
+      "workload_entrypoint": "acprof.workloads.diffusion:DiffusionWorkloadGenerator",
       "runtime": "torch",
       "backends": [
         "diffusers"
@@ -323,6 +329,7 @@
     {
       "extension_id": "torch-multimodal",
       "family": "multimodal",
+      "workload_entrypoint": "acprof.workloads.multimodal:MultimodalWorkloadGenerator",
       "runtime": "torch",
       "backends": [
         "transformers_pipeline",
@@ -383,6 +390,7 @@
     {
       "extension_id": "torch-moss",
       "family": "multimodal",
+      "workload_entrypoint": "acprof.workloads.multimodal:MultimodalWorkloadGenerator",
       "runtime": "torch",
       "backends": [
         "transformers_pipeline",
@@ -426,6 +434,7 @@
     {
       "extension_id": "torch-structured",
       "family": "structured",
+      "workload_entrypoint": "acprof.workloads.structured:StructuredWorkloadGenerator",
       "runtime": "torch",
       "backends": [
         "torchscript"
@@ -466,6 +475,7 @@
     {
       "extension_id": "skops-structured",
       "family": "structured",
+      "workload_entrypoint": "acprof.workloads.structured:StructuredWorkloadGenerator",
       "runtime": "skops",
       "backends": [
         "skops"

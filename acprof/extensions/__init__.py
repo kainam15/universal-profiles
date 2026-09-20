@@ -12,6 +12,16 @@ class UnsupportedExtensionError(ValueError):
     """A declared extension does not support the requested task or execution."""
 
 
+def validate_entrypoint(entrypoint: str, *, kind: str) -> None:
+    """Check a module:Class declaration without importing the implementation."""
+    if not isinstance(entrypoint, str):
+        raise ValueError(f"{kind} entrypoint must have module:Class form")
+    module, separator, name = entrypoint.partition(":")
+    if (not separator or not module or not name.isidentifier()
+            or not all(part.isidentifier() for part in module.split("."))):
+        raise ValueError(f"{kind} entrypoint must have module:Class form: {entrypoint!r}")
+
+
 @dataclass(frozen=True)
 class ExtensionDeclaration:
     extension_id: str
@@ -37,6 +47,7 @@ class ExtensionDeclaration:
     model_ids: tuple[str, ...] = ()
     require_registered_custom_architecture: bool = False
     unsupported_reason: str = ""
+    workload_entrypoint: str = ""
 
 
 class ExtensionCatalog:
@@ -48,10 +59,23 @@ class ExtensionCatalog:
         self.model_type_tasks: dict[str, str] = {}
         self.library_backends: dict[str, str] = {}
         self.backend_rules: list[dict[str, Any]] = []
+        self.workloads: dict[str, str] = {}
+        self.workload_sources: dict[str, str] = {}
 
     def add(self, declaration: ExtensionDeclaration) -> None:
         if declaration.extension_id in self.extensions:
+            if self.extensions[declaration.extension_id] == declaration:
+                return
             raise ValueError(f"duplicate extension ID: {declaration.extension_id}")
+        if declaration.workload_entrypoint != "":
+            validate_entrypoint(declaration.workload_entrypoint, kind="workload")
+            previous = self.workloads.get(declaration.family)
+            if previous and previous != declaration.workload_entrypoint:
+                raise ValueError(
+                    f"conflicting workload family={declaration.family!r}; "
+                    f"original={previous} ({self.workload_sources[declaration.family]}); "
+                    f"new={declaration.workload_entrypoint} ({declaration.extension_id})"
+                )
         for backend in declaration.backends:
             key = (declaration.family, backend, declaration.adapter)
             if key in self.routes:
@@ -61,6 +85,9 @@ class ExtensionCatalog:
             if previous and previous != declaration.family:
                 raise ValueError(f"conflicting task family for {task}: {previous} / {declaration.family}")
         self.extensions[declaration.extension_id] = declaration
+        if declaration.workload_entrypoint:
+            self.workloads[declaration.family] = declaration.workload_entrypoint
+            self.workload_sources.setdefault(declaration.family, declaration.extension_id)
         for backend in declaration.backends:
             self.routes[(declaration.family, backend, declaration.adapter)] = declaration
         for task in declaration.tasks:
@@ -155,14 +182,19 @@ def load_catalog(paths: Iterable[Path] | None = None) -> ExtensionCatalog:
             for statuses in status_maps:
                 if any(status not in {"available", "unsupported"} for status in statuses.values()):
                     raise ValueError(f"manifest status must declare available or unsupported: {path}")
-            catalog.add(ExtensionDeclaration(**values))
+            try:
+                catalog.add(ExtensionDeclaration(**values))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"invalid extension declaration in {path}: {exc}") from exc
         for name in ("architecture_tasks", "model_type_tasks", "library_backends"):
             target = getattr(catalog, name)
             for key, value in data.get(name, {}).items():
                 if key in target and target[key] != value:
                     raise ValueError(f"conflicting {name}: {key}")
                 target[key] = value
-        catalog.backend_rules.extend(data.get("backend_rules", []))
+        for rule in data.get("backend_rules", []):
+            if rule not in catalog.backend_rules:
+                catalog.backend_rules.append(rule)
     return catalog
 
 

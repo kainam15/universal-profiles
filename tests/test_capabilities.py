@@ -55,6 +55,115 @@ class CapabilityTests(unittest.TestCase):
         self.assertEqual(report.to_dict()["profiling_mode"], "basic")
         self.assertFalse(report.to_dict()["full_profile_complete"])
 
+    def test_preflight_availability_is_not_completed_measurement_evidence(self):
+        caps = self.capabilities()
+        report = caps.measurement_report("basic", gpu_modes=["off"])
+        payload = report.to_dict()
+        self.assertFalse(payload["requested_measurements_complete"])
+        self.assertTrue(payload["requested_measurements_available"])
+        self.assertFalse(payload["collection_finished"])
+        self.assertFalse(payload["collection_succeeded"])
+
+    def test_failed_and_not_attempted_rows_are_finished_but_not_successful(self):
+        caps = self.capabilities()
+        report = caps.measurement_report("basic", gpu_modes=["off"])
+        rows = [
+            {"status": "error", "error": "container_oom_killed during startup"},
+            {"status": "error", "error": "client_request_timeout: planned_request_attempted=true"},
+            {"status": "error", "error": "not_measured_after_timeout: planned_request_attempted=false"},
+        ]
+        caps.apply_collection_result(report, rows)
+        payload = report.to_dict()
+        self.assertTrue(payload["collection_finished"])
+        self.assertFalse(payload["collection_succeeded"])
+        self.assertFalse(payload["collection_complete"])
+        self.assertFalse(payload["requested_measurements_complete"])
+        self.assertEqual(payload["row_counts"], {
+            "total": 3, "succeeded": 0, "failed": 2, "not_measured": 1, "unfinished": 0,
+        })
+
+    def test_running_or_undiagnosed_error_rows_cannot_claim_finished(self):
+        caps = self.capabilities()
+        for row in ({"status": "running"}, {"status": "error", "error": ""}):
+            report = caps.measurement_report("basic", gpu_modes=["off"])
+            caps.apply_collection_result(report, [row])
+            self.assertFalse(report.to_dict()["collection_finished"])
+            self.assertEqual(report.to_dict()["row_counts"]["unfinished"], 1)
+
+    def test_old_report_unknown_completion_is_not_invented(self):
+        caps = self.capabilities()
+        payload = caps.CapabilityReport.from_dict({
+            "schema_version": 1, "profiling_mode": "basic", "collection_complete": False,
+        }).to_dict()
+        self.assertIsNone(payload["collection_finished"])
+        self.assertIsNone(payload["collection_succeeded"])
+        self.assertIsNone(payload["row_counts"])
+
+    def test_report_reader_accepts_known_versions_and_legacy_missing_version(self):
+        caps = self.capabilities()
+        for version in ({}, {"schema_version": 1}, {"schema_version": 2}):
+            with self.subTest(version=version):
+                restored = caps.CapabilityReport.from_dict({
+                    **version, "profiling_mode": "basic", "collection_complete": False,
+                }).to_dict()
+                self.assertEqual(restored["schema_version"], 2)
+                self.assertIs(restored["collection_complete"], False)
+                self.assertIsNone(restored["collection_finished"])
+                self.assertIsNone(restored["collection_succeeded"])
+                self.assertIsNone(restored["row_counts"])
+
+    def test_report_reader_rejects_unknown_and_non_integer_versions(self):
+        caps = self.capabilities()
+        for version in (0, 3, 999, True, False, 1.0, "2", None):
+            with self.subTest(version=version):
+                with self.assertRaisesRegex(ValueError, "schema_version"):
+                    caps.CapabilityReport.from_dict({"schema_version": version})
+
+    def test_report_reader_rejects_non_boolean_collection_states(self):
+        caps = self.capabilities()
+        for field in ("collection_complete", "collection_finished", "collection_succeeded"):
+            for value in ("false", "true", 0, 1, [], {}):
+                with self.subTest(field=field, value=value):
+                    with self.assertRaisesRegex(ValueError, field):
+                        caps.CapabilityReport.from_dict({"schema_version": 2, field: value})
+        with self.assertRaisesRegex(ValueError, "collection_complete"):
+            caps.CapabilityReport.from_dict({"schema_version": 2, "collection_complete": None})
+
+    def test_report_reader_preserves_nullable_states_and_legacy_success(self):
+        caps = self.capabilities()
+        legacy = caps.CapabilityReport.from_dict({"collection_complete": True}).to_dict()
+        self.assertIs(legacy["collection_finished"], True)
+        self.assertIs(legacy["collection_succeeded"], True)
+        self.assertIsNone(legacy["row_counts"])
+        for value in (True, False, None):
+            with self.subTest(value=value):
+                restored = caps.CapabilityReport.from_dict({
+                    "schema_version": 2, "collection_finished": value,
+                    "collection_succeeded": value,
+                }).to_dict()
+                self.assertIs(restored["collection_finished"], value)
+                self.assertIs(restored["collection_succeeded"], value)
+
+    def test_empty_collection_has_no_finished_or_measurement_evidence(self):
+        caps = self.capabilities()
+        report = caps.measurement_report("basic", gpu_modes=["off"])
+        caps.apply_collection_result(report, [])
+        payload = report.to_dict()
+        for field in ("collection_finished", "collection_succeeded", "collection_complete",
+                      "requested_measurements_complete"):
+            self.assertIs(payload[field], False)
+        self.assertEqual(payload["row_counts"]["total"], 0)
+
+    def test_collection_status_roundtrip_preserves_terminal_failure(self):
+        caps = self.capabilities()
+        report = caps.measurement_report("basic", gpu_modes=["off"])
+        caps.apply_collection_result(report, [{"status": "error", "error": "timeout"}])
+        payload = json.loads(json.dumps(report.to_dict()))
+        restored = caps.CapabilityReport.from_dict(payload).to_dict()
+        self.assertTrue(restored["collection_finished"])
+        self.assertFalse(restored["collection_succeeded"])
+        self.assertEqual(restored["row_counts"]["failed"], 1)
+
     def test_failed_requested_profiler_cannot_claim_complete_full_profile(self):
         caps = self.capabilities()
         report = caps.measurement_report("full", gpu_modes=["on"], compute_tool="ncu")
@@ -69,11 +178,24 @@ class CapabilityTests(unittest.TestCase):
         caps = self.capabilities()
         report = caps.CapabilityReport(profiling_mode="full")
         caps.apply_runtime_validation(report, {
-            "devices": {"off": {"status": "ok"}, "on": {"status": "resource_limit"}},
+            "devices": {"off": {"status": "ok", "validation": {
+                "protocol": {"status": "verified"}, "task": {"status": "verified"},
+            }}, "on": {"status": "resource_limit"}},
         }, environment_id="env-test")
         self.assertEqual(report.execution["cpu"].status.value, "verified")
         self.assertEqual(report.execution["cuda"].status.value, "unavailable")
         self.assertEqual(report.execution["cpu"].evidence["environment_id"], "env-test")
+
+    def test_runtime_ok_without_complete_validation_cannot_claim_verified(self):
+        caps = self.capabilities()
+        for validation in (None, {}, {"protocol": {"status": "verified"}},
+                           {"protocol": {"status": "verified"}, "task": {"status": "available"}}):
+            report = caps.CapabilityReport(profiling_mode="basic")
+            caps.apply_runtime_validation(report, {
+                "devices": {"off": {"status": "ok", "validation": validation}},
+            })
+            self.assertEqual(report.execution["cpu"].status.value, "available")
+            self.assertIn("validation", report.execution["cpu"].detail)
 
     def test_collection_verifies_actual_csv_fields_and_preserves_measured_zero(self):
         caps = self.capabilities()

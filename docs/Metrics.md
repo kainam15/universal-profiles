@@ -204,6 +204,26 @@ mean/median 聚合，默认仅纳入 `status=ok` 且 `warmup=0` 的行。
 `--require-complete` 要求正式完成状态及完整计划；`--require-ok` 要求所有非 warmup 行为 `ok`
 且至少有一行。默认允许审计历史或失败实验，但结构/一致性错误仍以退出码 1 表示。
 
+跨后端比较沿用同一只读入口：
+
+```bash
+.venv/bin/python audit.py results/<left-model>/ --compare results/<right-model>/ --json
+# 条件不完整或不一致时要求非零退出：
+.venv/bin/python audit.py results/<left-model>/ --compare results/<right-model>/ --require-comparable
+```
+
+比较分别返回 `compatible`、`incompatible`、`unknown`，检查任务/场景、物化输入内容与顺序、
+资源设置、已记录的有效线程数、测量口径、质量约束和 actual workload。它允许预期中的 backend、
+环境、镜像、模型与制品身份差异，不要求整份输入计划或配置 hash 相同。`run_id`、续跑身份和
+恢复锁仍按原规则严格匹配，运行后 actual 不进入执行前身份。
+旧结果缺条件时返回 unknown；目前没有统一质量阈值配置，只有输入计划显式记录了可选
+`quality_constraints` 才能比较这一项。条件相同不证明质量达标，也不证明机器、CPU affinity
+或独立 probe 之后的全部运行状态等价；这些限制一并写入报告。
+线程比较仅在恢复记录包含显式正整数线程请求、且独立验证记录了实际生效值时成立。
+默认值或运行时自行选择的线程数记为 unknown，避免把独立验证的 quota 派生默认值当作正式服务事实。
+actual workload 的 `variants` 计数必须覆盖 `request_count`，已有 `repeat_in_window` 时还需一致；
+显式失败案例的终态与成功状态分别显示，不将 OOM/timeout 归为未开始或成功。
+
 ### 窗口置信区间与开销对照
 
 ```bash

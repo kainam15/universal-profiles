@@ -83,6 +83,13 @@ def _scene(*, document: bool = False, frame: int = 0) -> tuple[Any, list, list]:
 
 
 class MultimodalWorkloadGenerator(WorkloadGenerator):
+    @classmethod
+    def from_config(cls, model_id: str, task_type: str, batch_size: int, *,
+                    workload_spec_path: Optional[str] = None,
+                    model_adapter: Optional[str] = None, **options: Any):
+        return cls(model_id, task_type, batch_size, workload_spec_path=workload_spec_path,
+                   model_adapter=model_adapter, **options)
+
     def __init__(self, model_id: str, task_type: str, batch_size: int,
                  workload_spec_path: Optional[str] = None, model_adapter: Optional[str] = None):
         super().__init__(model_id, task_type, batch_size)

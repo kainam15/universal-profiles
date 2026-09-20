@@ -61,6 +61,7 @@ class RuntimeValidationTests(unittest.TestCase):
         self.assertEqual({c[3] for c in runs}, {c[3] for c in removals})
         self.assertNotIn('--gpus', runs[0])
         self.assertIn('--gpus', runs[1])
+        self.assertTrue(all('ACPROF_REQUEST_TIMEOUT_S=30' in command for command in runs))
 
     def test_load_failure_keeps_stderr_and_stops_before_next_device(self):
         commands = []

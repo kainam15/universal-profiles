@@ -29,8 +29,9 @@ USE_GPU = int(os.getenv("USE_GPU", "0"))
 # ─────────────────────────────────────────────
 # Load handler and model
 # ─────────────────────────────────────────────
-from acprof.container.handlers import HandlerRegistry, load_handler, resolve_model_source  # noqa: E402
-from acprof.container.execution import configured_execution  # noqa: E402
+from acprof.container.handlers import HandlerRegistry, InputLimitError, load_handler, resolve_model_source  # noqa: E402
+from acprof.container.execution import complete_prediction, configured_execution  # noqa: E402
+from acprof.runtime_settings import runtime_threads  # noqa: E402
 from acprof.workloads.contract import workload_contract  # noqa: E402
 
 handler = HandlerRegistry.get(TASK_FAMILY, RUNTIME_BACKEND)
@@ -41,7 +42,7 @@ MODEL_SOURCE = resolve_model_source(MODEL_ID, os.getenv("MODEL_LOCAL_PATH"))
 t_cuda_init_start = time.perf_counter()
 execution, device = configured_execution(
     TASK_FAMILY, RUNTIME_BACKEND, use_gpu=bool(USE_GPU),
-    threads=int(os.getenv("TORCH_NUM_THREADS", "0") or "0"),
+    threads=runtime_threads(),
     adapter=os.getenv("ACPROF_MODEL_ADAPTER", "family-default"),
 )
 t_cuda_init_end = time.perf_counter()
@@ -118,6 +119,7 @@ def predict():
         processed = handler.preprocess(model_ctx, data)
         with execution.inference_context():
             output = handler.predict(model_ctx, processed)
+            output = complete_prediction(execution, model_ctx, output)
         result = handler.postprocess(model_ctx, output)
         result["workload_contract"] = workload_contract(model_ctx, data, processed, result)
         metadata = _extract_probe_metadata(processed)
@@ -135,6 +137,8 @@ def probe():
     try:
         processed = handler.preprocess(model_ctx, data)
         return jsonify(_extract_probe_metadata(processed))
+    except InputLimitError as e:
+        return jsonify(e.probe_metadata)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -151,12 +155,14 @@ def scale_meta():
 
 @app.route("/meta")
 def meta():
+    runtime_metadata = execution.metadata()
     return jsonify({
         "model_id": MODEL_ID,
         "model_revision": MODEL_REVISION,
         "task_family": TASK_FAMILY,
         "task_type": TASK_TYPE,
         "runtime_backend": RUNTIME_BACKEND,
+        "runtime_parameters": model_ctx.get("runtime_parameters", runtime_metadata.get("runtime_parameters", {})),
         "device": device,
         "load_time_s": round(load_time_s, 3),
         "startup_timing": _startup_timing(),

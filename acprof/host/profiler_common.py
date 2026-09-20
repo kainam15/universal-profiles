@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Sequence
 
 from acprof.host.detect import TaskInfo
 from acprof.host.env_utils import hf_offline_docker_env_args
+from acprof.runtime_settings import runtime_docker_env_args
 
 
 CONTAINER_INPUT_SCALE_PLAN_FILE = "/payloads/input_scale_plan.json"
@@ -130,6 +131,9 @@ def _base_docker_cmd(
         "-e", f"OPENBLAS_NUM_THREADS={max(1, int(cpu))}",
         "-e", f"NUMEXPR_NUM_THREADS={max(1, int(cpu))}",
         "-e", f"TORCH_NUM_THREADS={max(1, int(cpu))}",
+        # Profiler slowdown had no request deadline; an explicit setting may override it.
+        "-e", "ACPROF_REQUEST_TIMEOUT_S=none",
+        *runtime_docker_env_args(),
     ]
     if not task_info.runtime_profile_id and os.path.isdir(package_root):
         cmd.extend(["-v", f"{package_root}:/app/acprof:ro"])

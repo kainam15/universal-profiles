@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from importlib import import_module
+from inspect import isawaitable
 import sys
+
+from acprof.runtime_settings import request_timeout_s
 
 
 def prepare_device(use_gpu: bool, threads: int = 0) -> str:
@@ -23,6 +27,26 @@ def synchronize() -> None:
 
 def metadata() -> dict:
     return {}
+
+
+def complete_prediction(runtime, model_ctx: dict, output):
+    """Resolve this request before postprocess, response, or the timing window ends.
+
+    Existing runtimes without the optional hook promise synchronous predict.
+    Async runtimes must implement wait_for_completion and propagate backend errors
+    and timeout; the hook returns the completed raw output. No validation runs here.
+    """
+    wait = getattr(runtime, 'wait_for_completion', None)
+    if wait is not None:
+        timeout = request_timeout_s()
+        try:
+            output = wait(model_ctx, output, timeout_s=timeout)
+        except (TimeoutError, FutureTimeoutError) as exc:
+            limit = f'after {timeout:g}s' if timeout is not None else '(no configured deadline)'
+            raise TimeoutError(f'request completion timed out {limit}: {exc}') from exc
+    if isinstance(output, Future) or isawaitable(output):
+        raise TypeError('execution must resolve asynchronous output with wait_for_completion before returning')
+    return output
 
 
 def configured_execution(family: str, backend: str, *, use_gpu: bool = False,

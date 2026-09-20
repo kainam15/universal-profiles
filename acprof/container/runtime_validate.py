@@ -13,13 +13,14 @@ RESULT_PREFIX = "ACPROF_RUNTIME_VALIDATION="
 
 def validate(payload: dict) -> dict:
     from acprof.container.handlers import HandlerRegistry, load_handler, resolve_model_source
-    from acprof.container.execution import configured_execution
+    from acprof.container.execution import complete_prediction, configured_execution
+    from acprof.runtime_settings import runtime_threads
     from acprof.extensions import get_extension
 
     use_gpu = os.getenv("USE_GPU", "0") == "1"
     execution, device = configured_execution(
         os.environ["TASK_FAMILY"], os.environ["RUNTIME_BACKEND"], use_gpu=use_gpu,
-        threads=max(1, int(os.getenv("TORCH_NUM_THREADS", "1"))),
+        threads=runtime_threads(default=1),
         adapter=os.getenv("ACPROF_MODEL_ADAPTER", "family-default"),
     )
     handler = HandlerRegistry.get(os.environ["TASK_FAMILY"], os.environ["RUNTIME_BACKEND"])
@@ -35,16 +36,20 @@ def validate(payload: dict) -> dict:
     processed = handler.preprocess(context, payload)
     with execution.inference_context():
         output = handler.predict(context, processed)
+        output = complete_prediction(execution, context, output)
     response = handler.postprocess(context, output)
     validation = handler.validate_output(context, payload, processed, output, response)
     for layer in ('protocol', 'task'):
         if not isinstance(validation, dict) or not isinstance(validation.get(layer), dict) or validation[layer].get('status') != 'verified':
             raise ValueError(f'{layer} validation must be verified before profiling: {validation!r}')
+    runtime_metadata = execution.metadata()
     return {
         "status": "ok", "device": device,
         "dtype": str(getattr(context.get("model"), "dtype", context.get("dtype", "unknown"))),
         "attention_implementation": context.get("attention_implementation", "model_default"),
-        **execution.metadata(), "validation": validation,
+        **runtime_metadata, "validation": validation,
+        "runtime_parameters": context.get("runtime_parameters", runtime_metadata.get("runtime_parameters", {})),
+        "artifact": context.get("artifact", {}),
         "workload_contract": validation["workload_contract"],
         "adapter": type(handler).__name__, "response": response,
         "effective_input_scale": processed.get("_effective_input_scale") if isinstance(processed, dict) else None,

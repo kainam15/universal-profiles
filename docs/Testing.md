@@ -88,13 +88,51 @@ git diff --check
 
 ```bash
 .venv/bin/python scripts/check_runtime.py --profile onnxruntime-cpu \
-  --test-pattern test_onnx_runtime_optional.py --output-dir internal-testing/onnx-runtime
+  --basic-e2e --output-dir internal-testing/onnx-runtime
 ```
 
-`--test-pattern` 可重复并覆盖 family 默认用例，不改变生产任务选择；报告记录实际测试范围。
-`examples/onnxruntime/smoke.py` 在无 Torch 环境生成 IR10 小型线性图，以独立已知数值核验
-load/preprocess/predict/postprocess/validate，并测试固定 shape 拒绝。真实矩阵使用 README 的 Iris 示例，
-核对独立 runtime validation、模式、镜像与锁、CSV 覆盖和 capability report；单元测试不启动真实实验。
+ONNX 的三个 profile 按 runtime 选择专用测试集，不按 family 误选 Torch 用例。
+`.github/workflows/ci.yml` 的独立 ONNX CPU job 在 GitHub-hosted runner 必跑上述命令；
+它检查 Torch、Transformers **未安装**，并要求 ORT/ONNX/Pillow/Tokenizers 等实际可导入。
+任何指定测试模式为空、skip、expected failure、依赖缺失、超时、输出／必需字段错误或清理失败
+都会失败。普通宿主测试仍可明确 skip 缺失的可选推理依赖，不代表容器通过。
+`--test-pattern` 可重复覆盖默认测试，报告记录每个 pattern 的发现数；专用 CI 不覆盖默认集。
+
+离线 fixture 固定 IR10/opset17，真实执行表格、图像、多输入文本，覆盖数值参考、动态维度、
+样本顺序、dtype/shape 与固定形状拒绝；不会下载 Hub 模型。basic 回归复用生产 client、
+ResourceUsageMonitor、CSV 合并及 audit，验证应用延迟、原有 batch/latency 吞吐口径、真实
+cgroup CPU/内存、actual workload、输出验证和能力状态。合成图只证明接口与执行链路。
+`--basic-e2e` 依次执行表格、图像、文本三种场景，每种包含一次 warmup 和两次正式请求；
+任一场景失败即返回失败。图像检查原始与处理后尺寸，文本检查具名整数输入及实际 token 数。
+真实 ORT、WordPiece tokenizer、HTTP probe 与既有规划器的联合回归还覆盖超限拒绝和自动尺度规划。
+真实 HTTP 回归还验证异步等待、后台失败、超时及请求内不执行输出验证。
+服务只发布 loopback 端口，不使用 privileged、Docker socket 挂载或硬件 runner；完成或失败后
+清理本次容器。已有 `.github/workflows/hardware.yml` 仍仅手动触发。
+
+两个预训练小模型可另行验证；第一步联网准备，第二步在同一无 Torch 环境断网执行。
+以下目录需尚未存在或为空，重复检查请换新目录：
+
+```bash
+.venv/bin/python examples/onnxruntime/real_models.py prepare mnist \
+  --directory internal-testing/pretrained-mnist
+.venv/bin/python examples/onnxruntime/real_models.py prepare bert-tiny \
+  --directory internal-testing/pretrained-bert-tiny
+runtime_image=$(.venv/bin/python -c 'import json; print(json.load(open("internal-testing/onnx-runtime/runtime.json"))["image_id"])')
+docker run --rm --network none --cpus 2 --memory 2g \
+  -e ACPROF_RUNTIME_THREADS=1 -e PYTHONDONTWRITEBYTECODE=1 \
+  -v "$PWD:/workspace:ro" -w /workspace "$runtime_image" \
+  python examples/onnxruntime/real_models.py validate mnist \
+  --directory internal-testing/pretrained-mnist
+docker run --rm --network none --cpus 2 --memory 2g \
+  -e ACPROF_RUNTIME_THREADS=1 -e PYTHONDONTWRITEBYTECODE=1 \
+  -v "$PWD:/workspace:ro" -w /workspace "$runtime_image" \
+  python examples/onnxruntime/real_models.py validate bert-tiny \
+  --directory internal-testing/pretrained-bert-tiny
+```
+
+脚本保留来源、许可证说明、revision 和制品哈希，参考检查使用独立的 ONNX ReferenceEvaluator。
+它验证一个样例的数值一致性，不执行训练数据准确率评测，也不输出正式性能结果。
+真实 full 矩阵仍需相应硬件和权限；basic 成功不能替代 full 指标验收。
 
 ## TUI 与终端证据
 

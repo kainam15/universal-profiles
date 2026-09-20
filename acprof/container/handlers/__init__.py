@@ -52,6 +52,19 @@ def transformers_pipeline_load_kwargs(
     }
 
 
+class InputLimitError(ValueError):
+    """Unmodified input exceeds a known limit; /probe may report this without execution."""
+
+    def __init__(self, reason: str, *, effective_input_scale: float):
+        super().__init__(reason)
+        self.probe_metadata = {
+            "effective_input_scale": float(effective_input_scale),
+            "truncated_by_limit": False,
+            "limit_exceeded": True,
+            "reason": reason,
+        }
+
+
 class BaseHandler(ABC):
     """Standard four-phase handler interface for all task families."""
 

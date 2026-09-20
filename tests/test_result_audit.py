@@ -88,6 +88,36 @@ class ResultAuditTests(unittest.TestCase):
         self.assertFalse(report["valid"])
         self.assertIn("formula_mismatch", [issue["code"] for issue in report["issues"]])
 
+    def test_terminal_oom_timeout_and_unattempted_rows_are_separate_outcomes(self):
+        self.write(
+            self.row(status="error", error="container_oom_killed"),
+            self.row(repeat_idx="1", status="error", error="client_request_timeout"),
+            self.row(repeat_idx="2", status="error", error="not_measured_after_timeout: planned_request_attempted=false"),
+        )
+        (self.root / "run_state.json").write_text(json.dumps({"status": "complete", "outcome": "partial"}))
+        report = audit_result(self.root)
+        self.assertTrue(report["valid"])
+        self.assertEqual(report["completion"], "complete")
+        self.assertTrue(report["execution"]["finished"])
+        self.assertFalse(report["execution"]["succeeded"])
+        self.assertEqual(report["execution"]["row_counts"], {
+            "total": 3, "succeeded": 0, "failed": 2, "not_measured": 1, "unfinished": 0,
+        })
+
+    def test_actual_workload_counts_must_match_variants_and_completed_requests(self):
+        for request_count, variant_count, repeat_count in ((2, 1, "2"), (1, 1, "2")):
+            summary = {"schema_version": 1, "request_count": request_count,
+                       "variants": [{"count": variant_count, "contract": None}]}
+            self.write(self.row(workload_contract=json.dumps(summary), repeat_in_window=repeat_count))
+            report = audit_result(self.root)
+            self.assertFalse(report["valid"])
+            self.assertIn("workload_contract", {issue["code"] for issue in report["issues"]})
+
+    def test_unknown_per_request_workload_is_not_invented_or_rejected(self):
+        summary = {"schema_version": 1, "request_count": 2, "variants": [{"count": 2, "contract": None}]}
+        self.write(self.row(workload_contract=json.dumps(summary), repeat_in_window="2"))
+        self.assertTrue(audit_result(self.root)["valid"])
+
 
 if __name__ == "__main__":
     unittest.main()

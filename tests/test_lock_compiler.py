@@ -22,8 +22,14 @@ class LockCompilerTests(unittest.TestCase):
                 "urllib.request.urlopen", side_effect=AssertionError("check accessed network"),
             ):
                 result = check_catalog(root)
-            self.assertEqual(result["profiles"], 23)
+            self.assertEqual(result["profiles"], 25)
             self.assertEqual(len(result["environments"]), 21)
+            onnx_environments = [environment for environment in result["environments"].values()
+                                 if environment["environment_key"] == "onnxruntime-cpu"]
+            self.assertEqual(len(onnx_environments), 1)
+            self.assertEqual(onnx_environments[0]["platform_id"], "python-cpu")
+            self.assertEqual(set(onnx_environments[0]["profiles"]),
+                             {"onnxruntime-cpu", "onnxruntime-cv-cpu", "onnxruntime-nlp-cpu"})
             self.assertEqual(before, {path: hashlib.sha256(path.read_bytes()).hexdigest()
                                       for path in root.rglob("*") if path.is_file()})
 

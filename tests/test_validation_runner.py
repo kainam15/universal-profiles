@@ -48,6 +48,16 @@ class ValidationRunnerTests(unittest.TestCase):
         self.assertEqual(process.returncode, 1, process.stderr)
         self.assertEqual(report["counts"]["run"], 0)
 
+    def test_missing_required_pattern_cannot_hide_behind_other_passing_tests(self):
+        process, report = self.run_fixture(
+            "class Sample(unittest.TestCase):\n"
+            "    def test_runtime(self): pass\n",
+            "--require-no-skips", "--pattern", "test_sample.py", "--pattern", "test_missing_runtime.py",
+        )
+        self.assertEqual(process.returncode, 1, process.stderr)
+        self.assertFalse(report['successful'])
+        self.assertEqual(report['discovery_counts']['test_missing_runtime.py'], 0)
+
     def test_failed_subtest_is_failure_and_has_evidence(self):
         process, report = self.run_fixture(
             "class Sample(unittest.TestCase):\n"

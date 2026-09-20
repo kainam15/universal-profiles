@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from acprof.config import (
+    DEFAULT_REQUEST_TIMEOUT_SECONDS,
     DOCKER_IMAGE_PREFIX,
     SERVER_PORT,
     READY_POLL_INTERVAL_S,
@@ -22,6 +23,7 @@ from acprof.config import (
 )
 from acprof.host.detect import TaskInfo
 from acprof.host.env_utils import hf_offline_docker_env_args
+from acprof.runtime_settings import runtime_docker_env_args
 
 
 @dataclass
@@ -356,10 +358,16 @@ def _start_container_session(
     image_info: ImageInfo,
     container_name: str,
     log_prefix: str,
+    request_timeout_seconds: float | None = DEFAULT_REQUEST_TIMEOUT_SECONDS,
 ) -> RunningContainer:
     import requests
 
     gpu = _normalize_gpu_mode(gpu)
+    if request_timeout_seconds is not None:
+        request_timeout_seconds = float(request_timeout_seconds)
+        if not math.isfinite(request_timeout_seconds) or request_timeout_seconds <= 0:
+            raise ValueError("request_timeout_seconds must be finite and positive, or None")
+    completion_timeout = "none" if request_timeout_seconds is None else f"{request_timeout_seconds:g}"
     host_port = _host_port(cpu, mem)
 
     _run(["docker", "rm", "-f", container_name], check=False)
@@ -383,6 +391,8 @@ def _start_container_session(
         "-e", f"RUNTIME_BACKEND={task_info.runtime_backend}",
         "-e", f"USE_GPU={use_gpu}",
         *hf_offline_docker_env_args(),
+        "-e", f"ACPROF_REQUEST_TIMEOUT_S={completion_timeout}",
+        *runtime_docker_env_args(),
         "-p", f"{host_port}:{SERVER_PORT}",
         image_info.tag,
     ]

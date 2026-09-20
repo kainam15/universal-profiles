@@ -39,7 +39,88 @@
         "tabular"
       ],
       "environment": "onnxruntime-cpu",
-      "profile": "onnxruntime-cpu"
+      "profile": "onnxruntime-cpu",
+      "workload_entrypoint": "acprof.workloads.structured:StructuredWorkloadGenerator"
+    },
+    {
+      "extension_id": "onnxruntime-cv-cpu",
+      "family": "cv",
+      "runtime": "onnxruntime",
+      "backends": [
+        "onnxruntime"
+      ],
+      "tasks": [
+        "image-classification"
+      ],
+      "handler_entrypoint": "acprof.container.handlers.onnx_tasks:ONNXImageClassificationHandler",
+      "validation_entrypoint": "acprof.container.validation:validate_output",
+      "execution_entrypoint": "",
+      "environments": {
+        "cpu": "onnxruntime-cpu"
+      },
+      "execution": {
+        "cpu": "available",
+        "cuda": "unsupported",
+        "batch": "unsupported",
+        "streaming": "unsupported"
+      },
+      "measurement": {
+        "latency": "available",
+        "torch_profiler_eager": "unsupported",
+        "gpu_power": "unsupported",
+        "gpu_flops": "unsupported",
+        "ncu": "unsupported",
+        "nsys": "unsupported"
+      },
+      "dtypes": [
+        "FP32"
+      ],
+      "input_modalities": [
+        "image"
+      ],
+      "environment": "onnxruntime-cpu",
+      "profile": "onnxruntime-cv-cpu",
+      "workload_entrypoint": "acprof.workloads.cv:CVWorkloadGenerator"
+    },
+    {
+      "extension_id": "onnxruntime-nlp-cpu",
+      "family": "nlp",
+      "runtime": "onnxruntime",
+      "backends": [
+        "onnxruntime"
+      ],
+      "tasks": [
+        "text-classification"
+      ],
+      "handler_entrypoint": "acprof.container.handlers.onnx_tasks:ONNXTextClassificationHandler",
+      "validation_entrypoint": "acprof.container.validation:validate_output",
+      "execution_entrypoint": "",
+      "environments": {
+        "cpu": "onnxruntime-cpu"
+      },
+      "execution": {
+        "cpu": "available",
+        "cuda": "unsupported",
+        "batch": "available",
+        "streaming": "unsupported"
+      },
+      "measurement": {
+        "latency": "available",
+        "torch_profiler_eager": "unsupported",
+        "gpu_power": "unsupported",
+        "gpu_flops": "unsupported",
+        "ncu": "unsupported",
+        "nsys": "unsupported"
+      },
+      "dtypes": [
+        "FP32"
+      ],
+      "input_modalities": [
+        "text"
+      ],
+      "environment": "onnxruntime-cpu",
+      "profile": "onnxruntime-nlp-cpu",
+      "workload_entrypoint": "acprof.workloads.nlp:NLPWorkloadGenerator"
     }
   ],
   "library_backends": {
@@ -49,6 +130,22 @@
   "backend_rules": [
     {
       "family": "structured",
+      "libraries": [
+        "onnx",
+        "onnxruntime"
+      ],
+      "backend": "onnxruntime"
+    },
+    {
+      "family": "cv",
+      "libraries": [
+        "onnx",
+        "onnxruntime"
+      ],
+      "backend": "onnxruntime"
+    },
+    {
+      "family": "nlp",
       "libraries": [
         "onnx",
         "onnxruntime"

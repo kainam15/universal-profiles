@@ -61,31 +61,58 @@ class CapabilityReport:
     measurement: dict[str, Capability] = field(default_factory=dict)
     requested: set[str] = field(default_factory=set)
     collection_complete: bool = False
+    collection_finished: bool | None = False
+    collection_succeeded: bool | None = False
+    row_counts: dict[str, int] | None = None
 
     def __post_init__(self):
         require_profiling_mode(self.profiling_mode)
 
     def to_dict(self) -> dict:
-        complete = bool(self.requested) and all(name in self.measurement and self.measurement[name].status in {
+        available = bool(self.requested) and all(name in self.measurement and self.measurement[name].status in {
             CapabilityStatus.AVAILABLE, CapabilityStatus.VERIFIED,
         } for name in self.requested)
+        complete = bool(self.requested) and all(name in self.measurement and
+            self.measurement[name].status == CapabilityStatus.VERIFIED for name in self.requested)
         return {
-            "schema_version": 1, "profiling_mode": self.profiling_mode,
+            "schema_version": 2, "profiling_mode": self.profiling_mode,
             "execution": {name: item.to_dict() for name, item in self.execution.items()},
             "measurement": {name: item.to_dict() for name, item in self.measurement.items()},
             "requested_measurements": sorted(self.requested),
+            "requested_measurements_available": available,
             "requested_measurements_complete": complete,
             "collection_complete": self.collection_complete,
+            "collection_finished": self.collection_finished,
+            "collection_succeeded": self.collection_succeeded,
+            "row_counts": self.row_counts,
             "full_profile_complete": self.profiling_mode == "full" and complete and self.collection_complete,
         }
 
     @classmethod
     def from_dict(cls, payload: Mapping) -> "CapabilityReport":
+        """Read v1/v2 evidence; a missing version denotes the original v1 shape."""
+        version = payload.get("schema_version", 1)
+        if type(version) is not int or version not in {1, 2}:
+            raise ValueError(f"CapabilityReport: unsupported schema_version={version!r}; expected 1 or 2")
+        for name in ("collection_complete", "collection_finished", "collection_succeeded"):
+            if name not in payload:
+                continue
+            value = payload[name]
+            nullable = name != "collection_complete"
+            if type(value) is not bool and not (nullable and value is None):
+                expected = "bool or None" if nullable else "bool"
+                raise ValueError(f"CapabilityReport.{name} must be {expected}; received {value!r}")
         report = cls(payload.get("profiling_mode", "full"))
         for group in ("execution", "measurement"):
             setattr(report, group, {name: Capability(**item) for name, item in payload.get(group, {}).items()})
         report.requested = set(payload.get("requested_measurements", ()))
-        report.collection_complete = bool(payload.get("collection_complete", False))
+        report.collection_complete = payload.get("collection_complete", False)
+        # A legacy false means either unfinished or finished with failures.
+        # Preserve that uncertainty instead of inventing execution evidence.
+        legacy_success = True if report.collection_complete else None
+        report.collection_finished = payload.get("collection_finished", legacy_success)
+        report.collection_succeeded = payload.get("collection_succeeded", legacy_success)
+        report.row_counts = payload.get("row_counts")
         return report
 
 
@@ -179,7 +206,16 @@ def apply_runtime_validation(report: CapabilityReport, validation: Mapping, *, e
         name = {"off": "cpu", "on": "cuda"}.get(device, device)
         evidence = {"environment_id": environment_id, **result}
         if result.get("status") == "ok":
-            capability = Capability("verified", source="runtime_probe", evidence=evidence)
+            output_validation = result.get("validation")
+            verified = isinstance(output_validation, Mapping) and all(
+                isinstance(output_validation.get(layer), Mapping)
+                and output_validation[layer].get("status") == "verified" for layer in ("protocol", "task")
+            )
+            capability = Capability(
+                "verified" if verified else "available",
+                detail="" if verified else "runtime returned ok without complete protocol/task validation evidence",
+                source="runtime_probe", evidence=evidence,
+            )
         elif result.get("status") == "resource_limit":
             capability = Capability("unavailable", "validation resource limit", "runtime_probe", evidence)
         else:
@@ -239,9 +275,36 @@ def missing_required_measurements(report: CapabilityReport, rows: list[Mapping])
                   and report.measurement[name].status != CapabilityStatus.VERIFIED)
 
 
+def collection_outcomes(rows: list[Mapping]) -> dict:
+    """Terminal outcomes of recorded rows; plan coverage is checked separately.
+
+    A diagnostic placeholder closes a planned row without claiming it ran.
+    Warn retains the existing collection-success policy; formal analysis may
+    still exclude it using its stricter status filter.
+    """
+    counts = dict(total=len(rows), succeeded=0, failed=0, not_measured=0, unfinished=0)
+    for row in rows:
+        status = str(row.get("status", "")).strip().lower()
+        error = str(row.get("error") or "").strip().lower()
+        if status in {"ok", "warn"}:
+            outcome = "succeeded"
+        elif status == "error" and error not in {"", "nan", "none", "null"}:
+            outcome = "not_measured" if (error.startswith("not_measured_") or
+                "planned_request_attempted=false" in error) else "failed"
+        else:
+            outcome = "unfinished"
+        counts[outcome] += 1
+    return {"finished": bool(rows) and counts["unfinished"] == 0,
+            "succeeded": bool(rows) and counts["succeeded"] == len(rows), "row_counts": counts}
+
+
 def apply_collection_result(report: CapabilityReport, rows: list[Mapping]) -> None:
     """Attach evidence after collection; this never changes a measured field."""
-    report.collection_complete = bool(rows) and all(row.get("status") in {"ok", "warn"} for row in rows)
+    outcomes = collection_outcomes(rows)
+    report.collection_finished = outcomes["finished"]
+    report.collection_succeeded = outcomes["succeeded"]
+    report.row_counts = outcomes["row_counts"]
+    report.collection_complete = outcomes["succeeded"]
     for name, metrics in REQUIRED_MEASUREMENT_FIELDS.items():
         if name not in report.requested:
             continue

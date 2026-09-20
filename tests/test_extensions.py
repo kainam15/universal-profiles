@@ -13,6 +13,53 @@ from acprof.host.task_support import require_task_support
 
 
 class ExtensionDeclarationTests(unittest.TestCase):
+    def test_workload_manifest_is_shared_by_host_and_container_consumers(self):
+        from acprof.extensions import CATALOG
+        host = CATALOG.select_extension(TaskInfo(
+            "local/tiny", "tabular-regression", "structured", "onnxruntime", "onnx", "fixed", "manual",
+        ))
+        torch = CATALOG.get_extension("structured", "torchscript", task="tabular-regression")
+        self.assertEqual(CATALOG.workloads[host.family], torch.workload_entrypoint)
+        # Both process roles parse the same declaration without importing its workload.
+        for role in ("acprof.host.task_support", "acprof.container.handlers"):
+            script = (
+                f"import {role}; from acprof.extensions import CATALOG; "
+                "print(CATALOG.workloads['structured'])"
+            )
+            result = subprocess.run([sys.executable, "-c", script], capture_output=True,
+                                    text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), torch.workload_entrypoint)
+
+    def test_workload_conflict_reports_family_sources_and_is_atomic(self):
+        from acprof.extensions import CATALOG, ExtensionCatalog
+        catalog = ExtensionCatalog()
+        original = CATALOG.get_extension("structured", "torchscript")
+        catalog.add(original)
+        conflicting = replace(original, extension_id="conflicting", backends=("other",),
+                              workload_entrypoint="other_plugin:Generator")
+        with self.assertRaisesRegex(ValueError, "structured.*StructuredWorkloadGenerator.*other_plugin"):
+            catalog.add(conflicting)
+        self.assertNotIn("conflicting", catalog.extensions)
+        self.assertEqual(catalog.workloads["structured"], original.workload_entrypoint)
+
+    def test_repeated_identical_manifest_is_idempotent(self):
+        from acprof.extensions import load_catalog
+        import acprof.extensions
+        manifest = Path(acprof.extensions.__file__).parent / "builtin" / "manifest.json"
+        once = load_catalog([manifest])
+        repeated = load_catalog([manifest, manifest])
+        self.assertEqual(once.extensions, repeated.extensions)
+        self.assertEqual(once.workloads, repeated.workloads)
+        self.assertEqual(once.backend_rules, repeated.backend_rules)
+
+    def test_workload_entrypoint_is_validated_without_import(self):
+        from acprof.extensions import CATALOG, ExtensionCatalog
+        original = CATALOG.get_extension("structured", "torchscript")
+        for value in ("missing-colon", ":Generator", "module:", "module:bad-name", None, 4):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "workload.*entrypoint"):
+                ExtensionCatalog().add(replace(original, workload_entrypoint=value))
+
     def test_metadata_import_is_framework_free(self):
         result = subprocess.run(
             [sys.executable, "-c", "import sys; from acprof.extensions import get_extension; "

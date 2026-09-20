@@ -16,7 +16,8 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 from acprof.container.handlers import HandlerRegistry, load_handler, resolve_model_source
-from acprof.container.execution import configured_execution
+from acprof.container.execution import complete_prediction, configured_execution
+from acprof.runtime_settings import runtime_threads
 
 # Populated only for explicitly selected Torch/NVIDIA profiling paths.
 torch = None
@@ -126,7 +127,7 @@ def _sum_profiled_flops(prof: Any) -> float:
     return total
 
 
-def _run_torch_flop_profile(handler: Any, model_ctx: Any, processed: Any, repeat: int) -> float:
+def _run_torch_flop_profile(handler: Any, model_ctx: Any, processed: Any, repeat: int, *, execution=None) -> float:
     # PyTorch derives FLOPs from operator shapes, so CPU activity is enough for
     # both CPU and CUDA tensors and avoids CUPTI/performance-counter privileges.
     with torch.profiler.profile(
@@ -135,7 +136,10 @@ def _run_torch_flop_profile(handler: Any, model_ctx: Any, processed: Any, repeat
         with_flops=True,
     ) as prof:
         for _ in range(repeat):
-            handler.predict(model_ctx, processed)
+            output = handler.predict(model_ctx, processed)
+            if execution is not None:
+                complete_prediction(execution, model_ctx, output)
+            del output
             _cuda_synchronize()
     return _sum_profiled_flops(prof)
 
@@ -254,9 +258,8 @@ def main() -> None:
     task_type = os.getenv("TASK_TYPE", os.getenv("PIPELINE_TAG", "text-generation"))
     runtime_backend = os.getenv("RUNTIME_BACKEND", "transformers_pipeline")
     use_gpu = int(os.getenv("USE_GPU", "0"))
-    torch_threads = int(os.getenv("TORCH_NUM_THREADS", "0") or "0")
     execution, device = configured_execution(
-        task_family, runtime_backend, use_gpu=bool(use_gpu), threads=torch_threads,
+        task_family, runtime_backend, use_gpu=bool(use_gpu), threads=runtime_threads(),
         adapter=os.getenv("ACPROF_MODEL_ADAPTER", "family-default"),
     )
 
@@ -294,6 +297,7 @@ def main() -> None:
 
     with execution.inference_context():
         warmup_output = handler.predict(model_ctx, processed)
+        warmup_output = complete_prediction(execution, model_ctx, warmup_output)
         # Preserve the ordinary warmup and its postprocess guards. Full output
         # validation runs in a separate runtime_validate container before this
         # process starts, so whole-process tools such as Massif cannot count it.
@@ -303,7 +307,7 @@ def main() -> None:
 
         repeat = max(1, int(args.repeat))
         if torch_eager_mode:
-            total_flops = _run_torch_flop_profile(handler, model_ctx, processed, repeat)
+            total_flops = _run_torch_flop_profile(handler, model_ctx, processed, repeat, execution=execution)
             _cuda_synchronize()
             elapsed_s = time.perf_counter() - t_load
             print(json.dumps({
@@ -336,7 +340,9 @@ def main() -> None:
                 # outside the host inference wall-time metric.
                 profile_window_t0 = time.perf_counter()
                 for _ in range(repeat):
-                    handler.predict(model_ctx, processed)
+                    output = handler.predict(model_ctx, processed)
+                    complete_prediction(execution, model_ctx, output)
+                    del output
                 _cuda_synchronize()
                 profile_window_wall_time_ms = (
                     time.perf_counter() - profile_window_t0
@@ -349,7 +355,9 @@ def main() -> None:
             itt.resume()
             try:
                 for _ in range(repeat):
-                    handler.predict(model_ctx, processed)
+                    output = handler.predict(model_ctx, processed)
+                    complete_prediction(execution, model_ctx, output)
+                    del output
             finally:
                 itt.pause()
             profile_window_wall_time_ms = (

@@ -71,11 +71,14 @@ def main(argv=None):
     parser.add_argument("--require-no-skips", action="store_true")
     args = parser.parse_args(argv)
     suite = unittest.TestSuite()
+    discovery_counts = {}
     for pattern in args.pattern or ["test_*.py"]:
-        suite.addTests(unittest.defaultTestLoader.discover(args.directory, pattern=pattern))
+        discovered = unittest.defaultTestLoader.discover(args.directory, pattern=pattern)
+        discovery_counts[pattern] = discovered.countTestCases()
+        suite.addTests(discovered)
     started = time.perf_counter()
     result = unittest.TextTestRunner(verbosity=2, resultclass=EvidenceResult).run(suite)
-    successful = bool(result.testsRun) and result.wasSuccessful()
+    successful = bool(result.testsRun) and result.wasSuccessful() and all(discovery_counts.values())
     if args.require_no_skips and (result.skipped or result.expectedFailures):
         successful = False
     atomic_write_json(args.report, {
@@ -87,6 +90,7 @@ def main(argv=None):
                                 for dist in importlib.metadata.distributions())),
         "require_no_skips": args.require_no_skips,
         "patterns": args.pattern or ["test_*.py"],
+        "discovery_counts": discovery_counts,
         "counts": {
             "run": result.testsRun,
             "passed": sum(item["outcome"] == "passed" for item in result.records.values()),

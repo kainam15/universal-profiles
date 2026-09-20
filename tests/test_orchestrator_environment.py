@@ -1390,7 +1390,7 @@ class DetectEnvironmentTests(unittest.TestCase):
                 host_port=8106,
                 cold_start_s=1.0,
             ),
-        ), patch("acprof.host.orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
+        ) as start_container, patch("acprof.host.orchestrator._resolve_packet_latency_runtime", return_value=None), patch(
             "acprof.host.orchestrator._stop_container_session"
         ), patch("acprof.host.orchestrator._run", side_effect=fake_run):
             orchestrator.run_single_case(
@@ -1413,6 +1413,7 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(captured_env["REPEAT_IN_WINDOW"], "0")
         self.assertEqual(captured_env["REPEAT_WINDOW_SECONDS"], "10.0")
         self.assertEqual(captured_env["REQUEST_TIMEOUT_SECONDS"], "123.5")
+        self.assertEqual(start_container.call_args.kwargs["request_timeout_seconds"], 123.5)
 
     def test_run_single_case_preserves_manual_repeat_window_to_client(self) -> None:
         task_info = TaskInfo(

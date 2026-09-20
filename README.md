@@ -100,7 +100,7 @@ source .venv/bin/activate
 python -m pip install --require-hashes -r requirements.lock
 ```
 
-容器运行依赖由独立的平台和完整制品锁管理：保留 7 个任务族，23 个逻辑 profile 共享为
+容器运行依赖由独立的平台和完整制品锁管理：保留 7 个任务族，25 个逻辑 profile 共享为
 21 个依赖环境，其中 `onnxruntime-cpu` 完全不安装 Torch。镜像按需构建和复用；只读检查可运行 `python scripts/compile_locks.py --check`，
 分层及锁更新命令见[运行兼容](docs/Runtime_Compatibility.md#当前配置)。
 
@@ -167,6 +167,16 @@ cgroup v2。RAPL、perf、抓包不参与此模式，结果明确记录模式和
 
 此模型输入固定为 `[1,4]`，更大的输入或 batch 会明确拒绝。模型 revision 会解析并写入结果；
 任务 sanity check 不等于分类准确率评测。接口与声明格式见[扩展声明](docs/Runtime_Compatibility.md#扩展声明与按需加载)。
+
+离线容器回归（含真实服务、CPU/内存采集、落盘和审计）：
+
+```bash
+.venv/bin/python scripts/check_runtime.py --profile onnxruntime-cpu --basic-e2e \
+  --output-dir internal-testing/onnx-runtime
+```
+
+图像分类和多输入文本分类复用同一 ONNX 环境与现有任务生成器；
+支持边界及预训练小模型的复现步骤见[无 Torch 验收](docs/Testing.md#无-torch-运行时验收)。
 
 ### 4. 生成图表
 

@@ -39,7 +39,14 @@ Torch、NCU、Massif、Nsys 仍是显式选择的额外工具，`full` 不意味
 独立 `capability_report.json` 在采集结束后补充实际 CSV/profiler 证据。
 它记录主采集收尾时的能力快照；后续 posthoc 补采的状态以对应 profiler plan、CSV error 和
 `collection_history.json` 为准，当前不会自动改写该主采集快照。
-`requested_measurements_complete` 表示所请求项目是否具备证据；`collection_complete` 表示采集行完成且成功；
+Capability Report schema v2 将 `requested_measurements_available`（全部要求可采集）与
+`requested_measurements_complete`（全部要求已经 verified）分开；预检 available 不再算完成。
+`collection_complete` 保留原有“采集行完成且成功”的含义，新增 `collection_finished` 与
+`collection_succeeded` 分别表示行已有终态及行执行成功，`row_counts` 区分 succeeded、failed、
+not_measured、unfinished。OOM／timeout 是已结束的失败；剪枝未尝试行单列为 not_measured。
+这些是已提交审计的行状态，完整计划覆盖仍由 run_state/CSV 唯一键和 audit.coverage 检查。
+旧报告不能区分的完成状态为 null，不把 available 或单独的 runtime `status=ok` 冒充验证证据。
+读取兼容 schema v1/v2，缺版本按 v1；未知版本及非布尔完成状态明确报错，不隐式转换字符串。
 `full_profile_complete` 仅在 full 且上述两者满足时成立。工具 permission denied 或输出全为未知数值不能标完整。
 主矩阵仍可保留其它成功指标与失败计划；成功测量行缺少当前模式的必需指标时，保存诊断并以失败退出。
 
@@ -57,6 +64,12 @@ Torch、NCU、Massif、Nsys 仍是显式选择的额外工具，`full` 不意味
 相同事实在窗口结束后合并，避免快速模型的重复 JSON 超过 CSV 单字段限制；不同输出数量保留分布，
 不把它们简单改写成计划上限。这是工作量计数，不保存请求时间顺序。
 未知事实为 JSON `null` 并保留可用性说明，旧 CSV 缺此扩展列继续可读，不补造历史 workload。
+
+输入计划是 planned，原请求上限是 requested，Handler 观测的张量尺寸、token 数与输出数量是
+actual；三者不互相替代。新增任务通过现有 `_workload` 补充事实，保持列与 contract schema 不变。
+ONNX 独立验证记录实际 Provider、线程数及制品 SHA256；制品校验在准备／验证阶段完成，
+正式服务加载时不增加一次完整权重扫描。协议/任务 sanity 验证与固定参考结果检查分别报告，
+通过结构检查不表示模型准确率通过。
 
 文本的 `max_output_tokens` 是请求上限，`actual_output_tokens` 来自真实生成 token ID；
 计数排除 causal prompt／已知 decoder-start，包含终止 EOS，排除 EOS 后 padding。

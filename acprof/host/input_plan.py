@@ -268,12 +268,21 @@ def _parse_probe_response(data: Dict[str, Any], desc: str) -> Dict[str, Any]:
         raise RuntimeError(
             f"/probe returned non-boolean truncated_by_limit for {desc}: {truncated_by_limit!r}"
         )
+    limit_exceeded = data.get("limit_exceeded", False)
+    if not isinstance(limit_exceeded, bool):
+        raise RuntimeError(f"/probe returned non-boolean limit_exceeded for {desc}: {limit_exceeded!r}")
 
     return {
         "effective_input_scale": effective_scale,
         "truncated_by_limit": truncated_by_limit,
+        "limit_exceeded": limit_exceeded,
         "reason": reason,
     }
+
+
+def _probe_exceeds_limit(result: Dict[str, Any]) -> bool:
+    """Keep old actual-truncation evidence distinct from input rejected before execution."""
+    return result["truncated_by_limit"] or result.get("limit_exceeded", False)
 
 
 def _post_probe_payload(
@@ -484,7 +493,7 @@ def _assert_manual_nlp_scales_legal(
                 payload,
                 f"manual scale {_format_scale_value(scale)}",
             )
-            if result["truncated_by_limit"]:
+            if _probe_exceeds_limit(result):
                 invalid[scale] = (
                     f"{result['reason']}; effective_input_scale="
                     f"{_format_scale_value(result['effective_input_scale'])}"
@@ -533,7 +542,7 @@ def _plan_manual_nlp_scales(
                 payload,
                 f"manual scale {_format_scale_value(scale)}",
             )
-            if result["truncated_by_limit"]:
+            if _probe_exceeds_limit(result):
                 invalid[scale] = (
                     f"{result['reason']}; effective_input_scale="
                     f"{_format_scale_value(result['effective_input_scale'])}"
@@ -628,7 +637,7 @@ def _plan_nlp_auto_scales(
             while left <= right:
                 mid = (left + right) // 2
                 result = probe_word_count(mid)
-                condition = (not result["truncated_by_limit"]) and (
+                condition = (not _probe_exceeds_limit(result)) and (
                     result["effective_input_scale"] <= float(target_scale)
                 )
                 if condition:
@@ -649,7 +658,7 @@ def _plan_nlp_auto_scales(
 
             if upper_wc >= 1:
                 upper_result = probe_word_count(upper_wc)
-                if not upper_result["truncated_by_limit"]:
+                if not _probe_exceeds_limit(upper_result):
                     candidates.append(upper_result)
 
             if not candidates:
@@ -801,7 +810,7 @@ def _plan_audio_scales(
                 payload,
                 f"audio scale {_format_scale_value(scale)}s",
             )
-            if result["truncated_by_limit"]:
+            if _probe_exceeds_limit(result):
                 raise RuntimeError(
                     "audio input scale is not valid for short-form inference: "
                     f"{_format_scale_value(scale)}s ({result['reason']})"

@@ -4,6 +4,7 @@ import json
 import sys
 import types
 import unittest
+import weakref
 from contextlib import ExitStack, contextmanager, nullcontext, redirect_stdout
 from unittest.mock import patch
 
@@ -217,6 +218,47 @@ class ComputeProfileRunnerITTTests(unittest.TestCase):
                 result = json.loads(stdout.getvalue())
                 self.assertEqual(result["status"], "ok")
                 self.assertEqual(result["repeat"], 2)
+
+    def test_completed_outputs_are_released_before_the_next_profiled_request(self):
+        class Output:
+            pass
+
+        for mode in ("cpu", "gpu", "torch_eager_cpu", "torch_eager_gpu"):
+            with self.subTest(mode=mode):
+                events, references = [], []
+                with self._main_context(mode, events) as (runner, stdout):
+                    handler = runner.HandlerRegistry.get()
+
+                    def predict(*_args):
+                        if references:
+                            self.assertIsNone(references[-1](), "previous output survives into the next inference")
+                        result = Output()
+                        references.append(weakref.ref(result))
+                        events.append("predict")
+                        return result
+
+                    def complete(_context, output, *, timeout_s):
+                        self.assertIs(output, references[-1]())
+                        events.append("complete")
+                        return output
+
+                    def postprocess(_context, output):
+                        self.assertIs(output, references[-1]())
+                        self.assertEqual(events[-1], "complete")
+                        events.append("postprocess")
+                        return {}
+
+                    handler.predict = predict
+                    handler.postprocess = postprocess
+                    runner.configured_execution.return_value[0].wait_for_completion = complete
+                    runner.main()
+                self.assertEqual(len(references), 3)
+                self.assertTrue(all(reference() is None for reference in references))
+                self.assertEqual(events, [
+                    "load", "preprocess", "predict", "complete", "postprocess",
+                    "capture_start", "predict", "complete", "predict", "complete", "capture_end",
+                ])
+                self.assertEqual(json.loads(stdout.getvalue())["repeat"], 2)
 
 
 if __name__ == "__main__":

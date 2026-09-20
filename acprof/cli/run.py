@@ -915,7 +915,7 @@ def _run_main():
         write_static_meta_json(static_meta, static_meta_json)
         from acprof.artifacts import atomic_write_json
         atomic_write_json(Path(output_dir) / "capability_report.json", capability_report.to_dict())
-        if not capability_report.to_dict()["requested_measurements_complete"]:
+        if not capability_report.to_dict()["requested_measurements_available"]:
             print("[capability][WARN] 所请求的 profiler 尚有缺失或失败；详见 capability_report.json，不视为完整画像。")
         run_state.bind_runtime(task_info, image_info, planned_input_scales,
                                compute_profile_plan_file, execution_profile_plan_file)

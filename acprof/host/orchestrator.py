@@ -325,6 +325,7 @@ def run_single_case(
             image_info=image_info,
             container_name=container_name,
             log_prefix="[case]",
+            request_timeout_seconds=request_timeout_seconds,
         )
     except RuntimeError as exc:
         error = f"container_start_failed: {exc}"

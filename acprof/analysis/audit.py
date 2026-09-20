@@ -8,6 +8,7 @@ import json
 import math
 from pathlib import Path
 
+from acprof.capabilities import collection_outcomes
 from acprof.metric_registry import METRICS, NUMERIC_FIELDS
 from acprof.result_csv import expected_measurements, measurement_key, read_result_csv
 
@@ -71,6 +72,25 @@ def _formula_checks(row: dict) -> dict[str, float]:
     return expected
 
 
+def _check_workload_counts(row: dict) -> None:
+    raw = row.get("workload_contract", "")
+    if str(raw).strip().lower() in MISSING:
+        return
+    summary = json.loads(raw)
+    if not isinstance(summary, dict) or summary.get("schema_version") != 1:
+        raise ValueError("不支持的 workload_contract 摘要格式")
+    total = summary.get("request_count")
+    variants = summary.get("variants")
+    if type(total) is not int or total < 0 or not isinstance(variants, list):
+        raise ValueError("workload_contract 缺少合法 request_count/variants")
+    counts = [item.get("count") if isinstance(item, dict) else None for item in variants]
+    if any(type(count) is not int or count <= 0 for count in counts) or sum(counts) != total:
+        raise ValueError("workload_contract 的 variants 计数与 request_count 不一致")
+    completed = number(row.get("repeat_in_window"))
+    if completed is not None and completed != total:
+        raise ValueError("workload_contract.request_count 与 repeat_in_window 不一致")
+
+
 def audit_result(source: str | Path) -> dict:
     path = Path(source)
     if path.is_dir():
@@ -114,6 +134,7 @@ def audit_result(source: str | Path) -> dict:
         issue("invalid_csv", error)
         return report
     report["counts"]["rows"] = len(rows)
+    report["execution"] = collection_outcomes(rows)
     report["unknown_columns"] = [name for name in fields if name not in METRICS]
     report["missing_columns"] = [name for name in METRICS if name not in fields]
     expected_hash = metadata.get("input_scale_plan_sha256")
@@ -147,6 +168,10 @@ def audit_result(source: str | Path) -> dict:
             report["counts"][status] += 1
         formal = status == "ok" and not warmup
         report["counts"]["formal_ok"] += formal
+        try:
+            _check_workload_counts(row)
+        except (ValueError, TypeError) as error:
+            issue("workload_contract", error, row=index)
         for field in NUMERIC_FIELDS:
             raw = str(row.get(field, "nan")).strip().lower()
             if raw not in MISSING and number(raw) is None:
