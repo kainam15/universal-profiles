@@ -59,7 +59,7 @@ def measurement_key(row: Mapping[str, object]) -> MeasurementKey:
 def expected_measurements(cpus: Sequence[int], mems: Sequence[int], gpus: Sequence[str],
                           scales: Sequence[float], warmup: int, repeat: int) -> set[MeasurementKey]:
     return {
-        measurement_key(dict(zip(KEY_FIELDS, (cpu, mem, gpu, f"{float(scale):g}", is_warmup, index))))
+        measurement_key(dict(zip(KEY_FIELDS, (cpu, mem, gpu, str(float(scale)), is_warmup, index))))
         for cpu, mem, gpu, scale in product(cpus, mems, gpus, scales)
         for is_warmup, count in ((1, warmup), (0, repeat))
         for index in range(count)

@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from acprof.config import CSV_FIELDS
 from acprof.host.orchestrator import merge_all_csvs
+from acprof.result_csv import expected_measurements, measurement_key, read_result_csv
 
 
 class ResultMergeTests(unittest.TestCase):
@@ -30,6 +31,36 @@ class ResultMergeTests(unittest.TestCase):
 
     def assert_previous_result(self):
         self.assertEqual(self.destination.read_bytes(), b"previous result\n")
+
+    def test_fractional_image_scale_matches_exact_plan_without_tolerance(self):
+        scale = 30 / 224
+        row = dict(cpu_cores="1", mem_cap_gb="4", gpu_mode="off", input_scale=str(scale),
+                   warmup="0", repeat_idx="0", status="ok", error="")
+        path = self.source(rows=[row])
+        expected = expected_measurements([1], [4], ["off"], [scale], 0, 1)
+        _, rows = read_result_csv(path, expected=expected)
+        self.assertEqual(rows[0]["input_scale"], "0.13392857142857142")
+        changed = {**row, "input_scale": "0.133929"}
+        self.assertNotEqual(measurement_key(changed), measurement_key(row))
+
+    def test_close_scales_do_not_collapse_to_one_measurement(self):
+        keys = expected_measurements([1], [4], ["off"], [0.13392851, 0.13392852], 0, 1)
+        self.assertEqual(len(keys), 2)
+
+    def test_fractional_error_row_preserves_plan_scale(self):
+        from acprof.host.detect import TaskInfo
+        from acprof.host.input_plan import serialize_input_scales
+        from acprof.host.orchestrator import _write_case_error_csv
+        scale = 30 / 224
+        serialized = serialize_input_scales([scale])
+        self.assertEqual(float(serialized), scale)
+        path = self.directory / 'error.csv'
+        _write_case_error_csv(task_info=TaskInfo('org/model', 'image-classification', 'cv',
+                                                'transformers_pipeline', 'transformers', 'a' * 40, 'manual'),
+                              out_csv=str(path), cpu=1, mem=4, gpu='off', warmup=0, repeat=1,
+                              repeat_in_window=1, input_scales=serialized, error='injected startup failure')
+        _, rows = read_result_csv(path, expected=expected_measurements([1], [4], ['off'], [scale], 0, 1))
+        self.assertEqual(float(rows[0]['input_scale']), scale)
 
     def test_missing_source_rejected_before_replacing_previous_result(self):
         source = self.source()

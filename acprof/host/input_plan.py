@@ -40,7 +40,8 @@ def _format_scale_value(scale: float) -> str:
     value = float(scale)
     if value.is_integer():
         return str(int(value))
-    return f"{value:g}"
+    # This string also feeds error rows and recovery, so it must round-trip.
+    return str(value)
 
 
 def serialize_input_scales(scales: List[float]) -> str:

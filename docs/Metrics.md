@@ -243,11 +243,21 @@ actual workload 的 `variants` 计数必须覆盖 `request_count`，已有 `repe
 - `scripts/measure_overhead.py <完成的实验目录> --gpu off --output-dir <新目录>`：复用原 image ID、
   输入计划和资源，随机化每轮未启用 monitors 与 5/20/100 Hz 监测线程的顺序，按同轮请求均值计算相对变化。
   它记录 RAPL/NVML/cgroup monitor 的采样成功状态；不运行 PCAP、perf 或 TUI，也不生成正式能耗 CSV。
+  添加 `--modes none,basic,full --sample-hz 20` 可比较完整采集器组合：none 无采集器，basic 仅容器
+  CPU/memory，full 使用现有 PCAP、perf、RAPL、NVML 和容器资源采集器，并复用主 client 的无请求对照。
+  三组使用同一常驻服务、物化 payload、请求数、源实验线程／设备设置和串行 `/predict` 完成边界；
+  HTTP 返回前服务端已完成 runtime completion hook。未完成或错误响应使诊断失败，不记录成功时延。
+  这些是内部诊断场景，未新增正式 profiling mode，不输出正式画像 CSV；结果只比较请求窗口，
+  不包含容器启动、离线合并、profiler 或 TUI 成本。full 对照要求已有抓包权限，不修改系统权限。
+  full 在请求计时结束后沿用生产采集的抓包等待落盘步骤，保存 PCAP 和解析结果；请求覆盖不足时
+  诊断失败，该轮不能进入开销汇总。
 - `scripts/compare_ui.py <check_hardware 的 command.json> --output-dir <新目录>`：单 case 下随机化
   CLI/TUI 的配对顺序，每次运行完整正式协议并通过审计，镜像/revision/输入 hash 必须一致。
   默认 `--ui headless` 只测试 TUI 调度与日志路径；`--ui terminal` 用于实际终端绘制对照。
 
 两者默认 5 轮监测器对照 / 3 对 UI 实验，输出所有原始轮次和配对均值变化的 95% 区间。
+采集器对照还报告绝对时延差、各组轮次均值的样本标准差和配对差的标准差。每轮内多个请求
+只形成一个窗口均值，不能把请求数当成独立重复次数。
 负值表示该次对照中更快，不能直接解释成监测器提升了推理性能；区间跨零时没有检测到稳定方向。
 所有报告均在窗口结束后写出，新目录保护失败和中断证据。正式采集的 monitor 生命周期保持原协议。
 
