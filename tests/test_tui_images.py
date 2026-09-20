@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from rich.cells import cell_len
-from textual.widgets import Button, Collapsible, ContentSwitcher, DataTable, Input, Select, Static, TabbedContent, TabPane, Tree
+from textual.widgets import Button, Collapsible, ContentSwitcher, DataTable, Input, Static, TabbedContent, TabPane, Tree
 
 from acprof.tui.app import AcprofTui, PendingLaunch
 from acprof.tui.commands import RunConfig

@@ -6,7 +6,6 @@ import unittest
 from unittest.mock import patch
 
 from acprof.host import docker_runtime, input_plan
-from acprof.host import orchestrator
 from acprof.host.detect import TaskInfo
 
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
-import json
 import os
 from pathlib import Path
 import subprocess
@@ -11,10 +10,10 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from acprof.analysis.audit import audit_result, number
-from acprof.artifacts import atomic_write_json
-from acprof.tui.commands import RunConfig, build_run_command
-from acprof.result_csv import read_result_csv
+from acprof.analysis.audit import audit_result, number  # noqa: E402 -- 脚本先设置仓库导入路径。
+from acprof.artifacts import atomic_write_json  # noqa: E402 -- 脚本先设置仓库导入路径。
+from acprof.tui.commands import RunConfig, build_run_command  # noqa: E402 -- 脚本先设置仓库导入路径。
+from acprof.result_csv import read_result_csv  # noqa: E402 -- 脚本先设置仓库导入路径。
 
 
 def run_config(config: RunConfig, output: Path, *, ui: str = "cli") -> dict:

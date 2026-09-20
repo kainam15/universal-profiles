@@ -16,8 +16,8 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from acprof.dependency_locks import read_system_lock
-from acprof.runtime_profiles import PYTHON_BASE_IMAGE
+from acprof.dependency_locks import read_system_lock  # noqa: E402 -- 脚本先设置仓库导入路径。
+from acprof.runtime_profiles import PYTHON_BASE_IMAGE  # noqa: E402 -- 脚本先设置仓库导入路径。
 
 DIRECT_PACKAGES = ("valgrind", "libdw1t64", "build-essential")
 ARCHIVES = {"debian": ("trixie", "trixie-updates"), "debian-security": ("trixie-security",)}

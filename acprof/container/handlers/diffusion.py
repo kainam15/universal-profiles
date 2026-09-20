@@ -11,7 +11,6 @@ from typing import Any, Dict, NamedTuple, Optional
 
 from acprof.container.handlers import (
     BaseHandler,
-    HandlerRegistry,
     model_revision_kwargs,
 )
 

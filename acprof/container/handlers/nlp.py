@@ -9,7 +9,6 @@ from typing import Any, Dict, Optional, Tuple
 
 from acprof.container.handlers import (
     BaseHandler,
-    HandlerRegistry,
     model_revision_kwargs,
     transformers_pipeline_load_kwargs,
 )

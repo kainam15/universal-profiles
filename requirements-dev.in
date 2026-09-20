@@ -1,0 +1,6 @@
+# 开发工具独立于主机和容器运行锁；Ruff 同步 pyproject.toml 与 pre-commit hook。
+-c requirements.lock
+ruff==0.16.8
+pre-commit==4.6.2
+# 复用现有锁生成工具的版本。
+uv==0.12.13

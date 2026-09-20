@@ -18,7 +18,6 @@ from acprof.host.largest_scale_probe import (
 from acprof.host.orchestrator import ImageInfo
 from acprof.host.input_plan import PlannedInputScales
 from acprof.host.docker_runtime import RunningContainer
-from acprof.host import orchestrator
 
 
 def _task_info() -> TaskInfo:

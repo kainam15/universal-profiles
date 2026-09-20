@@ -14,7 +14,6 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from acprof.cli import plot
 from acprof.config import CSV_FIELDS
 from acprof.pixel_metrics import pixel_counts_from_metadata
 from acprof.host import client

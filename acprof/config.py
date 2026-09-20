@@ -1,7 +1,7 @@
 """AC-Prof Universal Profiler - Configuration & Constants."""
 
-from dataclasses import dataclass, field
-from typing import List, Dict, Any
+from dataclasses import dataclass
+from typing import Dict, Any
 
 # 保留公共常量名称；任务、后端与架构声明统一由 extension manifests 提供。
 from acprof.extensions import CATALOG
@@ -102,7 +102,11 @@ READY_POLL_INTERVAL_S = 0.1
 # ─────────────────────────────────────────────
 # CSV 输出字段
 # ─────────────────────────────────────────────
-from acprof.metric_registry import CSV_FIELDS, GPU_RUNTIME_STATE_FIELDS
+# 保留公共字段导出及现有初始化顺序。
+from acprof.metric_registry import (  # noqa: E402
+    CSV_FIELDS as CSV_FIELDS,
+    GPU_RUNTIME_STATE_FIELDS as GPU_RUNTIME_STATE_FIELDS,
+)
 
 STATIC_META_FIELDS = [
     "profiling_mode",

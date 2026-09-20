@@ -5,7 +5,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from acprof.metric_registry import METRICS
+from acprof.metric_registry import METRICS  # noqa: E402 -- 脚本先设置仓库导入路径。
 
 
 def render():

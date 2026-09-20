@@ -121,7 +121,6 @@ class MultimodalGenerationRuntimeTests(unittest.TestCase):
         self.assertEqual(first['output_type'], 'text')
 
     def test_omni_seed_repeats_audio_and_restores_external_rng(self):
-        from types import SimpleNamespace
         import torch
 
         class RandomAudioModel:

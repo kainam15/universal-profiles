@@ -15,6 +15,53 @@
 | 模型、backend、依赖或 Dockerfile | 路由与离线加载测试、镜像构建、所声明设备的真实推理；profiler 分别验证 |
 | TUI | 受影响的交互与尺寸检查；原生终端问题还需对应终端证据 |
 
+## 开发质量检查
+
+Ruff、pre-commit 和锁生成工具 uv 由 [`requirements-dev.in`](../requirements-dev.in) 声明，
+完整版本与制品哈希保存在 [`requirements-dev.lock`](../requirements-dev.lock)。开发锁以主机锁
+为约束，避免在同一个 `.venv` 安装时引入冲突；不加入主机运行依赖或容器环境身份。
+
+```bash
+.venv/bin/python -m pip install --require-hashes -r requirements-dev.lock
+.venv/bin/python -m pip check
+.venv/bin/python -m pre_commit install
+.venv/bin/python -m pre_commit run --all-files --show-diff-on-failure
+```
+
+`install` 仅给当前 clone 安装 Git hook；新 clone 需执行一次。手动运行和 CI 读取同一份
+[`.pre-commit-config.yaml`](../.pre-commit-config.yaml)，检查尾随空白、文件末尾换行、YAML、JSON、
+TOML、冲突标记、文件大小和 Python 代码。大文件检查对所有文件执行，限额为 1 MiB，覆盖现有
+约 938 KiB 的固定音频输入；Markdown 的两个行尾空格保留为换行。临时证据目录和禁止修改的
+`docs/Original_Project_Definition.md` 不参与 hooks。
+
+Ruff 版本由 [`pyproject.toml`](../pyproject.toml) 的 `required-version` 强制核验，Python 目标为
+3.10，显式启用 `E4`、`E7`、`E9`、`F`。第一版不启用 import 排序、`E501` 或 formatter；
+`line-length = 100` 本身不检查行长。Ruff hook 只检查，不自动修复；空白和末尾换行 hooks
+会修正文件并返回失败，检查 `git diff` 后重新运行。不得用扩大 `ignore` 或排除目录掩盖新问题。
+公共导出用显式重导出或 `__all__` 表达；必须先设置路径、环境或验证缺失依赖的 import，
+只在对应行标注具体规则及原因，不统一忽略 `__init__.py`。
+
+本地 Python 修改先运行 Ruff，再按受影响行为选择已有 runner 的测试模式；`--pattern` 可重复。
+未指定 `--pattern` 会执行完整测试集，不作为局部修改的默认要求。Git hook 不运行业务测试或硬件采集。
+
+```bash
+.venv/bin/ruff check acprof/host/env_utils.py tests/test_env_utils.py
+.venv/bin/python scripts/run_tests.py --pattern 'test_env_utils.py' \
+  --report internal-testing/env-tests.json
+git diff --check
+```
+
+更新开发工具时，修改输入并使用开发锁中的 uv 版本重新生成；Ruff 需同步修改版本约束及 hook 的
+完整 commit SHA，pre-commit 需同步最低版本。随后核对锁和 diff，重新安装开发锁并运行完整 hooks。
+
+```bash
+.venv/bin/uv pip compile requirements-dev.in --python-version 3.10 --universal \
+  --generate-hashes --no-annotate --no-header --output-file requirements-dev.lock
+```
+
+`scripts/compile_locks.py --check` 仍只验证既有容器锁与 profile 映射，不代替开发锁的重新解析。
+这些开发工具只在编辑、提交和 CI 验证时运行，不进入正式测量窗口。
+
 ## 自动化验证入口
 
 测试使用 `unittest`、`unittest.mock` 和临时目录；文件名为 `test_*.py`，方法名以 `test_` 开头。
@@ -53,6 +100,9 @@ git diff --check
 代码变化只重建服务层。它们不能替代实际容器构建与推理验证。
 
 ## CI 与环境测试
+
+独立 `lint` job 在 Python 3.10 上只安装开发锁，执行 `pip check` 和完整 pre-commit hooks；
+不安装推理依赖，也不需要 Docker/GPU。检查内容及 hook 版本与本地一致。
 
 `.github/workflows/ci.yml` 在 Python 3.10 / 3.12 上安装哈希锁并执行主机回归；
 每个版本将完整测试集按排序后的 test ID 轮转分成四片，保留 20 分钟作业超时。
@@ -190,6 +240,13 @@ Headless 能检查布局、键盘路径和输出状态；SVG、tmux 与真实 VS
 普通推理成功不能证明 Torch/NCU/Massif/Nsys 都支持；每种设备、dtype 和工具分别报告实际覆盖范围。
 
 ## 参考实现与复用取舍
+
+开发检查复用 [Ruff 官方 hook](https://github.com/astral-sh/ruff-pre-commit)
+和 [pre-commit 官方基础 hooks](https://github.com/pre-commit/pre-commit-hooks)（MIT，持续维护，
+所选版本支持 Python 3.10）。参考 [HTTPX 的工具配置](https://github.com/encode/httpx/blob/master/pyproject.toml)
+把 Ruff 规则放在 `pyproject.toml`，保留本项目的 unittest 与 evidence runner。
+hooks 固定完整 commit SHA，CI 直接执行同一份配置，避免维护第二份检查清单；只新增开发依赖，
+没有采集期间的后台进程或测量开销。
 
 结果原子发布采用 [CPython 的 tempfile](https://github.com/python/cpython/blob/main/Lib/tempfile.py)
 和标准库文件同步、替换机制；实验身份参考 [ASV 的结果管理](https://github.com/airspeed-velocity/asv/blob/main/asv/results.py)。

@@ -810,13 +810,13 @@ def enrich_static_meta(
 ) -> StaticMeta:
     """Return static metadata enriched with recognized profiling fields."""
     updates: Dict[str, Any] = {}
-    for field in STATIC_META_FIELDS:
-        if field not in metadata:
+    for field_name in STATIC_META_FIELDS:
+        if field_name not in metadata:
             continue
-        value = metadata[field]
+        value = metadata[field_name]
         if isinstance(value, tuple):
             value = list(value)
-        updates[field] = value
+        updates[field_name] = value
     return replace(static_meta, **updates) if updates else static_meta
 
 

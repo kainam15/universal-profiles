@@ -30,9 +30,9 @@ def _ensure_local_proxy_bypass() -> None:
 
 _ensure_local_proxy_bypass()
 
-import requests
+import requests  # noqa: E402 -- 代理绕过配置必须先于依赖导入。
 
-from acprof.config import (
+from acprof.config import (  # noqa: E402 -- 代理绕过配置必须先于依赖导入。
     CLIENT_REQUEST_TIMEOUT_EXIT_CODE,
     CSV_FIELDS,
     DEFAULT_IDLE_COOLDOWN_SECONDS,
@@ -44,19 +44,19 @@ from acprof.config import (
     IDLE_DIAG_DIRNAME,
     SCALING_DIMENSIONS,
 )
-from acprof.host.compute_profile_plan import (
+from acprof.host.compute_profile_plan import (  # noqa: E402 -- 代理绕过配置必须先于依赖导入。
     find_compute_profile_entry as _find_compute_profile_entry,
     load_compute_profile_plan as _load_compute_profile_plan,
 )
-from acprof.host.execution_profile_plan import (
+from acprof.host.execution_profile_plan import (  # noqa: E402 -- 代理绕过配置必须先于依赖导入。
     find_execution_profile_entry as _find_execution_profile_entry,
     load_execution_profile_plan as _load_execution_profile_plan,
 )
 
-from acprof.host import client_metrics as _client_metrics
-from acprof.workloads.contract import summarize_workload_contracts
-from acprof.pixel_metrics import pixel_counts_from_metadata, pixel_rate_metrics
-from acprof.host.client_metrics import (
+from acprof.host import client_metrics as _client_metrics  # noqa: E402 -- 代理绕过配置必须先于依赖导入。
+from acprof.workloads.contract import summarize_workload_contracts  # noqa: E402 -- 代理绕过配置必须先于依赖导入。
+from acprof.pixel_metrics import pixel_counts_from_metadata, pixel_rate_metrics  # noqa: E402 -- 代理绕过配置必须先于依赖导入。
+from acprof.host.client_metrics import (  # noqa: E402 -- 代理绕过配置必须先于依赖导入。
     CPU_METRIC_FIELDS,
     EFFICIENCY_METRIC_FIELDS,
     GPU_METRIC_FIELDS,
@@ -138,7 +138,7 @@ IDLE_DIAG_PATH = os.getenv("IDLE_DIAG_PATH", "").strip()
 CLIENT_ERROR_PATH = os.getenv("CLIENT_ERROR_PATH", "").strip()
 IDLE_DEBUG_TRACE_INTERVAL_S = float(os.getenv("IDLE_DEBUG_TRACE_INTERVAL_S", "0.1"))
 USE_MIPS = os.getenv("USE_MIPS", "").strip().lower() in {"1", "true", "yes", "on"}
-from acprof.capabilities import measurement_requested, require_profiling_mode
+from acprof.capabilities import measurement_requested, require_profiling_mode  # noqa: E402 -- 代理绕过配置必须先于依赖导入。
 PROFILING_MODE = require_profiling_mode(os.getenv("PROFILING_MODE", "full"))
 
 _FIRST_PREDICT_APP_S = float("nan")

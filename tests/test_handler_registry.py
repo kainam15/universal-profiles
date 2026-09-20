@@ -112,7 +112,7 @@ class HandlerRegistryTests(unittest.TestCase):
     def test_selected_handler_load_missing_dependency_is_actionable(self):
         class Handler:
             def load(self, *_args):
-                import acprof_missing_runtime_dependency
+                import acprof_missing_runtime_dependency  # noqa: F401 -- 验证缺失依赖的失败路径。
 
         with self.assertRaises(ValueError) as caught:
             handlers.load_handler(Handler(), "/model", "task", "optional", "cpu")

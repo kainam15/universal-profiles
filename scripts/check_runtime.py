@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 from pathlib import Path
 import subprocess
@@ -12,9 +11,9 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from acprof.artifacts import atomic_write_json
-from acprof.host.dependency_images import prepare_environment_image
-from acprof.runtime_profiles import DEFAULT_PROFILES, PROFILES, environment_id
+from acprof.artifacts import atomic_write_json  # noqa: E402 -- 脚本先设置仓库导入路径。
+from acprof.host.dependency_images import prepare_environment_image  # noqa: E402 -- 脚本先设置仓库导入路径。
+from acprof.runtime_profiles import DEFAULT_PROFILES, PROFILES, environment_id  # noqa: E402 -- 脚本先设置仓库导入路径。
 
 PATTERNS = {
     "nlp": ("test_nlp_runtime.py",),

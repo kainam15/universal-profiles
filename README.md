@@ -627,5 +627,14 @@ FLOP/MFLOPS 的单位、延迟分母和缺失值规则见[计算指标字典](do
 ## 项目结构与开发
 
 模块职责与依赖见[代码架构](docs/Architecture.md)，测试选择与证据要求见[测试指南](docs/Testing.md)。
+开发工具通过独立哈希锁安装，本地与 CI 共用 pre-commit 检查；规则、版本更新和定向测试方式见
+[开发质量检查](docs/Testing.md#开发质量检查)。在已有 `.venv` 中执行：
+
+```bash
+.venv/bin/python -m pip install --require-hashes -r requirements-dev.lock
+.venv/bin/python -m pre_commit install
+.venv/bin/python -m pre_commit run --all-files --show-diff-on-failure
+```
+
 新增模型或 backend 参见[适配契约](docs/Runtime_Compatibility.md#新增一个模型适配)及[适配流程](.agents/skills/acprof-model-adaptation/SKILL.md)。
 修改指标时更新对应的 [docs 专题](docs/README.md)，并同步受影响的示例和链接。

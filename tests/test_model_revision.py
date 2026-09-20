@@ -6,7 +6,6 @@ from unittest.mock import patch
 
 from acprof.container import download_model
 from acprof.container.handlers import model_revision_kwargs, resolve_model_source
-from acprof.host import orchestrator
 
 
 class ModelRevisionTests(unittest.TestCase):

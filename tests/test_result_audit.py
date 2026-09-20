@@ -1,6 +1,5 @@
 """审计真实 CSV/JSON 的故障与历史兼容边界。"""
 import csv
-import hashlib
 import json
 from pathlib import Path
 import tempfile

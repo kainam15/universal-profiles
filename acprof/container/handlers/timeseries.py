@@ -7,7 +7,6 @@ from typing import Any, Dict, Optional
 
 from acprof.container.handlers import (
     BaseHandler,
-    HandlerRegistry,
     model_revision_kwargs,
 )
 
@@ -24,7 +23,7 @@ class ChronosHandler(BaseHandler):
         model_revision: str = "main",
         load_options: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        import torch
+        import torch  # noqa: F401 -- 保留所选运行时在加载前的 Torch 依赖检查。
 
         if task_type != "time-series-forecasting" or backend != "chronos":
             raise ValueError("time-series-forecasting supports Chronos/ChronosBolt with backend='chronos'")

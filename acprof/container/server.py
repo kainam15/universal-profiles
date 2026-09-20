@@ -12,7 +12,7 @@ SERVER_PROCESS_STARTED_PERF = time.perf_counter()
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify  # noqa: E402 -- 先记录进程启动时刻并设置离线环境。
 
 app = Flask(__name__)
 

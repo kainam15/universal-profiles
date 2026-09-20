@@ -1,13 +1,11 @@
 import importlib
 import importlib.util
-import json
 import tempfile
 import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import numpy as np
 
 
 class ONNXHandlerTests(unittest.TestCase):

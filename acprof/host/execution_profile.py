@@ -517,9 +517,6 @@ def _collect_massif_entry(
     repeat: int,
 ) -> Dict[str, Any]:
     input_scale = float(entry["input_scale"])
-    scale_label = _safe_filename_token(
-        _format_scale_value(input_scale)
-    )
     host_report, checkpoint_path = _massif_artifact_paths(
         profile_root=profile_root,
         cpu=cpu,

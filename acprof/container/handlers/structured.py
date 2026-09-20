@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
-from acprof.container.handlers import BaseHandler, HandlerRegistry
+from acprof.container.handlers import BaseHandler
 
 
 TASK_OUTPUT_TYPES = {

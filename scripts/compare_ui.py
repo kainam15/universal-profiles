@@ -11,11 +11,11 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from acprof.artifacts import atomic_write_json
-from acprof.analysis.uncertainty import bootstrap_mean_interval
-from acprof.result_csv import read_result_csv
-from acprof.tui.commands import RunConfig
-from scripts.check_hardware import run_config
+from acprof.artifacts import atomic_write_json  # noqa: E402 -- 脚本先设置仓库导入路径。
+from acprof.analysis.uncertainty import bootstrap_mean_interval  # noqa: E402 -- 脚本先设置仓库导入路径。
+from acprof.result_csv import read_result_csv  # noqa: E402 -- 脚本先设置仓库导入路径。
+from acprof.tui.commands import RunConfig  # noqa: E402 -- 脚本先设置仓库导入路径。
+from scripts.check_hardware import run_config  # noqa: E402 -- 脚本先设置仓库导入路径。
 
 
 def main(argv=None):

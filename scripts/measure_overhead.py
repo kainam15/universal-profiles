@@ -19,9 +19,9 @@ from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from acprof.analysis.uncertainty import bootstrap_mean_interval
-from acprof.artifacts import atomic_write_json
-from acprof.runtime_settings import RUNTIME_ENV_NAMES
+from acprof.analysis.uncertainty import bootstrap_mean_interval  # noqa: E402 -- 脚本先设置仓库导入路径。
+from acprof.artifacts import atomic_write_json  # noqa: E402 -- 脚本先设置仓库导入路径。
+from acprof.runtime_settings import RUNTIME_ENV_NAMES  # noqa: E402 -- 脚本先设置仓库导入路径。
 
 
 @contextmanager
@@ -225,7 +225,9 @@ def measure_profile_window(session, entry, *, scenario, rate, count, name, cpu, 
                     os.environ["INPUT_SCALE_PLAN_FILE"] = previous_plan
             client.IDLE_SECONDS = idle
             client.IDLE_DEBUG = False
-            control = lambda: client._run_matched_control_window(gpu_monitor, cpu_monitor, resource, perf)
+
+            def control():
+                return client._run_matched_control_window(gpu_monitor, cpu_monitor, resource, perf)
         else:
             time.sleep(idle)
         handed_off = True

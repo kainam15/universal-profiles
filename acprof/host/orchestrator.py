@@ -345,7 +345,6 @@ def run_single_case(
         return out_csv
 
     base_url = session.base_url
-    cold_start_s = session.cold_start_s
     tcpdump_proc = None
     case_incomplete = False
     completed_rows_before_failure = 0

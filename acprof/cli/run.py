@@ -1009,7 +1009,7 @@ def _run_main():
         _cleanup_intermediate_results(csv_paths, output_dir, final_csv)
         elapsed = _format_elapsed(time.perf_counter() - start_time)
         print(f"\n{'='*60}")
-        print(f"Profiling complete!")
+        print("Profiling complete!")
         print(f"  Profiling mode:   {args.profiling_mode}")
         if not capability_report.to_dict()["requested_measurements_complete"]:
             print("  [WARN] 请求指标存在缺失；能力报告保留具体状态，结果不标记为完整画像。")
@@ -1022,7 +1022,7 @@ def _run_main():
             )
         print(f"  Merged results:   {final_csv}")
         print(f"  Total elapsed:    {elapsed}")
-        print(f"  Intermediate files from this run were cleaned up.")
+        print("  Intermediate files from this run were cleaned up.")
         print(f"{'='*60}")
         _record_run_completion(
             final_csv=final_csv,

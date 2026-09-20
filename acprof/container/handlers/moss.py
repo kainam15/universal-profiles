@@ -10,8 +10,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from acprof.container.handlers import HandlerRegistry, transformers_pipeline_load_kwargs
-from acprof.runtime_profiles import MOSS_ADAPTER
+from acprof.container.handlers import transformers_pipeline_load_kwargs
 from acprof.container.handlers.multimodal import MultimodalHandler
 
 

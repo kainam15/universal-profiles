@@ -20,7 +20,6 @@ import numpy as np
 
 from acprof.container.handlers import (
     BaseHandler,
-    HandlerRegistry,
     model_revision_kwargs,
     transformers_pipeline_load_kwargs,
 )

@@ -1,0 +1,24 @@
+minimum_pre_commit_version: '4.6.2'
+# 临时证据与原始项目定义不参与自动修改。
+exclude: '^(internal-testing/|results/|evidence/|docs/Original_Project_Definition\.md$)'
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+        args: [--assume-in-merge]
+      - id: check-added-large-files
+        # 固定 30 秒音频输入约 938 KiB；统一检查所有文件，限制为 1 MiB。
+        args: [--enforce-all, --maxkb=1024]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: 2eeb5678de71a00c0902cbda7105d328432f72cb # v0.16.8
+    hooks:
+      - id: ruff-check

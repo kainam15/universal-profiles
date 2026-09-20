@@ -11,8 +11,8 @@ from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from acprof.dependency_locks import normalized_name, package_versions, python_lock_text, read_python_lock
-from acprof.runtime_profiles import ENVIRONMENTS, PLATFORMS, PROFILES, environment_id, environment_identity
+from acprof.dependency_locks import normalized_name, package_versions, python_lock_text, read_python_lock  # noqa: E402 -- 脚本先设置仓库导入路径。
+from acprof.runtime_profiles import ENVIRONMENTS, PLATFORMS, PROFILES, environment_id, environment_identity  # noqa: E402 -- 脚本先设置仓库导入路径。
 
 UV_VERSION = "0.12.13"
 

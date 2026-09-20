@@ -19,6 +19,7 @@ AC-Prof 对 Docker 中的 Hugging Face 推理服务进行可复现分析，输�
 - 不修改 `docs/Original_Project_Definition.md`；用户未明确要求时不提交 Git。
 - 功能或结构改动前先检索 GitHub，评估兼容性、许可证、维护、依赖成本与测量开销，说明复用取舍。
 - 使用已有 `.venv`、Python 3.10+；正式采集要求原生 Linux、本机 Docker Engine、cgroup v2。
+- Python 改动后运行 Ruff，并按[验证范围](docs/Testing.md#验证范围)选择相关 unittest 与 evidence；局部修改不默认跑完整测试集。不得通过扩大忽略规则掩盖新问题。
 - 保持指标归因和可复现口径；界面活动、绘图、通知与额外诊断不进入正式测量窗口。
 - 凭据放在被 Git 忽略的 `.env.local`，不得写入文档或提交密码、令牌、webhook。
 - GPU/磁盘余量、Docker 状态、Git 分支和进程按需实时检查；临时计划不进入长期 Agent 文档。
@@ -43,12 +44,17 @@ AC-Prof 对 Docker 中的 Hugging Face 推理服务进行可复现分析，输�
 从仓库根目录执行，按[改动范围](docs/Testing.md#验证范围)选择：
 
 ```bash
+.venv/bin/ruff check .
+.venv/bin/python -m pre_commit run --all-files --show-diff-on-failure
 .venv/bin/python run.py --help
-.venv/bin/python -m unittest discover -s tests -p 'test_env_utils.py' -v
-.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python scripts/run_tests.py --pattern 'test_env_utils.py' --report internal-testing/env-tests.json
+# 跨模块变更需要完整回归时：
+.venv/bin/python scripts/run_tests.py --report internal-testing/host-tests.json
 .venv/bin/python -m compileall -q acprof run.py probe.py plot.py profile.py tui.py
 git diff --check
 ```
+
+开发工具安装、hook 与版本维护见[开发质量检查](docs/Testing.md#开发质量检查)。
 
 ## 完成标准
 

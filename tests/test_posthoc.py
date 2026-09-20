@@ -8,7 +8,6 @@ import acprof.host.posthoc.storage as host_posthoc_storage
 import csv
 import hashlib
 import json
-import math
 import os
 import tempfile
 import unittest
