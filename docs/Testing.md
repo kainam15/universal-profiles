@@ -95,7 +95,7 @@ git diff --check
 
 `test_runtime_image_build.py` 在 Docker 边界模拟环境中验证四层构建、跨 profile 的环境共享、
 模型 commit、Torch 来源、BuildKit secret、标签错配、额外包、输入变化及构建失败停止。
-环境身份测试覆盖原有 22 个 profile / 20 个环境的身份稳定性、新增无 Torch 环境、两组精确共享及 cu128 的版本差异；注释、锁文件名
+环境身份测试覆盖 37 个 profile / 24 个环境、无 Torch 环境、跨任务族精确共享及 cu128 的版本差异；CV 新增 timm 后按新包集计算身份。注释、锁文件名
 和条目顺序不影响身份，版本、制品、来源、平台和系统锁影响身份。配方变化改变构建缓存，业务
 代码变化只重建服务层。它们不能替代实际容器构建与推理验证。
 
@@ -111,6 +111,7 @@ git diff --check
 同时运行 `compile_locks.py --check`。七个任务族分别执行 CPU 接口测试，以随机小模型或明确导出的
 样例验证真实加载与推理；audio 和 multimodal 在同一作业共享一个 CPU 依赖环境，仍分别执行测试。
 网络在容器测试期间关闭。CI Actions 固定为已核验的 commit SHA，作业只授予仓库读取权限。
+另有 `nlp-transformers560-cpu` 矩阵项运行新版原生架构与图像 processor 测试，避免主机缺少推理依赖的 skip 掩盖环境回归。
 
 本地入口：
 
@@ -119,6 +120,7 @@ git diff --check
 .venv/bin/python scripts/compile_locks.py --check
 .venv/bin/python scripts/check_runtime.py --family audio --variant cpu --output-dir internal-testing/audio-runtime
 .venv/bin/python scripts/check_runtime.py --profile moss-transformers560 --build-only --output-dir internal-testing/moss-dependencies
+.venv/bin/python scripts/check_runtime.py --profile nlp-transformers560-cpu --test-pattern test_transformers5_runtime.py --output-dir internal-testing/transformers5-runtime
 .venv/bin/python scripts/render_metric_reference.py --check
 ```
 
@@ -140,6 +142,14 @@ git diff --check
 指定输出锁。具体命令见[当前配置](Runtime_Compatibility.md#当前配置)。
 
 源代码、模型权重和依赖层保持分离，CPU 容器测试不下载 Hub 模型，不代替真实 GPU/PMU/抓包实验。
+
+通用接口回归见 `test_generic_model_interfaces.py`：任意 checkpoint 名称的路由、固定 revision
+元数据读取、任务／架构到版本线的选择、制品拒绝、prompt 预算及 workload 参数重放。
+`test_cv_runtime.py` 在离线容器比较两类原生 timm 快照与官方模型输出；`test_timeseries_runtime.py`
+比较 Chronos-Bolt／Chronos-2 的多序列预测；`test_nlp_runtime.py` 比较完整句向量模块图、默认 prompt
+和归一化数值。`test_transformers5_runtime.py` 用旧环境没有的 Qwen3.5 原生小配置验证共享 NLP 入口，
+并验证新版图像 processor 的输入形状、检测框及依赖 OpenCV 的多边形输出。该测试需在
+`nlp-transformers560-cpu` 共享环境显式运行；随机小配置不是热门 checkpoint 的采集或准确率证据。
 
 ### 无 Torch 运行时验收
 

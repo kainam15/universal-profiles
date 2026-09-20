@@ -888,9 +888,9 @@ def plan_input_scales(
     input_scales: Optional[str] = None,
     workload_spec_path: Optional[str] = None,
 ) -> PlannedInputScales:
-    if workload_spec_path and task_info.task_family not in {"cv", "audio", "multimodal", "diffusion", "structured"}:
+    if workload_spec_path and task_info.task_family not in {"nlp", "cv", "audio", "multimodal", "diffusion", "structured"}:
         raise ValueError(
-            "--workload-spec is implemented for cv, audio, multimodal, diffusion and structured tasks"
+            "--workload-spec is implemented for nlp, cv, audio, multimodal, diffusion and structured tasks"
         )
     plan_file = _scale_plan_file_path(output_dir)
     _clear_scale_plan_file(plan_file)
@@ -926,7 +926,7 @@ def plan_input_scales(
                 scales=manual_scales,
                 batch_size=batch_size,
                 output_dir=output_dir,
-                **({"workload_spec_path": workload_spec_path} if text_audio else {}),
+                **({"workload_spec_path": workload_spec_path} if workload_spec_path or text_audio else {}),
             )
         if task_info.task_family == "timeseries":
             manual_scales = _assert_manual_timeseries_scales_legal(
@@ -955,7 +955,7 @@ def plan_input_scales(
             gpu_list=gpu_list,
             batch_size=batch_size,
             output_dir=output_dir,
-            **({"workload_spec_path": workload_spec_path} if text_audio else {}),
+            **({"workload_spec_path": workload_spec_path} if workload_spec_path or text_audio else {}),
         )
 
     if task_info.task_family == "audio":

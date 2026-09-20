@@ -128,6 +128,7 @@ STATIC_META_FIELDS = [
     "quantization_config",
     "model_license",
     "model_metadata_source",
+    "model_resolution",
     "task_family",
     "pipeline_tag",
     "runtime_backend",

@@ -74,7 +74,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--workload-spec",
         default=None,
-        help="Optional CV, audio, multimodal or diffusion workload manifest",
+        help="Optional NLP, CV, audio, multimodal, diffusion or structured workload manifest",
     )
     parser.add_argument(
         "--timeout-seconds",

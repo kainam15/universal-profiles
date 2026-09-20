@@ -83,6 +83,7 @@ class StaticMeta:
     quantization_config: Dict[str, Any] = field(default_factory=dict)
     model_license: Optional[str] = None
     model_metadata_source: Optional[str] = None
+    model_resolution: Dict[str, Any] = field(default_factory=dict)
     compute_profile_tools: List[str] = field(default_factory=list)
     torch_profiler_eager_flop_semantics: str = ""
     torch_profiler_eager_attention_implementation: str = ""
@@ -714,6 +715,7 @@ def collect_static_meta(
         quantization_config=dict(task_info.quantization_config),
         model_license=task_info.model_license,
         model_metadata_source=task_info.model_metadata_source,
+        model_resolution=dict(task_info.model_resolution),
         task_family=task_info.task_family,
         pipeline_tag=task_info.pipeline_tag,
         runtime_backend=task_info.runtime_backend,

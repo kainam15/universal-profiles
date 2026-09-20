@@ -27,7 +27,7 @@ MODEL_KEY_LABEL = "org.acprof.model-files-key"
 def configure_runtime_profile(task_info: Any) -> RuntimeProfile:
     """只在主机构建预检选择驱动分支；静态路由模块不探测硬件。"""
     from acprof.host.docker_runtime import _select_nlp_torch_index_url
-    from acprof.runtime_profiles import DEFAULT_PROFILES, PLATFORMS, PROFILES
+    from acprof.runtime_profiles import PLATFORMS, profile_for_platform
 
     profile = select_runtime_profile(task_info)
     if profile.adapter == "family-default" and profile.environment.platform.torch_version:
@@ -39,8 +39,10 @@ def configure_runtime_profile(task_info: Any) -> RuntimeProfile:
         version = PLATFORMS[variant].torch_version.split("+", 1)[0]
         if override and override not in {f"torch=={version}", f"torch=={version}+{variant}"}:
             raise ValueError(f"Torch 版本与依赖锁不符；{variant} 要求 torch=={version}+{variant}")
-        profile = PROFILES[DEFAULT_PROFILES[(profile.family, variant)]]
+        profile = profile_for_platform(profile, variant)
     task_info.runtime_profile_id, task_info.model_adapter = profile.profile_id, profile.adapter
+    if getattr(task_info, "model_resolution", None):
+        task_info.model_resolution["runtime_profile"] = profile.profile_id
     return profile
 
 
@@ -70,7 +72,7 @@ def request_fingerprint(task_info: Any, project_dir: str | Path = PROJECT_ROOT) 
         "model_download_policy": download_policy(task_info),
     }, sort_keys=True).encode())
     paths = sorted((root / "acprof").rglob("*.py"))
-    paths += sorted((root / "acprof" / "extensions").glob("*/manifest.json"))
+    paths += sorted((root / "acprof" / "extensions").rglob("*.json"))
     paths += [root / "dockerfiles" / name for name in ("runtime-model.Dockerfile", "runtime-final.Dockerfile")]
     for path in paths:
         digest.update(str(path.relative_to(root)).encode())

@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import math
+import copy
+import hashlib
+import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from acprof.workloads import WorkloadGenerator, register_generator
@@ -28,10 +32,39 @@ DEFAULT_HYPOTHESIS_TEMPLATE = "This example is {}."
 class NLPWorkloadGenerator(WorkloadGenerator):
     """Generate synthetic text of target sequence length (in approximate tokens)."""
 
-    def __init__(self, model_id: str, task_type: str, batch_size: int):
+    def __init__(self, model_id: str, task_type: str, batch_size: int,
+                 workload_spec_path: Optional[str] = None):
         super().__init__(model_id, task_type, batch_size)
         if isinstance(batch_size, bool) or int(batch_size) != batch_size or batch_size < 1:
             raise ValueError("batch_size must be a positive integer")
+        self._params: dict = {}
+        self._spec_metadata: dict = {}
+        if workload_spec_path:
+            raw = Path(workload_spec_path).read_bytes()
+            spec = json.loads(raw)
+            if not isinstance(spec, dict) or spec.get("schema_version") != 1:
+                raise ValueError("NLP workload requires schema_version=1")
+            unknown = set(spec) - {"schema_version", "task", "params"}
+            if unknown or spec.get("task", task_type) != task_type:
+                raise ValueError(f"invalid NLP workload task or fields: {sorted(unknown)}")
+            params = spec.get("params", {})
+            allowed = ({"prompt", "prompt_name", "normalize_embeddings"} if task_type in
+                       {"feature-extraction", "sentence-similarity"} else
+                       {"max_new_tokens"} if task_type in {"text-generation", "text2text-generation", "summarization",
+                                                          "translation", "conversational"} else set())
+            if not isinstance(params, dict) or set(params) - allowed:
+                raise ValueError(f"unsupported params for NLP workload task {task_type}")
+            if "max_new_tokens" in params and (type(params["max_new_tokens"]) is not int or params["max_new_tokens"] < 1):
+                raise ValueError("max_new_tokens must be a positive integer")
+            if "normalize_embeddings" in params and not isinstance(params["normalize_embeddings"], bool):
+                raise ValueError("normalize_embeddings must be a boolean")
+            if any(key in params and not isinstance(params[key], str) for key in ("prompt", "prompt_name")):
+                raise ValueError("embedding prompt and prompt_name must be strings")
+            if "prompt" in params and "prompt_name" in params:
+                raise ValueError("set either prompt or prompt_name, not both")
+            self._params = params
+            self._spec_metadata = {"workload_spec_sha256": hashlib.sha256(raw).hexdigest(),
+                                   "params": copy.deepcopy(params)}
 
     def _generate_text_from_word_count(self, word_count: int) -> str:
         n_words = max(1, int(word_count))
@@ -72,6 +105,7 @@ class NLPWorkloadGenerator(WorkloadGenerator):
             # while candidate count and the query stay fixed across scales.
             payload["documents"] = [text, " ".join(reversed(text.split()))]
 
+        payload["params"].update(copy.deepcopy(self._params))
         return payload
 
     def generate(self, scale_value: float) -> Dict[str, Any]:
@@ -102,15 +136,16 @@ class NLPWorkloadGenerator(WorkloadGenerator):
         return None
 
     def plan_metadata(self) -> Dict[str, Any]:
+        metadata = copy.deepcopy(self._spec_metadata)
         if self.task_type == "table-question-answering":
-            return {"input_scale_type": "table_rows", "columns": ["name", "value"]}
+            return {**metadata, "input_scale_type": "table_rows", "columns": ["name", "value"]}
         if self.task_type in {"sentence-similarity", "text-ranking"}:
-            return {"input_scale_type": "seq_length", "scale_scope": "per_candidate",
+            return {**metadata, "input_scale_type": "seq_length", "scale_scope": "per_candidate",
                     "candidate_count": 2, "query": DEFAULT_PAIR_QUERY}
         if self.task_type == "zero-shot-classification":
-            return {"candidate_labels": list(DEFAULT_CANDIDATE_LABELS),
+            return {**metadata, "candidate_labels": list(DEFAULT_CANDIDATE_LABELS),
                     "hypothesis_template": DEFAULT_HYPOTHESIS_TEMPLATE}
-        return {}
+        return metadata
 
 
 register_generator("nlp", NLPWorkloadGenerator)

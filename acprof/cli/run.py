@@ -630,6 +630,10 @@ def _run_main():
     print(f"  Library:  {task_info.library_name}")
     print(f"  Revision: {task_info.model_revision}")
     print(f"  Detected: {task_info.detection_method}")
+    if task_info.model_resolution:
+        resolution = task_info.model_resolution
+        print(f"  Interface: {resolution['loader']} / {resolution['artifact_format']} (candidate)")
+        print(f"  Runtime: {task_info.runtime_profile_id}")
     print(f"  Cgroup:   {cgroup_version} (mode={cgroup_collection_mode})")
     print(f"  Profiling mode: {args.profiling_mode}")
 

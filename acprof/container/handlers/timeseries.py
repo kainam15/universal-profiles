@@ -12,7 +12,7 @@ from acprof.container.handlers import (
 
 
 class ChronosHandler(BaseHandler):
-    """Handler for Chronos / ChronosBolt time-series forecasting models."""
+    """Use the upstream registry for native Chronos forecasting checkpoints."""
 
     def load(
         self,
@@ -41,31 +41,19 @@ class ChronosHandler(BaseHandler):
                 )
             chronos_load_options["attn_implementation"] = "eager"
 
-        # Try ChronosBolt first (faster), fall back to base Chronos
-        try:
-            from chronos import ChronosBoltPipeline
-            pipeline = ChronosBoltPipeline.from_pretrained(
-                model_source,
-                **model_revision_kwargs(model_source, model_revision),
-                **chronos_load_options,
-                device_map=device,
-                local_files_only=True,
-            )
-            pipeline_type = "bolt"
-        except Exception:
-            from chronos import ChronosPipeline
-            pipeline = ChronosPipeline.from_pretrained(
-                model_source,
-                **model_revision_kwargs(model_source, model_revision),
-                **chronos_load_options,
-                device_map=device,
-                local_files_only=True,
-            )
-            pipeline_type = "base"
+        from chronos import BaseChronosPipeline
+
+        pipeline = BaseChronosPipeline.from_pretrained(
+            model_source,
+            **model_revision_kwargs(model_source, model_revision),
+            **chronos_load_options,
+            device_map=device,
+            local_files_only=True,
+        )
 
         return {
             "pipeline": pipeline,
-            "pipeline_type": pipeline_type,
+            "pipeline_type": type(pipeline).__name__,
             "task_type": task_type,
             "device": device,
             "model_revision": model_revision or "main",
@@ -96,22 +84,37 @@ class ChronosHandler(BaseHandler):
         context = torch.tensor(raw, dtype=torch.float32)
         if context.ndim == 1:
             context = context.unsqueeze(0)
-        if model_ctx["device"] != "cpu":
-            context = context.to(model_ctx["device"])
+        # Native pipelines own batching and device transfer. Chronos 2 pins
+        # the incoming CPU tensors in its DataLoader before moving them.
 
-        return {"context": context, "prediction_length": pred_len,
+        return {"context": context, "series": [context[index] for index in range(context.shape[0])],
+                "prediction_length": pred_len,
                 "_effective_input_scale": float(len(rows[0])), "_truncated_by_limit": False,
                 "_probe_reason": "validated context length against available Chronos model limit"}
 
     def predict(self, model_ctx: Dict[str, Any], processed_input: Any) -> Any:
         pipeline = model_ctx["pipeline"]
         context = processed_input["context"]
+        series = processed_input.get("series")
+        if series is None:
+            series = [context[index] for index in range(context.shape[0])]
         pred_len = processed_input["prediction_length"]
 
         import torch
 
         with torch.inference_mode():
-            forecast = pipeline.predict(context, prediction_length=pred_len)
+            # A list of 1-D series is supported by all native Chronos
+            # generations; their batched tensor ranks differ (2-D vs 3-D).
+            forecast = pipeline.predict(series, prediction_length=pred_len)
+        # Chronos 2 returns one (variates, quantiles, horizon) tensor per
+        # series; this workload is univariate. Keep the shared B x Q x H
+        # contract without losing a series or flattening its horizon.
+        if isinstance(forecast, (list, tuple)):
+            if (len(forecast) != context.shape[0] or not forecast or
+                    any(len(item.shape) != 3 or item.shape[0] != 1 or
+                        item.shape[-1] != pred_len for item in forecast)):
+                raise ValueError("Chronos forecast must contain one univariate prediction per input series")
+            forecast = torch.cat(forecast, dim=0)
         return forecast
 
     def postprocess(self, model_ctx: Dict[str, Any], raw_output: Any) -> Dict[str, Any]:

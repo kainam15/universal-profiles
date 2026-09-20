@@ -174,6 +174,7 @@ OOM pruning 继续按原有参考 CPU/内存顺序重建证据，复用与推断
 | `quantization_config` | Hub model config 中的完整量化配置；没有时为空 object。 |
 | `model_license` | Hugging Face model card 许可证，例如 `apache-2.0`、`mit`；无法确认时为 `null`。 |
 | `model_metadata_source` | 参数量、参数 payload、精度、量化和许可证的元数据来源，当前在线 Hub 检测成功时为 `huggingface_hub`。 |
+| `model_resolution` | 可选的静态接口解析 object（内部 schema v1）：任务、backend、library、制品格式、loader、operation、model type、固定 revision、已读取元数据文件和最终所选 runtime profile。`status=candidate` 不是执行成功；历史 v7 缺失时按空 object／未知处理，不推算。无数值单位或测量窗口，不增加 CSV 列。 |
 | `task_family` | 任务族：`nlp`、`cv`、`audio`、`timeseries`、`diffusion`、`multimodal`、`structured`。 |
 | `pipeline_tag` | Hugging Face pipeline tag，例如 `fill-mask`、`image-classification`。 |
 | `runtime_backend` | 容器内使用的 runtime backend，例如 `transformers_pipeline`、`chronos`、`diffusers`。 |

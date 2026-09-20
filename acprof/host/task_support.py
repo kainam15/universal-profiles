@@ -12,11 +12,19 @@ from acprof.host.detect import TaskInfo
 
 
 class TaskSupportError(ValueError):
-    """An identified task cannot use the current collection implementation."""
+    """Collection preflight failed before image preparation or measurement."""
 
 
 def require_task_support(task_info: TaskInfo, *, batch_size: int = 1) -> None:
     """Reject known gaps and invalid task routing, without promising runtime compatibility."""
+    if task_info.metadata_errors:
+        raise TaskSupportError("\n".join([
+            f"[model-metadata][ERROR] Cannot resolve model metadata: {task_info.model_id}",
+            "  元数据读取失败，尚不能判断模型接口是否兼容。",
+            "  原因：" + "; ".join(task_info.metadata_errors),
+            "  请检查 HF_ENDPOINT、网络、仓库访问权限及 JSON 内容后重试。",
+            "  本次未进入镜像准备、资源矩阵或推理测量。",
+        ]))
     task = task_info.pipeline_tag
     expected_family = PIPELINE_TAG_TO_FAMILY.get(task)
     reason = None
@@ -36,10 +44,13 @@ def require_task_support(task_info: TaskInfo, *, batch_size: int = 1) -> None:
             reason = str(exc)
     if reason is None:
         from acprof.runtime_profiles import select_runtime_profile
+        from acprof.model_resolution import resolve_model_interface
 
         try:
+            task_info.model_resolution = resolve_model_interface(task_info)
             profile = select_runtime_profile(task_info)
             task_info.runtime_profile_id, task_info.model_adapter = profile.profile_id, profile.adapter
+            task_info.model_resolution["runtime_profile"] = profile.profile_id
         except ValueError as exc:
             reason = str(exc)
         else:

@@ -32,6 +32,8 @@ Agent 从 [AGENTS.md](AGENTS.md) 读取全局约束，再按目录和任务读�
 
 任务族、支持接口、尺度与示例统一见[运行兼容说明](docs/Runtime_Compatibility.md#任务支持范围)。
 支持某个任务标签不代表所有 checkpoint 都兼容；实际运行还需通过镜像与推理验证。
+原生 timm、Chronos 三代和 Sentence Transformers 使用共享接口；Transformers 新架构按元数据选择
+已锁定版本环境，无需逐模型增加代码。格式、prompt 和验证边界见[共享接口解析](docs/Runtime_Compatibility.md#共享接口解析)。
 
 ### NLP、音频、表格和策略任务
 
@@ -100,8 +102,8 @@ source .venv/bin/activate
 python -m pip install --require-hashes -r requirements.lock
 ```
 
-容器运行依赖由独立的平台和完整制品锁管理：保留 7 个任务族，25 个逻辑 profile 共享为
-21 个依赖环境，其中 `onnxruntime-cpu` 完全不安装 Torch。镜像按需构建和复用；只读检查可运行 `python scripts/compile_locks.py --check`，
+容器运行依赖由独立的平台和完整制品锁管理：保留 7 个任务族，37 个逻辑 profile 共享为
+24 个依赖环境，其中 `onnxruntime-cpu` 完全不安装 Torch。镜像按需构建和复用；只读检查可运行 `python scripts/compile_locks.py --check`，
 分层及锁更新命令见[运行兼容](docs/Runtime_Compatibility.md#当前配置)。
 
 私有或 gated 模型可在项目根目录创建 `.env.local`：

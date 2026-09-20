@@ -19,6 +19,11 @@ class Tensor:
     def unsqueeze(self, axis):
         return Tensor(np.expand_dims(self.values, axis))
 
+    def __getitem__(self, index):
+        item = Tensor(self.values[index])
+        item.device = self.device
+        return item
+
     def to(self, device):
         self.device = device
         return self
@@ -35,18 +40,19 @@ class TimeseriesSemanticsTests(unittest.TestCase):
         with patch.dict("sys.modules", {"torch": torch}), self.assertRaisesRegex(ValueError, "context.*2"):
             handler.preprocess(ctx, {"context": [[1, 2, 3]]})
 
-    def test_chronos_validates_scale_and_moves_input_during_preprocess(self):
+    def test_chronos_preserves_cpu_series_for_native_pinning_and_device_transfer(self):
         torch = types.SimpleNamespace(tensor=lambda value, **kwargs: Tensor(value), float32="float32",
                                       inference_mode=contextlib.nullcontext)
         ctx = {"device": "cuda", "task_type": "time-series-forecasting", "pipeline": Mock()}
         handler = ChronosHandler()
         with patch.dict("sys.modules", {"torch": torch}):
             processed = handler.preprocess(ctx, {"context": [[1.0, 2.0, 3.0]], "prediction_length": 2})
-            self.assertEqual(processed["context"].device, "cuda")
+            self.assertEqual(processed["context"].device, "cpu")
+            self.assertTrue(all(series.device == "cpu" for series in processed["series"]))
             self.assertEqual(processed["_effective_input_scale"], 3)
             processed["context"].to = Mock(side_effect=AssertionError("predict moved input"))
             handler.predict(ctx, processed)
-            ctx["pipeline"].predict.assert_called_once_with(processed["context"], prediction_length=2)
+            ctx["pipeline"].predict.assert_called_once_with(processed["series"], prediction_length=2)
 
     def test_invalid_context_and_prediction_length_fail(self):
         handler = ChronosHandler()

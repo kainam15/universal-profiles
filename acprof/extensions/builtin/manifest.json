@@ -55,7 +55,8 @@
       ],
       "backend_tasks": {
         "sentence_transformers": [
-          "sentence-similarity"
+          "sentence-similarity",
+          "feature-extraction"
         ],
         "cross_encoder": [
           "text-ranking"
@@ -582,9 +583,17 @@
     "diffusers": "diffusers",
     "timm": "transformers_model",
     "sklearn": "skops",
-    "skops": "skops"
+    "skops": "skops",
+    "chronos-forecasting": "chronos"
   },
   "backend_rules": [
+    {
+      "task": "feature-extraction",
+      "libraries": [
+        "sentence-transformers"
+      ],
+      "backend": "sentence_transformers"
+    },
     {
       "family": "structured",
       "libraries": [

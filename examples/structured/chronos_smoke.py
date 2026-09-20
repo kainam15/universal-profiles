@@ -25,11 +25,12 @@ def main(directory: Path) -> None:
     config.chronos_config = {"context_length": 32, "prediction_length": 4,
                             "input_patch_size": 4, "input_patch_stride": 4,
                             "quantiles": [0.1, 0.5, 0.9], "use_reg_token": True}
+    config.chronos_pipeline_class = "ChronosBoltPipeline"
     model = ChronosBoltModelForForecasting(config).eval()
     model.save_pretrained(directory)
     handler = ChronosHandler()
     context = handler.load(str(directory), "time-series-forecasting", "chronos", "cpu")
-    assert context["pipeline_type"] == "bolt"
+    assert context["pipeline_type"] == "ChronosBoltPipeline"
     assert handler.get_scale_metadata(context, {})["max_effective_input_scale"] == 32
     generator = TimeseriesWorkloadGenerator("chronos-fixture", "time-series-forecasting", 2)
     for scale in (8, 16, 32):

@@ -98,10 +98,14 @@ flowchart TD
 界面刷新、绘图、通知与额外文件操作继续位于正式测量窗口之外。
 
 `runtime_profiles` 是标准库声明层，分别登记 `RuntimeProfile`、`PlatformSpec`、`DependencyEnvironment`；
-7 个任务族和原有 22 个逻辑 profile 保留，新增三个 ONNX profile 后共 25 个 profile、21 个依赖环境。`dependency_locks` 规范化和验证
+7 个任务族共用 37 个逻辑 profile、24 个依赖环境。`dependency_locks` 规范化和验证
 制品锁，环境内容身份独立于 profile、adapter、模型及业务代码。主机检测只读元数据；handler 注册表
 供 server、输入规划和 profiler 共用。`extensions/*/manifest.json` 同时提供 config 映射、任务支持、
 profile 和延迟入口，读取声明不导入推理框架；声明文件参与服务镜像指纹。
+`model_resolution` 按固定 commit 的仓库布局和原生接口解析候选，`extensions/transformers` 保存
+固定版本的 Auto 注册数据；profile 选择按任务／架构匹配已锁定环境，平台切换保留版本线。
+元数据解析不加载模型，静态候选与独立推理、正式采集证据分别记录。timm、Chronos 三代及句向量
+复用上游接口与现有 Handler，公共采集器不增加 checkpoint 分支。
 `container.execution` 只加载所选声明的可选执行模块；Torch 上下文位于 `torch_execution`。
 无执行模块时采用 CPU/nullcontext，复用同一个 `BaseHandler`，不增加平行适配器层次。
 Workload 使用同一声明的可选 `workload_entrypoint`，按 family 延迟导入；任务参数在实现的

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from acprof.dependency_locks import (
@@ -82,6 +84,7 @@ class RuntimeProfile:
     task_types: tuple[str, ...] = ()
     model_types: tuple[str, ...] = ()
     backends: tuple[str, ...] = ("transformers_model", "transformers_pipeline")
+    runtime_line: str = "default"
 
     def __post_init__(self) -> None:
         if not isinstance(self.environment, DependencyEnvironment) or not self.environment.requirements_lock:
@@ -105,9 +108,9 @@ for _name, _platform, _inputs in (
     ("nlp-cpu", "cpu", ("nlp",)),
     ("nlp-cu124", "cu124", ("nlp",)),
     ("nlp-cu128", "cu128", ("nlp",)),
-    ("cv-cpu", "cpu", ("cv",)),
-    ("cv-cu124", "cu124", ("cv",)),
-    ("cv-cu128", "cu128", ("cv",)),
+    ("cv-cpu", "cpu", ("cv", "timm")),
+    ("cv-cu124", "cu124", ("cv", "timm")),
+    ("cv-cu128", "cu128", ("cv", "timm")),
     ("audio-cpu", "cpu", ("audio", "multimodal-transformers4576")),
     ("audio-cu124", "cu124", ("audio", "multimodal-transformers4576")),
     ("audio-cu128", "cu128", ("audio",)),
@@ -122,6 +125,9 @@ for _name, _platform, _inputs in (
     ("timeseries-cu128", "cu128", ("timeseries",)),
     ("multimodal-transformers4576", "cu128", ("multimodal-transformers4576",)),
     ("moss-transformers560", "cu128", ("moss-transformers560",)),
+    ("transformers560-cpu", "cpu", ("transformers560",)),
+    ("transformers560-cu124", "cu124", ("transformers560",)),
+    ("transformers560-cu128", "cu128", ("transformers560",)),
 ):
     ENVIRONMENTS[_name] = DependencyEnvironment(
         _name, PLATFORMS[_platform], f"dockerfiles/locks/{_name}.txt",
@@ -162,6 +168,42 @@ DEFAULT_PROFILES = {
     (profile.family, profile.environment.platform.platform_id): profile.profile_id
     for profile in PROFILES.values() if profile.adapter == "family-default"
 }
+for _family in ("nlp", "cv", "audio", "multimodal"):
+    for _variant in ("cpu", "cu124", "cu128"):
+        _name = f"{_family}-transformers560-{_variant}"
+        PROFILES[_name] = RuntimeProfile(
+            _name, _family, ENVIRONMENTS[f"transformers560-{_variant}"], runtime_line="transformers560",
+        )
+
+
+@lru_cache(maxsize=None)
+def _transformers_version(environment: DependencyEnvironment) -> str | None:
+    return package_versions(read_python_lock(Path(__file__).resolve().parents[1] / environment.requirements_lock)).get("transformers")
+
+
+def _native_compatible(task_info: Any, profile: RuntimeProfile) -> bool | None:
+    from acprof.model_resolution import supports_transformers_task
+    if task_info.runtime_backend not in {"transformers_model", "transformers_pipeline"}:
+        return None
+    config = getattr(task_info, "model_config", {}) or {}
+    # Custom Auto classes are verified by the selected extension/container.
+    if config.get("auto_map"):
+        return None
+    version = _transformers_version(profile.environment)
+    if not version:
+        return None
+    return supports_transformers_task(version, task_info.pipeline_tag, str(config.get("model_type") or ""))
+
+
+def profile_for_platform(profile: RuntimeProfile, platform: str) -> RuntimeProfile:
+    if profile.runtime_line == "default":
+        return PROFILES[DEFAULT_PROFILES[(profile.family, platform)]]
+    matches = [item for item in PROFILES.values() if item.family == profile.family
+               and item.adapter == profile.adapter and item.runtime_line == profile.runtime_line
+               and item.environment.platform.platform_id == platform]
+    if len(matches) != 1:
+        raise ValueError(f"No unique {platform} environment for {profile.profile_id}")
+    return matches[0]
 
 
 def platform_identity(platform: PlatformSpec, project_dir) -> dict:
@@ -232,6 +274,16 @@ def select_runtime_profile(task_info: Any) -> RuntimeProfile:
     profile = PROFILES.get(selected)
     if profile is None or profile.family != family or profile.adapter != "family-default":
         raise ValueError(f"No registered runtime for {family}/{selected}")
+    if _native_compatible(task_info, profile) is False:
+        if getattr(task_info, "runtime_profile_id", ""):
+            raise ValueError(f"Runtime {selected} does not register {task_info.pipeline_tag}/{task_info.model_config.get('model_type')}")
+        candidates = [item for item in PROFILES.values() if item.family == family
+                      and item.runtime_line != "default" and item.adapter == "family-default"
+                      and item.environment.platform.platform_id == profile.environment.platform.platform_id
+                      and _native_compatible(task_info, item) is True]
+        if not candidates:
+            raise ValueError(f"No registered Transformers runtime for {task_info.pipeline_tag}/{task_info.model_config.get('model_type')}")
+        profile = candidates[0]
     return profile
 
 

@@ -24,8 +24,12 @@ class EnvironmentIdentityTests(unittest.TestCase):
         self.env = ENVIRONMENTS['audio-cpu']
 
     def test_profiles_share_exact_environments_without_merging_near_matches(self):
-        self.assertEqual(len(PROFILES), 25)
-        self.assertEqual(len({environment_id(p.environment, ROOT) for p in PROFILES.values()}), 21)
+        self.assertEqual(len(PROFILES), 37)
+        self.assertEqual(len({environment_id(p.environment, ROOT) for p in PROFILES.values()}), 24)
+        for variant in ('cpu', 'cu124', 'cu128'):
+            for family in ('nlp', 'cv', 'audio', 'multimodal'):
+                self.assertIs(PROFILES[f'{family}-transformers560-{variant}'].environment,
+                              ENVIRONMENTS[f'transformers560-{variant}'])
         for profile in ('onnxruntime-cpu', 'onnxruntime-cv-cpu', 'onnxruntime-nlp-cpu'):
             self.assertIs(PROFILES[profile].environment, ENVIRONMENTS['onnxruntime-cpu'])
         for variant in ('cpu', 'cu124'):

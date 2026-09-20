@@ -91,7 +91,7 @@ Windows Terminal、VS Code 集成终端等支持真彩色的客户端，通过 S
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `--input-scales` | auto | 手动覆盖 input scale 列表；未提供时通常自动规划 6 档，自定义音频清单按声明档数。 |
-| `--workload-spec` | task default | cv、audio、multimodal、diffusion 或 structured 的 workload 清单 JSON。读取音频的任务默认复用内置 LibriSpeech 语音；文本到音频使用确定性文本。结构化清单声明输入宽度、尺度与种子。各任务须使用对应的清单格式。 |
+| `--workload-spec` | task default | NLP、cv、audio、multimodal、diffusion 或 structured 的 workload 清单 JSON。NLP 可声明 embedding／生成参数；读取音频的任务默认复用内置 LibriSpeech 语音；结构化清单声明输入宽度、尺度与种子。各任务须使用对应的清单格式。 |
 
 #### 计算分析器
 
@@ -170,6 +170,26 @@ Windows Terminal、VS Code 集成终端等支持真彩色的客户端，通过 S
 - 同一次 run 的所有资源配置共用同一组 scale。
 - 所有任务族都会把已确定尺度的 payload 写入唯一的 `input_scale_plan.json`；主采集与 compute profiler 共同读取该文件，保证实际执行 payload、FLOP profiling 和 CSV 中记录的 `input_scale` 一致。
 - 手动传入 `--input-scales` 时以手动值为准；workload 会在 sweep 前验证合法性（图像／视频生成分辨率至少为 64 且必须是 8 的倍数；去噪步数是正整数；CV 倍率为有限正数）。
+
+#### NLP workload 参数
+
+NLP 清单使用 `schema_version=1`、与检测结果一致的 `task` 和 `params`，不接受额外字段。
+例如 `feature-extraction` 的句向量归一化：
+
+```json
+{"schema_version": 1, "task": "feature-extraction", "params": {"normalize_embeddings": true}}
+```
+
+`feature-extraction`／`sentence-similarity` 可指定字符串 `prompt` 或 `prompt_name`（二选一）以及布尔
+`normalize_embeddings`；命名 prompt 必须由模型声明。特征提取的这些参数要求
+`sentence_transformers` backend，普通 Transformers token 特征不能忽略参数继续运行。
+未指定时保留模型默认 prompt 和模块图的归一化行为。`normalize_embeddings=false` 不会移除仓库已有的
+Normalize 模块，遵循原生 `encode` 语义。尺度表示正文 token 数；容量预算额外扣除
+prompt 和 special tokens，预处理还验证拼接后的实际长度，防止编码器隐式截断。
+
+生成任务接受正整数 `max_new_tokens`，例如 `{"schema_version":1,"task":"text-generation","params":{"max_new_tokens":16}}`。
+清单通过 `--workload-spec /path/to/workload.json` 传入；参数、清单 SHA256 及每档实际 payload
+写入输入计划，主采集与 profiler 重放同一参数。本接口不加载用户执行代码，也未增加任意 chat 模板或非对称检索任务。
 
 #### 真实音频 workload
 

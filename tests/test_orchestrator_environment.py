@@ -386,6 +386,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             quantized=False,
             model_license="apache-2.0",
             model_metadata_source="huggingface_hub",
+            model_resolution={"schema_version": 1, "status": "candidate", "loader": "Transformers Auto/pipeline"},
         )
 
         with patch("acprof.host.static_metadata._detect_environment", return_value="windows11+wsl"), patch(
@@ -442,6 +443,8 @@ class DetectEnvironmentTests(unittest.TestCase):
             )
 
         self.assertEqual(meta.environment, "windows11+wsl")
+        self.assertEqual(meta.model_resolution, task_info.model_resolution)
+        self.assertIsNot(meta.model_resolution, task_info.model_resolution)
         self.assertEqual(
             meta.run_command,
             "python run.py --model google-bert/bert-base-uncased",
@@ -660,6 +663,7 @@ class DetectEnvironmentTests(unittest.TestCase):
             ]
 
         self.assertEqual(list(payload), STATIC_META_FIELDS)
+        self.assertEqual(payload["model_resolution"], {})
         self.assertNotIn("compute_profile_schema_version", payload)
         self.assertEqual(payload["parameter_count"], 42)
         self.assertEqual(payload["parameter_bytes"], 168)
@@ -1021,17 +1025,17 @@ class DetectEnvironmentTests(unittest.TestCase):
 
     def test_workload_spec_is_rejected_for_unimplemented_families(self) -> None:
         task_info = TaskInfo(
-            model_id="test/nlp",
-            pipeline_tag="fill-mask",
-            task_family="nlp",
-            runtime_backend="transformers_pipeline",
-            library_name="transformers",
+            model_id="test/forecast",
+            pipeline_tag="time-series-forecasting",
+            task_family="timeseries",
+            runtime_backend="chronos",
+            library_name="chronos",
             model_revision="main",
             detection_method="unit",
         )
         with tempfile.TemporaryDirectory() as tmp, self.assertRaisesRegex(
             ValueError,
-            "implemented for cv, audio, multimodal, diffusion and structured",
+            "implemented for nlp, cv, audio, multimodal, diffusion and structured",
         ):
             input_plan.plan_input_scales(
                 task_info=task_info,

@@ -36,6 +36,7 @@ flowchart LR
 | 逻辑 profile | 选择条件 | 依赖与接口 |
 | --- | --- | --- |
 | `multimodal-transformers4576` | 已支持的原生 `multimodal` 模型 | Transformers 4.57.6；`family-default` handler |
+| `<family>-transformers560-<platform>` | NLP、CV、Audio、Multimodal 中旧 Auto 注册表未覆盖、5.6.0 已登记的原生架构 | 按任务和 `model_type` 选择；四个任务族共享每个平台的完整环境，仍用 `family-default` |
 | `moss-transformers560` | MOSS 官方模型 ID，或 `model_type=moss_transcribe_diarize` | Transformers 5.6.0；`moss-transcribe-diarize` adapter |
 | `<family>-cu128` / `<family>-cu124` | NLP、CV、Audio、Diffusion、Structured、Timeseries | 完整依赖锁；Torch 2.11.0 / 2.6.0，保留对应任务族接口 |
 | `<family>-cpu` | 显式 CPU 索引或容器 CI | CPU wheel；同样使用完整依赖锁 |
@@ -46,21 +47,23 @@ flowchart LR
 
 | 对象 | 声明内容 |
 | --- | --- |
-| `RuntimeProfile` / `PROFILES` | 名称、任务族、adapter、模型/backend 约束、dtype、环境引用；保留原 22 个 profile，加上三个 ONNX profile 共 25 个。 |
+| `RuntimeProfile` / `PROFILES` | 名称、任务族、adapter、模型/backend 约束、dtype、环境引用和版本线；当前共 37 个 profile。 |
 | `PlatformSpec` / `PLATFORMS` | Linux amd64、固定 Python 基础镜像 digest、Python 3.10.21、系统锁；Torch 字段可省略。旧 CPU / cu128 为 Torch 2.11.0，cu124 为 2.6.0。 |
-| `DependencyEnvironment` / `ENVIRONMENTS` | 平台引用及完整 Python 制品锁；当前有 21 个唯一环境；可用 `RuntimeSpec(type, version, package)` 核验运行时包的锁版本。名称仅用于引用，不决定内容身份。 |
+| `DependencyEnvironment` / `ENVIRONMENTS` | 平台引用及完整 Python 制品锁；当前有 24 个唯一环境；可用 `RuntimeSpec(type, version, package)` 核验运行时包的锁版本。名称仅用于引用，不决定内容身份。 |
 
 `audio-cpu` 与 `multimodal-transformers4576-cpu` 共享 `audio-cpu` 环境；cu124 的对应两个
 profile 共享 `audio-cu124` 环境。cu128 的 audio 使用 `tqdm==4.70.1`，原生 multimodal 使用
 `4.70.0`，因此保留独立环境。MOSS 继续使用 Transformers 5.6.0 的专用 cu128 环境。
+`transformers560-cpu/cu124/cu128` 是三个共享原生环境；复用 5.6.0 约束并加入 timm，不选择 MOSS adapter。
 同族可有多个环境，不同族可共享环境；环境和 profile 数量均不要求长期保留同等数量的镜像。
 
 完整锁位于 [`dockerfiles/locks`](../dockerfiles/locks)，源约束位于
 [`dockerfiles/requirements`](../dockerfiles/requirements)。旧平台的 `platform-*.txt` 包含 Torch
 必需依赖闭包和基础安装工具；`platform-python-cpu.txt` 只有基础安装工具。Flask、torchvision、torchaudio、NumPy、Pillow 等由环境完整锁声明。
 每个包固定一个适用于目标 Python/ABI/架构的 wheel URL 和 SHA256，包括 pip、setuptools、wheel
-及其依赖。各环境直接继承所声明的平台，不通过升级另一个环境来构建。原有 20 个环境的规范化内容身份保持不变，
-新运行时角色声明不改变相同完整包集的身份；缺少包或锁版本不一致会失败。
+及其依赖。各环境直接继承所声明的平台，不通过升级另一个环境来构建。CV 三个平台的锁新增
+`timm==1.0.27`，因此环境身份改变；其余已有环境的包集保留。新运行时角色声明不改变相同完整
+包集的身份；缺少包或锁版本不一致会失败。
 
 系统锁 [`system-trixie-amd64.json`](../dockerfiles/locks/system-trixie-amd64.json) 固定基础镜像、
 Debian `20260912T203535Z` 和安全仓库 `20260912T113611Z` 的实际 snapshot URL、签名索引摘要、
@@ -92,6 +95,36 @@ uv 0.12.13；生成目标 wheel 锁需要 Python 3.11+ 的 `tomllib`，只读检
 支持任务标签不等于支持所有 checkpoint。已知不兼容的架构在任务预检退出；未登记的自定义
 架构不会自动安装其 requirements 或执行主机端模型代码。通过静态检查的模型仍须完成实际
 推理验证；CPU、GPU、dtype 和每种 profiler 的支持分别判断。
+
+### 共享接口解析
+
+主机在同一个模型 commit 读取文件列表及 `config.json`、`model_index.json`、`modules.json`、
+`adapter_config.json`，不执行仓库 Python。`model_resolution` 记录格式、loader、operation、
+`model_type`、元数据文件名与所选 profile；`status=candidate` 只表示静态候选，成功加载与真实
+输出仍由独立 `runtime_validation` 判断。元数据读取失败单独报告，不能归因为任务不支持。
+镜像站 HEAD 缺少 Hub 元数据头时，客户端对同一 revision 回退到官方 Hub；认证、文件不存在和
+离线缓存错误不会触发这项回退。
+
+Transformers 版本选择使用 [`extensions/transformers`](../acprof/extensions/transformers) 中从官方
+固定版本导出的 Auto 注册表，按任务所需模型类与 `model_type` 匹配，不维护 checkpoint ID 白名单。
+旧版本已经登记的架构继续使用旧环境；仅 `config.transformers_version` 较新不会强制升级。
+CPU/CUDA 平台切换保留所选版本线。该候选选择目前面向 Transformers 原生 backend，
+Sentence Transformers/CrossEncoder 继续使用其既有 4.57.6 环境；自定义 `auto_map` 由扩展与容器验证。
+Auto 中存在类不保证 processor、pipeline、dtype 或所有 profiler 兼容。
+
+更新版本时，用 [`export_transformers_support.py`](../scripts/export_transformers_support.py) 对固定 tag 的
+`src/transformers/models/auto/modeling_auto.py` 执行受限 AST 解析，记录源码 URL/SHA256：
+
+```bash
+.venv/bin/python scripts/export_transformers_support.py \
+  --source /path/to/modeling_auto.py --version 5.6.0 \
+  --output acprof/extensions/transformers/5.6.0.json
+```
+
+必须联动精确依赖锁和实际容器验证；注册表也参与服务构建指纹。未匹配到已登记环境的原生架构
+提前拒绝。已知独立 adapter 缺少 base、GGUF 或缺少 `model_index.json` 的 Diffusers 单文件／组件
+仓库也提前拒绝；本阶段没有增加这些制品的加载器。pyannote、SB3、LeRobot 等生态不能仅凭
+Hub task 标签当作 Transformers 模型加载。
 
 ## 扩展声明与按需加载
 
@@ -438,6 +471,18 @@ Docker 查询只在上述空闲窗口执行，不增加正式测量窗口内的�
 
 ## 参考实现与取舍
 
+共享模型接口直接复用官方 [Transformers Auto 注册表](https://github.com/huggingface/transformers/blob/v5.6.0/src/transformers/models/auto/modeling_auto.py)、
+[timm wrapper](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/models/timm_wrapper/configuration_timm_wrapper.py)、
+[Chronos 基类分派](https://github.com/amazon-science/chronos-forecasting/blob/v2.3.2/src/chronos/base.py) 与
+[SentenceTransformer 模块加载和 encode](https://github.com/huggingface/sentence-transformers/blob/v5.1.2/sentence_transformers/SentenceTransformer.py)。
+这些上游持续维护，许可均为 Apache-2.0；保留固定版本，模型权重另按仓库许可。
+不复制各 checkpoint 的推理脚本；新增依赖为 CV 的 timm 和独立的 Transformers 5.6.0 共享环境。
+新版共享环境还锁定 [OpenCV headless](https://github.com/opencv/opencv-python) 4.13.0.92，供原生
+图像 processor 的轮廓／多边形处理使用；只安装 headless 包，不引入 GUI 依赖。OpenCV 采用
+Apache-2.0，Python 打包工具为 MIT；目标 wheel 约 60 MB，沿用 NumPy 2.2.6，不升级其余锁定包。
+已有采集器不按模型分支。元数据解析、环境选择与下载在测量前完成；prompt、Pooling、Normalize
+和必要的预测输出整理属于实际请求工作，不从测量中扣除。
+
 本次增量核查了 [Optimum Benchmark 的配置与依赖](https://github.com/huggingface/optimum-benchmark/blob/main/pyproject.toml)
 （Apache-2.0、Python 3.10+）：采用后端配置与实验报告分工，不引入其 Transformers、Accelerate、
 Hydra、datasets 等依赖；项目自述仍为 WIP，不能据此替代本仓库实测。
@@ -514,7 +559,7 @@ CV 镜像同时安装 `build-essential`，供 PyTorch/Triton 在首次 GPU 推�
 | `zero-shot-classification` | Transformers NLI pipeline；固定候选标签和假设模板 | 输入文本 token 数 |
 | `translation` | Transformers 翻译 pipeline | 输入 token 数 |
 | `summarization` | Transformers 摘要 pipeline | 输入 token 数 |
-| `feature-extraction` | Transformers 特征提取 pipeline | 输入 token 数 |
+| `feature-extraction` | SentenceTransformer 完整模块图的句向量，或普通 Transformers token 特征 pipeline；依据 library／`modules.json` 选择 | 输入正文 token 数，prompt 另占模型容量 |
 | `text-generation` | Transformers 生成 pipeline | 输入 token 数 |
 | `fill-mask` | Transformers 掩码填充 pipeline，自动使用 tokenizer 的 mask token | 输入 token 数 |
 | `sentence-similarity` | SentenceTransformer 编码并计算相似度；后端 `sentence_transformers` | 候选文本 token 数的最大值，query 和候选数量固定 |
@@ -527,12 +572,20 @@ CV 镜像同时安装 `build-essential`，供 PyTorch/Triton 在首次 GPU 推�
 | `voice-activity-detection` | Silero `silero_vad.jit`；后端 `torchscript`，仅 CPU | 输入音频秒数 |
 | `tabular-classification` | skops 保存的 sklearn 分类器，或约定格式的 TorchScript | 每个 batch 项的表格行数 |
 | `tabular-regression` | skops 保存的 sklearn 回归器，或约定格式的 TorchScript | 每个 batch 项的表格行数 |
-| `time-series-forecasting` | Chronos／Chronos-Bolt | 历史时间步数 |
+| `time-series-forecasting` | `BaseChronosPipeline` 按配置分派 Chronos／Chronos-Bolt／Chronos-2；单变量序列列表 | 历史时间步数 |
 | `reinforcement-learning` | TorchScript 向量观测策略 | 每个 batch 项的独立观测数 |
 | `robotics` | TorchScript 向量观测策略 | 每个 batch 项的独立观测数 |
 | `graph-ml` | TorchScript `forward(x, edge_index, batch)` | 每张图的节点数 |
 
 NLP 的输入计划保存真实 payload，句子相似度／排序每次重新编码 query 和文档，零样本分类完整运行候选标签对应的 NLI 推理。表格问答固定列结构并改变行数，超出模型容量时失败，不通过删行伪装成原尺度。音频任务要求 `--batch-size 1`；读取音频的任务默认复用有来源与 SHA256 的内置 LibriSpeech 前缀，文本到音频使用确定性文本。生成音频仅返回形状、采样率、样本数和时长摘要。需要额外声码器／说话人资产的 SpeechT5、FastSpeech2Conformer 暂未适配，会在加载时明确拒绝。
+
+SentenceTransformer 保留仓库的 Pooling、Normalize 和默认 prompt；特征提取输出为 `[batch, embedding_dim]`
+摘要，不再把 token 隐状态当作句向量。可通过 [NLP workload 参数](CLI_Reference.md#nlp-workload-参数)
+选择 `prompt`／`prompt_name` 和 `normalize_embeddings`，输入预算包含 prompt。句子相似度仍为对称
+`encode`，没有增加独立 `encode_query`／`encode_document` 协议。Chronos 三代共用单变量列表输入；
+原生 list 输出核对 batch、变量数和 horizon 后合并为 `[batch, samples_or_quantiles, horizon]`，不把不同代的
+sample 和 quantile 数值语义混为一谈。输入序列留在 CPU，由原生 pipeline 批处理、固定内存及搬运到
+模型设备，这些工作包含在 `predict` 与对应 profiler 范围内；不提前传入 CUDA tensor 破坏 DataLoader 约定。
 
 例如运行一个表格问答尺度，或将 `--task` 换为表中任务并选择对应模型：
 
@@ -567,6 +620,10 @@ NLP 的输入计划保存真实 payload，句子相似度／排序每次重新�
 ### 视觉任务
 
 以下 19 类任务接入同一输入计划、最大输入探测、采集和后置 profiler 流程。适配以镜像中 Transformers 4.57.6／Diffusers 0.39.0 的原生接口为边界，不表示 Hub 上同标签的任意模型或自定义代码均可运行。
+
+timm 图像分类使用 Transformers 官方 `timm_wrapper` 与已有 CV handler；从 `pretrained_cfg` 读取
+预处理配置，CV 环境提供锁定 timm。更换兼容 timm checkpoint 无需新增模型 ID 分支。
+需要较新原生架构时按[共享接口解析](#共享接口解析)选择 5.6.0 候选环境。
 
 | Hugging Face 任务 | 任务族 | 适配范围 |
 | --- | --- | --- |
@@ -675,7 +732,7 @@ Diffusers 清单示例（还可设置 `strength`、`image_guidance_scale`、`neg
 
 普通采集与 NCU／Nsys 复用完整 `predict()`。profiler 在推理计算捕获前的预热阶段验证一次输出协议，计算捕获只重复推理；Massif 按整个进程生命周期统计，包含加载、预热和这次验证。Omni 的 Token2Wav 不支持 eager 注意力，因此 `any-to-any` 的 `torch_profiler_eager` 会明确失败；Diffusers 的 Transformer 视频模型也会拒绝尚未验证的 eager 替换。这些失败按工具隔离，不能把未采集的 FLOP 当成 0。已有 UNet 文生图 eager 路径保留。
 
-适配复用官方 [Transformers 多模态接口](https://github.com/huggingface/transformers/blob/v4.57.6/docs/source/en/chat_templating_multimodal.md)、[检索接口](https://github.com/huggingface/transformers/blob/v4.57.6/docs/source/en/tasks/visual_document_retrieval.md)、[Omni 实现](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/models/qwen2_5_omni/modeling_qwen2_5_omni.py) 和 [Diffusers pipeline](https://github.com/huggingface/diffusers/tree/v0.39.0/src/diffusers/pipelines)。原生多模态路径固定 Transformers 4.57.6，Diffusers 保持 0.39.0；MOSS 使用独立的 Transformers 5.6.0 环境。两库采用 Apache-2.0；具体模型权重的许可与访问条件以其模型页为准。
+适配复用官方 [Transformers 多模态接口](https://github.com/huggingface/transformers/blob/v4.57.6/docs/source/en/chat_templating_multimodal.md)、[检索接口](https://github.com/huggingface/transformers/blob/v4.57.6/docs/source/en/tasks/visual_document_retrieval.md)、[Omni 实现](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/models/qwen2_5_omni/modeling_qwen2_5_omni.py) 和 [Diffusers pipeline](https://github.com/huggingface/diffusers/tree/v0.39.0/src/diffusers/pipelines)。原生多模态路径默认使用 Transformers 4.57.6；需要新版 Auto 类时按元数据选择共享的 5.6.0 环境，仍受现有任务协议限制。Diffusers 保持 0.39.0，MOSS 保留独立的 Transformers 5.6.0 环境。两库采用 Apache-2.0；具体模型权重的许可与访问条件以其模型页为准。
 
 MOSS 自动选择专用 adapter 和依赖锁，不需要修改主机 `.venv`。默认提示词要求带时间戳和说话人编号的转写，`max_new_tokens=512`，CPU 使用 FP32，GPU 使用 BF16；processor 按官方方式分块处理音频，输出保留原始标记文本。可先运行：
 

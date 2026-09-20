@@ -45,12 +45,61 @@ class TaskInfo:
     runtime_profile_id: str = ""
     model_adapter: str = "family-default"
     model_download_policy: str = "auto"
+    repository_files: tuple[str, ...] = ()
+    repository_metadata: dict[str, Any] = field(default_factory=dict)
+    metadata_errors: tuple[str, ...] = ()
+    model_resolution: dict[str, Any] = field(default_factory=dict)
 
 
 def _architecture_metadata(config: Any) -> dict[str, Any]:
     if not isinstance(config, dict):
         return {}
-    return {key: config[key] for key in ("model_type", "architectures", "auto_map") if key in config}
+    keys = ("model_type", "architectures", "auto_map", "transformers_version", "torch_dtype", "dtype",
+            "quantization_config", "chronos_pipeline_class", "pretrained_cfg", "architecture")
+    metadata = {key: config[key] for key in keys if key in config}
+    if "pretrained_cfg" in metadata and "model_type" not in metadata:
+        metadata["model_type"] = "timm_wrapper"
+    return metadata
+
+
+def _download_metadata(model_id: str, name: str, revision: str | None = None) -> str:
+    from huggingface_hub import constants, hf_hub_download
+    from huggingface_hub.errors import FileMetadataError, LocalEntryNotFoundError
+
+    kwargs = {"repo_id": model_id, "filename": name}
+    if revision is not None:
+        kwargs["revision"] = revision
+    try:
+        return hf_hub_download(**kwargs)
+    except LocalEntryNotFoundError as exc:
+        # Some mirrors redirect HEAD across hosts without the Hub metadata
+        # headers. Keep Hub cache/integrity checks and the requested revision;
+        # do not turn authentication, missing files or offline errors into retries.
+        if not isinstance(exc.__cause__, FileMetadataError) or constants.ENDPOINT.rstrip("/") == "https://huggingface.co":
+            raise
+        return hf_hub_download(**kwargs, endpoint="https://huggingface.co")
+
+
+def _repository_metadata(model_id: str, revision: str, info: Any) -> dict[str, Any]:
+    """Read small, non-executable metadata at the same commit as the weights."""
+    files = tuple(sorted({str(getattr(item, "rfilename", "")) for item in
+                          (getattr(info, "siblings", None) or []) if getattr(item, "rfilename", "")}))
+    metadata, errors = {}, []
+    if files:
+        for name in ("config.json", "model_index.json", "modules.json", "adapter_config.json"):
+            if name not in files:
+                continue
+            try:
+                path = _download_metadata(model_id, name, revision)
+                with open(path, encoding="utf-8") as stream:
+                    metadata[name] = json.load(stream)
+                expected = list if name == "modules.json" else dict
+                if not isinstance(metadata[name], expected):
+                    del metadata[name]
+                    raise ValueError(f"{name} must contain {expected.__name__}")
+            except Exception as exc:
+                errors.append(f"{name}: {_format_failure(exc)}")
+    return {"repository_files": files, "repository_metadata": metadata, "metadata_errors": tuple(errors)}
 
 
 _HUB_DTYPE_NAMES = {
@@ -298,11 +347,7 @@ def _diffusers_task_from_index(
 ) -> Optional[str]:
     """Read native pipeline metadata only; never execute repository code."""
     try:
-        from huggingface_hub import hf_hub_download
-
-        path = hf_hub_download(
-            repo_id=model_id, filename="model_index.json", revision=revision,
-        )
+        path = _download_metadata(model_id, "model_index.json", revision)
         with open(path, "r", encoding="utf-8") as stream:
             class_name = json.load(stream).get("_class_name")
         task = _DIFFUSERS_PIPELINE_TASKS.get(class_name) if isinstance(class_name, str) else None
@@ -330,6 +375,9 @@ def _detect_from_hub(
     pipeline_tag = getattr(info, "pipeline_tag", None)
     library_name = getattr(info, "library_name", None) or ""
     sha = getattr(info, "sha", None) or "main"
+    repository = _repository_metadata(model_id, sha, info)
+    model_config = _architecture_metadata(getattr(info, "config", None))
+    model_config.update(_architecture_metadata(repository["repository_metadata"].get("config.json")))
     if not pipeline_tag and library_name == "diffusers":
         pipeline_tag = _diffusers_task_from_index(model_id, sha, diagnostics)
 
@@ -342,9 +390,7 @@ def _detect_from_hub(
     runtime_backend = LIBRARY_TO_BACKEND.get(library_name, DEFAULT_BACKEND)
 
     # Special handling: chronos models
-    if library_name == "chronos" or (
-        pipeline_tag in {None, "time-series-forecasting"} and "chronos" in model_id.lower()
-    ):
+    if library_name in {"chronos", "chronos-forecasting"} or model_config.get("chronos_pipeline_class"):
         pipeline_tag = pipeline_tag or "time-series-forecasting"
         task_family = "timeseries"
         runtime_backend = "chronos"
@@ -368,7 +414,8 @@ def _detect_from_hub(
         library_name=library_name,
         model_revision=sha,
         detection_method="hub_api",
-        model_config=_architecture_metadata(getattr(info, "config", None)),
+        model_config=model_config,
+        **repository,
         **_hub_model_metadata(info),
     )
 
@@ -382,9 +429,7 @@ def _detect_from_config(
     config_data = {}
     revision = "main"
     try:
-        from huggingface_hub import hf_hub_download
-
-        config_path = hf_hub_download(repo_id=model_id, filename="config.json")
+        config_path = _download_metadata(model_id, "config.json")
         with open(config_path, "r", encoding="utf-8") as f:
             config_data = json.load(f)
         snapshot = Path(config_path).parent.name
@@ -488,5 +533,7 @@ def detect_task(
         info.runtime_backend = CATALOG.default_backend(
             info.pipeline_tag, info.task_family, info.library_name, info.runtime_backend,
         )
+        if info.pipeline_tag in {"feature-extraction", "sentence-similarity"} and "modules.json" in info.repository_metadata:
+            info.runtime_backend = "sentence_transformers"
 
     return info

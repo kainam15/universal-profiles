@@ -38,6 +38,32 @@ class CVRuntimeTests(unittest.TestCase):
             result = handler.predict(context, processed)
             return handler.postprocess(context, result)
 
+    @unittest.skipUnless(importlib.util.find_spec("timm") is not None, "requires timm")
+    def test_timm_architectures_share_transformers_loading_and_preprocessing(self):
+        import torch
+        import timm
+        from timm.models._hub import save_for_hf
+        from transformers import TimmWrapperImageProcessor
+
+        for architecture in ("mobilenetv3_small_050", "resnet18"):
+            with self.subTest(architecture=architecture), tempfile.TemporaryDirectory() as directory:
+                model = timm.create_model(architecture, pretrained=False, num_classes=3).eval()
+                model.pretrained_cfg.update(input_size=(3, 32, 32), crop_pct=1., interpolation="bilinear",
+                                            mean=(0.5,) * 3, std=(0.5,) * 3)
+                processor = TimmWrapperImageProcessor(pretrained_cfg=model.pretrained_cfg)
+                save_for_hf(model, directory, safe_serialization=True)
+                handler = CVHandler()
+                context = handler.load(directory, "image-classification", "transformers_model", "cpu")
+                payload = CVWorkloadGenerator("unseen/checkpoint", "image-classification", 1).generate(0.25)
+                prepared = handler.preprocess(context, payload)
+                output = handler.predict(context, prepared)
+                with torch.inference_mode():
+                    reference = model(processor(prepared["image"], return_tensors="pt")["pixel_values"]).softmax(-1)[0]
+                actual = {item["label"]: item["score"] for item in output}
+                for index in range(3):
+                    self.assertAlmostEqual(actual[context["pipeline"].model.config.id2label[index]], reference[index].item(), places=5)
+                self.assertEqual(handler.postprocess(context, output)["output_type"], "classification")
+
     def test_videomae_loads_local_snapshot_and_consumes_every_frame(self):
         from transformers import VideoMAEConfig, VideoMAEForVideoClassification, VideoMAEImageProcessor
 

@@ -471,6 +471,12 @@ class LargestScaleProbeTests(unittest.TestCase):
         build_image.assert_called_once()
         expected_task = _task_info()
         expected_task.runtime_profile_id = "nlp-cu128"
+        expected_task.model_resolution = {
+            "schema_version": 1, "status": "candidate", "task": "fill-mask",
+            "backend": "transformers_pipeline", "library": "transformers", "artifact_format": "transformers",
+            "loader": "Transformers Auto/pipeline", "operation": "predict", "model_revision": "1" * 40,
+            "metadata_files": [], "model_type": None, "runtime_profile": "nlp-cu128",
+        }
         self.assertEqual(build_image.call_args.args[0], expected_task)
         self.assertIs(plan_scales.call_args.kwargs["image_info"], built_image)
         self.assertIs(run_probe.call_args.kwargs["image_info"], built_image)
