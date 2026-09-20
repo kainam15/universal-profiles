@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import hashlib
 import importlib.metadata
 from pathlib import Path
 import platform
@@ -63,19 +64,34 @@ class EvidenceResult(unittest.TextTestResult):
         super().addUnexpectedSuccess(test)
 
 
+def iter_tests(suite):
+    for test in suite:
+        if isinstance(test, unittest.TestSuite):
+            yield from iter_tests(test)
+        else:
+            yield test
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--directory", default=str(ROOT / "tests"))
     parser.add_argument("--pattern", action="append")
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--require-no-skips", action="store_true")
+    parser.add_argument("--shard-index", type=int, default=0, help="从 0 开始的分片编号")
+    parser.add_argument("--shard-count", type=int, default=1, help="完整测试集的分片总数")
     args = parser.parse_args(argv)
+    if not 0 <= args.shard_index < args.shard_count:
+        parser.error("需要 0 <= --shard-index < --shard-count")
     suite = unittest.TestSuite()
     discovery_counts = {}
     for pattern in args.pattern or ["test_*.py"]:
         discovered = unittest.defaultTestLoader.discover(args.directory, pattern=pattern)
         discovery_counts[pattern] = discovered.countTestCases()
         suite.addTests(discovered)
+    tests = sorted(iter_tests(suite), key=lambda test: test.id())
+    selected = tests[args.shard_index::args.shard_count]
+    suite = unittest.TestSuite(selected)
     started = time.perf_counter()
     result = unittest.TextTestRunner(verbosity=2, resultclass=EvidenceResult).run(suite)
     successful = bool(result.testsRun) and result.wasSuccessful() and all(discovery_counts.values())
@@ -91,6 +107,11 @@ def main(argv=None):
         "require_no_skips": args.require_no_skips,
         "patterns": args.pattern or ["test_*.py"],
         "discovery_counts": discovery_counts,
+        "shard": {
+            "index": args.shard_index, "count": args.shard_count,
+            "discovered": len(tests), "selected": len(selected),
+            "suite_sha256": hashlib.sha256("\n".join(test.id() for test in tests).encode()).hexdigest(),
+        },
         "counts": {
             "run": result.testsRun,
             "passed": sum(item["outcome"] == "passed" for item in result.records.values()),

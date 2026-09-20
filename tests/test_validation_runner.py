@@ -68,6 +68,47 @@ class ValidationRunnerTests(unittest.TestCase):
         self.assertIsNotNone(report)
         self.assertIn("1 != 2", report["tests"][0]["reason"])
 
+    def test_shards_cover_every_test_once_and_preserve_failures(self):
+        body = (
+            "class Sample(unittest.TestCase):\n"
+            "    def test_a(self): pass\n"
+            "    def test_b(self): self.fail('real failure')\n"
+            "    def test_c(self): pass\n"
+            "    def test_d(self): pass\n"
+            "    def test_e(self): pass\n"
+        )
+        _, whole = self.run_fixture(body)
+        expected = {test["id"] for test in whole["tests"]}
+        selected = []
+        for index in range(3):
+            process, report = self.run_fixture(
+                body, "--shard-index", str(index), "--shard-count", "3",
+            )
+            self.assertIsNotNone(report, process.stderr)
+            selected.extend(test["id"] for test in report["tests"])
+            self.assertEqual(report["shard"]["index"], index)
+            self.assertEqual(report["shard"]["count"], 3)
+            self.assertEqual(report["shard"]["discovered"], 5)
+            self.assertEqual(report["shard"]["selected"], report["counts"]["run"])
+            self.assertEqual(report["shard"]["suite_sha256"], whole["shard"]["suite_sha256"])
+            self.assertEqual(process.returncode, 1 if index == 1 else 0, process.stderr)
+        self.assertEqual(set(selected), expected)
+        self.assertEqual(len(selected), len(expected))
+
+    def test_invalid_or_empty_shard_cannot_pass(self):
+        body = "class Sample(unittest.TestCase):\n    def test_one(self): pass\n"
+        for index, count in ((-1, 2), (2, 2), (0, 0)):
+            with self.subTest(index=index, count=count):
+                process, report = self.run_fixture(
+                    body, "--shard-index", str(index), "--shard-count", str(count),
+                )
+                self.assertEqual(process.returncode, 2)
+                self.assertIsNone(report)
+        process, report = self.run_fixture(body, "--shard-index", "1", "--shard-count", "2")
+        self.assertIsNotNone(report, process.stderr)
+        self.assertEqual(process.returncode, 1)
+        self.assertEqual(report["counts"]["run"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

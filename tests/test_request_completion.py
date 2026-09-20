@@ -1,6 +1,7 @@
 """Controlled async backend: protocol evidence, not a GPU benchmark."""
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import ExitStack, nullcontext
+from importlib import import_module
 import os
 from threading import Event
 import types
@@ -48,7 +49,11 @@ class RequestCompletionTests(unittest.TestCase):
         runtime = types.SimpleNamespace(inference_context=nullcontext, metadata=lambda: {},
                                         wait_for_completion=wait_for_completion)
         self.contexts.enter_context(patch('acprof.container.handlers.HandlerRegistry.get', return_value=AsyncHandler()))
-        self.contexts.enter_context(patch('acprof.container.execution.configured_execution', return_value=(runtime, 'cpu')))
+        # Import-isolation fixtures may leave a stale attribute on the parent
+        # package. Patch the module that validate() actually imports, including
+        # on Python 3.10 where dotted patch targets can use that stale attribute.
+        execution = import_module('acprof.container.execution')
+        self.contexts.enter_context(patch.object(execution, 'configured_execution', return_value=(runtime, 'cpu')))
         self.contexts.enter_context(patch.dict(os.environ, {
             'TASK_FAMILY': 'structured', 'TASK_TYPE': 'tabular-regression',
             'RUNTIME_BACKEND': 'onnxruntime', 'MODEL_ID': 'local/async-fixture',

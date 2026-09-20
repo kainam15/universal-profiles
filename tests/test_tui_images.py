@@ -1032,6 +1032,33 @@ class TuiImagesTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.query_one("#image-table", DataTable).row_count, 4)
             self.assertIn(extra, app.query_one("#image-table", DataTable).rows)
 
+    async def test_queued_image_callbacks_are_safe_during_shutdown(self):
+        for callback in ("timer", "worker"):
+            with self.subTest(callback=callback):
+                class ClosingImagesApp(AcprofTui):
+                    CSS_PATH = AcprofTui.CSS_PATH
+
+                    async def _close_all(self):
+                        # Textual marks the app as stopped before pruning the
+                        # screen, but App.on_unmount has not run yet. Deliver
+                        # an already queued callback after partial unmount.
+                        await self.query_one("#start-run").remove()
+                        try:
+                            if callback == "timer":
+                                self.refresh_images()
+                            else:
+                                self._show_images(self._image_inventory)
+                        finally:
+                            await super()._close_all()
+
+                app = ClosingImagesApp(
+                    RunConfig.smoke("demo/model"), settings_path=self.directory / "tui.json",
+                )
+                async with app.run_test(size=(120, 30)) as pilot:
+                    await self.load_images(app, pilot)
+                    commands_before_shutdown = len(self.docker.commands)
+                self.assertEqual(len(self.docker.commands), commands_before_shutdown)
+
     async def test_background_page_and_confirmation_do_not_scan(self):
         app = self.make_app()
         async with app.run_test(size=(120, 30)) as pilot:

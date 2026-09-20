@@ -1625,7 +1625,7 @@ class AcprofTui(BarCursorApp):
         # A queued worker/form callback may run after Screen children have
         # unmounted, before App.on_unmount clears _form_ready.
         tabs = self.query("#main-tabs")
-        if (not self._form_ready or self._images_unavailable()
+        if (not self.is_running or not self._form_ready or self._images_unavailable()
                 or not tabs or tabs.first(TabbedContent).active != "images-tab"):
             self._image_refresh_timer.pause()
         else:
@@ -1841,7 +1841,7 @@ class AcprofTui(BarCursorApp):
         self._set_busy(True)
 
     def refresh_images(self) -> None:
-        if (not self._form_ready or len(self.screen_stack) != 1 or self._images_unavailable()
+        if (not self.is_running or not self._form_ready or len(self.screen_stack) != 1 or self._images_unavailable()
                 or self.query_one("#main-tabs", TabbedContent).active != "images-tab"
                 or self.mouse_captured is not None):
             return
@@ -1860,6 +1860,10 @@ class AcprofTui(BarCursorApp):
         self.call_from_thread(self._show_images, inventory, error)
 
     def _show_images(self, inventory: ImageInventory | None, error: str = "", *, clear_selection: bool = False) -> None:
+        # Textual stops the app before pruning widgets; on_unmount runs later.
+        # A queued timer or worker result must not access the disappearing UI.
+        if not self.is_running or not self._form_ready:
+            return
         previous = self._image_inventory
         previous_selection = set(self._selected_image_ids)
         if clear_selection:

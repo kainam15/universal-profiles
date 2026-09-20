@@ -55,6 +55,9 @@ git diff --check
 ## CI 与环境测试
 
 `.github/workflows/ci.yml` 在 Python 3.10 / 3.12 上安装哈希锁并执行主机回归；
+每个版本将完整测试集按排序后的 test ID 轮转分成四片，保留 20 分钟作业超时。
+所有分片都执行完整 discovery，新增测试会自动分配；不使用手写文件白名单。
+每片分别上传 `host.json` 和实时保存的 `host.log`，失败时继续执行其他分片。
 同时运行 `compile_locks.py --check`。七个任务族分别执行 CPU 接口测试，以随机小模型或明确导出的
 样例验证真实加载与推理；audio 和 multimodal 在同一作业共享一个 CPU 依赖环境，仍分别执行测试。
 网络在容器测试期间关闭。CI Actions 固定为已核验的 commit SHA，作业只授予仓库读取权限。
@@ -70,6 +73,10 @@ git diff --check
 ```
 
 `run_tests.py` 保留 unittest 输出，并将每项测试的结果、失败/跳过原因、版本及耗时写入 JSON。
+本地可用 `--shard-index 0 --shard-count 4` 重现一个 CI 分片；省略参数执行完整测试集。
+报告的 `shard` 记录编号、总片数、完整发现数、选中数和排序后 test ID 列表的 SHA256。
+汇总时须确认同一 Python 版本的分片齐全且测试集摘要相同，所有 test ID 无重复，
+总执行数等于完整发现数；单片通过不代表主机回归完成。
 空测试集必定失败；容器作业带 `--require-no-skips`，跳过或 expected failure 都不算环境验证通过。
 普通主机测试允许缺少推理依赖时跳过，报告明确列出范围。`check_runtime.py` 的目录必须为空；
 `runtime.json` 另记录逻辑 profile、环境 ID、平台/环境 image ID、完整运行清单和退出结果，不覆盖旧验证。
@@ -144,6 +151,7 @@ docker run --rm --network none --cpus 2 --memory 2g \
 镜像详情检查摘要与诊断分离、默认折叠、长包清单的末项可达、点击/Enter 展开，以及换行选择、空筛选、语言切换和缩放时的折叠状态；这些操作不得触发额外 Docker 查询。
 详情分隔条检查上下拖动的实际高度变化、拖出边界后的最小可见区域、按键调整与默认值恢复、缩窗后再放大的手动高度和阅读位置；切换页面、采集开始、失去捕获、缩放或按 `Esc` 后均须释放鼠标，三个镜像视图与中英文均应可用。
 镜像自动刷新检查首次打开、定时更新、失败重试与有效勾选/浏览位置保留；验证后台页面、确认框、并发操作和测量窗口不启动扫描，以及任务结束后恢复。
+退出阶段还需验证已排队的 timer 和 worker 回调：Textual 停止应用后、控件部分卸载而 `on_unmount` 尚未执行时，不再扫描或访问页面控件。
 页面切换、挂载和布局更新后等待框架处理事件，再判断点击和焦点，不用堆叠固定 `sleep` 掩盖竞态。
 
 Headless 能检查布局、键盘路径和输出状态；SVG、tmux 与真实 VS Code/SSH 终端是不同证据。
@@ -193,6 +201,12 @@ Headless 能检查布局、键盘路径和输出状态；SVG、tmux 与真实 VS
 profiler 调研了 [NVIDIA nsight-python](https://github.com/NVIDIA/nsight-python)（Apache-2.0）；其 kernel profiling 接口
 不替代现有完整请求和旁路 probe 契约，因此保留 CLI/CSV 集成，提取纯解析与环境发现模块。
 这些选择不增加正式测量窗口内的服务或网络调用，工具和环境验证均在采集前后进行。
+
+主机分片沿用 [CPython unittest 的测试集与 fixture 机制](https://github.com/python/cpython/blob/3.12/Lib/unittest/suite.py)
+和 [GitHub Actions matrix](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/run-job-variations)，
+保留各分片内的模块、类排序，不引入并行测试插件。涉及 `sys.modules` 隔离的测试，先用
+`importlib.import_module` 获取真实目标再 `patch.object`，避免 Python 3.10 的字符串 patch
+沿父包属性找到已脱离导入缓存的模块；请求完成、异常和超时断言保持原语义。
 
 统计报告页复用 [Textual 官方 DataTable](https://github.com/Textualize/textual/blob/main/docs/widgets/data_table.md)
 及 [Worker API](https://github.com/Textualize/textual/blob/main/docs/guide/workers.md)（MIT，官方持续维护），
