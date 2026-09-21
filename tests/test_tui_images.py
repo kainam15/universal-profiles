@@ -152,13 +152,14 @@ class TuiImagesTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(self.directory.joinpath("tui.json").exists(), "高度仅在本次会话保留")
 
     async def test_detail_resize_releases_mouse_after_interruption(self):
-        app = self.make_app()
-        async with app.run_test(size=(120, 30)) as pilot:
-            await self.load_images(app, pilot)
-            handle = app.query_one("#image-detail-resize")
-            detail = app.query_one("#image-detail-scroll")
-            for interruption in ("escape", "capture_lost", "hidden", "measurement", "resize"):
-                with self.subTest(interruption=interruption):
+        for interruption in ("escape", "capture_lost", "hidden", "measurement", "resize"):
+            with self.subTest(interruption=interruption):
+                # 断言失败也会退出本次应用，避免隐藏页面或 busy 状态影响下一场景。
+                app = self.make_app()
+                async with app.run_test(size=(120, 30)) as pilot:
+                    await self.load_images(app, pilot)
+                    handle = app.query_one("#image-detail-resize")
+                    detail = app.query_one("#image-detail-scroll")
                     initial = detail.size.height
                     await pilot.mouse_down(handle, offset=(10, 0))
                     self.assertIs(app.mouse_captured, handle)
@@ -179,6 +180,8 @@ class TuiImagesTests(unittest.IsolatedAsyncioTestCase):
                     else:
                         await pilot.resize_terminal(150, 45)
                     await pilot.pause()
+                    # Pilot.pause() 末尾的布局刷新可能刚排入 Hide；等控件处理后再断言。
+                    await asyncio.wait_for(handle.wait_for_refresh(), timeout=3)
                     self.assertIsNone(app.mouse_captured)
                     await pilot.hover(offset=(60, 5))
                     await pilot.mouse_up(offset=(60, 5))
