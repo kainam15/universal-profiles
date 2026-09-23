@@ -19,6 +19,7 @@ from acprof.config import (
 )
 
 from acprof.tui.i18n import message
+from acprof.installation import cli_command
 
 
 TASK_FAMILIES = ("nlp", "cv", "audio", "timeseries", "diffusion", "multimodal", "structured")
@@ -299,12 +300,10 @@ def build_run_command(
     project_dir: Path,
     python_executable: str | Path = sys.executable,
 ) -> list[str]:
-    """Build the existing ``run.py`` command without duplicating its work."""
+    """Build the installed CLI command without duplicating its work."""
     config = config.validate(project_dir=project_dir)
     command = [
-        str(python_executable),
-        "-u",
-        str(project_dir / "run.py"),
+        *cli_command("run", python_executable=python_executable),
         "--model",
         config.model,
         "--cpus",
@@ -373,9 +372,7 @@ def build_probe_command(
     """Build a one-request largest-scale diagnostic probe command."""
     config = config.validate(project_dir=project_dir)
     command = [
-        str(python_executable),
-        "-u",
-        str(project_dir / "probe.py"),
+        *cli_command("probe", python_executable=python_executable),
         "--model",
         config.model,
         "--cpus",
@@ -410,9 +407,7 @@ def build_plot_command(
     python_executable: str | Path = sys.executable,
 ) -> list[str]:
     return [
-        str(python_executable),
-        "-u",
-        str(project_dir / "plot.py"),
+        *cli_command("plot", python_executable=python_executable),
         str(Path(result_csv).expanduser()),
     ]
 
@@ -424,7 +419,7 @@ def build_stats_command(
     project_dir: Path,
     python_executable: str | Path = sys.executable,
 ) -> list[str]:
-    return [str(python_executable), "-u", str(project_dir / "stats.py"),
+    return [*cli_command("stats", python_executable=python_executable),
             str(Path(result_csv).expanduser()), "--output", str(output)]
 
 
@@ -440,9 +435,7 @@ def build_profile_command(
     if not normalized_tools:
         raise TuiConfigError([message('补采工具不能为空')])
     command = [
-        str(python_executable),
-        "-u",
-        str(project_dir / "profile.py"),
+        *cli_command("profile", python_executable=python_executable),
         str(Path(result_dir).expanduser()),
         "--tools",
         normalized_tools,

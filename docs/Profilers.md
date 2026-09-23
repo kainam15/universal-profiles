@@ -1,12 +1,12 @@
 # 计算与执行分析器
 
-选择 Torch、NCU、Massif、Nsys，解释工具指标或采样来源时查阅。补采操作见 [README](../README.md#补采已有结果)，参数见 [CLI 参考](CLI_Reference.md#计算分析器)。
+选择 Torch、NCU、Massif、Nsys，解释工具指标或采样来源时查阅。操作见[补采已有结果](#补采已有结果)，参数见 [CLI 参考](CLI_Reference.md#计算分析器)。
 
 [文档导航](README.md)
 
 ## 选择性能分析器
 
-[计算分析器](#计算分析器--compute-profile-tool) · [执行分析器](#执行分析器--execution-profile-tool) · [补采已有结果](../README.md#补采已有结果) · [从计划生成派生 CSV](../README.md#从已有计划生成派生-csv)
+[计算分析器](#计算分析器--compute-profile-tool) · [执行分析器](#执行分析器--execution-profile-tool) · [补采已有结果](#补采已有结果) · [从计划生成派生 CSV](#从已有计划生成派生-csv)
 
 ### 计算分析器：`--compute-profile-tool`
 
@@ -72,6 +72,51 @@ python run.py --model google-bert/bert-base-uncased \
 `--nsys-reference-cpu`、`--nsys-reference-mem` 显式选择，取值必须在本次资源矩阵中；
 Nsys 的 `per-cpu-scale` 只使用代表内存，`per-scale` 同时使用代表 CPU 和内存。
 
+## 补采已有结果
+
+完成主矩阵后，结果目录需同时具有 `result_all.csv`、`static_meta.json` 和
+`input_scale_plan.json`。先检查计划，再执行补采：
+
+```bash
+python profile.py results/google-bert--bert-base-uncased --dry-run
+python profile.py results/google-bert--bert-base-uncased --tools torch,ncu
+```
+
+不传 `--tools` 时，默认补齐适用且尚未成功的 `torch,ncu,nsys,massif`。
+TUI 的“补采工具”页提供这四项独立复选框，默认勾选 `torch`、`ncu`；
+鼠标点击或聚焦后按空格切换，可同时勾选四项。至少选择一项后再查看补采计划或执行补采。
+未显式指定工具的 `/profile`、`/profile-run` 使用当前勾选项；命令中指定工具时以命令为准。
+Torch 匹配已有 CPU/GPU 数据，NCU/Nsys 只用于 GPU 行，Massif 只用于 CPU-only 行。
+补采沿用前述 Massif/Nsys 采样策略，也支持 `--massif-sampling full`、
+`--nsys-sampling per-scale` 或 `--nsys-sampling full`。
+
+NCU 和 Massif 会按 input scale 保存 checkpoint。NCU 可复用匹配的 CSV 或从已有
+`.ncu-rep` 恢复，Massif 可复用匹配的 `.out`；模型 revision、镜像、资源、repeat 和
+NCU metrics（适用时）必须匹配，才能恢复旧报告。分析固定使用不可变镜像 ID，
+旧 tag 形式的 Massif checkpoint 与新 ID 不匹配时会重采。完整成功的已有 plan 也可复用。
+默认保留已有成功 CSV 值；`--force-reprofile` 强制重新采集并替换所选 profiler 字段。
+
+写入前把旧文件备份到 `posthoc_backups/<timestamp>/`，验证临时文件后原子替换
+`result_all.csv`、`static_meta.json` 和 `collection_history.json`，失败时从备份恢复。
+操作记录追加到 `posthoc_profile_history`，原始实验命令和非 profiler 字段保持原样。
+仅接受当前产物协议，不迁移旧静态元数据中的历史记录；报告与补采 plan 位于 `posthoc_profiles/`。
+同一结果目录若仍被采集或分析进程使用，补采会拒绝启动。
+
+## 从已有计划生成派生 CSV
+
+如果 latency 已采集完成、之后才生成 `compute_profile_plan.json`，可以写出一份带 FLOP/MFLOPS 的新 CSV：
+
+```bash
+python -m acprof.cli.backfill_compute \
+  results/google-bert--bert-base-uncased/result_all.csv \
+  results/google-bert--bert-base-uncased/compute_profile_plan.json \
+  --output results/google-bert--bert-base-uncased/result_all.with_compute.csv
+```
+
+工具按 GPU mode 和 input scale 匹配已有计划，生成带 Torch/NCU 字段的派生 CSV。
+输出采用原子写入，默认拒绝覆盖已有文件；确需替换显式输出路径时追加 `--overwrite`。
+FLOP/MFLOPS 的单位、延迟分母和缺失值规则见[计算指标字典](Profilers.md#torch-与-ncu-计算指标)。
+
 ## Torch 与 NCU 计算指标
 
 NCU 仅选择当前 SASS 和浮点 Tensor counters，不使用旧 `flop_count_*`。查询失败会报告原因，
@@ -82,7 +127,7 @@ Torch eager 记录模型逻辑计算量，NCU 记录 GPU 实际执行量；两�
 仍可由绘图和迁移入口读取，新结果不再重复写入。
 从已有计划生成派生 CSV 时，匹配键为 GPU mode 与 input scale（绝对容差 `1e-6`）；
 未匹配或失败的工具字段保持 `nan`，对应错误列记录原因。操作见
-[README](../README.md#从已有计划生成派生-csv)。
+[从已有计划生成派生 CSV](#从已有计划生成派生-csv)。
 
 | 字段 | 含义 |
 | --- | --- |

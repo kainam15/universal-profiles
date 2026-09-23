@@ -23,9 +23,10 @@ from acprof.host.largest_scale_probe import (
 )
 from acprof.host.docker_runtime import prepare_image
 from acprof.host.input_plan import plan_input_scales
+from acprof.installation import resource_root
 
 
-PROJECT_DIR = Path(__file__).resolve().parents[2]
+PROJECT_DIR = resource_root()
 
 
 def _int_list(value: str, label: str) -> list[int]:
@@ -115,7 +116,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(str(exc))
 
     command_started = time.perf_counter()
-    bootstrap_project_env(str(PROJECT_DIR))
+    bootstrap_project_env(Path.cwd())
     require_native_linux_host()
     require_native_docker()
     cgroup_version = require_cgroup_prerequisites()
@@ -135,7 +136,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     output_root = Path(args.output_dir).expanduser()
     if not output_root.is_absolute():
-        output_root = PROJECT_DIR / output_root
+        output_root = Path.cwd() / output_root
     output_dir = create_probe_output_dir(output_root, task_info.model_id)
 
     print("=" * 60)

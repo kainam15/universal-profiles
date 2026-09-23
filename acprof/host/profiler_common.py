@@ -109,9 +109,8 @@ def _base_docker_cmd(
     profile_root: str,
     tool_mount_roots: Sequence[str],
 ) -> List[str]:
-    package_root = os.path.abspath(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir)
-    )
+    from acprof.installation import resource_root
+    package_root = str(resource_root() / "acprof")
     cmd = [
         "docker", "run", "--rm",
         f"--cpus={cpu}",

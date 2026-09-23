@@ -109,7 +109,8 @@ def quick_preflight(
             )
             if inspected.returncode == 0:
                 endpoint = inspected.stdout.strip()
-            docker_host_override = os.environ.get("DOCKER_HOST", "").strip()
+            docker_host_override = ("" if os.environ.get("DOCKER_CONTEXT", "").strip() else
+                                    os.environ.get("DOCKER_HOST", "").strip())
             if docker_host_override:
                 endpoint = docker_host_override
             info = command_runner(
@@ -175,7 +176,7 @@ def quick_preflight(
     # Do not retain .env.local credentials in the long-lived TUI process.
     probe_environ = os.environ.copy()
     load_project_env(
-        project_dir if project_dir is not None else Path(__file__).resolve().parents[2],
+        project_dir if project_dir is not None else Path.cwd(),
         environ=probe_environ,
     )
     perf = probe_perf_instructions(env=probe_environ) if measurement_requested(config.profiling_mode, "cpu_instructions") else Capability("not_requested", "basic", "profiling_mode")

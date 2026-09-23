@@ -4,7 +4,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
+import re
 import tempfile
 
 from acprof.dependency_locks import (
@@ -14,11 +16,45 @@ from acprof.dependency_locks import (
 from acprof.runtime_profiles import (
     DependencyEnvironment, PlatformSpec, environment_identity, platform_identity,
 )
+from acprof.installation import resource_root
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = resource_root()
 PLATFORM_LABEL = "org.acprof.platform-build-fingerprint"
 ENVIRONMENT_LABEL = "org.acprof.environment-build-fingerprint"
 BUILD_HELPERS = ("dockerfiles/environment_tools.py", "acprof/dependency_locks.py")
+DEFAULT_RUNTIME_REGISTRY = "ghcr.io/kainam15/universal-profiles/runtime"
+
+
+def registry_reference(kind: str, fingerprint: str, registry: str | None = None) -> str:
+    registry = (registry if registry is not None else
+                os.environ.get("ACPROF_RUNTIME_REGISTRY", DEFAULT_RUNTIME_REGISTRY)).rstrip("/")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._:/-]*", registry) or "://" in registry:
+        raise ValueError("ACPROF_RUNTIME_REGISTRY 必须是小写 OCI repository，不含 scheme 或凭据")
+    if kind not in {"platform", "environment"} or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+        raise ValueError("预构建镜像要求完整内容指纹")
+    return f"{registry}:{kind}-{fingerprint}"
+
+
+def _pull_cached_image(name: str, label: str, fingerprint: str, expected: dict,
+                       identity: dict, kind: str, source: str, registry: str | None):
+    from acprof.host.docker_runtime import _run
+    if source == "build":
+        return None
+    reference = registry_reference(kind, fingerprint, registry)
+    print(f"[runtime] 拉取预构建依赖：{reference}", flush=True)
+    result = _run(["docker", "pull", "--platform", "linux/amd64", reference],
+                  check=False, capture=False)
+    if result.returncode:
+        if source == "pull":
+            raise RuntimeError(f"预构建镜像拉取失败：{reference}；可设置 ACPROF_RUNTIME_IMAGE_SOURCE=build 本机构建")
+        print("[runtime] 预构建镜像不可用，回退到本机锁定依赖构建。", flush=True)
+        return None
+    # A successful pull with bad identity is never silently replaced by a local build.
+    verified = checked_image(reference, label, fingerprint, expected, identity, kind)
+    if verified is None:
+        raise RuntimeError(f"拉取后未找到预构建镜像：{reference}")
+    _run(["docker", "tag", verified[0], name])
+    return verified
 
 
 @dataclass(frozen=True)
@@ -27,6 +63,13 @@ class PreparedEnvironment:
     name: str
     platform_image_id: str
     manifest: dict
+
+
+@dataclass(frozen=True)
+class PreparedPlatform:
+    image_id: str
+    name: str
+    expected: dict
 
 
 def recipe_identity(root: Path, recipe: str) -> dict:
@@ -145,13 +188,15 @@ def build_dependency(root: Path, recipe: str, name: str, arguments: dict, expect
         _run(["docker", "tag", image_id, name])
 
 
-def prepare_environment_image(environment: DependencyEnvironment, project_dir=PROJECT_ROOT) -> PreparedEnvironment:
-    from acprof.host.docker_runtime import _run
-    from acprof.host.runtime_images import inspect_identity
-    root = Path(project_dir)
-    identity = environment_identity(environment, root)
-    platform = environment.platform
-    platform_data = identity["platform"]
+def _source_policy(image_source: str | None) -> str:
+    source_policy = image_source or os.environ.get("ACPROF_RUNTIME_IMAGE_SOURCE", "auto")
+    if source_policy not in {"auto", "build", "pull"}:
+        raise ValueError("ACPROF_RUNTIME_IMAGE_SOURCE 必须是 auto/build/pull")
+    return source_policy
+
+
+def _prepare_platform(platform: PlatformSpec, root: Path, platform_data: dict,
+                      source_policy: str, registry: str | None) -> PreparedPlatform:
     # 构建键与输入目录必须来自同一份声明，避免读锁和计算键之间的变更被误标为新缓存。
     platform_key = _platform_fingerprint(platform_data, root)
     platform_name = f"acprof-platform-{platform.platform_id}:{platform_key[:20]}"
@@ -160,6 +205,9 @@ def prepare_environment_image(environment: DependencyEnvironment, project_dir=PR
                          "python_base_image": platform.python_base_image, "architecture": platform.architecture}
     existing = checked_image(platform_name, PLATFORM_LABEL, platform_key, expected_platform, platform_data, "platform")
     if existing is None:
+        existing = _pull_cached_image(platform_name, PLATFORM_LABEL, platform_key, expected_platform,
+                                      platform_data, "platform", source_policy, registry)
+    if existing is None:
         build_dependency(root, "platform.Dockerfile", platform_name,
                          {"PYTHON_BASE_IMAGE": platform.python_base_image, "PLATFORM_ID": platform.platform_id,
                           "PLATFORM_BUILD_FINGERPRINT": platform_key}, expected_platform, platform_data,
@@ -167,7 +215,31 @@ def prepare_environment_image(environment: DependencyEnvironment, project_dir=PR
         existing = checked_image(platform_name, PLATFORM_LABEL, platform_key, expected_platform, platform_data, "platform")
     if existing is None:
         raise RuntimeError("平台构建后未找到缓存镜像")
-    platform_image_id = existing[0]
+    if platform_fingerprint(platform, root) != platform_key:
+        raise RuntimeError("平台依赖构建输入发生变化，拒绝使用缓存")
+    return PreparedPlatform(existing[0], platform_name, expected_platform)
+
+
+def prepare_platform_image(platform: PlatformSpec, project_dir=PROJECT_ROOT,
+                           *, image_source: str | None = None,
+                           registry: str | None = None) -> PreparedPlatform:
+    root = Path(project_dir)
+    return _prepare_platform(platform, root, platform_identity(platform, root),
+                             _source_policy(image_source), registry)
+
+
+def prepare_environment_image(environment: DependencyEnvironment, project_dir=PROJECT_ROOT,
+                              *, image_source: str | None = None,
+                              registry: str | None = None) -> PreparedEnvironment:
+    from acprof.host.docker_runtime import _run
+    from acprof.host.runtime_images import inspect_identity
+    root = Path(project_dir)
+    source_policy = _source_policy(image_source)
+    identity = environment_identity(environment, root)
+    platform = _prepare_platform(environment.platform, root, identity["platform"], source_policy, registry)
+    expected_platform = platform.expected
+    platform_key = expected_platform["platform_build_fingerprint"]
+    platform_image_id = platform.image_id
     spec_key = _runtime_fingerprint(identity, platform_key, root)
     if runtime_fingerprint(environment, root) != spec_key:
         raise RuntimeError("依赖构建输入发生变化，尚未构建环境镜像")
@@ -176,6 +248,9 @@ def prepare_environment_image(environment: DependencyEnvironment, project_dir=PR
     expected = {**expected_platform, "platform_image_id": platform_image_id,
                 "environment_id": content_digest(identity), "environment_build_fingerprint": environment_key}
     existing = checked_image(name, ENVIRONMENT_LABEL, environment_key, expected, identity, "environment")
+    if existing is None:
+        existing = _pull_cached_image(name, ENVIRONMENT_LABEL, environment_key, expected, identity,
+                                      "environment", source_policy, registry)
     if existing is None:
         source = "acprof-build-source:" + platform_image_id.split(":", 1)[1]
         _run(["docker", "tag", platform_image_id, source])
@@ -191,6 +266,7 @@ def prepare_environment_image(environment: DependencyEnvironment, project_dir=PR
         raise RuntimeError("依赖环境构建后未找到缓存镜像")
     if runtime_fingerprint(environment, root) != spec_key:
         raise RuntimeError("依赖构建输入发生变化，拒绝使用缓存")
-    if inspect_identity(name)["image_id"] != existing[0]:
+    current = inspect_identity(name)
+    if current is None or current["image_id"] != existing[0]:
         raise RuntimeError("依赖缓存标签在核验期间发生变化")
     return PreparedEnvironment(existing[0], name, platform_image_id, existing[1])

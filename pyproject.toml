@@ -1,3 +1,51 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "acprof"
+dynamic = ["version"]
+description = "Reproducible profiling of containerized Hugging Face inference services"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31,<3",
+    "huggingface-hub>=1.0,<2",
+    "socksio>=1.0,<2",
+    "textual>=8.2.8,<9",
+    "numpy>=1.24,<3",
+    "pandas>=2.0,<4",
+    "matplotlib>=3.7,<4",
+    "Pillow>=10.0",
+    "nvidia-ml-py>=13.610.43",
+]
+
+[project.scripts]
+acprof = "acprof.cli.main:main"
+
+[project.urls]
+Repository = "https://github.com/kainam15/universal-profiles"
+Issues = "https://github.com/kainam15/universal-profiles/issues"
+
+[tool.hatch.version]
+path = "acprof/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["acprof"]
+exclude = ["**/AGENTS.md", "**/__pycache__", "**/*.pyc"]
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/acprof", "/assets", "/dockerfiles", "/examples", "/scripts", "/tests",
+    "/packaging", "/docs", "/README.md", "/pyproject.toml", "/hatch_build.py",
+    "/requirements*", "/run.py", "/probe.py", "/profile.py", "/plot.py",
+    "/tui.py", "/audit.py", "/stats.py", "/.dockerignore",
+]
+exclude = ["**/AGENTS.md", "**/__pycache__", "**/*.pyc"]
+
 [tool.ruff]
 required-version = "==0.16.8"
 target-version = "py310"

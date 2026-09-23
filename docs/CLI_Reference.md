@@ -1,13 +1,33 @@
 # 命令行、输入清单与界面设置
 
-查 CLI 参数、workload 清单或 TUI 持久化契约时查阅。交互操作与运行示例见 [README](../README.md)，实现依据为当前入口的 `--help`。文中的命令从仓库根目录执行。
+查 CLI 参数、workload 清单或 TUI 持久化契约时查阅。交互操作见 [TUI 用户指南](TUI.md)，运行示例见[安装与运行](Getting_Started.md)，实现依据为当前入口的 `--help`。文中的命令从仓库根目录执行。
 
 [文档导航](README.md)
+
+## 主机环境与 Hugging Face 认证
+
+CLI 启动时先读取当前工作目录的 `.env`，再读取 `.env.local`，仅补充尚未设置的键；
+已有进程环境优先，文件中的同名值不会覆盖它。凭据保存方式见[认证配置](Getting_Started.md#hugging-face-认证)。
+
+读取完成后，Hugging Face 初始化按去除首尾空白后的非空值选择配置：
+
+- 地址依次取 `HF_ENDPOINT`、`HF_HUB_ENDPOINT`，都为空时使用默认镜像地址；
+  缺失或仅含空白的地址变量回填选中值，同时将对应主机加入 `NO_PROXY` 和 `no_proxy`。
+- 令牌依次取 `HF_TOKEN`、`HUGGING_FACE_HUB_TOKEN`，都为空时调用已有
+  `huggingface_hub.utils.get_token()`；找到令牌后回填缺失或仅含空白的令牌变量。
+  两个变量都有非空值时保留各自值，解析结果以 `HF_TOKEN` 为准；没有令牌或本地读取失败时返回匿名状态。
+
+认证优先级参考官方维护的
+[Hugging Face Hub 实现](https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/utils/_auth.py)
+（[Apache-2.0](https://github.com/huggingface/huggingface_hub/blob/main/LICENSE)）。
+项目沿用已安装的公开接口，只在自身初始化层处理空白值和变量回填，不复制上游内部实现、
+不新增依赖；该初始化发生在主机准备阶段，不进入正式测量窗口。
+模型构建仅通过 BuildKit secret 使用令牌，正式推理容器继续离线加载模型。
 
 ## TUI 本地设置
 
 `acprof/tui/settings.py` 管理项目隔离的 `tui.json`，当前版本为 v4；
-路径与操作方式见 [README 的 TUI 说明](../README.md#交互式终端界面)。
+路径与操作方式见 [TUI 设置文件](TUI.md#设置文件)。
 `ui.language` 是字符串，仅接受 `zh`（简体中文，默认）和 `en`（English），不使用系统 locale 自动推断。
 只读取 version 4 设置；缺少版本、v1/v2/v3 文件或仍包含已删除的 `allow_cgroup_v1` 字段时直接报错，原文件保持不变。归档旧设置后可重新配置。
 未知语言值或错误类型遵循现有校验规则：提示、使用默认设置，并保留原文件，直到用户主动保存。
@@ -23,7 +43,7 @@
 v4 新增顶层字符串 `last_result_dir` 和 `last_result_csv`，分别保存最近使用的结果目录和 CSV 路径。
 TUI 中，结果目录位于“补采工具”页，结果 CSV 与摘要位于“绘图工具”页；切换页面保留输入草稿和工具勾选。
 两者默认均为 `""`；当前版本文件缺少可选字段时保持空值，不从模型草稿推测历史输出目录。
-TUI 保存实际使用的绝对路径，相对输入以项目根目录为基准，支持 `~`、空格和中文。
+TUI 保存实际使用的绝对路径，相对输入以启动时的工作目录为基准，支持 `~`、空格和中文。
 确认采集时，两者与 `last_model` 一次性原子保存；采集结束后采用进度解析得到的合并 CSV，
 未提供时沿用已确认配置中的输出路径。它们表示最近一次采集的目标位置，不保证任务成功或文件仍然存在。
 读取摘要成功或启动绘图只更新 CSV 字段，启动补采（含 dry-run）只更新目录字段；取消确认和无效输入不更新。
@@ -37,7 +57,7 @@ VS Code 中的外观：背景 `#15232d`、输入框与面板 `#1c2e3b`、强调�
 全部主题均使用明确颜色，控件不依赖终端可重定义的 ANSI 基础色；原有主题选择及保存格式不变。
 主题控制背景与层次，操作颜色保持固定语义：青色为选择和主要操作、白色为普通操作、黄色为可恢复的风险操作、
 红色为删除或终止、灰色为禁用、绿色为成功或 Ready。浅色主题使用深色普通文字和较深的同色系颜色；
-悬停、聚焦及确认弹窗沿用操作原有的颜色。页面布局与操作位置见 [TUI 说明](../README.md#交互式终端界面)。
+悬停、聚焦及确认弹窗沿用操作原有的颜色。页面布局与操作位置见 [TUI 说明](TUI.md#启动和页面)。
 
 Windows Terminal、VS Code 集成终端等支持真彩色的客户端，通过 SSH 运行时即使缺少
 `COLORTERM`，默认模式也保留 RGB 输出。颜色模式仅作用于 TUI 渲染器，不修改 shell 配置、
@@ -48,9 +68,70 @@ Windows Terminal、VS Code 集成终端等支持真彩色的客户端，通过 S
 `COLORTERM` 决定色深；显式设置的 `TEXTUAL_COLOR_SYSTEM` 也只在此模式下沿用。
 `NO_COLOR` 在所有模式下仍由 Textual 转为单色显示。颜色模式只影响本次启动，不写入 `tui.json`。
 
+## 企业微信通知
+
+先在企业微信群中添加群机器人，把完整 Webhook 只保存在项目根目录的
+`.env.local`（该文件已被 Git 忽略）：
+
+```env
+ACPROF_WECOM_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx
+```
+
+建议限制本地配置文件权限：
+
+```bash
+chmod 600 .env.local
+```
+
+配置 Webhook 后，`run.py` 默认启用企业微信通知，无需额外参数：
+
+```bash
+python run.py --model google-bert/bert-base-uncased
+```
+
+`--notify` 默认为 `auto`（检测到 Webhook 自动启用）；传入 `--notify wecom` 显式启用，传入 `--notify none` 临时关闭：
+
+```bash
+python run.py --model google-bert/bert-base-uncased --notify none
+```
+
+通知覆盖实验开始、已启用 profiler 的各工具阶段完成、每个资源 case 完成和最终总结。
+CPU Torch、GPU Torch、NCU、Massif、Nsys 各自汇总实际采样项、失败数、阶段耗时和累计耗时；
+vendor 模式的 CPU Advisor 同样适用。阶段状态区分成功、部分失败、失败和无结果。
+关闭或不适用的工具不发阶段通知，代表资源复用不重复计数。最终总结区分成功、部分成功、
+无结果、失败和用户取消。TUI 启动的 `run.py` 使用同一设置，独立 `profile.py` 不发送这些通知。
+
+通知在测量窗口外发送：profiler 阶段返回后、下一个阶段前，或 case 的容器、监控器与抓包
+全部停止后。input scale、warmup 和 repeat 窗口内部不发送网络通知。每次发送超时 5 秒，
+最多尝试两次；失败只产生警告，不改变测量结果或原退出码。Webhook 只保存在本地环境配置中。
+
 ## CLI 参数
 
-以下参数表对应 `run.py`。示例命令见 [README](../README.md#运行正式实验)，
+安装后的统一入口为 `acprof <command>`；公共子命令有 `run`、`tui`、`probe`、`plot`、
+`doctor`、`profile`、`audit`、`stats`。根脚本仍用于源码运行，参数定义相同。
+`acprof --version` 查看版本，`acprof <command> --help` 查看对应帮助。
+
+### `acprof doctor`
+
+`doctor` 只检查环境，不下载模型、启动容器、安装工具或修改权限。
+检查覆盖原生 Linux x86_64、cgroup v2、本机 Docker、Buildx、安装资源与输出目录。
+`full` 另外检查 RAPL、perf instructions、抓包工具和网卡；`--gpus on` 检查 NVIDIA driver
+和 Docker NVIDIA runtime。模型下载、容器 GPU、任务输出与正式测量仍由实际运行验证。
+
+| 参数 | 默认 | 作用 |
+| --- | --- | --- |
+| `--profiling-mode basic/full` | `full` | 与主流程保持相同的必需能力范围 |
+| `--gpus off/on` | `off` | 是否检查 NVIDIA 主机和 runtime |
+| `--sniff-iface` | `docker0` | full 模式抓包网卡 |
+| `--output-dir` | 当前工作目录 | 检查输出路径可写性与所在磁盘余量 |
+| `--json` | 关闭 | 输出包含 `ready`、`checks`、`scope` 的 JSON |
+
+退出码为 `0`（必要检查通过）、`1`（必要条件缺失）、`2`（参数错误）。
+检查状态是 `available`、`unavailable`、`not_requested` 或 `warning`；
+`available` 不等于真实 workload 的 `verified`。低磁盘余量为提示，不自动删除镜像。
+`doctor` 不检测所有模型的联网和容量需求，`run` 仍在正式采集前执行权威 preflight。
+
+以下参数表对应 `run.py`。示例命令见[运行指南](Getting_Started.md#运行正式实验)，
 默认值与实际选项以当前入口的 `--help` 和 [acprof/config.py](../acprof/config.py) 为准。
 
 [run.py](#runpy) · [probe.py](#probepy) · [profile.py](#profilepy) · [其他入口](#其他入口) · [输入规模与音频清单](#输入规模与音频清单)
@@ -132,7 +213,7 @@ Windows Terminal、VS Code 集成终端等支持真彩色的客户端，通过 S
 | `--resume` | false | 使用原参数和目录恢复实验；核对运行身份、保留完成 case，并备份后重测中断 case。已完成实验不重测。 |
 | `--skip-build` | false | 核验构建指纹和环境清单后复用镜像；不存在时自动构建，不匹配时退出。 |
 | `--model-download-policy` | `auto` | `auto` 按已覆盖的加载器规则筛选文件，未知结构保留完整快照并记录原因；`full` 下载固定 commit 的完整仓库。策略进入镜像指纹，不能相互误复用。采集和探测入口均支持。 |
-| `--notify` | `auto` | `auto` 在配置 Webhook 后启用企业微信；`none` 关闭，`wecom` 显式选择企业微信。配置见 [README](../README.md#企业微信通知)。 |
+| `--notify` | `auto` | `auto` 在配置 Webhook 后启用企业微信；`none` 关闭，`wecom` 显式选择企业微信。配置见[企业微信通知](#企业微信通知)。 |
 | `--help` | — | 显示此入口的全部公开参数后退出。 |
 
 `--allow-cgroup-v1`、`--no-compute-profile` 和 `--compute-profile-tool auto` 已删除，使用它们会在参数解析时退出。关闭计算分析使用 `--compute-profile-tool none`。
@@ -239,12 +320,12 @@ CV 每请求一个图片／视频样本，`input_num_samples=1`；视频帧数�
 | `--timeout-seconds` | 不设超时 | 单次探测请求的等待上限；显式值必须有限且大于 0。 |
 
 `probe.py` 不接收 `run.py` 的 `--request-timeout-seconds`、warmup/repeat、能耗采样或 profiler 参数。
-详细用法见 [README](../README.md#先探测最大输入)。
+详细用法见[先探测最大输入](Getting_Started.md#先探测最大输入)。
 
 ### `profile.py`
 
 位置参数 `result_dir` 是已完成的模型结果目录。操作和恢复规则见
-[README 补采说明](../README.md#补采已有结果)。
+[补采说明](Profilers.md#补采已有结果)。
 
 TUI 使用四项复选框选择补采工具（初始勾选 `torch`、`ncu`），将勾选结果传给
 `--tools`；未勾选任何工具时不启动补采。工具适用范围、采样策略和指标口径与 CLI 相同。
@@ -271,7 +352,7 @@ TUI 使用四项复选框选择补采工具（初始勾选 `torch`、`ncu`），
 `--confidence`、`--resamples`、`--seed`、`--block-size` 和新的 `--output` 文件；定义见[结果分析](Metrics.md)。
 TUI“统计报告”页的“计算统计”使用 `stats.py` 默认参数，并在源 CSV 旁的 `analysis/` 保存唯一命名的 JSON。
 `/stats [csv/dir]` 与按钮等价；`/report [json]` 或“查看报告”读取已有窗口统计、监测开销或 CLI/TUI 对照报告。
-这些操作需要 TUI 空闲；开销实验仍通过独立脚本显式运行。报告展示与路径带入方式见 [TUI 说明](../README.md#交互式终端界面)。
+这些操作需要 TUI 空闲；开销实验仍通过独立脚本显式运行。报告展示与路径带入方式见 [TUI 说明](TUI.md#统计报告)。
 `/images` 打开“镜像管理”页并自动读取数据，空闲时每轮读取完成后 5 秒更新；离开页面或运行任务时暂停。
 默认视图为镜像树，可切换到镜像列表或层共享。
 树中 `←/→` 折叠/展开、空格勾选；列表表头点击排序，再次点击反向。筛选支持模型、逻辑环境名、标签、ID 和平台。

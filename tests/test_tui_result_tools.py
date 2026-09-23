@@ -64,8 +64,8 @@ class TuiResultToolsTests(unittest.IsolatedAsyncioTestCase):
                 execute.assert_called_once()
                 command, kind = execute.call_args.args
                 self.assertEqual(kind, "plot")
-                self.assertEqual(Path(command[2]).name, "plot.py")
-                self.assertEqual(command[3], str(self.csv_path))
+                self.assertEqual(command[1:5], ["-u", "-m", "acprof", "plot"])
+                self.assertEqual(command[5], str(self.csv_path))
                 self.assertEqual(tabs.active, "monitor-tab")
                 controls = list(app.query(
                     "#summarize-results, #plot-results, #profile-dry-run, #profile-run, .profile-tool"

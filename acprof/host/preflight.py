@@ -11,7 +11,6 @@ from pathlib import Path
 from acprof.capabilities import Capability, CapabilityStatus, capability_from_error
 
 
-PROJECT_DIR = str(Path(__file__).resolve().parents[2])
 NATIVE_DOCKER_SOCKET = "/var/run/docker.sock"
 
 
@@ -42,11 +41,9 @@ def _exit_unsupported_host(reason: str) -> None:
         "sources used by this project, including RAPL, perf PMU events, the "
         "Docker bridge, cgroups, and the NVIDIA runtime.\n\n"
         "Run AC-Prof directly from native Ubuntu as a normal user:\n"
-        f"  cd {PROJECT_DIR}\n"
-        "  source .venv/bin/activate\n"
         "  unset DOCKER_HOST DOCKER_CONTEXT\n"
         "  docker context use default\n"
-        "  python run.py --model <model-id> ...\n",
+        "  acprof run --model <model-id> ...\n",
         file=sys.stderr,
     )
     sys.exit(1)
@@ -183,7 +180,7 @@ def _exit_docker_desktop() -> None:
         "Switch to native Docker before running again, for example:\n"
         "  docker context use default\n"
         "or run one command with:\n"
-        "  DOCKER_HOST=unix:///var/run/docker.sock python run.py ...\n",
+        "  DOCKER_HOST=unix:///var/run/docker.sock acprof run ...\n",
         file=sys.stderr,
     )
     sys.exit(1)
@@ -206,7 +203,9 @@ def require_native_docker() -> None:
         ):
             _exit_docker_desktop()
 
-        docker_host = os.environ.get("DOCKER_HOST", "").strip()
+        # Docker gives explicit DOCKER_CONTEXT precedence over DOCKER_HOST.
+        docker_host = ("" if os.environ.get("DOCKER_CONTEXT", "").strip() else
+                       os.environ.get("DOCKER_HOST", "").strip())
         if not docker_host and context_result.returncode == 0:
             context_name = context_result.stdout.strip()
             endpoint_result = subprocess.run(
@@ -227,7 +226,7 @@ def require_native_docker() -> None:
             if endpoint_result.returncode == 0:
                 docker_host = endpoint_result.stdout.strip()
 
-        if docker_host and not _docker_host_is_native_socket(docker_host):
+        if not _docker_host_is_native_socket(docker_host):
             _exit_nonlocal_docker(docker_host)
 
         result = subprocess.run(

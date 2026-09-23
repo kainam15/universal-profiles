@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from pathlib import Path
 
 from acprof.host.image_management import ImageInventory
 
@@ -45,7 +44,8 @@ def describe_dependencies(inventory: ImageInventory) -> ImageInventory:
     from acprof.host.dependency_images import _platform_fingerprint
     from acprof.runtime_profiles import ENVIRONMENTS, PLATFORMS, environment_identity, platform_identity
 
-    root = Path(__file__).resolve().parents[2]
+    from acprof.installation import resource_root
+    root = resource_root()
     platforms, environments = {}, {}
     for spec in PLATFORMS.values():
         try:

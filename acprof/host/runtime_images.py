@@ -18,7 +18,9 @@ from acprof.host.dependency_images import (
 from acprof.runtime_profiles import RuntimeProfile, environment_id, environment_identity, select_runtime_profile
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+from acprof.installation import resource_root
+
+PROJECT_ROOT = resource_root()
 FINGERPRINT_LABEL = "org.acprof.build-fingerprint"
 REQUEST_LABEL = "org.acprof.request-fingerprint"
 MODEL_KEY_LABEL = "org.acprof.model-files-key"

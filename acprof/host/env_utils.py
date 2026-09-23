@@ -73,9 +73,11 @@ def _set_default_if_blank(key: str, value: str) -> None:
 
 def configure_hf_network() -> str:
     """Normalize host-side Hugging Face endpoint and proxy bypass for metadata calls."""
-    endpoint = (os.environ.get("HF_ENDPOINT") or os.environ.get("HF_HUB_ENDPOINT") or "").strip()
-    if not endpoint:
-        endpoint = HF_MIRROR_ENDPOINT
+    endpoint = (
+        os.environ.get("HF_ENDPOINT", "").strip()
+        or os.environ.get("HF_HUB_ENDPOINT", "").strip()
+        or HF_MIRROR_ENDPOINT
+    )
 
     _set_default_if_blank("HF_ENDPOINT", endpoint)
     _set_default_if_blank("HF_HUB_ENDPOINT", endpoint)
@@ -85,7 +87,10 @@ def configure_hf_network() -> str:
 
 def resolve_hf_token() -> str | None:
     """Populate HF_TOKEN from env or local Hugging Face login when available."""
-    token = (os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN") or "").strip()
+    token = (
+        os.environ.get("HF_TOKEN", "").strip()
+        or os.environ.get("HUGGING_FACE_HUB_TOKEN", "").strip()
+    )
     if not token:
         try:
             from huggingface_hub.utils import get_token
@@ -97,8 +102,8 @@ def resolve_hf_token() -> str | None:
     if not token:
         return None
 
-    os.environ.setdefault("HF_TOKEN", token)
-    os.environ.setdefault("HUGGING_FACE_HUB_TOKEN", token)
+    _set_default_if_blank("HF_TOKEN", token)
+    _set_default_if_blank("HUGGING_FACE_HUB_TOKEN", token)
     return token
 
 

@@ -41,7 +41,7 @@ class RuntimeImageBuildTests(unittest.TestCase):
         self.contexts = {}
         self.failed_dockerfile = None
         for mocked in (
-            patch.dict(os.environ, {}, clear=True),
+            patch.dict(os.environ, {"ACPROF_RUNTIME_IMAGE_SOURCE": "build"}, clear=True),
             patch.object(docker_runtime, "_run", side_effect=self.fake_run),
             patch.object(runtime_images, "inspect_identity", side_effect=self.images.get),
             patch.object(runtime_images, "verified_image", side_effect=self.verified_image),
@@ -96,6 +96,71 @@ class RuntimeImageBuildTests(unittest.TestCase):
 
     def build_commands(self):
         return [command for command in self.commands if command[:2] == ["docker", "build"]]
+
+    def test_prebuilt_images_are_verified_and_used_without_dependency_builds(self):
+        from acprof.host.dependency_images import prepare_environment_image
+        from acprof.runtime_profiles import ENVIRONMENTS
+        environment = ENVIRONMENTS["onnxruntime-cpu"]
+        prepared = prepare_environment_image(environment)
+        # Retain immutable images/manifests, then simulate an empty local tag cache.
+        platforms = {key: value for key, value in self.images.items() if key.startswith("acprof-platform-")}
+        runtime = self.images[prepared.name]
+        self.images = {key: value for key, value in self.images.items() if key.startswith("sha256:")}
+        self.commands.clear()
+
+        def registry_run(command, **kwargs):
+            if command[:2] == ["docker", "pull"]:
+                self.commands.append(command)
+                self.images[command[-1]] = next(iter(platforms.values())) if ":platform-" in command[-1] else runtime
+                return subprocess.CompletedProcess(command, 0, "", "")
+            return self.fake_run(command, **kwargs)
+
+        with patch.dict(os.environ, {"ACPROF_RUNTIME_IMAGE_SOURCE": "pull"}), patch.object(
+            docker_runtime, "_run", side_effect=registry_run,
+        ), patch.object(runtime_images, "inspect_identity", side_effect=self.images.get):
+            reused = prepare_environment_image(environment)
+        self.assertEqual(reused.image_id, prepared.image_id)
+        self.assertEqual(self.build_commands(), [])
+        pulls = [command for command in self.commands if command[:2] == ["docker", "pull"]]
+        self.assertEqual(len(pulls), 2)
+
+    def test_pull_only_failure_never_builds_locally(self):
+        from acprof.host.dependency_images import prepare_environment_image
+        from acprof.runtime_profiles import ENVIRONMENTS
+        with patch.dict(os.environ, {"ACPROF_RUNTIME_IMAGE_SOURCE": "pull"}), patch.object(
+            docker_runtime, "_run", return_value=subprocess.CompletedProcess([], 1, "", "manifest unknown"),
+        ) as command:
+            with self.assertRaisesRegex(RuntimeError, "拉取"):
+                prepare_environment_image(ENVIRONMENTS["onnxruntime-cpu"])
+        self.assertTrue(all(call.args[0][:2] == ["docker", "pull"] for call in command.call_args_list))
+
+    def test_auto_pull_failure_builds_the_locked_dependencies(self):
+        from acprof.host.dependency_images import prepare_environment_image
+        from acprof.runtime_profiles import ENVIRONMENTS
+
+        def unavailable_registry(command, **kwargs):
+            if command[:2] == ["docker", "pull"]:
+                return subprocess.CompletedProcess(command, 1, "", "registry unavailable")
+            return self.fake_run(command, **kwargs)
+
+        with patch.object(docker_runtime, "_run", side_effect=unavailable_registry):
+            image = prepare_environment_image(ENVIRONMENTS["onnxruntime-cpu"], image_source="auto")
+        self.assertTrue(image.image_id.startswith("sha256:"))
+        self.assertEqual(len(self.build_commands()), 2)
+
+    def test_successful_pull_with_wrong_identity_does_not_fall_back_to_build(self):
+        from acprof.host.dependency_images import prepare_environment_image
+        from acprof.runtime_profiles import ENVIRONMENTS
+
+        def corrupted_registry(command, **kwargs):
+            self.assertEqual(command[:2], ["docker", "pull"])
+            self.images[command[-1]] = {"image_id": "sha256:" + "f" * 64, "labels": {}}
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with patch.object(docker_runtime, "_run", side_effect=corrupted_registry):
+            with self.assertRaisesRegex(RuntimeError, "标签内容不匹配"):
+                prepare_environment_image(ENVIRONMENTS["onnxruntime-cpu"], image_source="auto")
+        self.assertEqual(self.build_commands(), [])
 
     def test_unlocked_profiles_fail_before_any_docker_command(self):
         for family in FAMILIES:

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 from hashlib import sha256
-from pathlib import Path
 
 from acprof.host.image_management import ImageInventory, ImageLayer, ManagedImage
+from acprof.installation import resource_root
 
 
 def _environment_names() -> dict[str, tuple[str, ...]]:
@@ -16,7 +16,7 @@ def _environment_names() -> dict[str, tuple[str, ...]]:
     names: dict[str, list[str]] = {}
     for name, environment in ENVIRONMENTS.items():
         try:
-            identity = content_digest(environment_identity(environment, Path(__file__).resolve().parents[2]))
+            identity = content_digest(environment_identity(environment, resource_root()))
         except (OSError, ValueError, KeyError):
             continue  # 历史或不完整 checkout 无法对上锁时保留环境摘要，不能猜 profile。
         names.setdefault(identity, []).append(name)

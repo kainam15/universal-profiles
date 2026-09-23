@@ -3,6 +3,10 @@
 AC-Prof 的命令入口负责参数和调度，业务模块按输入规划、运行时采集、结果分析与界面组织。
 根目录脚本负责命令启动；Python 调用直接引用职责所属模块，不保留已被替代的导入入口。
 
+安装包通过 `acprof.cli.main` 惰性分发 `acprof <command>`，根脚本继续调用同一实现。
+`installation.py` 区分只读构建资源和用户工作目录，并生成 Python/standalone 子进程命令。
+资源、安装与发布边界见[发行包说明](Distribution.md)。
+
 修改模块边界、依赖方向或兼容入口时查阅本文。操作说明见 [README](../README.md#项目结构与开发)，
 字段与测量口径见 [指标与结果分析](Metrics.md#result_allcsv-字段解释)，运行环境扩展见[模型运行环境与适配器](Runtime_Compatibility.md)。
 

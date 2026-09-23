@@ -65,7 +65,10 @@ class TuiProfileToolsTests(unittest.IsolatedAsyncioTestCase):
 
             for tool in ("torch", "ncu"):
                 await self.click_visible(app, pilot, f"#profile-tool-{tool}")
-            command = app._profile_command(dry_run=True)
+            prepared = app._profile_command(dry_run=True)
+            assert prepared is not None
+            command, result_path = prepared
+            self.assertEqual(result_path, self.result_dir)
             self.assertEqual(command[command.index("--tools") + 1], "torch,ncu,nsys,massif")
 
     async def test_empty_selection_blocks_launch_but_explicit_slash_tools_still_work(self):

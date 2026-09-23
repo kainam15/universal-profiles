@@ -21,7 +21,6 @@ from typing import (
 from acprof.host.collection_history import COLLECTION_HISTORY_NAME, normalize_collection_history
 from acprof.host.posthoc.context import (
     BACKUP_DIRNAME,
-    PROJECT_DIR,
     PosthocError,
     RESULT_CSV_NAME,
     ResultContext,
@@ -281,6 +280,7 @@ def find_active_processes(
             for marker in (
                 "run.py",
                 "acprof.cli.run",
+                "acprof run",
                 "compute_profile_runner",
                 " ncu ",
                 "/ncu ",
@@ -289,6 +289,7 @@ def find_active_processes(
                 "posthoc.py",
                 "profile.py",
                 "acprof.cli.posthoc",
+                "acprof profile",
             )
         )
         direct_match = str(expected) in command and profiler_process
@@ -298,12 +299,20 @@ def find_active_processes(
                 Path(arg).name == "run.py" for arg in args
             ) or (
                 "-m" in args and "acprof.cli.run" in args
+            ) or (
+                "-m" in args and "acprof" in args and "run" in args
+            ) or (
+                any(Path(program).name.startswith("acprof") and command == "run"
+                    for program, command in zip(args[:3], args[1:4]))
             )
             if is_run_command:
                 output_root = _option_value(args, "--output-dir") or "results"
                 output_root_path = Path(output_root)
                 if not output_root_path.is_absolute():
-                    output_root_path = PROJECT_DIR / output_root_path
+                    try:
+                        output_root_path = (pid_dir / "cwd").resolve(strict=True) / output_root_path
+                    except OSError:
+                        continue
                 candidate = output_root_path / model_id.replace("/", "--")
                 run_match = candidate.resolve() == expected
         if direct_match or run_match:

@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 
 from acprof.config import SCALING_DIMENSIONS
+from acprof.installation import cli_command, resource_root
 from acprof.capabilities import (
     measurement_requested, measurement_report, apply_extension,
     apply_runtime_validation, apply_profiler_plan, apply_collection_result,
@@ -59,7 +60,7 @@ from acprof.notifications import (
     WeComWebhookNotifier,
 )
 
-PROJECT_DIR = str(Path(__file__).resolve().parents[2])
+PROJECT_DIR = str(resource_root())
 TMUX_TERMINAL_LOG_FILENAME = "tmux_all.log"
 DEFAULT_NOTIFY_PROVIDER = "auto"
 _ACTIVE_TMUX_TERMINAL_LOG: tuple[str, str, str] | None = None
@@ -106,6 +107,8 @@ def _format_run_command(argv: list[str]) -> str:
     """Return a shell-safe command string matching the run.py invocation."""
     if not argv:
         return "python run.py"
+    if argv[0] == "acprof run":
+        return shlex.join([*cli_command("run"), *argv[1:]])
     return shlex.join(["python", *argv])
 
 
@@ -540,7 +543,7 @@ def _run_main():
     global _ACTIVE_TMUX_TERMINAL_LOG, _ACTIVE_RUN_STATE
 
     start_time = time.perf_counter()
-    bootstrap_project_env(PROJECT_DIR)
+    bootstrap_project_env(Path.cwd())
 
     parser = _build_parser(default_notify_provider=DEFAULT_NOTIFY_PROVIDER)
 
@@ -574,7 +577,7 @@ def _run_main():
             parser.error(f"{option} must be > 0")
 
     terminal_output_dir = os.path.join(
-        PROJECT_DIR,
+        os.getcwd(),
         args.output_dir,
         args.model.replace("/", "--"),
     )
@@ -638,7 +641,7 @@ def _run_main():
     print(f"  Profiling mode: {args.profiling_mode}")
 
     output_dir = os.path.join(
-        PROJECT_DIR,
+        os.getcwd(),
         args.output_dir,
         task_info.model_id.replace("/", "--"),
     )

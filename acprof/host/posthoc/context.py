@@ -36,9 +36,10 @@ from acprof.host.compute_profile_plan import (
 )
 from acprof.host.detect import TaskInfo
 from acprof.host.execution_profile_plan import MASSIF_ERROR_FIELD, NSYS_ERROR_FIELD
+from acprof.installation import resource_root
 
 
-PROJECT_DIR = Path(__file__).resolve().parents[3]
+PROJECT_DIR = resource_root()
 
 
 RESULT_CSV_NAME = "result_all.csv"

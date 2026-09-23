@@ -60,7 +60,7 @@ class TuiCoreTests(unittest.TestCase):
         )
 
         self.assertEqual(command[0], str(PROJECT_DIR / ".venv/bin/python"))
-        self.assertEqual(command[1:3], ["-u", str(PROJECT_DIR / "run.py")])
+        self.assertEqual(command[1:5], ["-u", "-m", "acprof", "run"])
         self.assertEqual(command[command.index("--cpus") + 1], "1")
         self.assertEqual(command[command.index("--mems") + 1], "4")
         self.assertEqual(command[command.index("--input-scales") + 1], "64")
@@ -73,7 +73,7 @@ class TuiCoreTests(unittest.TestCase):
             "300.0",
         )
         self.assertNotIn("--allow-cgroup-v1", command)
-        self.assertIn("run.py", format_command(command, project_dir=PROJECT_DIR))
+        self.assertIn("acprof run", format_command(command, project_dir=PROJECT_DIR))
 
     def test_probe_command_uses_matrix_bounds_without_collection_options(self):
         config = RunConfig(
@@ -95,7 +95,7 @@ class TuiCoreTests(unittest.TestCase):
             python_executable="python",
         )
 
-        self.assertEqual(command[1:3], ["-u", str(PROJECT_DIR / "probe.py")])
+        self.assertEqual(command[1:5], ["-u", "-m", "acprof", "probe"])
         self.assertEqual(command[command.index("--cpus") + 1], "1,4")
         self.assertEqual(command[command.index("--mems") + 1], "2,8")
         self.assertEqual(command[command.index("--input-scales") + 1], "64,512")
@@ -106,7 +106,7 @@ class TuiCoreTests(unittest.TestCase):
         self.assertNotIn("--compute-profile-tool", command)
         self.assertNotIn("--request-timeout-seconds", command)
         self.assertNotIn("--timeout-seconds", command)
-        self.assertIn("probe.py", format_command(command, project_dir=PROJECT_DIR))
+        self.assertIn("acprof probe", format_command(command, project_dir=PROJECT_DIR))
 
     def test_invalid_matrix_is_rejected_before_launch(self):
         with self.assertRaises(TuiConfigError) as context:

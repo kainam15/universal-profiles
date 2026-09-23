@@ -1,6 +1,9 @@
 # 构建只读取受版本控制的代码、Dockerfile 和依赖输入。
 .git
 .venv
+.release-venv
+dist
+build
 .env*
 .agents
 .codex

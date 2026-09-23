@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from acprof.config import SERVER_PORT
+from acprof.installation import module_command
 from acprof.host.docker_runtime import (
     _run,
 )
@@ -186,9 +187,7 @@ def _resolve_packet_latency_runtime(
                 str(SERVER_PORT),
             ],
             parse_cmd=[
-                sys.executable,
-                "-m",
-                "acprof.packet.sniff_parse_pcap",
+                *module_command("acprof.packet.sniff_parse_pcap"),
                 pcap_file,
                 str(SERVER_PORT),
             ],

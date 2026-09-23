@@ -1,0 +1,93 @@
+name: GHCR 预构建依赖环境
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 平台 tag 对应的 image ID 必须先固定，环境 job 再共享同一父层。
+concurrency:
+  group: acprof-runtime-images
+  cancel-in-progress: false
+
+jobs:
+  matrix:
+    runs-on: ubuntu-24.04
+    outputs:
+      platforms: ${{ steps.matrix.outputs.platforms }}
+      environments: ${{ steps.matrix.outputs.environments }}
+      registry: ${{ steps.matrix.outputs.registry }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - id: matrix
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          matrix = json.loads(subprocess.check_output(['python3', 'scripts/publish_runtime_images.py', '--matrix']))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              for name, values in matrix.items():
+                  print(f'{name}={json.dumps(values)}', file=output)
+              print(f'registry=ghcr.io/{os.environ["REPOSITORY"].lower()}/runtime', file=output)
+          PY
+  platform:
+    needs: matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        platform: ${{ fromJSON(needs.matrix.outputs.platforms) }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: 构建、核验并发布平台
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          REGISTRY: ${{ needs.matrix.outputs.registry }}
+        run: python3 scripts/publish_runtime_images.py --platform "$PLATFORM" --registry "$REGISTRY" --push --report evidence/platform.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: platform-${{ matrix.platform }}
+          path: evidence/
+  environment:
+    needs: [matrix, platform]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        environment: ${{ fromJSON(needs.matrix.outputs.environments) }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: 复用已发布平台，核验并发布完整环境
+        env:
+          ENVIRONMENT: ${{ matrix.environment }}
+          REGISTRY: ${{ needs.matrix.outputs.registry }}
+        run: python3 scripts/publish_runtime_images.py --environment "$ENVIRONMENT" --pull-platform --registry "$REGISTRY" --push --report evidence/environment.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: environment-${{ matrix.environment }}
+          path: evidence/

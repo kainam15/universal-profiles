@@ -4,6 +4,12 @@ __pycache__/
 .venv/
 .ruff_cache/
 
+# Python distributions and standalone build products.
+dist/
+build/
+.release-venv/
+*.egg-info/
+
 .env
 .env.local
 

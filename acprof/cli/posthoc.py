@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 from typing import Optional, Sequence
 
 from acprof.host.env_utils import bootstrap_project_env
-from acprof.host.posthoc.context import PROJECT_DIR, PosthocError, SUPPORTED_TOOLS
+from acprof.host.posthoc.context import PosthocError, SUPPORTED_TOOLS
 from acprof.host.posthoc.service import run_posthoc
 
 
@@ -83,7 +84,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = _build_parser()
     args = parser.parse_args(argv)
-    bootstrap_project_env(PROJECT_DIR)
+    bootstrap_project_env(Path.cwd())
     try:
         run_posthoc(
             args.result_dir,

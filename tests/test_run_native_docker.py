@@ -133,7 +133,7 @@ class NativeDockerGuardTests(unittest.TestCase):
         message = stderr.getvalue()
         self.assertIn("native Linux host", message)
         self.assertIn("WSL was detected", message)
-        self.assertIn("source .venv/bin/activate", message)
+        self.assertIn("acprof run", message)
 
     def test_native_linux_host_rejects_windows(self) -> None:
         stderr = io.StringIO()

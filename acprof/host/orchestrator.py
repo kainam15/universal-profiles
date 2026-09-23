@@ -29,6 +29,7 @@ from acprof.host.compute_profile_plan import NCU_ERROR_FIELD, TORCH_ERROR_FIELD
 from acprof.pixel_metrics import PIXEL_COUNT_FIELDS, PIXEL_RATE_SOURCES
 from acprof.monitors.perf_mips import MIPS_EXIT_CODE
 from acprof.capabilities import measurement_requested, require_profiling_mode
+from acprof.installation import module_command
 from acprof.host.docker_runtime import (
     ImageInfo,
     _sanitize_model_id,
@@ -430,7 +431,7 @@ def run_single_case(
         client_env.pop("ACPROF_WECOM_WEBHOOK_URL", None)
 
         client_result = _run(
-            [sys.executable, "-m", "acprof.host.client"],
+            module_command("acprof.host.client"),
             check=False,
             capture=False,
             env=client_env,
@@ -564,9 +565,7 @@ def run_single_case(
                 merged_csv = out_csv + ".merged"
                 merge_result = _run(
                     [
-                        sys.executable,
-                        "-m",
-                        "acprof.packet.merge_packet_latency",
+                        *module_command("acprof.packet.merge_packet_latency"),
                         out_csv,
                         lat_json,
                         merged_csv,

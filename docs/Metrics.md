@@ -4,6 +4,47 @@
 
 [文档导航](README.md)
 
+## 采集能力概览
+
+以下为项目可采集的指标范围；实际列值取决于 [profiling mode](Profiling_Protocol.md#profiling-mode-与能力证据)、设备和显式启用的工具。
+
+- 性能：application / packet-level latency、P50/P90/P95、标准差/CV/IQR/最大值、吞吐量、每任务尺度单位及每百万像素延迟、每 CPU core 吞吐，以及容器启动、server setup、CUDA 初始化、模型加载、ready wait 和首次推理的冷启动分解。
+- 能耗：CPU package、估算 vCPU 和 GPU 的 idle、平均/峰值功率与能量，以及不增加采集轮次的 container-attributed 能效派生值（包括 J/input unit，以及图像任务的 J/Mpixel）。
+- 资源：容器 CPU / 内存、cgroup CPU throttling、memory events、CPU/内存/I/O PSI、`memory.peak`、anon/file/slab、page fault/refault、块 I/O 字节与操作数、PID 当前值/峰值/上限事件、CPU 频率与估算 cycles，以及 GPU utilization、VRAM、SM/显存时钟、P-state 和温度。
+- 网络：从同一份 PCAP 派生每请求的请求/响应 frame bytes、TCP payload 和 L2–L4 协议开销，不增加抓包轮次。
+- PMU：retired-instruction MIPS、cache miss 和 dTLB miss。
+- 计算：PyTorch eager 逻辑 FLOP，以及 NVIDIA Nsight Compute 实际 GPU FLOP。
+- 可选 execution profile：Valgrind Massif 内存峰值、Nsight Systems CUDA timeline。
+
+## 从结果目录开始
+
+结果目录为 `<output-dir>/<model-dir>/`，模型 ID 中的 `/` 替换为 `--`。
+例如 `google-bert/bert-base-uncased` 对应 `google-bert--bert-base-uncased/`。
+
+| 阅读目的 | 入口 |
+| --- | --- |
+| 查看测量值 | `result_all.csv`；正式性能分析筛选 `status=ok` 且 `warmup=0`。 |
+| 复现实验对象和输入 | `static_meta.json` 与 `input_scale_plan.json`。 |
+| 追踪补采或修复 | `collection_history.json` 与对应 profiler plan。 |
+| 查看图表和拟合 | `cpu/`、`gpu/`、`gpu+cpu/` 与 `latency_model/`。 |
+
+`latency_app_s` 是客户端应用层计时，`latency_s` 是抓包解析得到的 packet-level 计时。
+关闭 GPU 或未启用某个 profiler 时，对应字段为 `nan` 属于预期结果。
+运行中先写 `result_case_*.csv`，矩阵完成后才合并为 `result_all.csv`。
+
+可只读检查结果完整性，并按独立测量窗口估计均值区间：
+
+```bash
+.venv/bin/python audit.py results/<model-dir>/ --require-complete --require-ok
+.venv/bin/python stats.py results/<model-dir>/ --metric latency_app_s
+```
+
+历史实验可能缺少完成状态，先省略 `--require-complete` 查看审计说明。区间的样本单位、
+连续窗口相关性与开销对照方法见[统计说明](Metrics.md#窗口置信区间与开销对照)。
+
+完整说明集中在[输出文件](Profiling_Protocol.md#输出文件)、[CSV 字段字典](Metrics.md#result_allcsv-字段解释)
+和[常见判断](Troubleshooting.md#常见判断)。
+
 ## result_all.csv 字段解释
 
 每行对应一个资源配置、一个 input scale 和一次 warmup/repeat 请求窗口。
@@ -69,6 +110,12 @@
 | `throughput_samples_per_s_per_cpu_core` | `throughput_samples_per_s / cpu_cores`；packet latency merge 后会与 throughput 一起重算。它表示按配置 CPU quota 归一化的吞吐，不是实际 CPU utilization 归一化值。 |
 
 ### 像素归一化口径
+
+分辨率横轴（`resolution_px` / `resolution_scale`）下的能耗和延迟归一化子图使用
+`J/Mpixel` / `s/Mpixel`，分母为每请求像素总数除以一百万。Diffusion 使用输出像素，
+CV 和图像多模态使用 processor 处理前的输入像素；视频计入全部帧。横轴仍表示原来的
+边长或缩放倍率。`input_units_per_request` 和 `*_per_input_unit` 继续表示任务尺度单位；
+文本 token、音频秒数、去噪步数等尺度使用各自的 input unit。
 
 `Mpixel` 表示一百万像素。新字段使用每百万像素单位，避免 CSV 六位小数把很小的
 每像素延迟舍入为零。所有分子已经平均到单 request；分母计入该 request 的完整 batch，
@@ -270,9 +317,16 @@ TUI 的“统计报告”页调用同一个 `stats.py`，默认分析应用延�
 该页还可直接读取上述两种开销工具的成功报告，显示配对轮数、延迟变化和区间；headless 与 terminal
 的测量范围分别注明。未完成、失败、损坏或未知版本的报告显示错误，不保留上一份结果冒充新报告。
 读取只展示报告记录的实验，不重新测量或核验源 CSV 的当前版本；比较时须使用同一实验口径。
-操作步骤见 [TUI 使用说明](../README.md#交互式终端界面)。
+操作步骤见 [TUI 使用说明](TUI.md#统计报告)。
 
 ### 绘图入口
+
+```bash
+python plot.py \
+  results/smoke/google-bert--bert-base-uncased/result_all.csv
+```
+
+图表会写回模型结果目录下的 `cpu/`、`gpu/`、`gpu+cpu/` 和 `latency_model/`；没有适用数据的分组会自动跳过。除原有指标总览外，还会按可用字段生成资源失败边界、P50/P90/P95 尾延迟、延迟–能耗 Pareto 前沿和冷启动阶段分解图。历史 CSV 缺少新字段时只跳过对应图，不影响其余图表。
 
 `plot.py` 默认读取同目录下的 `static_meta.json`，用其中的 `input_scale_type` 作为横轴语义名；静态元数据要求 schema v7，旧 `static_meta.csv` 会直接报错。图片会写入结果目录下的三个子目录：
 

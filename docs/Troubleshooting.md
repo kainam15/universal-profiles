@@ -103,7 +103,7 @@ docker info
 ```
 
 结合 `DOCKER_HOST`、`DOCKER_CONTEXT` 与 CLI 报错确定实际 endpoint；只有需要切换时再调整本次命令环境，
-不要仅为诊断就改写用户默认 Docker context。正式采集的主机条件见[快速开始](../README.md#1-检查主机环境)。
+不要仅为诊断就改写用户默认 Docker context。正式采集的主机条件见[运行指南](Getting_Started.md#1-检查主机环境)。
 
 ### `[sniff][ERROR]` 或 `latency_s` 无法合并
 

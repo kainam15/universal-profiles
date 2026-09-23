@@ -62,7 +62,26 @@ git diff --check
 `scripts/compile_locks.py --check` 仍只验证既有容器锁与 profile 映射，不代替开发锁的重新解析。
 这些开发工具只在编辑、提交和 CI 验证时运行，不进入正式测量窗口。
 
+### PyCharm MCP 的验证边界
+
+使用项目的 `.venv` 解释器；符号搜索按需限定 `paths=["acprof/**", "tests/**"]`，
+避免将临时虚拟环境中的第三方代码视为项目实现。调用分析无法解析已找到的 Python 符号时，
+结合符号文档和源码核对调用者；空结果不能证明没有依赖。
+
+项目使用 unittest。若从代码位置创建的 Run Configuration 自动选择 pytest，而解释器没有
+安装 pytest，应选择 unittest 配置，或通过 IDE 终端运行本页的 `scripts/run_tests.py` 入口；
+无需为该 IDE 默认值引入另一套测试依赖。执行证据必须包含实际输出和退出码。
+`build_project` 若提示无法收集构建诊断，不能替代 Python 编译和相关测试；
+依赖查询返回空列表也不能证明 Python 环境没有安装依赖。
+临时重命名和工具测试文件放在任务独立的 `internal-testing/` 子目录中。
+
 ## 自动化验证入口
+
+安装分发修改除普通回归外，还需构建 sdist/wheel，在隔离环境从空目录执行
+`scripts/check_distribution.py`；standalone 用 `--binary <path>` 执行相同验收。
+该脚本核对全部公共帮助入口、参数错误、无 Docker 时的 doctor JSON、内置资源和 packet worker 的实际输出。
+CI 另执行真实 `uv tool install`，构建步骤见[发行包说明](Distribution.md#linux-standalone)。
+这些检查不代替 Docker/GPU 推理和完整 profiling。
 
 测试使用 `unittest`、`unittest.mock` 和临时目录；文件名为 `test_*.py`，方法名以 `test_` 开头。
 模拟网络、Docker、硬件与通知边界；避免测试触发真实采集或改写用户设置。
@@ -250,7 +269,7 @@ Headless 能检查布局、键盘路径和输出状态；SVG、tmux 与真实 VS
 并保存会话。PTY、headless 和用户的 VS Code/SSH 终端须分别标明，不能互相替代。
 
 镜像依赖变化后，主机 `.venv` 测试不能证明容器已更新；构建与复用契约见[运行兼容](Runtime_Compatibility.md#构建复用和验证)。
-最小采集示例见 [README](../README.md#3-跑一个最小-smoke-test)。用独立输出目录运行验证，保留模型 revision、输入计划与日志。
+最小采集示例见[运行指南](Getting_Started.md#3-跑一个最小-smoke-test)。用独立输出目录运行验证，保留模型 revision、输入计划与日志。
 `examples/` 下脚本是手动接口示例，不会自动运行，也不产生与正式 `run.py` 等价的测量证据。
 
 `internal-testing/` 用于本地临时验证和截图；原始实验结果留在对应结果目录。

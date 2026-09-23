@@ -1,642 +1,134 @@
 # AC-Prof
 
-AC-Prof 是一个面向 Hugging Face 推理服务的零侵入运行时分析工具。给它一个模型 ID，它会构建包含模型权重的 Docker 镜像，在不同 CPU、内存、GPU 和输入规模下运行同一组 workload，最后输出可复现的 CSV、静态元数据和图表。
+AC-Prof 用来比较 Hugging Face 模型在不同 CPU、内存、GPU 配置和输入规模下的推理表现。
+你提供一个模型 ID，它会准备包含模型权重的 Docker 镜像，运行实验，并保存延迟、能耗、资源占用等数据。
+支持的模型无需修改代码；结果包含 CSV、复现所需的元数据和可生成的图表。
 
-`Hugging Face 模型 → Docker 镜像 → 资源矩阵实验 → 延迟 / 能耗 / 资源 / FLOP 指标 → CSV 与图表`
-
-[快速开始](#快速开始) · [任务支持](#ac-prof-会采集什么) · [正式实验](#运行正式实验) · [终端界面](#交互式终端界面) · [企业通知](#企业微信通知) · [查看结果](#查看结果) · [性能分析](docs/Profilers.md#选择性能分析器) · [排查问题](docs/Troubleshooting.md#常见问题) · [文档导航](#文档导航)
-
-## 先看这两点
-
-> **运行环境：** AC-Prof 只支持原生 Linux 主机和本机 Docker Engine，正式采集强制使用统一 cgroup v2。WSL、Docker Desktop、远程 Docker daemon、Windows 和 macOS 不能作为实验采集环境。当前推荐并验证的是 Ubuntu 24.04。
-
-> **时间成本：** 默认 6 档 input scale 时，完整矩阵计划生成 1,344 行主实验（含 warmup）。按默认每行约 10 秒 workload、20 秒 Idle 基线和 5 秒前置冷却估算，仅主测量窗口就约 13 小时，且还不包含模型下载、镜像构建、case 切换，以及显式启用各类分析器时的额外耗时。第一次使用请先跑下面的最小 smoke test；具体公式见[时间成本估算](docs/Profiling_Protocol.md#结果行数和时间成本估算)。
-
-## 文档导航
-
-[docs/README.md](docs/README.md) 是长期项目知识的导航入口；按问题读取对应专题。
-本文维护安装与操作示例；字段、协议与参数说明统一在对应专题维护。
-Agent 从 [AGENTS.md](AGENTS.md) 读取全局约束，再按目录和任务读取局部规则、文档及 Skills。
+[快速开始](#快速开始) · [终端界面](#交互式终端界面) · [查看结果](#查看结果) · [完整文档](docs/README.md)
 
 ## AC-Prof 会采集什么
 
-[NLP、音频、表格和策略](docs/Runtime_Compatibility.md#nlp音频表格和策略任务) · [视觉](docs/Runtime_Compatibility.md#视觉任务) · [多模态](docs/Runtime_Compatibility.md#多模态任务)
+| 使用方式 | 可以看到什么 |
+| --- | --- |
+| `basic`，下面的入门示例 | 应用层延迟、吞吐量、容器 CPU 和内存占用 |
+| `full`，命令行默认模式 | 在基础指标上增加能耗、抓包延迟和 CPU 硬件计数器等指标 |
+| 显式启用或事后补采 profiler | Torch / NCU FLOP、Massif 内存峰值、Nsight Systems 执行时间线 |
 
-- 性能：application / packet-level latency、P50/P90/P95、标准差/CV/IQR/最大值、吞吐量、每任务尺度单位及每百万像素延迟、每 CPU core 吞吐，以及容器启动、server setup、CUDA 初始化、模型加载、ready wait 和首次推理的冷启动分解。
-- 能耗：CPU package、估算 vCPU 和 GPU 的 idle、平均/峰值功率与能量，以及不增加采集轮次的 container-attributed 能效派生值（包括 J/input unit，以及图像任务的 J/Mpixel）。
-- 资源：容器 CPU / 内存、cgroup CPU throttling、memory events、CPU/内存/I/O PSI、`memory.peak`、anon/file/slab、page fault/refault、块 I/O 字节与操作数、PID 当前值/峰值/上限事件、CPU 频率与估算 cycles，以及 GPU utilization、VRAM、SM/显存时钟、P-state 和温度。
-- 网络：从同一份 PCAP 派生每请求的请求/响应 frame bytes、TCP payload 和 L2–L4 协议开销，不增加抓包轮次。
-- PMU：retired-instruction MIPS、cache miss 和 dTLB miss。
-- 计算：PyTorch eager 逻辑 FLOP，以及 NVIDIA Nsight Compute 实际 GPU FLOP。
-- 可选 execution profile：Valgrind Massif 内存峰值、Nsight Systems CUDA timeline。
-
-任务族、支持接口、尺度与示例统一见[运行兼容说明](docs/Runtime_Compatibility.md#任务支持范围)。
-支持某个任务标签不代表所有 checkpoint 都兼容；实际运行还需通过镜像与推理验证。
-原生 timm、Chronos 三代和 Sentence Transformers 使用共享接口；Transformers 新架构按元数据选择
-已锁定版本环境，无需逐模型增加代码。格式、prompt 和验证边界见[共享接口解析](docs/Runtime_Compatibility.md#共享接口解析)。
-
-### NLP、音频、表格和策略任务
-
-见[任务接口与 workload](docs/Runtime_Compatibility.md#nlp音频表格和策略任务)。
-
-### 视觉任务
-
-见[视觉任务与清单](docs/Runtime_Compatibility.md#视觉任务)。
-
-### 多模态任务
-
-见[多模态支持边界](docs/Runtime_Compatibility.md#多模态任务)。
+支持范围包括文本、视觉、音频、时间序列、Diffusion、多模态与结构化数据任务。
+具体模型需满足对应的[任务接口与运行环境](docs/Runtime_Compatibility.md#任务支持范围)，任务标签本身不保证任意 checkpoint 都能运行。
+[指标说明](docs/Metrics.md#采集能力概览)解释各项数据的含义和测量范围。
 
 ## 快速开始
 
-### 1. 检查主机环境
+### 1. 准备主机
 
-必需条件：
+需要原生 Linux x86_64、本机 Docker Engine 和统一 cgroup v2，推荐 Ubuntu 24.04。
+下面使用 uv 安装 Python 工具；也可使用无需预装 Python 的 [standalone](docs/Distribution.md#linux-standalone)。
+当前用户应能直接运行 `docker info`，并能访问 Hugging Face 及依赖下载源。
+WSL、Docker Desktop、远程 Docker daemon、Windows 和 macOS 不支持实验采集。
+下面的 CPU 示例不需要 GPU；GPU 实验另需 NVIDIA driver 和 NVIDIA Container Toolkit。
 
-- Python 3.10+。
-- 当前用户可以直接访问 `unix:///var/run/docker.sock`，无需使用 `sudo docker`。
-- Host 使用统一 cgroup v2；`/sys/fs/cgroup/cgroup.controllers` 必须存在。
-- Hugging Face Hub 可访问；私有或 gated 模型还需要 `HF_TOKEN`。
-- `full` 模式要求 Linux RAPL powercap 可读。
-- `full` 模式要求 Linux `perf` 可以访问硬件 `instructions` 事件。
-- `full` 模式要求 `tcpdump`、`tshark` 和本机 Docker bridge 可用。
-- 运行 `--gpus on` 时，还需要 NVIDIA driver 和 NVIDIA Container Toolkit。
+不确定环境是否满足要求时，先看[主机检查与配置](docs/Getting_Started.md#1-检查主机环境)。
+`full` 模式还需要可读的 RAPL、可用的 `perf instructions`、`tcpdump`、`tshark` 和 Docker bridge。
 
-先确认 Docker 指向本机 daemon：
+### 2. 安装 AC-Prof 并检查环境
 
-```bash
-unset DOCKER_HOST DOCKER_CONTEXT
-docker context use default
-docker context inspect default --format '{{(index .Endpoints "docker").Host}}'
-docker info --format 'OperatingSystem={{.OperatingSystem}}'
-test -f /sys/fs/cgroup/cgroup.controllers
-cat /proc/self/cgroup
-```
-
-`docker context inspect` 应输出 `unix:///var/run/docker.sock`。再检查采集工具：
+先准备 Git，并按 [uv 官方指南](https://docs.astral.sh/uv/getting-started/installation/)安装 uv，再执行：
 
 ```bash
-command -v perf tcpdump tshark
-getcap "$(command -v tcpdump)"
-ip link show docker0
-find /sys/class/powercap -name energy_uj -readable -print -quit
-perf stat -e instructions -- true
-```
-
-如果 `tcpdump` 尚未配置：
-
-```bash
-sudo apt-get install -y tcpdump tshark libcap2-bin
-sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v tcpdump)"
-```
-
-`run.py` 会在下载模型之前执行完整 preflight，并在条件不满足时给出对应修复命令。
-
-### 2. 安装 Python 依赖
-
-```bash
+git clone https://github.com/kainam15/universal-profiles.git
 cd universal-profiles
-# 仅在 .venv 不存在时执行下一行
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --require-hashes -r requirements.lock
+uv tool install .
+uv tool update-shell
 ```
 
-容器运行依赖由独立的平台和完整制品锁管理：保留 7 个任务族，37 个逻辑 profile 共享为
-24 个依赖环境，其中 `onnxruntime-cpu` 完全不安装 Torch。镜像按需构建和复用；只读检查可运行 `python scripts/compile_locks.py --check`，
-分层及锁更新命令见[运行兼容](docs/Runtime_Compatibility.md#当前配置)。
-
-私有或 gated 模型可在项目根目录创建 `.env.local`：
-
-```env
-HF_TOKEN=hf_xxx
-# 可选：仅在 host 侧 perf/tcpdump 需要 sudo 且 sudo -n 不可用时设置
-ACPROF_SUDO_PASSWORD=your_sudo_password
-```
-
-`.env.local` 已被 Git 忽略，可用 `chmod 600 .env.local` 限制读取权限。程序自动读取
-`.env` 和 `.env.local`；令牌只用于主机检测和构建时的 BuildKit secret，正式推理容器
-从镜像内的 `/models/model-snapshot` 离线加载模型，不接收令牌或在运行中下载权重。
-
-### 3. 跑一个最小 smoke test
-
-下面只运行一个 CPU、一个内存限制、一个输入尺度和一个请求，并暂时关闭高开销 profiler：
+重新打开终端（或按 uv 提示刷新 `PATH`），回到刚才的目录，再检查环境：
 
 ```bash
-python run.py --model google-bert/bert-base-uncased \
-  --cpus 1 --mems 4 --gpus off \
-  --input-scales 64 \
-  --warmup 0 --repeat 1 --repeat-in-window 1 \
-  --compute-profile-tool none \
-  --execution-profile-tool none \
-  --output-dir results/smoke
+acprof doctor --profiling-mode basic
 ```
 
-Stable Diffusion 建议先做单 GPU、单分辨率 smoke test：
+后续可从任意工作目录启动 `acprof`，结果写入该目录。
+模型推理依赖优先复用经过核验的 GHCR 预构建镜像，不可用时自动本机构建；模型权重仍按需下载。
+私有或 gated 模型在当前工作目录的 `.env.local` 中配置 `HF_TOKEN`，并将该文件加入 Git 忽略。
+详见[认证配置](docs/Getting_Started.md#hugging-face-认证)、[开发环境安装](docs/Getting_Started.md#2-安装-python-依赖)和[发行包说明](docs/Distribution.md)。
+
+### 3. 跑通第一个 CPU 实验
+
+下面只使用 1 个 CPU、4 GB 容器内存和一个输入规模，主测量发送一次请求。
+它用于检查流程能否跑通，单次测量不足以得出性能结论。
 
 ```bash
-python run.py --model stable-diffusion-v1-5/stable-diffusion-v1-5 \
-  --cpus 4 --mems 16 --gpus on --input-scales 256 \
+acprof run --model google-bert/bert-base-uncased \
+  --profiling-mode basic \
+  --cpus 1 --mems 4 --gpus off --input-scales 64 \
   --warmup 0 --repeat 1 --repeat-in-window 1 \
   --compute-profile-tool none --execution-profile-tool none \
-  --output-dir results/sd-smoke
+  --notify none --output-dir results/first-run
 ```
 
-首次运行仍需下载模型并构建镜像。成功后，主要结果位于：
-
-```text
-results/smoke/google-bert--bert-base-uncased/
-├── result_all.csv
-├── static_meta.json
-├── collection_history.json
-└── input_scale_plan.json
-```
-
-### 无 Torch 的 ONNX Runtime CPU 示例
-
-`basic` 只采集 application latency、吞吐、容器 CPU 和内存；仍要求原生 Linux、本机 Docker、
-cgroup v2。RAPL、perf、抓包不参与此模式，结果明确记录模式和能力状态。默认 `full` 保留原有严格条件。
-
-```bash
-.venv/bin/python run.py --model Ritual-Net/iris-classification \
-  --task tabular-classification --backend onnxruntime \
-  --workload-spec examples/onnxruntime/iris.json --input-scales 1 \
-  --cpus 1 --mems 1 --gpus off --batch-size 1 \
-  --warmup 0 --repeat 1 --repeat-in-window 1 \
-  --profiling-mode basic --compute-profile-tool none --execution-profile-tool none \
-  --notify none --output-dir results/onnx-basic
-```
-
-此模型输入固定为 `[1,4]`，更大的输入或 batch 会明确拒绝。模型 revision 会解析并写入结果；
-任务 sanity check 不等于分类准确率评测。接口与声明格式见[扩展声明](docs/Runtime_Compatibility.md#扩展声明与按需加载)。
-
-离线容器回归（含真实服务、CPU/内存采集、落盘和审计）：
-
-```bash
-.venv/bin/python scripts/check_runtime.py --profile onnxruntime-cpu --basic-e2e \
-  --output-dir internal-testing/onnx-runtime
-```
-
-图像分类和多输入文本分类复用同一 ONNX 环境与现有任务生成器；
-支持边界及预训练小模型的复现步骤见[无 Torch 验收](docs/Testing.md#无-torch-运行时验收)。
-
-### 4. 生成图表
-
-```bash
-python plot.py \
-  results/smoke/google-bert--bert-base-uncased/result_all.csv
-```
-
-图表会写回模型结果目录下的 `cpu/`、`gpu/`、`gpu+cpu/` 和 `latency_model/`；没有适用数据的分组会自动跳过。除原有指标总览外，还会按可用字段生成资源失败边界、P50/P90/P95 尾延迟、延迟–能耗 Pareto 前沿和冷启动阶段分解图。历史 CSV 缺少新字段时只跳过对应图，不影响其余图表。
-
-分辨率横轴（`resolution_px` / `resolution_scale`）下的能耗和延迟归一化子图使用
-`J/Mpixel` / `s/Mpixel`，分母为每请求像素总数除以一百万。Diffusion 使用输出像素，
-CV 和图像多模态使用 processor 处理前的输入像素；视频计入全部帧。横轴仍表示原来的
-边长或缩放倍率。文本 token、音频秒数、去噪步数等尺度继续使用各自的 input unit。
-
-`input_units_per_request` 和 `*_per_input_unit` 继续表示任务尺度单位。
-`plot.py` 仅使用 CSV 已记录的显式像素计数，不再从旧计划补造像素指标。
-缺少可靠像素数时，对应子图显示 `No data`，不以边长代替面积。
-公式和字段要求见 [像素归一化口径](docs/Metrics.md#像素归一化口径)。
-
-当前只保留已有替代实现的最新入口：设置 version 4、输入计划 schema v2、静态元数据 schema v7。
-旧参数、旧 schema、旧 GPU/通用 FLOP 字段会直接报错；详见[当前协议要求](docs/Architecture.md#只保留当前协议)。
-
-## 运行正式实验
-
-建议先逐步扩大规模：最小 smoke test → 单个资源配置的全部 input scale → 不带 profiler 的目标资源矩阵 → 最后补采高开销 profiler。
-
-中断后使用原命令加 `--resume`，或在 TUI 高级参数勾选“恢复未完成实验”。系统会核对原参数、
-镜像和输入计划，保留完成的 case，并备份后重新测量中断的 case。新实验应选择新的输出目录；
-已有产物不会被默认覆盖。符合当前产物协议的实验没有恢复状态文件时仍可绘图、补采，主实验恢复约定见
-[结果完整性与断点续跑](docs/Profiling_Protocol.md#结果完整性与断点续跑)。
-
-### 先探测最大输入
-
-完整矩阵开始前，可先扫描候选内存上限，确认最大输入能否完成一次请求：
-
-```bash
-python probe.py --model google-bert/bert-base-uncased \
-  --cpus 1,2,4 --mems 2,4,8 --gpus off,on --skip-build
-```
-
-这个例子固定使用最小 CPU `1`，优先选择 `GPU=off`，按 `2GB → 4GB → 8GB` 实测。
-输入尺度留空时取自动规划结果的最大档；手动传入 `--input-scales` 时取其中最大值。
-每档使用全新容器，最多发送一次 `/predict`，第一个成功值是这些候选中的最低可用内存。
-明确的启动或运行期主机内存 OOM 会推进到下一档；CUDA OOM、超时、尺度不一致和其他
-错误会停止，尚未验证的更大内存不会被报告为可行。
-
-探测请求默认不设超时，需要限制时传入 `--timeout-seconds <正数>`。
-这与正式矩阵默认 `--request-timeout-seconds 300` 相互独立。结果同时报告成功档的
-容器冷启动、单次请求及两者合计耗时，写入独立的 `probes/` 目录；该流程不采集能耗、
-PMU 或网络指标，也不写正式 CSV。字段见[探测输出](docs/Profiling_Protocol.md#最大输入探测结果)。
-TUI 的“探测最大输入”调用同一入口。
-
-### CPU-only 矩阵
-
-```bash
-python run.py --model google-bert/bert-base-uncased \
-  --cpus 1,2,4 --mems 4,8 --gpus off \
-  --compute-profile-tool none \
-  --output-dir results/bert-cpu
-```
-
-### CPU / GPU 对比矩阵
-
-```bash
-python run.py --model google-bert/bert-base-uncased \
-  --cpus 1,2,4 --mems 4,8 --gpus off,on \
-  --compute-profile-tool none \
-  --output-dir results/bert-cpu-gpu
-```
-
-上面两个例子先完成主矩阵，之后可用 `profile.py` 补采计算指标。计算分析器现在默认关闭；若希望在矩阵开始前直接采集 Torch / NCU，请显式传入 `--compute-profile-tool both`。`--execution-profile-tool` 默认也是 `none`。
-
-### 默认完整矩阵
-
-```bash
-python run.py --model google-bert/bert-base-uncased
-```
-
-默认配置如下：
-
-| 维度 | 默认值 |
-| --- | --- |
-| CPU | `1,2,4,8` |
-| 内存 | `2,4,8,16` GB |
-| GPU mode | `off,on` |
-| input scale | 自动规划，通常 6 档 |
-| warmup / repeat | `2 / 5` |
-| 每行 workload | 自动持续到累计 application latency 约 10 秒 |
-| 单个 `/predict` 请求超时 | `300` 秒 |
-| Idle 基线 / 前置冷却 | `20 / 5` 秒 |
-| compute profiler | `none`（关闭；需要时显式启用或后续补采） |
-| execution profiler | `none` |
-| 企业微信通知 | 配置 Webhook 后自动启用；`--notify none` 可关闭 |
-
-若实际规划出 6 档输入，完整矩阵包含 384 行 warmup 和 960 行正式测量。
-行数、请求数与端到端耗时的区别见[时间成本估算](docs/Profiling_Protocol.md#结果行数和时间成本估算)。
-大矩阵开始前也应检查 profiler artifacts 的磁盘占用。
-
-### 常用变体
-
-```bash
-# 手动指定输入规模
-python run.py --model google-bert/bert-base-uncased \
-  --input-scales 64,128,256,512
-
-# 时间序列模型
-python run.py --model amazon/chronos-bolt-base \
-  --task-family timeseries --backend chronos
-
-# 复用已有镜像
-python run.py --model google-bert/bert-base-uncased --skip-build
-
-# 单个推理请求最多等待 30 分钟
-python run.py --model stable-diffusion-v1-5/stable-diffusion-v1-5 \
-  --request-timeout-seconds 1800
-
-# 查看全部参数
-python run.py --help
-```
-
-### 镜像复用、超时与失败处理
-
-- 模型文件筛选、依赖/模型/代码分层及缓存含义见[运行兼容说明](docs/Runtime_Compatibility.md#模型文件选择规则)。
-- `--skip-build` 核验匹配后复用，不存在则构建；镜像与独立推理验证的失败边界见[构建、复用和验证](docs/Runtime_Compatibility.md#构建复用和验证)。
-- 启动 OOM、剪枝推断及部分结果处理见[排障说明](docs/Troubleshooting.md#启动-oom-与剪枝占位)。
-- 长请求可设置 `--request-timeout-seconds 1800`；它限制单次请求，不限制整个矩阵。默认值与适用阶段见[CLI 参数](docs/CLI_Reference.md#请求窗口与采样)。
-
-## 交互式终端界面
-
-不想反复输入长命令时，可以从项目根目录启动全屏 TUI：
-
-```bash
-./acprof-tui
-```
-
-也可以预填模型并直接加载最小 smoke 配置：
-
-```bash
-./acprof-tui --model google-bert/bert-base-uncased --preset smoke
-```
-
-默认以 RGB 真彩色显示，普通终端和 VS Code 使用相同的深海蓝配色；SSH 未传递 `COLORTERM`
-也不会自动降级。仅支持 256 色的终端可加 `--color-system 256`，需要环境自动检测时使用
-`--color-system auto`；具体行为见[终端颜色说明](docs/CLI_Reference.md#tui-终端颜色)。
-
-TUI 分为“实验配置”“运行监控”“绘图工具”“统计报告”“补采工具”“镜像管理”和“设置”七页。
-页面统一为顶部导航、页面标题或状态摘要、主内容、底部操作栏；主内容滚动时，摘要和操作栏保持可见。
-“开始采集”“生成图表”“计算统计”“执行补采”“删除所选”“保存设置”固定在各页右下角，
-监控页的日志工具和“终止任务”位于底栏，放大日志后仍可操作。可选的快捷命令框位于页面操作栏下方。
-实验页集中填写模型、资源矩阵和输入规模，提供三种预设及自动命令预览；底栏还提供环境检查和最大输入探测。
-表单会随终端宽度切换排列。监控页显示 case 级进度和日志；绘图页通过结果 CSV 读取摘要、生成图表，
-补采页通过结果目录选择 profiler、查看补采计划或执行补采。绘图和补采任务启动后切换到监控页查看日志。
-`/results`、`/summary` 读取摘要后打开绘图页。开始探测、采集和执行补采前都会显示确认页。
-
-“统计报告”页可查看窗口置信区间、CPU/GPU 监测开销和 CLI/TUI 对照：
-
-- 采集结束后点击“当前结果”，再点“计算统计”；也可输入其他实验目录或 CSV。
-  计算调用 `stats.py`，完成后自动显示表格，并保存到 CSV 同目录的 `analysis/window-statistics-<唯一标识>.json`。
-- 查看已生成的报告时，输入 JSON 路径后点击“查看报告”。表格支持方向键、滚动和选行查看口径；延迟以 ms 显示。
-- `/stats [csv/dir]` 计算统计，`/report [json]` 打开报告。计算和读取仅在 TUI 空闲时执行，原始 CSV 与旧报告保留。
-
-窗口统计需要主动点击，不会在每次采集后自动计算；监测开销及 CLI/TUI 对照仍由独立工具运行，
-本页读取它们已经生成的报告。统计口径、默认指标与样本不足的说明见[指标分析](docs/Metrics.md#窗口置信区间与开销对照)。
-
-所有 TUI 表格（资源矩阵、统计报告、镜像树、镜像列表、层共享）均支持按住表头相邻列之间的 `│` 左右拖动，手动调整左侧列宽；最后一列右侧不显示拖动手柄。
-表头与单元格内容统一左对齐，镜像树名称保留层级缩进；拖动改宽后保持对齐。
-松开鼠标结束；拖动不触发排序、勾选或折叠。一般列最窄保留一个字符格，镜像树名称列另保留层级箭头与勾选空间。
-手动列宽在本次会话的排序、筛选、刷新、视图与语言切换、终端缩放后保留，重启 TUI 后恢复默认；任务运行期间暂停拖动。
-
-“镜像管理”页（`/images`）默认打开可折叠的**镜像树**，可切换到**镜像列表**或**层共享**。
-打开页面自动读取清单，空闲时每轮读取完成后 5 秒更新；刷新保留有效勾选、筛选、折叠和浏览位置。
-树中显示逻辑名称、完整大小与相对父镜像的新增大小；搜索支持包名和版本，并保留祖先路径。
-平台节点显示 `CPU`、`CUDA 12.4`、`CUDA 12.8`，同平台子节点省略重复后缀；依赖版本号保留小数点。
-`←/→` 或树的箭头折叠/展开；树和列表中，点击 `□ / ☑` 及左右各一格留白勾选/取消，点击行内其他位置只查看详情。
-镜像树左侧会高亮通往当前行的祖先连接线，随鼠标点击或方向键移动更新。
-空格可切换当前镜像的勾选状态；列表表头可排序。镜像列表只固定最左侧勾选列，“环境 / 模型”与大小、`Repository`、`Tag` 等数据列一起横向滚动。
-详情先显示镜像摘要（名称、类型、大小、容器引用数与删除释放估算），下方“依赖清单”“镜像信息”“诊断信息”默认折叠。
-按住列表与详情之间的“↕ 拖动调整详情高度”分隔条上下拖动：向上扩大详情，向下扩大列表。
-分隔条可用 `Tab` 聚焦，`↑/↓` 微调、`Home` 恢复默认高度；高度在本次会话保留，缩小终端时自动限制，放大后恢复。两侧内容仍可独立滚动。
-点击分组标题，或用 `Tab` 聚焦后按 `Enter` 展开；依赖标题显示包数量、“无新增包”或“未知”，展开后逐行查看完整包版本。
-“镜像信息”显示继承路径、共享/独有空间、模型、标签与容器；完整 SHA、依赖来源、history 核验和空间计算说明放在“诊断信息”。
-切换语言、缩放窗口或勾选同一镜像时保留展开状态；换一个镜像时回到折叠摘要。依赖按镜像身份匹配锁，运行依赖层扣除平台已有包；层共享视图也将引用镜像与诊断标识分组。
-“选择同模型”会选中该模型的服务、权重和调试镜像，保留公共依赖。点击“删除所选”后，核对全部标签并确认。
-已有容器引用的镜像不能删除；仍需续采或补采时应保留原实验镜像。页面按 image ID 合并别名，大小包含共享层，
-释放估算按所选集合去重，构建缓存仍可能保留数据；`?` 表示未知。
-离开页面、显示确认框或运行任务时暂停自动扫描；删除仍需明确确认，具体范围见[镜像管理与清理](docs/Runtime_Compatibility.md#镜像管理与清理)。
-公共基础、运行依赖、模型文件等类型的名称、用途和复用关系，见[镜像分类与复用](docs/Runtime_Compatibility.md#镜像分类与复用)。
-
-`F2` 或 `/settings` 打开设置，`F5` 开始采集，`F6` 执行环境检查，`Ctrl+X` 安全终止当前任务。
-点击界面右上角的“×”或按 `Ctrl+Q` 退出；任务运行中会提示先安全终止任务。
-底部输入框还支持 `/run`、`/probe`、`/check`、`/status`、`/stop`、`/plot`、`/stats`、`/report`、`/images`、`/profile` 和 `/help`
-等快捷命令。
-
-如果 `Ctrl+Q` 在普通终端有效、在 VS Code 集成终端无效，可能是按键被 VS Code 拦截。
-Windows 客户端默认将它绑定到“快速打开视图”（`workbench.action.quickOpenView`）；
-Remote-SSH 也由发起连接的客户端处理快捷键。在 VS Code 工作区设置 JSON 中加入
-以下配置；已有 `terminal.integrated.commandsToSkipShell` 数组时，将该条目追加进去：
-
-```json
-{
-  "terminal.integrated.commandsToSkipShell": [
-    "-workbench.action.quickOpenView"
-  ]
-}
-```
-
-前缀 `-` 表示将该命令移出终端按键拦截名单，让终端应用接收按键。
-参见 [VS Code 官方终端快捷键说明](https://code.visualstudio.com/docs/terminal/advanced#_keyboard-shortcuts-and-the-shell)。
-保存后点击终端让其获得焦点，再按 `Ctrl+Q`。若仍无效，运行命令面板中的
-`Developer: Toggle Keyboard Shortcuts Troubleshooting`，再按一次 `Ctrl+Q`，查看
-快捷键日志中实际匹配的命令，以排查扩展或自定义绑定；排查后再次运行该命令关闭日志。
-也可以点击右上角“×”，或在底部快捷命令框输入 `/quit` 退出。
-
-点击“环境检查”或按 `F6` 后，界面立即切换到“运行监控”显示日志，无需等待检查结束。
-环境检查不会启动模型或正式采集。`perf instructions` 与正式启动共用权限探测，依次尝试
-普通用户、免交互 sudo，以及通过 `ACPROF_SUDO_PASSWORD` 配置的 sudo；读到有效指令计数
-才显示通过，并注明使用的方式。失败时日志保留各次尝试的错误。该检查不会修改系统权限设置，
-正式启动时仍会执行完整预检。
-
-所有输入框均支持 `Ctrl+A` 全选当前框内的文本；全选后键入或粘贴会替换全文，
-按 `Backspace` 或 `Delete` 清空。`Home` 仍移到行首，`Ctrl+Shift+A` 也可全选。
-输入框使用细竖线插入光标，停下输入后亮 0.5 秒、灭 0.5 秒；键入、移动或点击后立即显示。
-TUI 直接控制光标亮灭，不依赖终端的闪烁设置，也不为闪烁重绘界面。离开输入框后隐藏并停止
-计时，正式测量窗口内暂停闪烁。光标形状需要终端支持 DECSCUSR；退出或挂起 TUI 时重置样式。
-
-操作按钮统一使用透明底色和细线圆角边框，颜色含义不随主题变化：青色表示当前选择或主要操作，
-普通白色表示一般操作，黄色表示补采等有风险但可恢复的操作，红色表示删除或终止，灰色表示禁用，
-绿色表示成功或服务就绪。浅色主题用深色普通文字及较深的同色系操作颜色保持可读性。
-悬停或键盘聚焦时加粗并加下划线，保留操作本身的颜色；禁用时统一变灰。
-日志工具栏和确认弹窗也使用相同语义，删除、终止的确认按钮保持红色，补采确认保持黄色。
-确认弹窗打开时不预选按钮；使用鼠标时，移入按钮才高亮，移出后恢复。
-键盘操作使用 `Tab` / `Shift+Tab` 选择按钮，`Enter` 执行所选操作，`Esc` 取消；未选择时直接按 `Enter` 不执行操作。
-
-设置页只放界面偏好：界面语言（简体中文 / English）、八种主题（深海蓝、纸白、石墨灰、松林绿、暮紫、琥珀、暖砂、雾蓝）、
-日志保留行数（500 / 1000 / 3000 / 10000）、日志自动换行，以及是否显示底部快捷命令框。
-修改当次生效，点击“保存设置”后，下次启动沿用。
-按 `F2` 打开设置，在“界面语言 / Language”选择 `English` 即可切换为英文；
-页面、表单、提示、确认弹窗和监控状态同步切换，当前输入、预设、日志选区和已读取摘要保留。
-日志中的原始子进程输出保留原文，模型 ID、路径、命令和实验数据不做翻译。
-默认使用简体中文；已有设置文件缺少语言字段时也使用简体中文。
-换行设置会重新排布已有日志；行数上限按原始文本行计算，调整后立即裁剪较旧内容。
-“恢复界面默认”先恢复当次显示，再点击保存即可保留。
-
-采集参数留在实验页。点击“高级参数”，切换到 batch size、warmup/repeat、请求窗口、采样
-频率、请求超时、分析器和任务覆盖参数等选项；点击“返回基本配置”回到模型和资源矩阵。
-高级参数内的“记住实验配置”会保存当前实验表单，下次打开此项目时自动填入。
-模型 ID 会在确认启动采集或最大输入探测时自动记住，无需点击保存；即使任务失败或被终止，
-下次打开仍会填入该模型。仅修改输入、预览命令或取消确认不会更新记录。
-模型的填入顺序为：命令行 `--model` → 最近启动的模型 → 手动保存的实验配置。
-`--preset` 优先于保存的其他实验参数，并保留按上述顺序选出的模型。运行任务期间，配置控件暂时锁定。
-
-“绘图工具”的“结果 CSV”和“补采工具”的“结果目录”分别自动记忆，下次启动直接恢复。
-确认采集时保存本次输出路径，结束后按实际合并 CSV 更新；失败或终止仍保留本次路径，便于续跑。
-成功读取摘要或启动绘图时记住使用的 CSV，确认启动补采或补采计划时记住使用的目录，
-按钮和快捷命令都适用。仅编辑输入框、无效路径或取消确认不会覆盖记录；最大输入探测不改动这两个结果路径。
-路径保存只发生在子进程启动前或结束后、手动读取摘要后；测量期间禁用摘要读取。
-统计页初始带入最近的结果 CSV；完成采集或更换已确认的 CSV 时，未另行编辑的统计路径会随之更新。
-“当前结果”可重新带入绘图页的 CSV；手动输入的报告路径在切页和语言切换时保留，不另存为实验配置。
-启动窗口统计会记住使用的 CSV，打开 JSON 报告不会改变采集、绘图或补采路径。
-
-设置文件按项目目录隔离，保存在 `$XDG_CONFIG_HOME/acprof/<项目路径哈希>/tui.json`；
-未设置有效的 `XDG_CONFIG_HOME` 时使用 `~/.config/acprof/<项目路径哈希>/tui.json`。
-设置页会显示完整保存位置。文件仅包含界面偏好、显式记住的实验默认参数、最近启动的模型 ID 和结果路径；
-凭据仍由本地环境配置管理。设置文件损坏时，界面提示并使用默认值，自动记忆不会覆盖原文件；
-下一次主动保存设置后恢复自动记忆。自动记忆保存失败会提示，但不阻止任务启动或结果读取。
-
-监控页优先显示日志，资源矩阵默认折叠，点击标题或输入 `/matrix` 可展开。
-日志是只读文本：鼠标拖动选择，双击选词，`Ctrl+A` 全选，`Ctrl+C` 或“复制选区”复制。
-复制保留原始文本，屏幕上的自动换行不会变成额外换行；系统剪贴板通过终端的 OSC 52 通道写入，
-需要终端允许该功能。点击“放大日志”、按 `F8` 或输入 `/log` 可铺满终端，`Esc` 或“返回监控”恢复。
-放大时仍可复制、清空和终止任务。滚动查看历史或选择文字后暂停跟随，新增日志继续保留，
-点击“回到最新”恢复自动跟随。滚动条使用与主题一致的整格滑块，避免半格字形形成黑色断带。
-
-界面不会重写采集逻辑，而是启动现有 `run.py`、`probe.py`、`plot.py`、`stats.py` 和 `profile.py`。为了降低
-对能耗与延迟实验的影响，正式 workload 窗口内停止常规日志重绘，不运行实时绘图，
-也不轮询正在写入的 CSV；状态仅从已有进程输出中事件驱动更新。TUI 内运行时还会
-禁用子进程的 tmux pane 捕获，避免把全屏 ANSI 重绘写进 `tmux_all.log`。论文复现仍可
-直接复制界面显示的完整命令，在普通 CLI 或自动化脚本中执行。
-
-## 企业微信通知
-
-先在企业微信群中添加群机器人，把完整 Webhook 只保存在项目根目录的
-`.env.local`（该文件已被 Git 忽略）：
-
-```env
-ACPROF_WECOM_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx
-```
-
-建议限制本地配置文件权限：
-
-```bash
-chmod 600 .env.local
-```
-
-配置 Webhook 后，`run.py` 默认启用企业微信通知，无需额外参数：
-
-```bash
-python run.py --model google-bert/bert-base-uncased
-```
-
-`--notify` 默认为 `auto`（检测到 Webhook 自动启用）；传入 `--notify wecom` 显式启用，传入 `--notify none` 临时关闭：
-
-```bash
-python run.py --model google-bert/bert-base-uncased --notify none
-```
-
-通知覆盖实验开始、已启用 profiler 的各工具阶段完成、每个资源 case 完成和最终总结。
-CPU Torch、GPU Torch、NCU、Massif、Nsys 各自汇总实际采样项、失败数、阶段耗时和累计耗时；
-vendor 模式的 CPU Advisor 同样适用。阶段状态区分成功、部分失败、失败和无结果。
-关闭或不适用的工具不发阶段通知，代表资源复用不重复计数。最终总结区分成功、部分成功、
-无结果、失败和用户取消。TUI 启动的 `run.py` 使用同一设置，独立 `profile.py` 不发送这些通知。
-
-通知在测量窗口外发送：profiler 阶段返回后、下一个阶段前，或 case 的容器、监控器与抓包
-全部停止后。input scale、warmup 和 repeat 窗口内部不发送网络通知。每次发送超时 5 秒，
-最多尝试两次；失败只产生警告，不改变测量结果或原退出码。Webhook 只保存在本地环境配置中。
+首次运行会下载模型和依赖、构建镜像，准备阶段可能较久。程序会先检查环境，再开始下载和实验。
+这个 `basic` 示例只采集基础指标；能耗、抓包和独立 profiler 的字段为 `nan` 属于预期结果。
+完成后按下一节查看结果。重新做一个实验请换新的 `--output-dir`；中断后可用原命令加 `--resume` [恢复实验](docs/Profiling_Protocol.md#结果完整性与断点续跑)。
 
 ## 查看结果
 
-结果目录为 `<output-dir>/<model-dir>/`，模型 ID 中的 `/` 替换为 `--`。
-例如 `google-bert/bert-base-uncased` 对应 `google-bert--bert-base-uncased/`。
+上面示例的主要文件位于：
 
-| 阅读目的 | 入口 |
+```text
+results/first-run/google-bert--bert-base-uncased/
+├── result_all.csv          # 测量数据
+├── static_meta.json        # 模型、镜像和运行环境
+├── input_scale_plan.json   # 本次实验使用的输入
+├── collection_history.json # 补采或修复记录
+└── run_state.json          # 实验完成与恢复状态
+```
+
+先检查结果是否完整，再生成有适用数据的图表：
+
+```bash
+acprof audit results/first-run/google-bert--bert-base-uncased/ --require-complete --require-ok
+acprof plot results/first-run/google-bert--bert-base-uncased/result_all.csv
+```
+
+图表写入同一模型目录下的 `cpu/`、`gpu/`、`gpu+cpu/` 和 `latency_model/`，没有适用数据的部分会跳过。
+采集过程中先写 `result_case_*.csv`，矩阵结束后才合并出 `result_all.csv`。
+正式分析筛选 `status=ok` 且 `warmup=0`；字段、统计与缺失值说明见[结果阅读指南](docs/Metrics.md#从结果目录开始)。
+
+## 交互式终端界面
+
+也可以通过全屏 TUI 填写参数、查看日志、绘图和管理镜像。完成安装后运行：
+
+```bash
+acprof tui --model google-bert/bert-base-uncased --preset smoke
+```
+
+若要使用与上面相同的基础采集模式，打开“高级参数”，将“画像模式”改为“基础（延迟 / CPU / 内存）”，再点击“开始采集”。
+TUI 的 smoke 预设默认仍是 `full`，需要对应的主机采集工具。开始前可在命令预览中核对参数。
+页面、快捷键、日志复制、设置与 VS Code 按键问题见 [TUI 用户指南](docs/TUI.md)。
+
+## 运行正式实验
+
+先用最小实验确认环境，再逐步增加输入规模、CPU、内存或 GPU 配置；高开销 profiler 可以在主实验后补采。
+使用 `full` 前完成[主机准备](docs/Getting_Started.md#1-检查主机环境)，并为新实验选择独立输出目录。
+
+仅传 `--model` 会使用默认完整矩阵。自动规划出 6 档输入时，它计划生成 1,344 行（含 warmup），
+仅主测量窗口就约 13 小时，下载、构建和 profiler 还需额外时间。详见[时间成本估算](docs/Profiling_Protocol.md#结果行数和时间成本估算)。
+
+[CPU / GPU 矩阵示例](docs/Getting_Started.md#运行正式实验) · [先探测最大输入](docs/Getting_Started.md#先探测最大输入) · [选择与补采 profiler](docs/Profilers.md) · [企业微信通知](docs/CLI_Reference.md#企业微信通知)
+
+## 文档导航
+
+| 想继续做什么 | 阅读入口 |
 | --- | --- |
-| 查看测量值 | `result_all.csv`；正式性能分析筛选 `status=ok` 且 `warmup=0`。 |
-| 复现实验对象和输入 | `static_meta.json` 与 `input_scale_plan.json`。 |
-| 追踪补采或修复 | `collection_history.json` 与对应 profiler plan。 |
-| 查看图表和拟合 | `cpu/`、`gpu/`、`gpu+cpu/` 与 `latency_model/`。 |
-
-`latency_app_s` 是客户端应用层计时，`latency_s` 是抓包解析得到的 packet-level 计时。
-关闭 GPU 或未启用某个 profiler 时，对应字段为 `nan` 属于预期结果。
-运行中先写 `result_case_*.csv`，矩阵完成后才合并为 `result_all.csv`。
-
-可只读检查结果完整性，并按独立测量窗口估计均值区间：
-
-```bash
-.venv/bin/python audit.py results/<model-dir>/ --require-complete --require-ok
-.venv/bin/python stats.py results/<model-dir>/ --metric latency_app_s
-```
-
-历史实验可能缺少完成状态，先省略 `--require-complete` 查看审计说明。区间的样本单位、
-连续窗口相关性与开销对照方法见[统计说明](docs/Metrics.md#窗口置信区间与开销对照)。
-
-完整说明集中在[输出文件](docs/Profiling_Protocol.md#输出文件)、[CSV 字段字典](docs/Metrics.md#result_allcsv-字段解释)
-和[常见判断](docs/Troubleshooting.md#常见判断)。
-
-## 选择性能分析器
-
-工具选择、测量边界与成本统一见 [Profiler 说明](docs/Profilers.md)。
-
-### 计算分析器：`--compute-profile-tool`
-
-选项与使用场景见[计算分析器](docs/Profilers.md#计算分析器--compute-profile-tool)。
-
-### 执行分析器：`--execution-profile-tool`
-
-选项、代表资源与完整矩阵见[执行分析器](docs/Profilers.md#执行分析器--execution-profile-tool)。
-
-### 补采已有结果
-
-完成主矩阵后，结果目录需同时具有 `result_all.csv`、`static_meta.json` 和
-`input_scale_plan.json`。先检查计划，再执行补采：
-
-```bash
-python profile.py results/google-bert--bert-base-uncased --dry-run
-python profile.py results/google-bert--bert-base-uncased --tools torch,ncu
-```
-
-不传 `--tools` 时，默认补齐适用且尚未成功的 `torch,ncu,nsys,massif`。
-TUI 的“补采工具”页提供这四项独立复选框，默认勾选 `torch`、`ncu`；
-鼠标点击或聚焦后按空格切换，可同时勾选四项。至少选择一项后再查看补采计划或执行补采。
-未显式指定工具的 `/profile`、`/profile-run` 使用当前勾选项；命令中指定工具时以命令为准。
-Torch 匹配已有 CPU/GPU 数据，NCU/Nsys 只用于 GPU 行，Massif 只用于 CPU-only 行。
-补采沿用前述 Massif/Nsys 采样策略，也支持 `--massif-sampling full`、
-`--nsys-sampling per-scale` 或 `--nsys-sampling full`。
-
-NCU 和 Massif 会按 input scale 保存 checkpoint。NCU 可复用匹配的 CSV 或从已有
-`.ncu-rep` 恢复，Massif 可复用匹配的 `.out`；模型 revision、镜像、资源、repeat 和
-NCU metrics（适用时）必须匹配，才能恢复旧报告。分析固定使用不可变镜像 ID，
-旧 tag 形式的 Massif checkpoint 与新 ID 不匹配时会重采。完整成功的已有 plan 也可复用。
-默认保留已有成功 CSV 值；`--force-reprofile` 强制重新采集并替换所选 profiler 字段。
-
-写入前把旧文件备份到 `posthoc_backups/<timestamp>/`，验证临时文件后原子替换
-`result_all.csv`、`static_meta.json` 和 `collection_history.json`，失败时从备份恢复。
-操作记录追加到 `posthoc_profile_history`，原始实验命令和非 profiler 字段保持原样。
-仅接受当前产物协议，不迁移旧静态元数据中的历史记录；报告与补采 plan 位于 `posthoc_profiles/`。
-同一结果目录若仍被采集或分析进程使用，补采会拒绝启动。
-
-### 从已有计划生成派生 CSV
-
-如果 latency 已采集完成、之后才生成 `compute_profile_plan.json`，可以写出一份带 FLOP/MFLOPS 的新 CSV：
-
-```bash
-python -m acprof.cli.backfill_compute \
-  results/google-bert--bert-base-uncased/result_all.csv \
-  results/google-bert--bert-base-uncased/compute_profile_plan.json \
-  --output results/google-bert--bert-base-uncased/result_all.with_compute.csv
-```
-
-工具按 GPU mode 和 input scale 匹配已有计划，生成带 Torch/NCU 字段的派生 CSV。
-输出采用原子写入，默认拒绝覆盖已有文件；确需替换显式输出路径时追加 `--overwrite`。
-FLOP/MFLOPS 的单位、延迟分母和缺失值规则见[计算指标字典](docs/Profilers.md#torch-与-ncu-计算指标)。
-
-## 常见问题
-
-主机与运行排查、结果判断统一见[排障文档](docs/Troubleshooting.md)。
-
-### `[infra][ERROR]`
-
-见[对应诊断](docs/Troubleshooting.md#infraerror)。
-
-### `[sniff][ERROR]` 或 `latency_s` 无法合并
-
-见[对应诊断](docs/Troubleshooting.md#snifferror-或-latency_s-无法合并)。
-
-### `[cpu-energy][ERROR]`
-
-见[对应诊断](docs/Troubleshooting.md#cpu-energyerror)。
-
-### `[cgroup][ERROR]`
-
-见[对应诊断](docs/Troubleshooting.md#cgrouperror)。
-
-### `[mips][ERROR]`
-
-见[对应诊断](docs/Troubleshooting.md#mipserror)。
-
-### `container_oom_killed during startup`
-
-见[对应诊断](docs/Troubleshooting.md#container_oom_killed-during-startup)。
-
-### `container_runtime_oom`
-
-见[对应诊断](docs/Troubleshooting.md#container_runtime_oom)。
-
-### 运行中还没有 `result_all.csv`
-
-见[对应诊断](docs/Troubleshooting.md#运行中还没有-result_allcsv)。
-
-### `--skip-build` 后接口报错
-
-见[对应诊断](docs/Troubleshooting.md#--skip-build-后接口报错)。
-
-### `[task-support][ERROR]` / TUI 显示“任务不支持”
-
-见[对应诊断](docs/Troubleshooting.md#task-supporterror--tui-显示任务不支持)。
+| 配置环境，运行 Stable Diffusion、ONNX 或完整矩阵 | [安装与运行指南](docs/Getting_Started.md) |
+| 查参数、输入规模或自定义 workload | [CLI 参考](docs/CLI_Reference.md) |
+| 选择模型、backend 或了解镜像复用 | [运行兼容](docs/Runtime_Compatibility.md) |
+| 理解指标、能耗、图表和统计 | [指标与结果](docs/Metrics.md)、[能耗测量](docs/Energy_Measurement.md) |
+| 排查环境、OOM、超时或部分结果 | [运行排障](docs/Troubleshooting.md) |
+| 查采集协议和其他专题 | [完整文档索引](docs/README.md) |
 
 ## 项目结构与开发
 
-模块职责与依赖见[代码架构](docs/Architecture.md)，测试选择与证据要求见[测试指南](docs/Testing.md)。
-开发工具通过独立哈希锁安装，本地与 CI 共用 pre-commit 检查；规则、版本更新和定向测试方式见
-[开发质量检查](docs/Testing.md#开发质量检查)。在已有 `.venv` 中执行：
-
-```bash
-.venv/bin/python -m pip install --require-hashes -r requirements-dev.lock
-.venv/bin/python -m pre_commit install
-.venv/bin/python -m pre_commit run --all-files --show-diff-on-failure
-```
-
-新增模型或 backend 参见[适配契约](docs/Runtime_Compatibility.md#新增一个模型适配)及[适配流程](.agents/skills/acprof-model-adaptation/SKILL.md)。
-修改指标时更新对应的 [docs 专题](docs/README.md)，并同步受影响的示例和链接。
+模块职责见[代码架构](docs/Architecture.md)，开发依赖、pre-commit 和测试入口见[测试指南](docs/Testing.md#开发质量检查)。
+新增模型或 backend 参见[适配契约](docs/Runtime_Compatibility.md#新增一个模型适配)；Agent 协作规则见 [AGENTS.md](AGENTS.md)。

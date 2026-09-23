@@ -302,7 +302,7 @@ OOM pruning 继续按原有参考 CPU/内存顺序重建证据，复用与推断
 | `timing.request_timeout_s` | 默认无限等待时为 `null`；显式设置 `--timeout-seconds` 时为对应秒数。旧 schema v2 始终记录有限值。 |
 
 探测不会写入或修改 `result_case_*.csv`、`result_all.csv`、`static_meta.json` 或
-`collection_history.json`，结果不包含 idle、能耗或网络测量。用法见 [README](../README.md#先探测最大输入)。
+`collection_history.json`，结果不包含 idle、能耗或网络测量。用法见[最大输入探测](Getting_Started.md#先探测最大输入)。
 
 ## 冷启动
 

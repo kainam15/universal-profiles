@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
 from acprof.dependency_locks import (
@@ -178,7 +177,8 @@ for _family in ("nlp", "cv", "audio", "multimodal"):
 
 @lru_cache(maxsize=None)
 def _transformers_version(environment: DependencyEnvironment) -> str | None:
-    return package_versions(read_python_lock(Path(__file__).resolve().parents[1] / environment.requirements_lock)).get("transformers")
+    from acprof.installation import resource_root
+    return package_versions(read_python_lock(resource_root() / environment.requirements_lock)).get("transformers")
 
 
 def _native_compatible(task_info: Any, profile: RuntimeProfile) -> bool | None:

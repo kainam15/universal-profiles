@@ -19,9 +19,10 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 import wave
 
 from acprof.workloads import WorkloadGenerator, register_generator
+from acprof.installation import resource_root
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = resource_root()
 SAMPLE_RATE = 16000
 CHANNELS = 1
 SAMPLE_WIDTH_BYTES = 2

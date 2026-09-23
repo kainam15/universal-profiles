@@ -1,4 +1,5 @@
 from dataclasses import replace
+from itertools import product
 import os
 from pathlib import Path
 import tempfile
@@ -515,8 +516,8 @@ class TuiModelMemoryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_result_tools_remember_confirmed_paths_before_starting(self):
         csv_path = self.write_result()
-        for kind in ("plot", "profile-dry-run", "profile"):
-            with self.subTest(kind=kind):
+        for kind, frozen in product(("plot", "profile-dry-run", "profile"), (False, True)):
+            with self.subTest(kind=kind, frozen=frozen), patch("sys.frozen", frozen, create=True):
                 save_settings(self.settings_path, self.saved, PROJECT_DIR)
                 original = self.settings_path.read_bytes()
                 expected = replace(
@@ -529,7 +530,9 @@ class TuiModelMemoryTests(unittest.IsolatedAsyncioTestCase):
                     def check_persisted_before_launch(command, launched_kind):
                         self.assertEqual(launched_kind, kind)
                         self.assertEqual(load_settings(self.settings_path, PROJECT_DIR), (expected, ""))
-                        self.assertEqual(command[3], str(csv_path if kind == "plot" else csv_path.parent))
+                        subcommand = "plot" if kind == "plot" else "profile"
+                        self.assertEqual(command[command.index(subcommand) + 1],
+                                         str(csv_path if kind == "plot" else csv_path.parent))
 
                     with patch.object(app, "_execute_command", side_effect=check_persisted_before_launch) as execute:
                         if kind == "plot":

@@ -112,7 +112,7 @@ from acprof.tui.views import (
 )
 
 
-PROJECT_DIR = Path(__file__).resolve().parents[2]
+PROJECT_DIR = Path.cwd()
 # Keep the virtual-environment path. Resolving this symlink would turn
 # ``.venv/bin/python`` into the system interpreter and lose the venv.
 PYTHON_EXECUTABLE = Path(sys.executable).absolute()
@@ -2070,7 +2070,7 @@ class AcprofTui(BarCursorApp):
         dry_run: bool,
         result_dir: str | None = None,
         tools: str | None = None,
-    ) -> list[str] | None:
+    ) -> tuple[list[str], Path] | None:
         directory = result_dir or self._input("result-dir")
         selected_tools = tools if tools is not None else ",".join(
             checkbox.name
@@ -2090,13 +2090,14 @@ class AcprofTui(BarCursorApp):
             self.notify(message('结果目录不存在：{0}', result_path), severity="error")
             return None
         try:
-            return build_profile_command(
+            command = build_profile_command(
                 result_path,
                 tools=selected_tools,
                 dry_run=dry_run,
                 project_dir=PROJECT_DIR,
                 python_executable=PYTHON_EXECUTABLE,
             )
+            return command, result_path
         except TuiConfigError as exc:
             self._show_config_error(exc)
             return None
@@ -2111,14 +2112,15 @@ class AcprofTui(BarCursorApp):
         if self._is_busy():
             self.notify("已有任务正在运行", severity="warning")
             return
-        command = self._profile_command(
+        prepared = self._profile_command(
             dry_run=dry_run,
             result_dir=result_dir,
             tools=tools,
         )
-        if command is not None:
+        if prepared is not None:
+            command, result_path = prepared
             self._launch(PendingLaunch(
-                tuple(command), "profile-dry-run" if dry_run else "profile", result_dir=command[3],
+                tuple(command), "profile-dry-run" if dry_run else "profile", result_dir=str(result_path),
             ))
 
     def _request_profile_run(
@@ -2129,14 +2131,15 @@ class AcprofTui(BarCursorApp):
         if self._is_busy():
             self.notify("已有任务正在运行", severity="warning")
             return
-        command = self._profile_command(
+        prepared = self._profile_command(
             dry_run=False,
             result_dir=result_dir,
             tools=tools,
         )
-        if command is None:
+        if prepared is None:
             return
-        self._pending_launch = PendingLaunch(tuple(command), "profile", result_dir=command[3])
+        command, result_path = prepared
+        self._pending_launch = PendingLaunch(tuple(command), "profile", result_dir=str(result_path))
         self.push_screen(
             ConfirmActionScreen(
                 "执行 profiler 补采？",
