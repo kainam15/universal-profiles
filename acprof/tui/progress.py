@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass, replace
 
 from acprof.tui.i18n import message
+from acprof.tui.presentation import UNKNOWN
 
 
 ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
@@ -61,8 +62,8 @@ def _format_probe_duration(raw: str) -> str:
     try:
         value = float(raw)
     except ValueError:
-        return message('不可用')
-    return f"{value:.3f}s" if math.isfinite(value) else message('不可用')
+        return UNKNOWN
+    return f"{value:.3f}s" if math.isfinite(value) else UNKNOWN
 
 
 @dataclass(frozen=True)

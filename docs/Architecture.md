@@ -158,6 +158,7 @@ dry-run、已有数据完整性判断、计划复用、备份和发布顺序沿�
 `app` 保留事件、状态和进程生命周期；`views` 使用页面构建函数输出 TabPane 子树。
 `commands` 定义唯一的 `RunConfig` 及命令构造，`progress` 解析运行日志，
 `diagnostics` 负责提示性预检和结果摘要。TUI 提示性检查与 CLI 权威检查保留各自用途。
+`presentation` 统一数值输入格式与不适用、计算中、未知的显示标记，不改动配置、进度或结果协议。
 `reports` 用标准库校验已有统计/对照 JSON，并提供带单位和口径的表格数据；不加载 Textual 或采集依赖。
 统计页通过 `commands.build_stats_command` 启动既有 `stats.py`，沿用 App 的进程互斥、停止和日志流程；
 完成后在后台读取一次报告并更新表格。读取期间锁定启动入口，不定时扫描 CSV 或自动运行开销实验。

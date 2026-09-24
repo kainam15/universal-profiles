@@ -522,7 +522,7 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("--request-timeout-seconds 300.0", preview)
             self.assertEqual(
                 app.query_one("#request-timeout-seconds", Input).value,
-                "300.0",
+                "300",
             )
             with self.assertRaises(NoMatches):
                 app.query_one("#preview-command")

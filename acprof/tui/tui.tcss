@@ -68,6 +68,9 @@ Underline { color: $accent; }
 }
 .form-grid.tool-form-grid { grid-size: 2; grid-columns: 18 1fr; }
 Input, Select { width: 1fr; }
+.number-field { height: 3; }
+.number-field Input { width: 16; }
+.form-grid .number-field .field-unit { width: auto; margin-left: 1; }
 /* Basic line glyphs avoid seams in terminals that misrender tall block borders. */
 Input {
     background: $surface;
@@ -202,9 +205,22 @@ Select:disabled > SelectCurrent { color: $ui-disabled; border: solid $ui-disable
 }
 #run-log:focus { border: round $accent; }
 #run-log .text-area--selection { background: $accent; color: $background; }
-#result-summary { height: auto; min-height: 5; background: $surface; padding: 1; margin-top: 1; }
+#result-summary {
+    height: auto;
+    background: transparent;
+    border: none;
+    border-top: solid $panel;
+    padding: 1 0;
+    margin-top: 1;
+}
 #report-panel { padding: 0 2; height: 1fr; }
-#report-table { height: 1fr; min-height: 3; }
+Rule.content-divider { height: 1; margin: 0; color: $panel; }
+#report-table {
+    height: 1fr;
+    min-height: 3;
+    background: transparent;
+    border: none;
+}
 #report-detail { height: auto; max-height: 4; margin-top: 1; color: $text-muted; overflow-y: auto; }
 
 #image-panel { padding: 0 2; height: 1fr; }

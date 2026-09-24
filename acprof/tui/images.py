@@ -17,6 +17,7 @@ from textual.widgets import Button, Collapsible, DataTable, Static, Tree
 from acprof.host.image_graph import reclaimable_image_bytes
 from acprof.host.image_management import ImageInventory, ImageLayer, ImageManagementError, ManagedImage
 from acprof.tui.i18n import join_messages, message
+from acprof.tui.presentation import NOT_APPLICABLE, STATUS_LEGEND, UNKNOWN
 from acprof.tui.table import ResizableDataTable
 from acprof.tui.views import COLLAPSED_SYMBOL, EXPANDED_SYMBOL, ConfirmActionScreen
 
@@ -41,6 +42,8 @@ class ImageTable(ResizableDataTable):
         event.prevent_default()
         event.stop()
         if self.disabled or event.button != 1 or self._consume_resize_click(event):
+            return
+        if self._consume_invalid_header_click(event):
             return
         # 保留原生表头、光标和滚动处理，禁止重复点当前行发出勾选事件。
         with self.prevent(DataTable.RowSelected):
@@ -141,7 +144,7 @@ class ImageTree(Tree[ManagedImage]):
                 label.truncate(max(4, widths[0] - depth * self.guide_depth - 2), overflow="ellipsis", pad=True)
                 for value, width in zip((format_image_size(item.size_bytes), format_image_size(item.added_bytes),
                                          str(len(item.containers))), widths[1:]):
-                    cell = Text(value)
+                    cell = Text(self.app.tr(value))
                     cell.truncate(width - 2, overflow="ellipsis")
                     cell.align("left", width - 2)
                     label.append(" ")
@@ -387,7 +390,7 @@ class ImageDeleteScreen(ConfirmActionScreen):
 
 def format_image_size(value: int | None) -> str:
     if value is None:
-        return "?"
+        return UNKNOWN
     for unit, scale in (("TB", 10**12), ("GB", 10**9), ("MB", 10**6), ("kB", 1000)):
         if value >= scale:
             return f"{value / scale:.2f} {unit}"
@@ -504,7 +507,8 @@ def image_metadata(item: ManagedImage, inventory: ImageInventory) -> str:
     return join_messages("\n\n", (
         image_path(item, inventory),
         message("其它镜像共享：{0} · 仅当前镜像使用：{1}", format_image_size(item.shared_bytes), format_image_size(item.unique_bytes)),
-        message("模型：{0} · 创建时间：{1}", item.model_id or "—", item.created or "—"),
+        message("模型：{0} · 创建时间：{1}",
+                item.model_id or (NOT_APPLICABLE if item.kind in {"base", "runtime"} else UNKNOWN), item.created or UNKNOWN),
         message("容器引用：{0}", ", ".join(item.containers) if item.containers else message("无")),
         message("全部标签：\n{0}", "\n".join(item.tags) if item.tags else message("无标签")),
     ))
@@ -528,7 +532,8 @@ def image_diagnostics(item: ManagedImage, inventory: ImageInventory) -> str:
         inherited_cells = min(30, round(30 * item.inherited_bytes / item.size_bytes))
         space.append(message("空间构成：{0}  █ 继承 / ░ 新增", "█" * inherited_cells + "░" * (30 - inherited_cells)))
     space.extend((
-        message("? 表示未知；释放范围受构建缓存与存储驱动影响。"),
+        STATUS_LEGEND,
+        message("释放范围受构建缓存与存储驱动影响。"),
     ))
     parts = [join_messages("\n", identity), join_messages("\n", evidence), join_messages("\n", space)]
     parts.extend(message(warning) for warning in inventory.warnings)
@@ -537,7 +542,7 @@ def image_diagnostics(item: ManagedImage, inventory: ImageInventory) -> str:
 
 def reclaimable_text(inventory: ImageInventory, image_ids: tuple[str, ...]) -> str:
     value = reclaimable_image_bytes(inventory, image_ids)
-    return message("未知") if value is None else "0 B" if value == 0 else message("0 B ～ 约 {0}", format_image_size(value))
+    return UNKNOWN if value is None else "0 B" if value == 0 else message("0 B ～ 约 {0}", format_image_size(value))
 
 
 def layer_image_detail(layer: ImageLayer, inventory: ImageInventory) -> str:
@@ -582,7 +587,7 @@ def render_image_tree(tree: ImageTree, inventory: ImageInventory | None, visible
         logical = image_display_name(item, parent.data)
         if item.model_id:
             logical = f"{tr(IMAGE_KINDS[item.kind])} · {logical}"
-        evidence = " ≈" if item.parent_source == "layer-prefix" else " ?" if item.parent_source in {"ambiguous", "missing", "conflict"} else ""
+        evidence = " ≈" if item.parent_source == "layer-prefix" else f" · {tr(UNKNOWN)}" if item.parent_source in {"ambiguous", "missing", "conflict"} else ""
         name = f" {marker}  {logical}{evidence}"
         label = Text(name, style="dim" if item.image_id not in matches else "")
         # 复选框及左右各一格留白可点击，不覆盖箭头、名称或数值。

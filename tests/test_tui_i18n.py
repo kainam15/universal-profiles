@@ -61,7 +61,7 @@ class TranslationTests(unittest.TestCase):
             "cold_start_s=nan request_s=1.25 ready_plus_request_s=3.5"
         )
         self.assertEqual(snapshot.stage, "探测完成")
-        self.assertIn("Single request 1.250s · Cold start unavailable · Ready + request 3.500s", translate(snapshot.detail, "en"))
+        self.assertIn("Single request 1.250s · Cold start Unknown · Ready + request 3.500s", translate(snapshot.detail, "en"))
         self.assertFalse(snapshot.measurement_active)
 
     def test_catalog_preserves_interpolation_fields_and_numeric_formats(self):

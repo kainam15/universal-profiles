@@ -61,6 +61,7 @@ from acprof.tui.commands import (
 )
 
 from acprof.tui.diagnostics import PreflightCheck, quick_preflight, summarize_result_csv
+from acprof.tui.presentation import CALCULATING, NOT_APPLICABLE, UNKNOWN, format_input_number
 
 from acprof.tui.i18n import (
     error_message,
@@ -595,15 +596,7 @@ class AcprofTui(BarCursorApp):
         elif preset == "default":
             self.preset_default()
 
-    @staticmethod
-    def _pair(value: str, label: str) -> tuple[str, str]:
-        parts = [part.strip() for part in value.split(",")]
-        if len(parts) != 2 or not all(parts):
-            raise TuiConfigError([message('{0}必须填写两个逗号分隔的值', label)])
-        return parts[0], parts[1]
-
     def _collect_config(self, *, allow_empty_model: bool = False) -> RunConfig:
-        warmup, repeat = self._pair(self._input("warmup-repeat"), "Warmup / Repeat")
         config = RunConfig(
             model=self._input("model"),
             task=self._input("task"),
@@ -617,8 +610,8 @@ class AcprofTui(BarCursorApp):
             model_spec=self._input("model-spec"),
             output_dir=self._input("output-dir"),
             batch_size=self._input("batch-size"),  # normalized by RunConfig
-            warmup=warmup,
-            repeat=repeat,
+            warmup=self._input("warmup"),
+            repeat=self._input("repeat"),
             repeat_in_window=self._input("repeat-in-window"),
             repeat_window_seconds=self._input("repeat-window-seconds"),
             request_timeout_seconds=self._input("request-timeout-seconds"),
@@ -655,14 +648,15 @@ class AcprofTui(BarCursorApp):
             "workload-spec": config.workload_spec,
             "model-spec": config.model_spec,
             "output-dir": config.output_dir,
-            "batch-size": str(config.batch_size),
-            "warmup-repeat": f"{config.warmup},{config.repeat}",
-            "repeat-in-window": str(config.repeat_in_window),
-            "repeat-window-seconds": str(config.repeat_window_seconds),
-            "request-timeout-seconds": str(config.request_timeout_seconds),
-            "sample-hz": str(config.sample_hz),
-            "idle-seconds": str(config.idle_seconds),
-            "idle-cooldown-seconds": str(config.idle_cooldown_seconds),
+            "batch-size": format_input_number(config.batch_size),
+            "warmup": format_input_number(config.warmup),
+            "repeat": format_input_number(config.repeat),
+            "repeat-in-window": format_input_number(config.repeat_in_window),
+            "repeat-window-seconds": format_input_number(config.repeat_window_seconds),
+            "request-timeout-seconds": format_input_number(config.request_timeout_seconds),
+            "sample-hz": format_input_number(config.sample_hz),
+            "idle-seconds": format_input_number(config.idle_seconds),
+            "idle-cooldown-seconds": format_input_number(config.idle_cooldown_seconds),
             "sniff-iface": config.sniff_iface,
         }
         # Value watchers post Changed messages asynchronously. Suppressing
@@ -1220,7 +1214,7 @@ class AcprofTui(BarCursorApp):
         elapsed = (
             self._format_elapsed(time.monotonic() - self._started_monotonic)
             if self._started_monotonic
-            else "-"
+            else NOT_APPLICABLE
         )
         # Stage text with visual category coloring.
         stage_widget = self.query_one("#status-stage", Static)
@@ -1230,13 +1224,14 @@ class AcprofTui(BarCursorApp):
         )
         self._set_text(self.query_one('#status-elapsed', Static), elapsed)
         self._set_text(self.query_one("#status-case", Static), message(
-            "当前 {0} · 已完成 {1}/{2}", snapshot.current_case or "-",
+            "当前 {0} · 已完成 {1}/{2}", snapshot.current_case or NOT_APPLICABLE,
             snapshot.completed_cases, snapshot.total_cases,
         ))
-        self._set_text(
-            self.query_one("#status-resource", Static),
-            f"CPU={snapshot.cpu}  MEM={snapshot.mem}GB  GPU={snapshot.gpu}",
-        )
+        missing = UNKNOWN if snapshot.current_case else NOT_APPLICABLE
+        cpu = snapshot.cpu if snapshot.cpu != "-" else missing
+        mem = f"{snapshot.mem}GB" if snapshot.mem != "-" else missing
+        gpu = snapshot.gpu if snapshot.gpu != "-" else missing
+        self._set_text(self.query_one("#status-resource", Static), message("CPU={0}  MEM={1}  GPU={2}", cpu, mem, gpu))
         self._set_text(self.query_one('#status-errors', Static), f'{snapshot.warnings} / {snapshot.errors}')
         self._set_text(self.query_one('#status-detail', Static), snapshot.detail)
         total = max(1, snapshot.total_cases)
@@ -1259,8 +1254,8 @@ class AcprofTui(BarCursorApp):
         # Correct resource columns with actual values from the log.
         if snapshot.cpu != "-":
             table.update_cell(row_key, "cpu", snapshot.cpu)
-            table.update_cell(row_key, "mem", snapshot.mem)
-            table.update_cell(row_key, "gpu", snapshot.gpu)
+            table.update_cell(row_key, "mem", self.tr(UNKNOWN) if snapshot.mem == "-" else snapshot.mem)
+            table.update_cell(row_key, "gpu", self.tr(UNKNOWN) if snapshot.gpu == "-" else snapshot.gpu)
         # Update status column.
         status = self._MATRIX_STATUS.get(snapshot.stage)
         if status:
@@ -1668,7 +1663,7 @@ class AcprofTui(BarCursorApp):
             return
         hidden = len(self._selected_image_ids - {item.image_id for item in self._visible_images})
         self._set_text(self.query_one("#image-status", Static), message(
-            "环境 {0} · 匹配 {1}/{2} · 已选 {3}（筛选外 {4}）· ? 未知",
+            "环境 {0} · 匹配 {1}/{2} · 已选 {3}（筛选外 {4}）",
             self._image_inventory.connection.name, len(self._visible_images), len(self._image_inventory.images),
             len(self._selected_image_ids), hidden,
         ))
@@ -1708,8 +1703,8 @@ class AcprofTui(BarCursorApp):
             table.add_row(
                 Text("☑" if item.image_id in self._selected_image_ids else "—" if item.containers else "□"),
                 Text(image_display_name(item) + " · " + item.image_id[7:13], overflow="ellipsis", no_wrap=True),
-                Text(format_image_size(item.size_bytes)), Text(format_image_size(item.added_bytes)),
-                Text(str(len(item.containers))), Text(image_display_name(parent) if parent else "?", overflow="ellipsis", no_wrap=True),
+                Text(self.tr(format_image_size(item.size_bytes))), Text(self.tr(format_image_size(item.added_bytes))),
+                Text(str(len(item.containers))), Text(image_display_name(parent) if parent else self.tr(UNKNOWN), overflow="ellipsis", no_wrap=True),
                 Text(self.tr(IMAGE_KINDS[item.kind])),
                 Text(repository if separator else item.name, overflow="ellipsis", no_wrap=True),
                 Text(tag if separator else "—", overflow="ellipsis", no_wrap=True),
@@ -1741,7 +1736,7 @@ class AcprofTui(BarCursorApp):
                                   ("引用镜像", "refs", 10), ("Chain ID", "chain", 23)):
             table.add_column(self.tr(title), key=key, width=width)
         for layer in self._visible_image_layers:
-            table.add_row(Text(layer.diff_id, overflow="ellipsis", no_wrap=True), format_image_size(layer.size_bytes),
+            table.add_row(Text(layer.diff_id, overflow="ellipsis", no_wrap=True), self.tr(format_image_size(layer.size_bytes)),
                           str(len(layer.image_ids)), Text(layer.chain_id, overflow="ellipsis", no_wrap=True), key=layer.chain_id)
         table.move_cursor(row=next((i for i, layer in enumerate(self._visible_image_layers) if layer.chain_id == current), 0),
                           animate=False, scroll=not preserve_scroll)
@@ -1849,7 +1844,7 @@ class AcprofTui(BarCursorApp):
             return
         self._image_operation = "refresh"
         if self._image_inventory is None and not self._image_refresh_error:
-            self._set_text(self.query_one("#image-status", Static), "正在读取 Docker 镜像与容器引用……")
+            self._set_text(self.query_one("#image-status", Static), message("{0} 正在读取 Docker 镜像与容器引用", CALCULATING))
         self._set_busy(True)
         self._execute_image_refresh()
 
@@ -1979,7 +1974,7 @@ class AcprofTui(BarCursorApp):
             return
         with self.prevent(Input.Changed):
             self.query_one("#report-source", Input).value = str(report_path)
-        self._clear_report("正在读取报告……")
+        self._clear_report(message("{0} 正在读取报告", CALCULATING))
         self.screen.set_focus(self.query_one("#report-table"), scroll_visible=False)
         self._report_loading = True
         self._set_busy(True)
@@ -2055,7 +2050,7 @@ class AcprofTui(BarCursorApp):
         command = build_stats_command(csv_path, output, project_dir=PROJECT_DIR,
                                       python_executable=PYTHON_EXECUTABLE)
         self._stats_report_path = output
-        self._clear_report("正在计算窗口统计，完成后自动显示报告……")
+        self._clear_report(message("{0} 正在计算窗口统计，完成后自动显示报告。", CALCULATING))
         self._launch(PendingLaunch(tuple(command), "stats", result_csv=str(csv_path)))
 
     @on(Button.Pressed, "#profile-dry-run")

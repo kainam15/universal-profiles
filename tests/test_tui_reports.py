@@ -85,6 +85,38 @@ class TuiReportsTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(app.query_one("#start-run", Button).disabled)
         self.assertEqual(self.csv_path.read_bytes(), original)
 
+    async def test_empty_header_click_before_loading_and_after_read_failure(self):
+        report = self.overhead_report()
+        for size in ((80, 24), (120, 30), (150, 45)):
+            with self.subTest(size=size):
+                app = self.make_app()
+                async with app.run_test(size=size) as pilot:
+                    await self.open_tab(app, pilot)
+                    table = app.query_one("#report-table", DataTable)
+                    for language in ("zh", "en"):
+                        app.ui_preferences = replace(app.ui_preferences, language=language)
+                        app._apply_ui_preferences()
+                        await pilot.pause()
+                        self.assertEqual(len(table.columns), 0)
+                        inset = table.content_region.offset - table.region.offset
+                        self.assertTrue(await pilot.click(table, offset=(inset.x + 38, inset.y)))
+                        self.assertTrue(app.is_running)
+                        self.assertIsNone(app.mouse_captured)
+                    source = app.query_one("#report-source", Input)
+                    source.value = str(report)
+                    self.assertTrue(await pilot.click("#report-open"))
+                    await self.finish_workers(app, pilot)
+                    self.assertEqual(table.row_count, 1)
+                    source.value = str(self.directory / "missing.json")
+                    self.assertTrue(await pilot.click("#report-open"))
+                    await self.finish_workers(app, pilot)
+                    self.assertEqual(len(table.columns), 0)
+                    self.assertTrue(await pilot.click(table, offset=(inset.x + 38, inset.y)))
+                    source.value = str(report)
+                    self.assertTrue(await pilot.click("#report-open"))
+                    await self.finish_workers(app, pilot)
+                    self.assertEqual(table.row_count, 1, "空表头点击后仍能正常读取报告")
+
     async def test_open_overhead_at_all_sizes_and_language_switch_preserves_data_and_draft(self):
         report = self.overhead_report()
         original = report.read_bytes()

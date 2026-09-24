@@ -3,14 +3,17 @@
 import unittest
 
 from rich.cells import cell_len
+from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.widgets import Static
 
+from acprof.tui.images import ImageTable
 from acprof.tui.table import ResizableDataTable
 
 
 class TableApp(App):
+    table_type = ResizableDataTable
     CSS = """
     ResizableDataTable { width: 52; height: 10; margin: 1 2; padding: 1 2; border: solid $primary; }
     """
@@ -21,7 +24,7 @@ class TableApp(App):
         self.selected = []
 
     def compose(self) -> ComposeResult:
-        yield ResizableDataTable(id="table", fixed_columns=1, header_height=2, cursor_type="row")
+        yield self.table_type(id="table", fixed_columns=1, header_height=2, cursor_type="row")
         yield Static("outside", id="outside")
 
     def on_mount(self):
@@ -59,6 +62,94 @@ async def drag(pilot, table, start, dx, dy=0, *, release_click=False):
 
 
 class ResizableTableTests(unittest.IsolatedAsyncioTestCase):
+    async def test_real_header_click_preserves_native_action_dispatch(self):
+        class HeaderActionTable(ResizableDataTable):
+            header_actions = 0
+
+            def action_header_click(self):
+                self.header_actions += 1
+
+        app = TableApp()
+        app.table_type = HeaderActionTable
+        async with app.run_test(size=(80, 24)) as pilot:
+            table = app.query_one(HeaderActionTable)
+            table.clear(columns=True)
+            table.add_column(Text.from_markup("[@click=header_click]Action[/]"), width=10, key="name")
+            await pilot.pause()
+            inset = table.content_region.offset - table.region.offset
+            self.assertTrue(await pilot.click(table, offset=(inset.x + 2, inset.y)))
+            self.assertEqual(app.headers, ["name"])
+            self.assertEqual(table.header_actions, 1)
+
+    async def test_empty_header_click_does_not_exit_or_select(self):
+        for table_type in (ResizableDataTable, ImageTable):
+            with self.subTest(table_type=table_type.__name__):
+                app = TableApp()
+                app.table_type = table_type
+                async with app.run_test(size=(80, 24)) as pilot:
+                    table = app.query_one(ResizableDataTable)
+                    table.clear(columns=True)
+                    await pilot.pause()
+                    inset = table.content_region.offset - table.region.offset
+                    for x, y in ((1, 0), (38, 0), (38, 1)):
+                        self.assertTrue(await pilot.click(table, offset=(inset.x + x, inset.y + y)))
+                    self.assertTrue(app.is_running)
+                    self.assertIsNone(app.mouse_captured)
+                    self.assertEqual(app.headers, [])
+                    self.assertEqual(app.selected, [])
+
+    async def test_header_filler_is_ignored_but_real_header_and_row_filler_work(self):
+        for table_type in (ResizableDataTable, ImageTable):
+            with self.subTest(table_type=table_type.__name__):
+                app = TableApp()
+                app.table_type = table_type
+                async with app.run_test(size=(80, 24)) as pilot:
+                    table = app.query_one(ResizableDataTable)
+                    table.clear(columns=True)
+                    table.add_column("名称", width=10, key="name")
+                    table.add_row("第一个", key="first")
+                    table.add_row("第二个", key="second")
+                    await pilot.pause()
+                    inset = table.content_region.offset - table.region.offset
+                    await pilot.click(table, offset=(inset.x + 38, inset.y))
+                    self.assertEqual(app.headers, [], "表头右侧留白不能误选第 0 列")
+                    await pilot.click(table, offset=(inset.x + 2, inset.y))
+                    self.assertEqual(app.headers, ["name"])
+                    await pilot.click(table, offset=(inset.x + 38, inset.y + table.header_height + 1))
+                    self.assertEqual(table.cursor_row, 1, "行尾留白仍应定位到对应行")
+                    self.assertEqual(app.selected, [], "镜像行尾不能误触勾选")
+                    await pilot.press("enter")
+                    self.assertEqual(app.selected, ["second"])
+                    self.assertIsNone(app.mouse_captured)
+
+    async def test_queued_header_click_ignores_a_removed_column(self):
+        for table_type in (ResizableDataTable, ImageTable):
+            with self.subTest(table_type=table_type.__name__):
+                app = TableApp()
+                app.table_type = table_type
+                async with app.run_test(size=(80, 24)) as pilot:
+                    table = app.query_one(ResizableDataTable)
+                    await pilot.pause()
+                    screen_x, screen_y = table.content_region.x + 14, table.content_region.y
+                    old_style = app.screen.get_style_at(screen_x, screen_y)
+                    self.assertEqual(old_style.meta["column"], 1)
+                    self.assertFalse(old_style.meta.get("out_of_bounds"))
+                    table.clear(columns=True)
+                    table.add_column("新列", width=10, key="new")
+                    table.add_row("新数据", key="new-row")
+                    await pilot.pause()
+                    # 模拟渲染后、事件处理前列已被重建，保留实际旧表头的元数据。
+                    table.post_message(events.Click(
+                        table, 14, 0, 0, 0, 1, False, False, False,
+                        screen_x=screen_x, screen_y=screen_y, style=old_style,
+                    ))
+                    await pilot.pause()
+                    self.assertTrue(app.is_running)
+                    self.assertEqual(app.headers, [])
+                    inset = table.content_region.offset - table.region.offset
+                    await pilot.click(table, offset=(inset.x + 2, inset.y))
+                    self.assertEqual(app.headers, ["new"])
+
     async def test_last_header_edge_cannot_resize_and_keeps_header_clicks(self):
         for layout in ("wide", "scrolled", "single"):
             with self.subTest(layout=layout):

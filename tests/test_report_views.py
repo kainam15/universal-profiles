@@ -40,9 +40,20 @@ class ReportViewTests(unittest.TestCase):
         self.assertIn("90%", str(view.title))
         self.assertEqual(view.rows[0].cells[2:4], ("20 ms", "[10, 30] ms"))
         self.assertEqual(view.rows[1].cells[2:4], ("0 J/request", "[0, 0] J/request"))
-        self.assertEqual(view.rows[2].cells[2:], ("20 ms", "—", "1/2", "窗口不足"))
-        self.assertEqual(view.rows[3].cells[2:], ("—", "—", "0/3", "无有效窗口"))
+        self.assertEqual(view.rows[2].cells[2:], ("20 ms", "未知", "1/2", "窗口不足"))
+        self.assertEqual(view.rows[3].cells[2:], ("未知", "未知", "0/3", "无有效窗口"))
+        self.assertIn("标准差：未知", view.rows[2].detail)
+        self.assertEqual(translate(view.rows[3].cells[2], "en"), "Unknown")
         self.assertIn("原始/结果.csv", str(view.note))
+
+    def test_gpu_energy_without_a_gpu_is_inapplicable_but_missing_gpu_data_is_unknown(self):
+        group = {**self.group, "metric": "gpu_energy_total_j", "unit": "J/request", "n_windows": 0,
+                 "missing_windows": 3, "mean": None, "std": None, "ci_low": None, "ci_high": None,
+                 "reason": "insufficient_windows"}
+        view = self.read({**self.window, "groups": [group, {**group, "gpu_mode": "on"}]})
+        self.assertEqual(view.rows[0].cells[2:4], ("—", "—"))
+        self.assertEqual(view.rows[0].cells[-1], "不适用")
+        self.assertEqual(view.rows[1].cells[2:4], ("未知", "未知"))
 
     def test_empty_formal_results_are_viewable_without_inventing_samples(self):
         view = self.read(dict(self.window, groups=[]))

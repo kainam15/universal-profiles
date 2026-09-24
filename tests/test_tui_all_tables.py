@@ -120,7 +120,7 @@ class AllTablesTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(header.columns["size"].width, before - 3)
             tree.scroll_to(x=tree.max_scroll_x, animate=False, force=True)
             await pilot.pause()
-            for row, values in enumerate((("100 B", "?", "0"), ("400 B", "300 B", "0"),
+            for row, values in enumerate((("100 B", "未知", "0"), ("400 B", "300 B", "0"),
                                            ("410 B", "10 B", "0"))):
                 line = tree.render_line(row)
                 for column, value in enumerate(values):

@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 
 from acprof.tui.i18n import join_messages, message
+from acprof.tui.presentation import NOT_APPLICABLE, STATUS_LEGEND, UNKNOWN
 
 
 @dataclass(frozen=True)
@@ -99,19 +100,22 @@ def _windows(source: Path, data: dict) -> ReportView:
                            f"{_number(group.get('mem_cap_gb')):g}G",
                            "GPU" if mode == "on" else "CPU",
                            f"{_number(group.get('input_scale')):g}"))
-        mean_text = "—" if mean is None else f"{mean * multiplier:.6g} {display_unit}".strip()
-        interval = "—" if low is None else f"[{low * multiplier:.6g}, {high * multiplier:.6g}] {display_unit}".strip()
+        inapplicable = name == "gpu_energy_total_j" and mode == "off" and count == 0
+        missing_value = NOT_APPLICABLE if inapplicable else UNKNOWN
+        mean_text = missing_value if mean is None else f"{mean * multiplier:.6g} {display_unit}".strip()
+        interval = missing_value if low is None else f"[{low * multiplier:.6g}, {high * multiplier:.6g}] {display_unit}".strip()
         reason = _text(group.get("reason"))
-        state = ("无有效窗口" if not count else _REASONS.get(reason, reason or
+        state = ("不适用" if inapplicable else "无有效窗口" if not count else _REASONS.get(reason, reason or
                  ("已估计" if low is not None else "区间不可用")))
         rows.append(ReportRow(
             (config, message(_METRIC_LABELS.get(name, name)), mean_text, interval,
              f"{count}/{missing}", message(state)),
             message("字段：{0} · 标准差：{1} · 有效窗口：{2} · 缺失：{3}",
-                    name, "—" if std is None else f"{std * multiplier:.6g} {display_unit}", count, missing),
+                    name, missing_value if std is None else f"{std * multiplier:.6g} {display_unit}", count, missing),
         ))
     origin = _text(data.get("result_csv"), str(source))
     note = join_messages("\n", (
+        STATUS_LEGEND,
         message("仅统计正式成功窗口；少量窗口的区间可能不稳定。"),
         message("数据来源：{0}", origin),
     ))
@@ -131,7 +135,7 @@ def _comparison_row(label: str, row: dict, count: int, detail: str) -> ReportRow
 
 def _comparisons(source: Path, data: dict) -> ReportView:
     if data.get("successful") is not True:
-        raise ValueError(message("对照实验未完成或失败：{0}", _text(data.get("error"), "—")))
+        raise ValueError(message("对照实验未完成或失败：{0}", _text(data.get("error")) or UNKNOWN))
     rows = []
     if data["kind"] == "monitor_overhead_diagnostic":
         mode = data.get("gpu_mode")

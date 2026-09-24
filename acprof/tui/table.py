@@ -170,8 +170,21 @@ class ResizableDataTable(DataTable):
             return True
         return False
 
+    def _consume_invalid_header_click(self, event: events.Click) -> bool:
+        meta = event.style.meta
+        # Textual 8.2.8 的整行留白也带 column=0；空表头不能据此索引列。
+        # 重建表格后排队的点击还可能引用已经移除的列。
+        if meta.get("row") == -1 and (
+            meta.get("out_of_bounds") or not self.is_valid_column_index(meta.get("column", -1))
+        ):
+            event.prevent_default()
+            event.stop()
+            return True
+        return False
+
     def on_click(self, event: events.Click) -> None:
-        self._consume_resize_click(event)
+        if not self._consume_resize_click(event):
+            self._consume_invalid_header_click(event)
 
     def _finish_resize(self) -> None:
         if self._resize_column is None:

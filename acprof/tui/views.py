@@ -15,6 +15,7 @@ from textual.widgets import (
     ContentSwitcher,
     Label,
     ProgressBar,
+    Rule,
     Static,
     TabPane,
 )
@@ -25,6 +26,7 @@ from acprof.tui.i18n import LANGUAGE_OPTIONS
 from acprof.tui.input import BarCursorInput as Input
 
 from acprof.tui.log import SelectableLog
+from acprof.tui.presentation import NOT_APPLICABLE, format_input_number
 from acprof.tui.table import ResizableDataTable
 
 from acprof.tui.themes import THEME_OPTIONS
@@ -134,6 +136,17 @@ class LogPanel(Vertical):
     ALLOW_MAXIMIZE = True
 
 
+def compose_number_field(app: AcprofTui, label: str, widget_id: str, value: int | float | str,
+                         unit: str, *, placeholder: str = "") -> ComposeResult:
+    yield app._localized_widget(Label(label))
+    with Horizontal(classes="number-field"):
+        yield app._localized_widget(Input(
+            value=format_input_number(value), id=widget_id, classes="config-control",
+            placeholder=placeholder,
+        ))
+        yield app._localized_widget(Label(unit, classes="field-unit"))
+
+
 def compose_run_tab(app: AcprofTui) -> ComposeResult:
     with TabPane("实验配置", id="run-tab"):
         with Vertical(classes="page-header"):
@@ -219,63 +232,18 @@ def compose_run_tab(app: AcprofTui) -> ComposeResult:
 
             with VerticalScroll(id="advanced-form", classes="pane-scroll"):
                 with Grid(classes="form-grid"):
-                    yield app._localized_widget(Label("Batch size"))
-                    yield app._localized_widget(Input(
-                        value=str(app.initial_config.batch_size),
-                        id="batch-size",
-                        classes="config-control",
-                    ))
-                    yield app._localized_widget(Label("Warmup / Repeat"))
-                    yield app._localized_widget(Input(
-                        value=(
-                            f"{app.initial_config.warmup},"
-                            f"{app.initial_config.repeat}"
-                        ),
-                        placeholder="2,5",
-                        id="warmup-repeat",
-                        classes="config-control",
-                    ))
-
-                    yield app._localized_widget(Label("窗口请求数"))
-                    yield app._localized_widget(Input(
-                        value=str(app.initial_config.repeat_in_window),
-                        placeholder="0 表示自动校准",
-                        id="repeat-in-window",
-                        classes="config-control",
-                    ))
-                    yield app._localized_widget(Label("自动窗口秒数"))
-                    yield app._localized_widget(Input(
-                        value=str(app.initial_config.repeat_window_seconds),
-                        id="repeat-window-seconds",
-                        classes="config-control",
-                    ))
-
-                    yield app._localized_widget(Label("采样频率 Hz"))
-                    yield app._localized_widget(Input(
-                        value=str(app.initial_config.sample_hz),
-                        id="sample-hz",
-                        classes="config-control",
-                    ))
-                    yield app._localized_widget(Label("Idle 基线测量秒"))
-                    yield app._localized_widget(Input(
-                        value=str(app.initial_config.idle_seconds),
-                        id="idle-seconds",
-                        classes="config-control",
-                    ))
-
-                    yield app._localized_widget(Label("基线前冷却秒"))
-                    yield app._localized_widget(Input(
-                        value=str(app.initial_config.idle_cooldown_seconds),
-                        id="idle-cooldown-seconds",
-                        classes="config-control",
-                    ))
-                    yield app._localized_widget(Label("单请求超时秒"))
-                    yield app._localized_widget(Input(
-                        value=str(app.initial_config.request_timeout_seconds),
-                        id="request-timeout-seconds",
-                        classes="config-control",
-                    ))
-
+                    for label, field, unit in (
+                        ("Warmup", "warmup", "次"), ("Repeat", "repeat", "次"),
+                        ("采样频率", "sample_hz", "Hz"), ("Idle 基线", "idle_seconds", "s"),
+                        ("冷却时间", "idle_cooldown_seconds", "s"), ("请求超时", "request_timeout_seconds", "s"),
+                        ("Batch size", "batch_size", ""), ("窗口请求数", "repeat_in_window", "次"),
+                        ("自动窗口", "repeat_window_seconds", "s"),
+                    ):
+                        yield from compose_number_field(
+                            app, label, field.replace("_", "-"), getattr(app.initial_config, field), unit,
+                            placeholder="0 表示自动校准" if field == "repeat_in_window" else "",
+                        )
+                with Grid(classes="form-grid"):
                     yield app._localized_widget(Label("画像模式"))
                     yield app._localized_select(
                         (("完整（RAPL / perf / 抓包）", "full"), ("基础（延迟 / CPU / 内存）", "basic")),
@@ -430,12 +398,12 @@ def compose_monitor_tab(app: AcprofTui) -> ComposeResult:
                 yield app._localized_widget(Static("阶段", classes="status-label"))
                 yield app._localized_widget(Static("等待", id="status-stage", markup=False))
                 yield app._localized_widget(Static("运行时间", classes="status-label"))
-                yield app._localized_widget(Static("-", id="status-elapsed", markup=False))
+                yield app._localized_widget(Static(NOT_APPLICABLE, id="status-elapsed", markup=False))
 
                 yield app._localized_widget(Static("Case", classes="status-label"))
                 yield app._localized_widget(Static("0/0", id="status-case", markup=False))
                 yield app._localized_widget(Static("资源", classes="status-label"))
-                yield app._localized_widget(Static("CPU=-  MEM=-  GPU=-", id="status-resource", markup=False))
+                yield app._localized_widget(Static("CPU=—  MEM=—  GPU=—", id="status-resource", markup=False))
 
                 yield app._localized_widget(Static("警告 / 错误", classes="status-label"))
                 yield app._localized_widget(Static("0 / 0", id="status-errors", markup=False))
@@ -515,6 +483,7 @@ def compose_reports_tab(app: AcprofTui) -> ComposeResult:
                 app._saved_settings.last_result_csv, id="report-source", classes="report-control",
                 placeholder="实验目录、结果 CSV 或报告 JSON 路径",
             ))
+            yield Rule(classes="content-divider")
             yield app._localized_widget(ResizableDataTable(
                 id="report-table", cursor_type="row", zebra_stripes=True, fixed_columns=1))
             yield app._localized_widget(Static(
