@@ -801,7 +801,7 @@ class AcprofTui(BarCursorApp):
 
     def preset_smoke(self) -> None:
         self._apply_config(RunConfig.smoke(self._input("model")), preset="smoke")
-        self.notify("已应用最小 Smoke 预设", timeout=3)
+        self.notify("已应用基础 CPU Smoke 预设", timeout=3)
 
     def preset_main(self) -> None:
         self._apply_config(

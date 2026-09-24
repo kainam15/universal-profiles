@@ -23,7 +23,7 @@ AC-Prof 用来比较 Hugging Face 模型在不同 CPU、内存、GPU 配置和�
 ### 1. 准备主机
 
 需要原生 Linux x86_64、本机 Docker Engine 和统一 cgroup v2，推荐 Ubuntu 24.04。
-下面使用 uv 安装 Python 工具；也可使用无需预装 Python 的 [standalone](docs/Distribution.md#linux-standalone)。
+下面的安装脚本会自动准备 uv 和 Python；也可使用无需源码的 [standalone](docs/Distribution.md#linux-standalone)。
 当前用户应能直接运行 `docker info`，并能访问 Hugging Face 及依赖下载源。
 WSL、Docker Desktop、远程 Docker daemon、Windows 和 macOS 不支持实验采集。
 下面的 CPU 示例不需要 GPU；GPU 实验另需 NVIDIA driver 和 NVIDIA Container Toolkit。
@@ -33,29 +33,33 @@ WSL、Docker Desktop、远程 Docker daemon、Windows 和 macOS 不支持实验�
 
 ### 2. 安装 AC-Prof 并检查环境
 
-先准备 Git，并按 [uv 官方指南](https://docs.astral.sh/uv/getting-started/installation/)安装 uv，再执行：
+准备好 Git 和 Docker 后执行：
 
 ```bash
 git clone https://github.com/kainam15/universal-profiles.git
 cd universal-profiles
-uv tool install .
-uv tool update-shell
+./setup.sh
 ```
 
-重新打开终端（或按 uv 提示刷新 `PATH`），回到刚才的目录，再检查环境：
+脚本安装当前源码版本，运行 `doctor`，通过后在交互终端打开 TUI。
+已预填 BERT、basic CPU、单次请求和新的结果目录；点击“开始采集”并核对确认页即可体验。
+Docker 或基础采集条件缺失时会给出处理建议，修复后可重新执行。
+
+只安装和检查、不自动打开界面：
 
 ```bash
-acprof doctor --profiling-mode basic
+./setup.sh --no-tui
 ```
 
-后续可从任意工作目录启动 `acprof`，结果写入该目录。
+安装完成后，新终端可直接使用 `acprof`，当前终端可使用脚本输出的完整路径命令。
+后续可从任意工作目录启动，结果写入该目录；脚本启动的工作目录为源码根目录。
 模型推理依赖优先复用经过核验的 GHCR 预构建镜像，不可用时自动本机构建；模型权重仍按需下载。
 私有或 gated 模型在当前工作目录的 `.env.local` 中配置 `HF_TOKEN`，并将该文件加入 Git 忽略。
 详见[认证配置](docs/Getting_Started.md#hugging-face-认证)、[开发环境安装](docs/Getting_Started.md#2-安装-python-依赖)和[发行包说明](docs/Distribution.md)。
 
 ### 3. 跑通第一个 CPU 实验
 
-下面只使用 1 个 CPU、4 GB 容器内存和一个输入规模，主测量发送一次请求。
+也可以在命令行运行同样的入门实验：只使用 1 个 CPU、4 GB 容器内存和一个输入规模，主测量发送一次请求。
 它用于检查流程能否跑通，单次测量不足以得出性能结论。
 
 ```bash
@@ -73,7 +77,8 @@ acprof run --model google-bert/bert-base-uncased \
 
 ## 查看结果
 
-上面示例的主要文件位于：
+上面命令行示例的主要文件位于下方目录。通过 `setup.sh` 启动时，输出目录为
+`results/first-run-<时间>-<随机后缀>/`，以界面显示的路径替换以下命令中的 `results/first-run`。
 
 ```text
 results/first-run/google-bert--bert-base-uncased/
@@ -103,8 +108,8 @@ acprof plot results/first-run/google-bert--bert-base-uncased/result_all.csv
 acprof tui --model google-bert/bert-base-uncased --preset smoke
 ```
 
-若要使用与上面相同的基础采集模式，打开“高级参数”，将“画像模式”改为“基础（延迟 / CPU / 内存）”，再点击“开始采集”。
-TUI 的 smoke 预设默认仍是 `full`，需要对应的主机采集工具。开始前可在命令预览中核对参数。
+smoke 预设使用 `basic`、CPU 和单次请求，关闭独立 profiler 与通知。
+需要完整指标时，在“高级参数”中改为 `full`，并完成相应的主机检查；开始前可在命令预览中核对参数。
 页面、快捷键、日志复制、设置与 VS Code 按键问题见 [TUI 用户指南](docs/TUI.md)。
 
 ## 运行正式实验

@@ -26,6 +26,11 @@ CLI 启动时先读取当前工作目录的 `.env`，再读取 `.env.local`，�
 
 ## TUI 本地设置
 
+`acprof tui --model <ID> --preset smoke --output-dir <目录>` 可覆盖本次初始表单。
+显式 preset 优先于已保存的实验默认参数，显式输出目录再覆盖 preset 的目录；未传入的 model
+沿用已保存模型。启动参数不直接写入设置文件，保存时机仍遵循下方约定。
+smoke 为 basic CPU 单次请求配置；`main` 和 `default` 保持 full。
+
 `acprof/tui/settings.py` 管理项目隔离的 `tui.json`，当前版本为 v4；
 路径与操作方式见 [TUI 设置文件](TUI.md#设置文件)。
 `ui.language` 是字符串，仅接受 `zh`（简体中文，默认）和 `en`（English），不使用系统 locale 自动推断。

@@ -4,6 +4,39 @@ AC-Prof 支持源码开发、`uv tool install` 隔离安装和 Linux x86_64 stan
 三种入口执行相同的主机采集代码；Docker Engine、cgroup v2、GPU driver 和采集工具仍由主机提供。
 安装与首次运行见[安装指南](Getting_Started.md)，环境检查参数见 [doctor](CLI_Reference.md#acprof-doctor)。
 
+## Clone 后初始化
+
+准备原生 Linux x86_64、本机 Docker Engine/Buildx、cgroup v2 和 Git 后：
+
+```bash
+git clone https://github.com/kainam15/universal-profiles.git
+cd universal-profiles
+./setup.sh
+```
+
+`setup.sh` 先检查主机和 Docker，再使用已有 uv；找不到时通过官方安装脚本准备 uv 0.12.13，
+默认安装到 `~/.local/bin`（可用 `UV_INSTALL_DIR` 指定）。随后用 Python 3.10 和
+`requirements.lock` 的版本约束隔离安装当前 checkout；缺少 Python 3.10 时由 uv 下载。
+重复执行会更新当前源码包、复用依赖缓存，保留项目 `.venv`、认证文件、TUI 设置和旧结果。
+脚本不自动安装系统包、修改 Docker 权限或 GPU 驱动；错误修复后重试原命令即可。
+
+安装后使用现有 `doctor --profiling-mode basic --gpus off` 检查，并打印 GPU/full 的检查命令。
+只有 basic 前置检查通过才进入 TUI；检查通过不代表真实推理已成功。
+交互终端自动预填 BERT 和基础 CPU smoke，每次分配独立的
+`results/first-run-<时间>-<随机后缀>/`，用户点击“开始采集”后再准备镜像、下载模型和运行。
+runtime 由所选模型、backend 和设备配置决定，沿用已有按需拉取/核验/构建流程。
+
+| 参数 | 行为 |
+| --- | --- |
+| `--no-tui` | 完成安装和检查后退出，打印启动命令；非交互终端也自动采用此行为 |
+| `--no-modify-path` | 不修改 shell 启动文件；使用打印的完整路径命令 |
+| `--help` | 显示说明，不安装或检查系统 |
+
+默认调用 `uv tool update-shell` 配置后续终端的命令路径，当前终端和自动启动均使用完整路径，
+不要求重新登录。初始化及其结果目录以源码根目录为工作目录；手动启动的 `acprof` 则以调用时的目录为准。
+自动化隔离安装可使用 uv 原生的 `UV_TOOL_DIR`、`UV_TOOL_BIN_DIR`、`UV_CACHE_DIR` 和
+`UV_PYTHON_INSTALL_DIR`，配合 `--no-tui --no-modify-path`。
+
 ## Python 工具安装
 
 在包含 `pyproject.toml` 的源码目录中：
@@ -100,7 +133,9 @@ GHCR 只预构建平台和依赖环境，不发布模型权重、用户数据或
 ## 参考实现与取舍
 
 - [uv tools](https://github.com/astral-sh/uv/blob/main/docs/guides/tools.md)（MIT / Apache-2.0）：
-  采用标准 console script 与隔离工具环境，不增加自己的安装器。
+  采用标准 console script 与隔离工具环境。`setup.sh` 只串联安装和已有诊断；uv 引导使用
+  [官方 installer](https://docs.astral.sh/uv/reference/installer/) 的 `UV_INSTALL_DIR` / `UV_NO_MODIFY_PATH`，
+  不复制包管理逻辑。uv 引导版本与开发锁、Release 工具链一同维护。
 - [Hatch build hooks](https://github.com/pypa/hatch/tree/master/backend/src/hatchling/builders/hooks)
   （MIT）：用一个小型 build hook 打包既有资源，不改变运行时依赖和镜像配方。
 - [PyInstaller](https://github.com/pyinstaller/pyinstaller)（GPL 与分发例外）：使用官方冻结工具，

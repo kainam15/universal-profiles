@@ -83,6 +83,10 @@ git diff --check
 CI 另执行真实 `uv tool install`，构建步骤见[发行包说明](Distribution.md#linux-standalone)。
 这些检查不代替 Docker/GPU 推理和完整 profiling。
 
+初始化入口修改运行 `test_setup.py` 和 `test_tui_onboarding.py`，覆盖缺失 uv、安装/诊断失败、
+重复执行、非交互终端、首次配置与已有设置保留；使用隔离 uv 目录实际执行
+`./setup.sh --no-tui --no-modify-path`。真实推理另用安装后的命令运行最小 basic CPU 实验并审计结果。
+
 测试使用 `unittest`、`unittest.mock` 和临时目录；文件名为 `test_*.py`，方法名以 `test_` 开头。
 模拟网络、Docker、硬件与通知边界；避免测试触发真实采集或改写用户设置。
 
@@ -239,6 +243,9 @@ docker run --rm --network none --cpus 2 --memory 2g \
 页面切换、挂载和布局更新后等待框架处理事件，再判断点击和焦点，不用堆叠固定 `sleep` 掩盖竞态。
 Textual 8.2.8 的 `Pilot.pause()` 可能在返回前的布局刷新中才排入 `Hide`；隐藏后的鼠标捕获断言需继续等待目标控件的 `wait_for_refresh()`，并设置超时，确保已排队的事件完成处理。
 拖动中断的各个场景使用独立 `run_test()` 应用实例，避免某次断言失败遗留的页面或 busy 状态引发连带失败。
+光标阶段与点击、编辑后恢复的测试只将光标闪烁 Timer 以 `pause=True` 创建，由测试显式推进阶段，
+并等待输入框刷新完成后断言；重复点击同一位置也应恢复可见阶段。真实 0.5 秒闪烁间隔及无额外重绘
+由独立的 idle-cursor 测试验证，避免较慢的 `Pilot` 操作跨过闪烁周期而误报失败。
 
 Headless 能检查布局、键盘路径和输出状态；SVG、tmux 与真实 VS Code/SSH 终端是不同证据。
 颜色回归还需检查实际渲染器输出的 SGR 颜色序列：Textual 的 SVG 导出固定使用真彩色，

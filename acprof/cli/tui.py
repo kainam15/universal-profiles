@@ -26,6 +26,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Initial form preset (overrides saved experiment defaults)",
     )
     parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Initial result directory (overrides the preset or saved directory)",
+    )
+    parser.add_argument(
         "--color-system",
         choices=("truecolor", "256", "auto"),
         default="truecolor",
@@ -51,6 +56,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         config = RunConfig(model=model)
     else:
         config = replace(config, model=model)
+    if args.output_dir is not None:
+        config = replace(config, output_dir=args.output_dir)
     app.initial_config = config
     app._initial_preset = app._infer_preset(config)
     app.run()

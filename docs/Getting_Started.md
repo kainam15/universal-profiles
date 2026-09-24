@@ -1,6 +1,7 @@
 # 安装与运行指南
 
-首次使用可先按[首页的快速开始](../README.md#快速开始)跑通一个 basic CPU 实验。
+首次使用可先按[首页的快速开始](../README.md#快速开始)，执行 `./setup.sh` 后在 TUI 跑通一个 basic CPU 实验。
+脚本参数、重复执行和安装路径见[Clone 后初始化](Distribution.md#clone-后初始化)。
 本文保留完整主机检查、认证配置，以及 full、GPU、ONNX 和资源矩阵示例。
 下文保留源码目录和 `.venv` 的开发方式；安装后的 `acprof` 命令可从任意工作目录执行。
 隔离工具安装、standalone 下载及发布方式见[发行包说明](Distribution.md)。
@@ -17,7 +18,7 @@ WSL、Docker Desktop、远程 Docker daemon、Windows 和 macOS 不能作为实�
 
 必需条件：
 
-- Python 3.10+。
+- Python 3.10+；`setup.sh` 可自动准备，standalone 已内置。
 - 当前用户可以直接访问 `unix:///var/run/docker.sock`，无需使用 `sudo docker`。
 - Host 使用统一 cgroup v2；`/sys/fs/cgroup/cgroup.controllers` 必须存在。
 - Hugging Face Hub 可访问；私有或 gated 模型还需要 `HF_TOKEN`。

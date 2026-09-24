@@ -161,7 +161,7 @@ def compose_run_tab(app: AcprofTui) -> ComposeResult:
                     yield app._localized_select(
                         (
                             ("自定义", "custom"),
-                            ("最小 Smoke", "smoke"),
+                            ("基础 CPU Smoke", "smoke"),
                             ("主矩阵（分析器关闭）", "main"),
                             ("完整默认", "default"),
                         ),

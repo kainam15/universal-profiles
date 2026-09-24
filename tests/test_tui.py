@@ -64,6 +64,9 @@ class TuiCoreTests(unittest.TestCase):
         self.assertEqual(command[command.index("--cpus") + 1], "1")
         self.assertEqual(command[command.index("--mems") + 1], "4")
         self.assertEqual(command[command.index("--input-scales") + 1], "64")
+        self.assertEqual(command[command.index("--profiling-mode") + 1], "basic")
+        self.assertEqual(command[command.index("--gpus") + 1], "off")
+        self.assertEqual(command[command.index("--notify") + 1], "none")
         self.assertEqual(
             command[command.index("--compute-profile-tool") + 1],
             "none",

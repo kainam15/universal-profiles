@@ -119,7 +119,7 @@ class RunConfig:
 
     @classmethod
     def smoke(cls, model: str = "") -> "RunConfig":
-        """Return a deliberately tiny, low-overhead validation run."""
+        """Return a basic CPU validation run without optional collectors or notifications."""
         return cls(
             model=model,
             cpus="1",
@@ -130,8 +130,10 @@ class RunConfig:
             warmup=0,
             repeat=1,
             repeat_in_window=1,
+            profiling_mode="basic",
             compute_profile_tool="none",
             execution_profile_tool="none",
+            notify="none",
         )
 
     @classmethod

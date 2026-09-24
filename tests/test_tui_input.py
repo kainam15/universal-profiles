@@ -11,6 +11,7 @@ from rich.segment import Segment
 from textual.app import App
 from textual.driver import Driver
 from textual.geometry import Offset
+from textual.message_pump import MessagePump
 from textual.widgets import Button, Collapsible, Input
 
 from acprof.tui.app import AcprofTui
@@ -256,7 +257,19 @@ class TuiInputTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause()
             field = app.query_one("#model", Input)
-            with patch.object(app, "_driver", RecordingDriver(app)):
+            set_interval = MessagePump.set_interval
+
+            def set_manual_cursor_interval(pump, interval, callback=None, **kwargs):
+                # Drive blink phases explicitly while Pilot processes input. The
+                # idle-cursor test above covers the real wall-clock interval.
+                if pump is app and callback == app._toggle_input_cursor:
+                    kwargs["pause"] = True
+                return set_interval(pump, interval, callback, **kwargs)
+
+            with (
+                patch.object(app, "_driver", RecordingDriver(app)),
+                patch.object(MessagePump, "set_interval", set_manual_cursor_interval),
+            ):
                 try:
                     app._sync_input_cursor()
                     timer = app._input_cursor_timer
@@ -270,12 +283,18 @@ class TuiInputTests(unittest.IsolatedAsyncioTestCase):
                     app._sync_input_cursor()
                     self.assertTrue(app._input_cursor_visible)
                     self.assertIsNot(app._input_cursor_timer, timer)
+                    await asyncio.wait_for(field.wait_for_refresh(), timeout=3)
                     app._toggle_input_cursor()
                     self.assertFalse(app._input_cursor_visible)
-                    await pilot.click("#model", offset=(3, 1))
-                    self.assertTrue(app._input_cursor_visible)
-                    app._toggle_input_cursor()
+                    # Repeat at the same position to require the click itself
+                    # to restart blinking, even when the selection is unchanged.
+                    for _ in range(2):
+                        await pilot.click("#model", offset=(3, 1))
+                        await asyncio.wait_for(field.wait_for_refresh(), timeout=3)
+                        self.assertTrue(app._input_cursor_visible)
+                        app._toggle_input_cursor()
                     await pilot.press("X")
+                    await asyncio.wait_for(field.wait_for_refresh(), timeout=3)
                     self.assertTrue(app._input_cursor_visible)
                     app.query_one("#quit-app", Button).focus()
                     await pilot.pause()
