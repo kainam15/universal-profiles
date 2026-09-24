@@ -40,6 +40,8 @@ elif name == "uv":
         shutil.copyfile(__file__, destination)
         destination.chmod(0o755)
     elif args == ["tool", "dir", "--bin"]:
+        if os.environ.get("SETUP_TEST_TOOL_DIR_FAIL"):
+            sys.exit(8)
         print(os.environ["UV_TOOL_BIN_DIR"])
     elif args != ["tool", "update-shell"]:
         sys.exit(98)
@@ -49,6 +51,9 @@ elif name == "acprof":
         sys.exit(int(os.environ.get("SETUP_TEST_DOCTOR_EXIT", "0")))
     if args[0] != "tui":
         sys.exit(97)
+    sys.exit(int(os.environ.get("SETUP_TEST_TUI_EXIT", "0")))
+elif name == "python":
+    sys.exit(int(os.environ.get("SETUP_TEST_TUI_EXIT", "0")))
 else:
     sys.exit(96)
 '''
@@ -123,6 +128,96 @@ class SetupTests(unittest.TestCase):
             return []
         return [entry for line in self.log.read_text().splitlines()
                 if (entry := json.loads(line))["tool"] == tool]
+
+    def invoke_launcher(self, *arguments, **environment):
+        launcher = self.checkout / "acprof-tui"
+        shutil.copyfile(ROOT / "acprof-tui", launcher)
+        return subprocess.run(
+            ["bash", str(launcher), *arguments],
+            cwd=self.root,
+            env={**self.environment, **environment},
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+
+    def test_installed_launcher_works_without_project_venv_or_refreshed_path(self):
+        installed = self.invoke("--no-tui", "--no-modify-path")
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        arguments = ("--model", "owner/model", "--preset", "smoke", "--output-dir", "results/with spaces")
+        result = self.invoke_launcher(*arguments)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.calls("acprof")[-1]["args"], ["tui", *arguments])
+        self.assertEqual(self.calls("acprof")[-1]["cwd"], str(self.root))
+        self.assertFalse((self.checkout / ".venv").exists())
+        self.assertEqual(self.config.read_text(), "KEEP_EXISTING_CONFIG=yes\n")
+
+    def test_launcher_uses_acprof_on_path_without_uv(self):
+        shutil.copy2(self.bin / "uv", self.bin / "acprof")
+        (self.bin / "uv").unlink()
+        result = self.invoke_launcher("--preset", "smoke")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.calls("acprof")[0]["args"], ["tui", "--preset", "smoke"])
+        self.assertEqual(self.calls("uv"), [])
+
+    def test_launcher_prefers_project_venv_over_installed_acprof(self):
+        source_python = self.checkout / ".venv" / "bin" / "python"
+        source_python.parent.mkdir(parents=True)
+        shutil.copy2(self.bin / "uv", source_python)
+        shutil.copy2(self.bin / "uv", self.bin / "acprof")
+        result = self.invoke_launcher("--output-dir", "results/with spaces")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.calls("python")[0]["args"], [
+            "-m", "acprof.cli.tui", "--output-dir", "results/with spaces",
+        ])
+        self.assertEqual(self.calls("acprof"), [])
+        self.assertEqual(self.calls("uv"), [])
+
+    def test_launcher_finds_uv_in_its_install_directory(self):
+        installed = self.invoke("--no-tui", "--no-modify-path")
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        uv_directory = Path(self.environment["UV_INSTALL_DIR"])
+        uv_directory.mkdir()
+        (self.bin / "uv").rename(uv_directory / "uv")
+        result = self.invoke_launcher("--preset", "smoke")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.calls("acprof")[-1]["args"], ["tui", "--preset", "smoke"])
+
+    def test_launcher_falls_back_when_project_python_is_broken(self):
+        source_python = self.checkout / ".venv" / "bin" / "python"
+        source_python.parent.mkdir(parents=True)
+        source_python.symlink_to(self.root / "removed-python")
+        shutil.copy2(self.bin / "uv", self.bin / "acprof")
+        result = self.invoke_launcher("--help")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.calls("acprof")[0]["args"], ["tui", "--help"])
+
+    def test_launcher_preserves_failure_status_without_retrying_another_environment(self):
+        shutil.copy2(self.bin / "uv", self.bin / "acprof")
+        for mode in ("installed", "source"):
+            with self.subTest(mode=mode):
+                if mode == "source":
+                    source_python = self.checkout / ".venv" / "bin" / "python"
+                    source_python.parent.mkdir(parents=True)
+                    shutil.copy2(self.bin / "uv", source_python)
+                installed_calls = len(self.calls("acprof"))
+                result = self.invoke_launcher("--preset", "smoke", SETUP_TEST_TUI_EXIT="17")
+                self.assertEqual(result.returncode, 17, result.stdout + result.stderr)
+                self.assertEqual(len(self.calls("acprof")), installed_calls + (mode == "installed"))
+                self.assertEqual(len(self.calls("python")), int(mode == "source"))
+                self.assertEqual(self.calls("uv"), [])
+
+    def test_launcher_without_installation_gives_setup_guidance(self):
+        for mode in ("empty", "query_failure", "missing_uv"):
+            with self.subTest(mode=mode):
+                if mode == "missing_uv":
+                    (self.bin / "uv").unlink()
+                result = self.invoke_launcher(SETUP_TEST_TOOL_DIR_FAIL="1" if mode == "query_failure" else "")
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("setup.sh", result.stderr)
+                self.assertEqual(self.calls("acprof"), [])
+                self.assertTrue(all(call["args"] == ["tool", "dir", "--bin"] for call in self.calls("uv")))
+                self.assertFalse((self.checkout / ".venv").exists())
 
     def test_noninteractive_install_uses_checkout_and_diagnoses_without_running_experiment(self):
         result = self.invoke("--no-modify-path")

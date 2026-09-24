@@ -4,10 +4,26 @@ set -euo pipefail
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 venv_python="${project_dir}/.venv/bin/python"
 
-if [[ ! -x "${venv_python}" ]]; then
-  echo "AC-Prof virtual environment not found: ${venv_python}" >&2
-  echo "Create it and install requirements before launching the TUI." >&2
-  exit 1
+if [[ -x "${venv_python}" ]]; then
+  exec "${venv_python}" -m acprof.cli.tui "$@"
 fi
 
-exec "${venv_python}" -m acprof.cli.tui "$@"
+if command -v acprof >/dev/null 2>&1; then
+  exec acprof tui "$@"
+fi
+
+# setup.sh installs an isolated uv tool, which may not be on this shell's PATH yet.
+uv_command="$(command -v uv || true)"
+if [[ -z "${uv_command}" ]]; then
+  uv_command="${UV_INSTALL_DIR:-${HOME}/.local/bin}/uv"
+fi
+if [[ -x "${uv_command}" ]]; then
+  if tool_bin_dir="$("${uv_command}" tool dir --bin 2>/dev/null)" && \
+      [[ -n "${tool_bin_dir}" && -x "${tool_bin_dir}/acprof" ]]; then
+    exec "${tool_bin_dir}/acprof" tui "$@"
+  fi
+fi
+
+printf '未找到 AC-Prof：项目 .venv 不可用，也未找到已安装的 acprof。\n请先运行：\n  %q\n' \
+  "${project_dir}/setup.sh" >&2
+exit 1

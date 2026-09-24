@@ -37,6 +37,13 @@ runtime 由所选模型、backend 和设备配置决定，沿用已有按需拉�
 自动化隔离安装可使用 uv 原生的 `UV_TOOL_DIR`、`UV_TOOL_BIN_DIR`、`UV_CACHE_DIR` 和
 `UV_PYTHON_INSTALL_DIR`，配合 `--no-tui --no-modify-path`。
 
+仓库中的 `./acprof-tui --preset smoke` 也可用于启动：优先使用项目 `.venv/bin/python`，
+没有可执行的项目解释器时使用 PATH 中的 `acprof tui`。若 PATH 尚未刷新，则查找 PATH 或
+`UV_INSTALL_DIR`（默认 `~/.local/bin`）中的 uv，通过 `uv tool dir --bin` 定位已安装的命令，
+支持自定义 `UV_TOOL_BIN_DIR`。`setup.sh` 的隔离安装无需创建项目 `.venv`。
+启动器保留调用时的工作目录、命令参数和退出码；找不到运行环境时提示执行 `setup.sh`，
+不会自动安装依赖。已有项目解释器或已安装命令启动后报错时，直接保留该错误，不切换环境重试。
+
 ## Python 工具安装
 
 在包含 `pyproject.toml` 的源码目录中：
@@ -136,6 +143,8 @@ GHCR 只预构建平台和依赖环境，不发布模型权重、用户数据或
   采用标准 console script 与隔离工具环境。`setup.sh` 只串联安装和已有诊断；uv 引导使用
   [官方 installer](https://docs.astral.sh/uv/reference/installer/) 的 `UV_INSTALL_DIR` / `UV_NO_MODIFY_PATH`，
   不复制包管理逻辑。uv 引导版本与开发锁、Release 工具链一同维护。
+  `acprof-tui` 复用 [uv 的目录查询接口](https://github.com/astral-sh/uv/blob/main/crates/uv/src/commands/tool/dir.rs)
+  定位工具入口，不推测内部虚拟环境布局；不增加运行依赖，查询只发生在界面启动前。
 - [Hatch build hooks](https://github.com/pypa/hatch/tree/master/backend/src/hatchling/builders/hooks)
   （MIT）：用一个小型 build hook 打包既有资源，不改变运行时依赖和镜像配方。
 - [PyInstaller](https://github.com/pyinstaller/pyinstaller)（GPL 与分发例外）：使用官方冻结工具，
