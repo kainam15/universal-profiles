@@ -10,6 +10,7 @@ AC-Prof 按模型选择逻辑 profile 和 adapter，profile 引用完整依赖�
 
 - [任务支持范围](#任务支持范围)：按 NLP、视觉、多模态选择接口与清单。
 - [当前配置](#当前配置)：选择运行环境，核对支持边界。
+- [本地模型声明与自定义 pipeline](#本地模型声明与自定义-pipeline)：补充缺失元数据、选择制品或映射标准任务协议。
 - [MOSS 的执行约定](#moss-的执行约定)：仅在处理该 adapter 时读取。
 - [构建、复用和验证](#构建复用和验证)：检查镜像、依赖清单与独立推理验证。
 - [镜像分类与复用](#镜像分类与复用)：识别公共环境、模型文件、推理服务及辅助镜像。
@@ -99,9 +100,17 @@ uv 0.12.13；生成目标 wheel 锁需要 Python 3.11+ 的 `tomllib`，只读检
 ### 共享接口解析
 
 主机在同一个模型 commit 读取文件列表及 `config.json`、`model_index.json`、`modules.json`、
-`adapter_config.json`，不执行仓库 Python。`model_resolution` 记录格式、loader、operation、
-`model_type`、元数据文件名与所选 profile；`status=candidate` 只表示静态候选，成功加载与真实
-输出仍由独立 `runtime_validation` 判断。元数据读取失败单独报告，不能归因为任务不支持。
+`adapter_config.json`、`acprof_model.json` 和 tokenizer/processor 配置，不执行仓库 Python。
+即使 Hub 没有 `pipeline_tag`，仍保留 revision、文件与元数据，并从 architecture、`auto_map`、
+`custom_pipelines` 和制品格式汇总候选。选择优先级为显式任务、本地／仓库声明、Hub 任务，
+最后才使用唯一推导候选；多候选为 `ambiguous`，信息不足为 `needs_configuration`。
+Hub 与模型声明的任务冲突必须显式选择；`--task`／`--backend` 不能与有效模型声明矛盾。
+ONNX 文件本身只能证明格式，不能凭输入 shape 猜分类、回归或预处理；这些语义须显式补充。
+
+`model_resolution` 记录候选、证据、冲突、缺失项、选择结果以及格式、loader、operation、
+`model_type`、元数据文件名与所选 profile。`status=candidate` 只表示通过静态检查，成功加载、
+输入 dtype/shape 和真实输出仍由独立 `runtime_validation` 判断。元数据读取失败单独报告，
+不能归因为任务不支持。
 镜像站 HEAD 缺少 Hub 元数据头时，客户端对同一 revision 回退到官方 Hub；认证、文件不存在和
 离线缓存错误不会触发这项回退。
 
@@ -132,6 +141,53 @@ Auto 注册表选择 `AutoModelForSeq2SeqLM` 或 `AutoModelForImageTextToText`�
 提前拒绝。已知独立 adapter 缺少 base、GGUF 或缺少 `model_index.json` 的 Diffusers 单文件／组件
 仓库也提前拒绝；本阶段没有增加这些制品的加载器。pyannote、SB3、LeRobot 等生态不能仅凭
 Hub task 标签当作 Transformers 模型加载。
+
+### 本地模型声明与自定义 pipeline
+
+`run.py` 和 `probe.py` 接受 `--model-spec /path/to/model.json`，覆盖 snapshot 中的
+`acprof_model.json`。JSON 必须声明 `schema_version=1`、`format`、标准任务 `task`，最大 64 KiB。
+制品接口使用 `format=onnxruntime/torchscript/skops` 和相对 snapshot 的 `model_file`；
+ONNX 图像／文本还需[对应预处理声明](#扩展声明与按需加载)。结构化任务的 `feature_dim`
+可驱动输入生成，workload 中显式指定的不同宽度会报错。`--model-spec` 描述模型接口，
+`--workload-spec` 描述输入样本、生成与实验参数，二者职责独立。
+
+例如没有 Hub 任务标签的 Iris 可使用仓库中的声明与合成输入清单：
+
+```bash
+.venv/bin/python run.py --model Ritual-Net/iris-classification \
+  --model-spec examples/onnxruntime/iris.model.json \
+  --workload-spec examples/onnxruntime/iris.json \
+  --profiling-mode basic --cpus 1 --mems 2 --gpus off \
+  --input-scales 1 --warmup 1 --repeat 2 --repeat-in-window 1 \
+  --notify none --output-dir results/iris
+```
+
+[`iris.model.json`](../examples/onnxruntime/iris.model.json) 选择 `iris.onnx`、
+`tabular-classification`、4 列输入；无需修改上游仓库或添加 Iris 专用 handler。
+这是运行链路示例，合成输入不用于 Iris 准确率评估。
+
+声明自定义 pipeline 别名时，显式映射到已有任务协议，例如：
+
+```json
+{
+  "schema_version": 1,
+  "format": "transformers-pipeline",
+  "task": "text-classification",
+  "pipeline_task": "acme-classify"
+}
+```
+
+`config.custom_pipelines` 必须包含所选 `pipeline_task` 及其 `impl`。已有 NLP、CV、Audio
+pipeline handler 按该别名加载，输入生成、有效尺度和输出仍按标准 `task` 处理；直接模型路径、
+多模态特殊协议等仍需 adapter。`auto_map` 声明也只产生候选，不保证兼容锁定的 Transformers。
+主机静态检查代码引用属于同一固定 snapshot，保存 `code_files/code_revision`；跨仓库代码引用
+或缺少文件明确拒绝。自定义代码保留完整 snapshot，接口验证在无网络容器中执行；缺少依赖需
+登记完整环境锁，不在验证或正式请求期间自动安装。
+
+有效声明进入服务镜像构建指纹及 `runtime_environment.model_spec`，由构建期环境变量
+`ACPROF_MODEL_SPEC_B64` 传入，server、独立验证与 profiler 使用同一份内容。不会改写 Hub
+snapshot；本地文件路径与 SHA256 进入恢复身份，内容改变不能沿用旧实验。依赖层和模型文件层
+仍可复用。发现与输出验证位于测量窗口外；自定义 pipeline 内部处理沿用原有 pipeline 计时口径。
 
 ## 扩展声明与按需加载
 
@@ -274,6 +330,9 @@ Dockerfile 和安装脚本；环境镜像再计对应配方及不可变平台 im
 启动独立验证容器，执行完整的加载、预处理、推理和输出序列化。容器无网络，退出后清理。
 验证错误和超时保留日志并退出；Docker 明确报告的 cgroup OOM 记为资源限制，允许矩阵继续。
 验证不会写测量 CSV、计算能耗或充当正式 warmup。
+报告按 execution、load、preprocess、predict、completion、postprocess、validate_output、metadata
+分别保存阶段结果，失败保留原异常类型及 `failed_stage`。已声明的自定义分类 pipeline 还需返回
+非空 label/score，不能仅凭一个可序列化的 object 判定兼容；其余任务继续使用相应 validator。
 
 验证可能预热宿主机文件缓存；正式容器初始化、首次请求和测量窗口的区别见[采集生命周期](Profiling_Protocol.md#采集生命周期)。
 
@@ -500,6 +559,14 @@ Docker 查询只在上述空闲窗口执行，不增加正式测量窗口内的�
 当前 loader 的设备、模态和 profiler 边界在下方任务章节维护；新的行为须同时满足[采集协议](Profiling_Protocol.md#协议不变量)。
 
 ## 参考实现与取舍
+
+候选解析参考 [vLLM 模型 registry](https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/models/registry.py)
+（Apache-2.0）的延迟入口、显式选择、独立检查和有条件回退；
+[worker 注册问题 #16228](https://github.com/vllm-project/vllm/issues/16228) 提醒解析结果必须传入执行进程。
+AC-Prof 沿用现有 manifest／Handler 和独立 Docker 验证，将有效声明固化到服务镜像，
+不引入 vLLM 的推理调度、CUDA 依赖或第二套 adapter 框架。自定义 pipeline 桥接直接使用
+[Transformers pipeline 工厂](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/pipelines/__init__.py)
+的 `custom_pipelines/auto_map` 协议；上游维护中的接口仍以本项目锁定版本和实际验证为准。
 
 共享模型接口直接复用官方 [Transformers Auto 注册表](https://github.com/huggingface/transformers/blob/v5.6.0/src/transformers/models/auto/modeling_auto.py)、
 [timm wrapper](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/models/timm_wrapper/configuration_timm_wrapper.py)、

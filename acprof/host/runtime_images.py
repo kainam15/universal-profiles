@@ -16,6 +16,7 @@ from acprof.host.dependency_images import (
     verify_labels, verify_manifest,
 )
 from acprof.runtime_profiles import RuntimeProfile, environment_id, environment_identity, select_runtime_profile
+from acprof.model_spec import encode_model_spec, task_model_spec
 
 
 from acprof.installation import resource_root
@@ -72,6 +73,7 @@ def request_fingerprint(task_info: Any, project_dir: str | Path = PROJECT_ROOT) 
         "dependency_build": runtime_fingerprint(profile.environment, root),
         "build_overrides": overrides,
         "model_download_policy": download_policy(task_info),
+        "model_spec": task_model_spec(task_info),
     }, sort_keys=True).encode())
     paths = sorted((root / "acprof").rglob("*.py"))
     paths += sorted((root / "acprof" / "extensions").rglob("*.json"))
@@ -152,6 +154,8 @@ def verified_image(task_info: Any, name: str, fingerprint: str, project_dir=PROJ
     }
     if not isinstance(manifest, dict) or any(manifest.get(key) != value for key, value in expected.items()):
         raise RuntimeError("镜像环境、适配器或模型 revision 与本次任务不匹配")
+    if manifest.get("model_spec", {}) != task_model_spec(task_info):
+        raise RuntimeError("镜像模型声明与本次 --model-spec 不匹配")
     for key in ("platform_image_id", "environment_image_id", "model_image_id"):
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(manifest.get(key, ""))):
             raise RuntimeError(f"镜像缺少不可变的 {key}")
@@ -287,6 +291,7 @@ def build_runtime_image(task_info: Any, project_dir: str):
         "REQUEST_FINGERPRINT": fingerprint, "PLATFORM_IMAGE_ID": dependency.platform_image_id,
         "ENVIRONMENT_IMAGE_ID": runtime_id, "MODEL_IMAGE_ID": model_id,
         "DEPENDENCY_LOCK_SHA256": dependency.manifest["dependency_lock_sha256"],
+        "MODEL_SPEC_B64": encode_model_spec(task_model_spec(task_info)),
     }, (model_source, model_id))
     image = verified_image(task_info, final_id, fingerprint, root)
     if image is None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import base64
 import importlib.metadata
 import json
 import os
@@ -78,6 +79,8 @@ def collect_manifest() -> dict:
         "model_revision": os.environ.get("MODEL_REVISION", ""),
         "model_snapshot_revision": snapshot_revision,
         "model_download": download,
+        "model_spec": json.loads(base64.b64decode(os.environ["ACPROF_MODEL_SPEC_B64"], validate=True))
+                      if os.getenv("ACPROF_MODEL_SPEC_B64") else {},
         "python_version": platform.python_version(),
         "packages": packages,
         "dependency_lock_sha256": lock_hash,

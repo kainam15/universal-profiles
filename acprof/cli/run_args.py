@@ -37,6 +37,8 @@ Examples:
         help="Override task family (nlp/cv/audio/timeseries/diffusion/multimodal/structured)",
     )
     parser.add_argument("--backend", default=None, help="Override runtime backend (transformers_pipeline/chronos/...)")
+    parser.add_argument("--model-spec", default=None,
+                        help="Local acprof_model.json interface declaration; baked into the immutable service image")
 
     # Resource matrix
     parser.add_argument("--cpus", default="1,2,4,8", help="CPU core counts (comma-separated)")

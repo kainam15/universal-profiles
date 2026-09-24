@@ -624,6 +624,7 @@ def _run_main():
             override_tag=args.task,
             override_family=args.task_family,
             override_backend=args.backend,
+            model_spec_path=args.model_spec,
         )
     require_task_support(task_info, batch_size=args.batch_size)
 

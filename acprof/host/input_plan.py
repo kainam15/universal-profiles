@@ -1036,7 +1036,11 @@ def plan_input_scales(
 def _get_task_generator(task_info: TaskInfo, batch_size: int, **kwargs: Any):
     """Carry the selected adapter into workload defaults, including model aliases."""
     from acprof.workloads import get_generator
+    from acprof.model_spec import task_model_spec
 
     if task_info.model_adapter != "family-default":
         kwargs["model_adapter"] = task_info.model_adapter
+    spec = task_model_spec(task_info)
+    if task_info.task_family == "structured" and spec.get("feature_dim") is not None:
+        kwargs["model_feature_dim"] = spec["feature_dim"]
     return get_generator(task_info.task_family, task_info.model_id, task_info.pipeline_tag, batch_size, **kwargs)

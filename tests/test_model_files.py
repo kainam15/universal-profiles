@@ -63,6 +63,7 @@ class ModelFilePlanTests(unittest.TestCase):
         for config in (
             {"model_type": "new_model"}, {"model_type": "bert", "auto_map": {"AutoModel": "custom.Model"}},
             {"model_type": "bert", "quantization_config": {"quant_method": "gptq"}},
+            {"model_type": "bert", "custom_pipelines": {"custom": {"impl": "custom.Pipeline"}}},
             {"model_type": ["custom", "Model"]},
         ):
             with self.subTest(config=config):

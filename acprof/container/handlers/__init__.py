@@ -162,6 +162,11 @@ def load_handler(handler: BaseHandler, model_source: str, task_type: str, backen
         ) from exc
     if not isinstance(context, dict):
         raise HandlerInitializationError(f"backend: {backend}; module: {module_name}; handler.load must return a dict")
+    if backend == "transformers_pipeline":
+        from acprof.model_spec import load_model_spec
+        spec = load_model_spec(model_source, task_type, expected_format="transformers-pipeline")
+        if spec:
+            context["model_spec"] = spec
     return context
 
 

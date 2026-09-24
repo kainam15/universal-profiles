@@ -108,6 +108,9 @@ flowchart TD
 profile 和延迟入口，读取声明不导入推理框架；声明文件参与服务镜像指纹。
 `model_resolution` 按固定 commit 的仓库布局和原生接口解析候选，`extensions/transformers` 保存
 固定版本的 Auto 注册数据；profile 选择按任务／架构匹配已锁定环境，平台切换保留版本线。
+标准库模块 `model_spec` 共用本地／仓库模型声明及代码引用检查；候选记录保留证据和歧义，
+有效声明参与服务镜像与恢复身份，并传入容器 loader。自定义 pipeline 复用标准任务 Handler，
+不在采集器增加模型分支；是否可运行由独立验证的各阶段结果判断。
 元数据解析不加载模型，静态候选与独立推理、正式采集证据分别记录。timm、Chronos 三代及句向量
 复用上游接口与现有 Handler，公共采集器不增加 checkpoint 分支。
 `container.execution` 只加载所选声明的可选执行模块；Torch 上下文位于 `torch_execution`。

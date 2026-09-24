@@ -59,6 +59,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--task", default=None, help="Override pipeline_tag")
     parser.add_argument("--task-family", default=None, help="Override task family")
     parser.add_argument("--backend", default=None, help="Override runtime backend")
+    parser.add_argument("--model-spec", default=None,
+                        help="Local acprof_model.json interface declaration; baked into the service image")
     parser.add_argument("--cpus", default="1,2,4,8", help="CPU list")
     parser.add_argument(
         "--mems",
@@ -128,6 +130,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         override_tag=args.task,
         override_family=args.task_family,
         override_backend=args.backend,
+        model_spec_path=args.model_spec,
     )
     try:
         require_task_support(task_info, batch_size=args.batch_size)

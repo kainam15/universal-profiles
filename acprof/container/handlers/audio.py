@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from acprof.model_spec import pipeline_task
+
 import base64
 import binascii
 import io
@@ -95,7 +97,7 @@ class AudioHandler(BaseHandler):
         torch_dtype = torch.float16 if device != "cpu" else torch.float32
 
         pipe = hf_pipeline(
-            task=task_type,
+            task=pipeline_task(model_source, task_type),
             model=model_source,
             **model_revision_kwargs(model_source, model_revision),
             **transformers_pipeline_load_kwargs(load_options),

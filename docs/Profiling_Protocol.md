@@ -174,7 +174,7 @@ OOM pruning 继续按原有参考 CPU/内存顺序重建证据，复用与推断
 | `quantization_config` | Hub model config 中的完整量化配置；没有时为空 object。 |
 | `model_license` | Hugging Face model card 许可证，例如 `apache-2.0`、`mit`；无法确认时为 `null`。 |
 | `model_metadata_source` | 参数量、参数 payload、精度、量化和许可证的元数据来源，当前在线 Hub 检测成功时为 `huggingface_hub`。 |
-| `model_resolution` | 可选的静态接口解析 object（内部 schema v1）：任务、backend、library、制品格式、loader、operation、model type、固定 revision、已读取元数据文件和最终所选 runtime profile。`status=candidate` 不是执行成功；历史 v7 缺失时按空 object／未知处理，不推算。无数值单位或测量窗口，不增加 CSV 列。 |
+| `model_resolution` | 可选的静态接口解析 object（内部 schema v1）：任务、backend、library、制品格式、loader、operation、model type、固定 revision、元数据文件和 runtime profile。追加 `candidates/evidence`、`conflicts/missing`、`selection`，以及 `interface_kind`、`pipeline_task`、`code_files/code_revision`、有效 `model_spec`。`candidate` 不是执行成功；`ambiguous/needs_configuration` 在镜像准备前拒绝。历史 v7 缺失字段按未知处理，不推算。无数值单位或测量窗口，不增加 CSV 列。 |
 | `task_family` | 任务族：`nlp`、`cv`、`audio`、`timeseries`、`diffusion`、`multimodal`、`structured`。 |
 | `pipeline_tag` | Hugging Face pipeline tag，例如 `fill-mask`、`image-classification`。 |
 | `runtime_backend` | 容器内使用的 runtime backend，例如 `transformers_pipeline`、`chronos`、`diffusers`。 |
@@ -182,7 +182,7 @@ OOM pruning 继续按原有参考 CPU/内存顺序重建证据，复用与推断
 | `image_id` | 经 Docker inspect 核验的不可变镜像 ID；补采优先使用该字段。历史文件无法确认时不补造。 |
 | `image_name` | 便于查看的构建标签，含模型名和构建请求指纹前缀；执行仍使用 `image_id`。 |
 | `runtime_environment` | 镜像内生成的环境清单：profile、adapter、构建指纹、模型及实际 snapshot revision、Python 和已安装包版本、依赖锁与包清单 SHA256、自定义 Python 源码 SHA256，以及 `model_download` 文件清单。新构建追加平台/环境身份、各父镜像 ID、系统锁摘要与实际系统包集合，字段详见下文；历史缺失字段不推算。 |
-| `runtime_validation` | 独立容器验证报告。保存实际 image ID、输入尺度／payload SHA256、每个设备的状态、dtype、attention 实现及输出摘要。验证推理接口，不替代 profiler 兼容性检查，也不计入请求或性能测量。失败的完整报告另见 `runtime_validation.json`。 |
+| `runtime_validation` | 独立容器验证报告。保存实际 image ID、输入尺度／payload SHA256、每个设备的状态、dtype、attention 实现、输出摘要、有效 `model_spec` 和分阶段 `stages`。验证推理接口，不替代 profiler 兼容性检查，也不计入请求或性能测量。失败的完整报告另见 `runtime_validation.json`。 |
 | `batch_size` | 本次 profiling 的 batch size。 |
 | `input_scale_type` | `result_all.csv/input_scale` 的语义名，例如 `seq_length`。 |
 | `workload` | workload 清单的可复现元数据，包括素材 SHA256、来源、变换、推理模式以及模型侧输入约束。 |
@@ -258,6 +258,7 @@ OOM pruning 继续按原有参考 CPU/内存顺序重建证据，复用与推断
 | `platform_image_id` / `environment_image_id` / `model_image_id` | 本次实际继承的平台、环境与模型快照镜像的不可变 Docker ID。 |
 | `platform_build_fingerprint` / `environment_build_fingerprint` | 包含安装配方的构建身份；环境构建还绑定实际平台 image ID。 |
 | `request_fingerprint` | 服务构建声明的查找键；原有 `build_fingerprint` 另绑定不可变模型父镜像 ID，继续表示实际构建身份。 |
+| `model_spec` | 本地 `--model-spec` 优先于仓库 `acprof_model.json` 的有效内容，无声明时为空 object。规范化内容参与服务构建指纹，加载器消费构建期固化的相同内容；不改变依赖环境或模型文件层身份。本地声明文件的绝对路径和原始字节 SHA256 另参与 run 恢复身份。 |
 | `python_base_image` / `architecture` | 固定 OCI digest 的 Python 基础镜像及目标 `linux/amd64`。 |
 | `system_lock_sha256` | 规范化系统锁的 SHA256，覆盖 snapshot 来源、索引摘要、系统包集合和 `.deb` 制品。 |
 | `system_packages` | 构建时实测的完整已安装系统包集合，键为 `包名:架构`，值为包含 epoch 的版本。 |
@@ -270,6 +271,12 @@ OOM pruning 继续按原有参考 CPU/内存顺序重建证据，复用与推断
 `runtime_environment.model_download` 是可选的独立 schema v1 清单，历史结果可缺失。`requested_policy` 保存 `auto/full`，`effective_policy` 保存实际 `selected/full`，`reason` 说明筛选或回退原因；`weights` 记录组件、格式、variant 和索引／分片文件。`files` 保存路径、实际逻辑大小和构建时计算的 SHA256，另保留 Hub 提供的 Git blob／LFS 标识；`excluded_files` 是未下载文件的远端元数据。`verification=sha256` 表示构建阶段已完成完整性检查，`plan_sha256` 校验规范化 JSON（不含自身字段）。`selected_bytes` 按清单路径求和，不对相同内容的多个路径去重，因此不等同于 `model_cache_bytes`、镜像大小或释放的磁盘空间。新增清单不改变 CSV 字段和历史指标定义。
 
 `runtime_validation.json` 使用独立 schema v1：`devices.off/on` 分别保存 CPU／GPU 的 `ok`、`error` 或明确 cgroup OOM 的 `resource_limit`；总状态为 `ok`、`error` 或 `resource_limited`。每个模式只执行一次最小计划输入，资源上限为本次配置的最大 CPU／内存。错误会在矩阵之前退出；资源限制允许正式矩阵继续测定 OOM 边界。stdout/stderr 保存在 `runtime_validation_off/on.log`，超时也清理验证容器。它们不是 warmup、测量行或 profiler 结果。验证前已有的结果不因此变为本次成功结果。
+
+每个设备的可选 `stages` 依次记录 `execution/load/preprocess/predict/completion/postprocess/validate_output/metadata`，
+每项包含阶段名与 `verified/error`；错误保存原异常类型和消息。失败报告的 `failed_stage` 指向
+失败步骤，读取输入或进入／退出推理上下文的异常为 `input_or_execution_context`。被终止或超时的
+进程可能没有阶段回报，以外层状态和日志为准；未执行阶段和历史缺失字段不补为成功。
+这些诊断没有时间单位，不用于比较阶段耗时，也不增加正式测量请求。
 
 这些字段在 profiling 后原子补写，原始 `run_command` 保持不变。`static_flops` 只保存不依赖硬件计数器的 Torch 逻辑 shape FLOPs，并按 input scale 展开；NCU 实际执行 FLOPs、吞吐率以及 execution 数值仍保存在 `result_all.csv`，execution 字段是否来自代表资源由上述 sampling metadata 和 plan entry provenance 说明。
 

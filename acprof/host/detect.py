@@ -1,9 +1,8 @@
 """AC-Prof Universal Profiler - HuggingFace Model Task Auto-Detection.
 
-Three-level fallback:
-  Level 1: HF Hub API (pipeline_tag + library_name)
-  Level 2: config.json architecture metadata (no model code on the host)
-  Level 3: CLI manual override (always takes precedence)
+Collect Hub, repository and artifact evidence at a pinned revision, then select
+an interface using explicit overrides or unambiguous metadata. No model code is
+loaded on the host; runtime compatibility is verified separately in containers.
 """
 
 from __future__ import annotations
@@ -49,12 +48,13 @@ class TaskInfo:
     repository_metadata: dict[str, Any] = field(default_factory=dict)
     metadata_errors: tuple[str, ...] = ()
     model_resolution: dict[str, Any] = field(default_factory=dict)
+    model_spec: dict[str, Any] = field(default_factory=dict)
 
 
 def _architecture_metadata(config: Any) -> dict[str, Any]:
     if not isinstance(config, dict):
         return {}
-    keys = ("model_type", "architectures", "auto_map", "transformers_version", "torch_dtype", "dtype",
+    keys = ("model_type", "architectures", "auto_map", "custom_pipelines", "transformers_version", "torch_dtype", "dtype",
             "quantization_config", "chronos_pipeline_class", "pretrained_cfg", "architecture")
     metadata = {key: config[key] for key in keys if key in config}
     if "pretrained_cfg" in metadata and "model_type" not in metadata:
@@ -86,7 +86,8 @@ def _repository_metadata(model_id: str, revision: str, info: Any) -> dict[str, A
                           (getattr(info, "siblings", None) or []) if getattr(item, "rfilename", "")}))
     metadata, errors = {}, []
     if files:
-        for name in ("config.json", "model_index.json", "modules.json", "adapter_config.json"):
+        for name in ("config.json", "model_index.json", "modules.json", "adapter_config.json",
+                     "acprof_model.json", "tokenizer_config.json", "processor_config.json", "preprocessor_config.json"):
             if name not in files:
                 continue
             try:
@@ -401,11 +402,10 @@ def _detect_from_hub(
             "hub_api",
             f"metadata returned no pipeline_tag (library_name={library_name or 'unknown'})",
         )
-        return None
 
     return TaskInfo(
         model_id=model_id,
-        pipeline_tag=pipeline_tag,
+        pipeline_tag=pipeline_tag or "unknown",
         # Explicit Hub metadata must survive even without a collection adapter.
         # Falling back to a generic architecture suffix can misroute multimodal
         # models to NLP. CLI overrides still apply before the support check.
@@ -472,6 +472,7 @@ def _detect_from_config(
         model_revision=revision,
         detection_method="config_infer",
         model_config=_architecture_metadata(config_data),
+        repository_metadata={"config.json": config_data},
     )
 
 
@@ -480,11 +481,9 @@ def detect_task(
     override_tag: Optional[str] = None,
     override_family: Optional[str] = None,
     override_backend: Optional[str] = None,
+    model_spec_path: Optional[str] = None,
 ) -> TaskInfo:
-    """Detect model task with three-level fallback.
-
-    CLI overrides (Level 3) always take precedence over auto-detection.
-    """
+    """Discover candidates and apply CLI overrides, checking declaration conflicts."""
     # Start with auto-detection
     diagnostics: list[str] = []
     info = _detect_from_hub(model_id, diagnostics)
@@ -493,7 +492,7 @@ def detect_task(
 
     # If auto-detection failed entirely, require manual override
     if info is None:
-        if not override_tag and not override_family:
+        if not override_tag and not override_family and not model_spec_path:
             details = "\n".join(f"  - {reason}" for reason in diagnostics)
             if not details:
                 details = "  - no diagnostic details were captured"
@@ -516,7 +515,13 @@ def detect_task(
             detection_method="manual",
         )
 
-    # Apply CLI overrides (Level 3 - highest priority)
+    if model_spec_path:
+        from acprof.model_spec import read_model_spec
+        info.model_spec = read_model_spec(Path(model_spec_path).expanduser())
+    from acprof.model_resolution import discover_model_candidates
+    info.model_resolution = discover_model_candidates(info, override_tag=override_tag, override_backend=override_backend)
+
+    # Apply CLI overrides (highest priority, still checked against declarations).
     if override_tag:
         info.pipeline_tag = override_tag
         if override_tag in PIPELINE_TAG_TO_FAMILY:
@@ -528,12 +533,5 @@ def detect_task(
     if override_backend:
         info.runtime_backend = override_backend
         info.detection_method = "manual"
-
-    if not override_backend:
-        info.runtime_backend = CATALOG.default_backend(
-            info.pipeline_tag, info.task_family, info.library_name, info.runtime_backend,
-        )
-        if info.pipeline_tag in {"feature-extraction", "sentence-similarity"} and "modules.json" in info.repository_metadata:
-            info.runtime_backend = "sentence_transformers"
 
     return info

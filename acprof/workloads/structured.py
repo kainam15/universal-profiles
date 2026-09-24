@@ -40,12 +40,13 @@ def positive_integer(value: Any, name: str, maximum: Optional[int] = None) -> in
 
 class StructuredWorkloadGenerator(WorkloadGenerator):
     def __init__(self, model_id: str, task_type: str, batch_size: int,
-                 workload_spec_path: Optional[str] = None):
+                 workload_spec_path: Optional[str] = None, model_feature_dim: Optional[int] = None):
         if task_type not in TASK_FEATURE_DIMS:
             raise ValueError(f"unsupported structured task: {task_type!r}")
         super().__init__(model_id, task_type, positive_integer(batch_size, "batch_size"))
         self._max_scale = 2048 if task_type == "graph-ml" else 4096
-        self.feature_dim = TASK_FEATURE_DIMS[task_type]
+        self.feature_dim = (TASK_FEATURE_DIMS[task_type] if model_feature_dim is None else
+                            positive_integer(model_feature_dim, "model feature_dim", 65536))
         self.seed = 12345
         self._scales = [8.0, 32.0, 128.0, 512.0] if task_type == "graph-ml" else [1.0, 8.0, 32.0, 128.0]
         self._spec_sha256 = None
@@ -60,6 +61,8 @@ class StructuredWorkloadGenerator(WorkloadGenerator):
             if spec.get("task", task_type) != task_type:
                 raise ValueError("structured workload task does not match selected task")
             self.feature_dim = positive_integer(spec.get("feature_dim", self.feature_dim), "feature_dim", 65536)
+            if model_feature_dim is not None and self.feature_dim != model_feature_dim:
+                raise ValueError("workload feature_dim conflicts with model spec feature_dim")
             seed = spec.get("seed", self.seed)
             if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
                 raise ValueError("seed must be a non-negative integer")

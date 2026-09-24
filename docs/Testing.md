@@ -179,6 +179,22 @@ git diff --check
 并验证新版图像 processor 的输入形状、检测框及依赖 OpenCV 的多边形输出。该测试需在
 `nlp-transformers560-cpu` 共享环境显式运行；随机小配置不是热门 checkpoint 的采集或准确率证据。
 
+候选发现、冲突处理、本地模型声明、镜像／恢复身份和输入宽度回归见
+`test_model_discovery.py`；`test_validation_stages.py` 检查成功步骤、失败位置及原异常保留。
+`test_custom_pipeline_runtime.py` 在断网 NLP 容器创建微型随机 BERT snapshot 与自定义 pipeline，
+比较原生接口和自定义接口的 label/score，并执行真实独立验证、失败阶段检查及自定义 `auto_map`
+架构加载。它已加入默认 NLP 容器测试集，由现有 CI 的 NLP job 执行；也可单独运行：
+
+```bash
+.venv/bin/python scripts/check_runtime.py --family nlp --variant cpu \
+  --test-pattern test_custom_pipeline_runtime.py \
+  --output-dir internal-testing/custom-pipeline-runtime
+```
+
+该证据覆盖锁定环境中的标准文本分类桥接，不证明任意自定义模型、其它任务或 GPU 兼容。
+生产模型声明与服务镜像的完整链路可使用 [Iris 示例](Runtime_Compatibility.md#本地模型声明与自定义-pipeline)，
+按实际结果分别验收 basic／full；接口检查、预热、正式行和 profiler 结果分别计数。
+
 ### 无 Torch 运行时验收
 
 ```bash

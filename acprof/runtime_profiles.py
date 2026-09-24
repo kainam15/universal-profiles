@@ -187,7 +187,7 @@ def _native_compatible(task_info: Any, profile: RuntimeProfile) -> bool | None:
         return None
     config = getattr(task_info, "model_config", {}) or {}
     # Custom Auto classes are verified by the selected extension/container.
-    if config.get("auto_map"):
+    if config.get("auto_map") or (getattr(task_info, "model_resolution", {}) or {}).get("interface_kind") == "custom_pipeline":
         return None
     version = _transformers_version(profile.environment)
     if not version:

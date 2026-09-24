@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from typing import Any
 
 import numpy as np
@@ -10,6 +9,7 @@ import onnxruntime as ort
 
 from acprof.container.handlers.structured import _artifact_path, _local_snapshot
 from acprof.runtime_settings import onnx_runtime_parameters
+from acprof.model_spec import load_model_spec
 
 
 TENSOR_DTYPES = {
@@ -27,17 +27,11 @@ def load_session(model_source: str, task_type: str, backend: str, device: str,
     if load_options:
         raise ValueError('unsupported: ONNX Runtime does not implement Torch attention/profiler options')
     root = _local_snapshot(model_source, model_revision)
-    manifest_file = root / 'acprof_model.json'
-    manifest = {}
-    if manifest_file.is_file():
-        manifest = json.loads(manifest_file.read_text(encoding='utf-8'))
-        if (not isinstance(manifest, dict) or manifest.get('schema_version') != 1
-                or isinstance(manifest.get('schema_version'), bool)
-                or manifest.get('format') != 'onnxruntime' or manifest.get('task') != task_type):
-            raise ValueError('acprof_model.json must declare schema_version=1, selected task, format=onnxruntime')
+    manifest = load_model_spec(str(root), task_type, expected_format='onnxruntime')
+    if manifest:
         artifact = _artifact_path(root, manifest.get('model_file'))
     else:
-        artifacts = sorted(root.glob('*.onnx'))
+        artifacts = sorted(root.rglob('*.onnx'))
         if len(artifacts) != 1:
             raise ValueError('ONNX requires exactly one *.onnx file or acprof_model.json selecting model_file')
         artifact = artifacts[0]

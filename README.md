@@ -16,6 +16,7 @@ AC-Prof 用来比较 Hugging Face 模型在不同 CPU、内存、GPU 配置和�
 
 支持范围包括文本、视觉、音频、时间序列、Diffusion、多模态与结构化数据任务。
 具体模型需满足对应的[任务接口与运行环境](docs/Runtime_Compatibility.md#任务支持范围)，任务标签本身不保证任意 checkpoint 都能运行。
+缺少模型元数据或需要指定自定义 pipeline 时，可使用[本地模型声明](docs/Runtime_Compatibility.md#本地模型声明与自定义-pipeline)，通过独立推理验证后再采集。
 [指标说明](docs/Metrics.md#采集能力概览)解释各项数据的含义和测量范围。
 
 ## 快速开始

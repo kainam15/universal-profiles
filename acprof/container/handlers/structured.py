@@ -7,7 +7,6 @@ Hub repositories. No environment steps, policy training or robot I/O occur.
 
 from __future__ import annotations
 
-import json
 import math
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -15,6 +14,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 
 from acprof.container.handlers import BaseHandler
+from acprof.model_spec import load_model_spec
 
 
 TASK_OUTPUT_TYPES = {
@@ -77,10 +77,8 @@ class StructuredHandler(BaseHandler):
         if backend == "skops" and (device != "cpu" or not task_type.startswith("tabular-")):
             raise ValueError("skops supports only tabular-classification/tabular-regression on CPU")
         root = _local_snapshot(model_source, model_revision)
-        manifest_path = root / "acprof_model.json"
-        manifest = None
-        if manifest_path.is_file():
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = load_model_spec(str(root), task_type, expected_format=backend) or None
+        if manifest:
             if not isinstance(manifest, dict) or manifest.get("schema_version") != 1 or isinstance(manifest.get("schema_version"), bool):
                 raise ValueError("acprof_model.json schema_version must be 1")
             if manifest.get("task") != task_type:

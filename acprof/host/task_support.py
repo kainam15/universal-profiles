@@ -25,6 +25,13 @@ def require_task_support(task_info: TaskInfo, *, batch_size: int = 1) -> None:
             "  请检查 HF_ENDPOINT、网络、仓库访问权限及 JSON 内容后重试。",
             "  本次未进入镜像准备、资源矩阵或推理测量。",
         ]))
+    from acprof.model_resolution import require_resolved_candidate
+    from acprof.model_spec import custom_code_files
+    try:
+        require_resolved_candidate(task_info)
+        custom_code_files(task_info.model_config or {})
+    except ValueError as exc:
+        raise TaskSupportError(f"[model-resolution][ERROR] {exc}\n  未进入镜像准备或正式测量。") from exc
     task = task_info.pipeline_tag
     expected_family = PIPELINE_TAG_TO_FAMILY.get(task)
     reason = None

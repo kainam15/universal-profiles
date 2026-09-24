@@ -151,6 +151,7 @@ vendor 模式的 CPU Advisor 同样适用。阶段状态区分成功、部分失
 | `--task` | auto | 覆盖 `pipeline_tag`，例如 `fill-mask`、`text-generation`。 |
 | `--task-family` | auto | 覆盖任务族：`nlp`、`cv`、`audio`、`timeseries`、`diffusion`、`multimodal`、`structured`。 |
 | `--backend` | auto | 覆盖声明清单中的 runtime backend，例如 `transformers_pipeline`、`chronos`、`diffusers`、`onnxruntime`。 |
+| `--model-spec` | 无 | 本地 `acprof_model.json` 格式的模型接口声明，优先于仓库声明，固化到服务镜像并参与恢复身份。用于缺少任务元数据、明确选择制品或自定义 pipeline 别名，见[模型声明](Runtime_Compatibility.md#本地模型声明与自定义-pipeline)。 |
 | `--profiling-mode` | `full` | `full` 保留 RAPL、perf 和 packet latency 必需条件；`basic` 仅要求 application latency、吞吐、容器 CPU/内存，跳过能耗、PMU、抓包。两者均要求原生 Linux、本机 Docker 和 cgroup v2。 |
 | `--cpus` | `1,2,4,8` | CPU core 限制列表。 |
 | `--mems` | `2,4,8,16` | Memory cap GB 列表。 |
@@ -312,7 +313,7 @@ CV 每请求一个图片／视频样本，`input_num_samples=1`；视频帧数�
 
 ### `probe.py`
 
-复用 `--model`、`--task`、`--task-family`、`--backend`、`--batch-size`、`--workload-spec`、
+复用 `--model`、`--task`、`--task-family`、`--backend`、`--model-spec`、`--batch-size`、`--workload-spec`、
 `--output-dir` 和 `--skip-build` 的参数及默认值。
 资源列表与超时的用途如下：
 

@@ -125,7 +125,7 @@ def plan_download(
         config = read_json(config_path)
         if not isinstance(config, dict):
             raise ModelFilesError(f"invalid configuration: {config_path}")
-        if config.get("auto_map") or config.get("quantization_config") or "adapter_config.json" in names:
+        if config.get("auto_map") or config.get("custom_pipelines") or config.get("quantization_config") or "adapter_config.json" in names:
             return None, "custom_or_quantized_model"
         model_type = config.get("model_type")
         if not isinstance(model_type, str) or model_type not in (native_model_types or set()):

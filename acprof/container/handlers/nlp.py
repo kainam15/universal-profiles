@@ -12,6 +12,7 @@ from acprof.container.handlers import (
     model_revision_kwargs,
     transformers_pipeline_load_kwargs,
 )
+from acprof.model_spec import pipeline_task
 
 # Tasks that generate text output
 _GENERATIVE_TASKS = {
@@ -306,7 +307,7 @@ class NLPHandler(BaseHandler):
         else:
             from transformers import pipeline as hf_pipeline
             pipe = hf_pipeline(
-                task=task_type,
+                task=pipeline_task(model_source, task_type),
                 model=model_source,
                 **model_revision_kwargs(model_source, model_revision),
                 **pipeline_options,

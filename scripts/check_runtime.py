@@ -16,7 +16,7 @@ from acprof.host.dependency_images import prepare_environment_image  # noqa: E40
 from acprof.runtime_profiles import DEFAULT_PROFILES, PROFILES, environment_id  # noqa: E402 -- 脚本先设置仓库导入路径。
 
 PATTERNS = {
-    "nlp": ("test_nlp_runtime.py",),
+    "nlp": ("test_nlp_runtime.py", "test_custom_pipeline_runtime.py"),
     "cv": ("test_cv_runtime.py",),
     "audio": ("test_audio_runtime_optional.py",),
     "diffusion": ("test_diffusion_runtime.py",),

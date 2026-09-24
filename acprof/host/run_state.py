@@ -70,6 +70,12 @@ def run_options(args) -> dict:
         path = Path(options["workload_spec"]).expanduser().resolve()
         options["workload_spec"] = str(path)
         options["workload_spec_sha256"] = file_sha256(path)
+    if options.get("model_spec"):
+        path = Path(options["model_spec"]).expanduser().resolve()
+        options["model_spec"] = str(path)
+        options["model_spec_sha256"] = file_sha256(path)
+    else:
+        options.pop("model_spec", None)
     return options
 
 

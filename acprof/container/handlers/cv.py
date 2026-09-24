@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from acprof.model_spec import pipeline_task
+
 import base64
 import io
 import math
@@ -37,7 +39,7 @@ class CVHandler(BaseHandler):
 
         try:
             pipe = hf_pipeline(
-                task=task_type,
+                task=pipeline_task(model_source, task_type),
                 model=model_source,
                 **model_revision_kwargs(model_source, model_revision),
                 **transformers_pipeline_load_kwargs(load_options),

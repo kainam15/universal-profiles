@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "format": "onnxruntime",
+  "task": "tabular-classification",
+  "model_file": "iris.onnx",
+  "feature_dim": 4
+}

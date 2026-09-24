@@ -102,6 +102,21 @@ def validate_output(model_ctx: dict, raw_input: dict, processed_input: Any,
         shape_evidence = {'status': 'verified' if actual_shape is not None else 'available',
                           'detail': 'actual tensor dimensions' if actual_shape is not None else 'postprocess dimensions'}
     task_checks = []
+    if (model_ctx.get('model_spec', {}).get('format') == 'transformers-pipeline'
+            and task in {'text-classification', 'image-classification', 'audio-classification'}):
+        def classification_records(value):
+            if isinstance(value, Mapping):
+                return [value]
+            if isinstance(value, (list, tuple)):
+                return [record for item in value for record in classification_records(item)]
+            raise OutputValidationError('custom classification requires label/score records')
+
+        records = classification_records(raw_output)
+        if not records or any(not isinstance(item.get('label'), str) or not item['label'].strip()
+                              or isinstance(item.get('score'), bool) or not isinstance(item.get('score'), Number)
+                              for item in records):
+            raise OutputValidationError('custom classification requires non-empty labels and numeric scores')
+        task_checks.append('classification_labels_scores')
     if task.startswith('tabular-') or task in {'reinforcement-learning', 'robotics', 'graph-ml'}:
         if 'output_shape' not in response:
             raise OutputValidationError('structured output requires output_shape')
