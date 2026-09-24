@@ -68,6 +68,15 @@ git diff --check
 避免将临时虚拟环境中的第三方代码视为项目实现。调用分析无法解析已找到的 Python 符号时，
 结合符号文档和源码核对调用者；空结果不能证明没有依赖。
 
+PyCharm 2026.2.3（build `262.10968.92`）已复现一种 MCP 兼容问题：
+`analyze_calls` 的 `isCallableSymbol` 依赖显示文本中的 `name(...)`，
+而 Python 函数的 Usage View 文本只有名称，因此真实 `PyFunction` 也会被过滤。
+这类错误应修复 IDE 工具的函数识别，不需要改动业务函数或重建 Python 环境。
+修复验收应包含真实函数的入向、出向调用和不存在符号的错误路径；
+本机兼容补丁还需验证版本匹配、撤销与启动加载，并区分独立 JVM 检查和完整 IDE 重启。
+实现依据见 [JetBrains Call Hierarchy](https://github.com/JetBrains/intellij-community/blob/master/plugins/mcp-server/mcpserver.toolsets/src/general/CallHierarchyAnalysisSupport.kt)
+与 [Python Usage View](https://github.com/JetBrains/intellij-community/blob/master/python/src/com/jetbrains/python/findUsages/PyElementDescriptionProvider.java)。
+
 项目使用 unittest。若从代码位置创建的 Run Configuration 自动选择 pytest，而解释器没有
 安装 pytest，应选择 unittest 配置，或通过 IDE 终端运行本页的 `scripts/run_tests.py` 入口；
 无需为该 IDE 默认值引入另一套测试依赖。执行证据必须包含实际输出和退出码。
