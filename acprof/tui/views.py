@@ -14,7 +14,6 @@ from textual.widgets import (
     Collapsible,
     ContentSwitcher,
     Label,
-    ProgressBar,
     Rule,
     Static,
     TabPane,
@@ -27,6 +26,7 @@ from acprof.tui.input import BarCursorInput as Input
 
 from acprof.tui.log import SelectableLog
 from acprof.tui.presentation import NOT_APPLICABLE, format_input_number
+from acprof.tui.rendering import CjkCompositor
 from acprof.tui.table import ResizableDataTable
 
 from acprof.tui.themes import THEME_OPTIONS
@@ -96,6 +96,7 @@ class ConfirmActionScreen(ModalScreen[bool]):
         variant: ButtonVariant = "primary",
     ):
         super().__init__()
+        self._compositor = CjkCompositor()
         self.dialog_title = title
         self.message = message
         self.confirm_label = confirm_label
@@ -410,22 +411,6 @@ def compose_monitor_tab(app: AcprofTui) -> ComposeResult:
                 yield app._localized_widget(Static("详情", classes="status-label"))
                 yield app._localized_widget(Static("尚未启动", id="status-detail", markup=False))
 
-            yield ProgressBar(
-                total=1,
-                show_eta=False,
-                id="case-progress",
-            )
-            with app._localized_widget(Collapsible(
-                title="资源矩阵",
-                collapsed=True,
-                collapsed_symbol=COLLAPSED_SYMBOL,
-                expanded_symbol=EXPANDED_SYMBOL,
-                id="matrix-board",
-            )):
-                yield app._localized_widget(ResizableDataTable(
-                    id="matrix-table",
-                    show_cursor=False,
-                ))
             with LogPanel(id="log-panel"):
                 with Horizontal(id="log-toolbar", classes="action-bar"):
                     yield app._localized_widget(Static("日志", id="log-title", markup=False))
@@ -438,10 +423,6 @@ def compose_monitor_tab(app: AcprofTui) -> ComposeResult:
                         "终止任务", id="stop-run", classes="log-tool",
                         variant="error", disabled=True,
                     ))
-                yield app._localized_widget(Static(
-                    "拖动选择 · Ctrl+C 复制 · F8 放大 · 正在跟随最新",
-                    id="log-hint", markup=False,
-                ))
                 yield SelectableLog(
                     id="run-log",
                     max_lines=app.ui_preferences.log_max_lines,
@@ -576,7 +557,7 @@ def compose_settings_tab(app: AcprofTui) -> ComposeResult:
 
 def compose_images_tab(app: AcprofTui) -> ComposeResult:
     from acprof.tui.images import (
-        IMAGE_HINT, ImageDetailPanel, ImageDetailResizeHandle, ImageTable, ImageTree, ImageTreeHeader, ImageWorkspace,
+        IMAGE_HINT, IMAGE_PLATFORMS, ImageDetailPanel, ImageDetailResizeHandle, ImageTable, ImageTree, ImageTreeHeader, ImageWorkspace,
     )
 
     with TabPane("镜像管理", id="images-tab"):
@@ -587,8 +568,9 @@ def compose_images_tab(app: AcprofTui) -> ComposeResult:
             with Horizontal(id="image-filters"):
                 yield app._localized_select(
                     (("AC-Prof 镜像", "acprof"), ("全部镜像", "all"), ("模型相关", "models"),
-                     ("公共依赖", "runtime"), ("公共基础", "base"), ("CPU", "cpu"),
-                     ("CUDA 12.4", "cu124"), ("CUDA 12.8", "cu128"), ("无标签", "untagged")),
+                     ("公共依赖", "runtime"), ("公共基础", "base"),
+                     *((IMAGE_PLATFORMS[key], key) for key in ("cpu", "cu124", "cu128")),
+                     ("无标签", "untagged")),
                     value="acprof", allow_blank=False, id="image-scope", classes="image-control",
                 )
                 yield app._localized_widget(Input(

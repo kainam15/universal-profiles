@@ -25,12 +25,12 @@ class ImageDisplayNameTests(unittest.TestCase):
         parent = ManagedImage(RUNTIME, ("acprof-platform-cu124:base",), 100, "", "base", platform_id="cu124")
         child = ManagedImage(WEIGHTS, ("acprof-runtime-env:opaque",), 400, "", "runtime",
                              platform_id="cu124", environment_id="env-known", profiles=("nlp-cu124",))
-        self.assertEqual(image_display_name(parent), "CUDA 12.4")
+        self.assertEqual(image_display_name(parent), "PyTorch CUDA 12.4")
         self.assertEqual(image_display_name(child, parent), "nlp")
         for context in (None, replace(parent, platform_id="cu128"), replace(parent, kind="model")):
-            self.assertEqual(image_display_name(child, context), "nlp · CUDA 12.4")
-        self.assertEqual(image_display_name(replace(child, profiles=())), "env-env-known · CUDA 12.4")
-        self.assertEqual(image_display_name(replace(parent, platform_id="cpu")), "CPU")
+            self.assertEqual(image_display_name(child, context), "nlp · PyTorch CUDA 12.4")
+        self.assertEqual(image_display_name(replace(child, profiles=())), "env-env-known · PyTorch CUDA 12.4")
+        self.assertEqual(image_display_name(replace(parent, platform_id="cpu")), "PyTorch CPU")
         self.assertEqual(child.profiles, ("nlp-cu124",))
         self.assertEqual(child.tags, ("acprof-runtime-env:opaque",))
 
@@ -38,7 +38,7 @@ class ImageDisplayNameTests(unittest.TestCase):
         item = ManagedImage(WEIGHTS, (), 400, "", "runtime", platform_id="cpu", environment_id="known",
                             profiles=("audio-cpu", "multimodal-transformers4576-cpu", "custom-v1.12.3-cpu", "custom123-cpu"))
         self.assertEqual(image_display_name(item),
-                         "audio / multimodal-transformers4.57.6 / custom-v1.12.3 / custom123 · CPU")
+                         "audio / multimodal-transformers4.57.6 / custom-v1.12.3 / custom123 · PyTorch CPU")
         self.assertEqual(image_display_name(replace(item, kind="model", model_id="Qwen/Qwen2.5-0.5B")),
                          "Qwen/Qwen2.5-0.5B")
 
@@ -693,7 +693,7 @@ class TuiImagesTests(unittest.IsolatedAsyncioTestCase):
                         await pilot.pause()
                         tree = app.query_one("#image-tree", Tree)
                         platform = tree.root.children[0]
-                        self.assertEqual(platform.label.plain.split("  ")[1], "CUDA 12.8")
+                        self.assertEqual(platform.label.plain.split("  ")[1], "PyTorch CUDA 12.8")
                         children = {node.data.image_id: node for node in platform.children}
                         for image_id, expected in ((WEIGHTS, "moss-transformers5.6.0"),
                                                    (FINAL, "multimodal-transformers4.57.6")):
@@ -707,8 +707,8 @@ class TuiImagesTests(unittest.IsolatedAsyncioTestCase):
                             self.assertIn(expected, tree.render_line(row).text)
             inventory = app._image_inventory
             runtime = next(item for item in inventory.images if item.image_id == WEIGHTS)
-            self.assertIn("CUDA 12.8 › moss-transformers5.6.0", str(image_metadata(runtime, inventory)))
-            self.assertIn("moss-transformers5.6.0 · CUDA 12.8", str(layer_image_detail(inventory.layers[0], inventory)))
+            self.assertIn("PyTorch CUDA 12.8 › moss-transformers5.6.0", str(image_metadata(runtime, inventory)))
+            self.assertIn("moss-transformers5.6.0 · PyTorch CUDA 12.8", str(layer_image_detail(inventory.layers[0], inventory)))
             self.assertEqual({item.image_id for item in filtered_images(inventory, "CUDA 12.8", "all")},
                              {RUNTIME, WEIGHTS, FINAL})
             self.assertEqual([item.image_id for item in filtered_images(inventory, "5.6.0", "all")], [WEIGHTS])
@@ -716,8 +716,8 @@ class TuiImagesTests(unittest.IsolatedAsyncioTestCase):
             await pilot.click("#image-view-list")
             await pilot.pause()
             table = app.query_one("#image-table", DataTable)
-            self.assertIn("moss-transformers5.6.0 · CUDA 12.8", table.get_cell(WEIGHTS, "name").plain)
-            self.assertEqual(table.get_cell(WEIGHTS, "parent").plain, "CUDA 12.8")
+            self.assertIn("moss-transformers5.6.0 · PyTorch CUDA 12.8", table.get_cell(WEIGHTS, "name").plain)
+            self.assertEqual(table.get_cell(WEIGHTS, "parent").plain, "PyTorch CUDA 12.8")
             self.assertEqual(table.get_cell(WEIGHTS, "tag").plain, "moss-transformers560")
             self.assertEqual(len(self.docker.commands), before)
 

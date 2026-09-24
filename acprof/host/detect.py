@@ -85,15 +85,23 @@ def _repository_metadata(model_id: str, revision: str, info: Any) -> dict[str, A
     files = tuple(sorted({str(getattr(item, "rfilename", "")) for item in
                           (getattr(info, "siblings", None) or []) if getattr(item, "rfilename", "")}))
     metadata, errors = {}, []
+    from acprof.model_evidence import pinned_revision
+    if files and not pinned_revision(revision):
+        return {"repository_files": files, "repository_metadata": {},
+                "metadata_errors": ("model revision must be a full commit SHA before metadata reads",)}
     if files:
         for name in ("config.json", "model_index.json", "modules.json", "adapter_config.json",
-                     "acprof_model.json", "tokenizer_config.json", "processor_config.json", "preprocessor_config.json"):
+                     "acprof_model.json", "tokenizer_config.json", "processor_config.json", "preprocessor_config.json",
+                     "generation_config.json"):
             if name not in files:
                 continue
             try:
                 path = _download_metadata(model_id, name, revision)
                 with open(path, encoding="utf-8") as stream:
-                    metadata[name] = json.load(stream)
+                    text = stream.read(1024 * 1024 + 1)
+                    if len(text.encode()) > 1024 * 1024:
+                        raise ValueError(f"{name} exceeds 1 MiB metadata limit")
+                    metadata[name] = json.loads(text)
                 expected = list if name == "modules.json" else dict
                 if not isinstance(metadata[name], expected):
                     del metadata[name]
@@ -379,7 +387,7 @@ def _detect_from_hub(
     repository = _repository_metadata(model_id, sha, info)
     model_config = _architecture_metadata(getattr(info, "config", None))
     model_config.update(_architecture_metadata(repository["repository_metadata"].get("config.json")))
-    if not pipeline_tag and library_name == "diffusers":
+    if not pipeline_tag and library_name == "diffusers" and not repository["metadata_errors"]:
         pipeline_tag = _diffusers_task_from_index(model_id, sha, diagnostics)
 
     # Determine task_family from pipeline_tag
@@ -429,12 +437,14 @@ def _detect_from_config(
     config_data = {}
     revision = "main"
     try:
+        from acprof.model_evidence import pinned_revision
         config_path = _download_metadata(model_id, "config.json")
+        # hf_hub_download pins the ref before returning the cache snapshot.
+        revision = Path(config_path).parent.name
+        if not pinned_revision(revision) or Path(config_path).parent.parent.name != "snapshots":
+            raise ValueError("config fallback requires a pinned snapshot commit SHA")
         with open(config_path, "r", encoding="utf-8") as f:
             config_data = json.load(f)
-        snapshot = Path(config_path).parent.name
-        if len(snapshot) == 40 and all(char in "0123456789abcdef" for char in snapshot):
-            revision = snapshot
         architectures = config_data.get("architectures") or []
         if not architectures:
             _record_failure(diagnostics, "config_json", "config.json has no architectures field")
@@ -520,6 +530,23 @@ def detect_task(
         info.model_spec = read_model_spec(Path(model_spec_path).expanduser())
     from acprof.model_resolution import discover_model_candidates
     info.model_resolution = discover_model_candidates(info, override_tag=override_tag, override_backend=override_backend)
+    if not info.metadata_errors:
+        from acprof.model_contract import apply_model_contract
+        from acprof.model_source_analysis import MAX_SOURCE_BYTES
+        source_revision = info.model_revision
+
+        def read_source(name: str) -> str:
+            try:
+                path = _download_metadata(model_id, name, source_revision)
+                with open(path, "rb") as stream:
+                    data = stream.read(MAX_SOURCE_BYTES + 1)
+                if len(data) > MAX_SOURCE_BYTES:
+                    raise ValueError(f"{name} exceeds {MAX_SOURCE_BYTES} bytes")
+                return data.decode("utf-8")
+            except Exception as exc:
+                raise OSError(f"{name}: {_format_failure(exc)}") from exc
+
+        apply_model_contract(info, read_source, override_tag=override_tag, override_backend=override_backend)
 
     # Apply CLI overrides (highest priority, still checked against declarations).
     if override_tag:

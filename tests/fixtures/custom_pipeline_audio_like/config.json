@@ -1,0 +1,10 @@
+{
+  "model_type": "fixture_audio",
+  "custom_pipelines": {
+    "listen-and-answer": {
+      "impl": "pipeline.AudioPipeline",
+      "pt": ["AutoModel"],
+      "type": "multimodal"
+    }
+  }
+}

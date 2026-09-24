@@ -1,4 +1,4 @@
-"""运行矩阵、报告和镜像树也通过鼠标边界调整列宽。"""
+"""报告和镜像树通过鼠标边界调整列宽。"""
 
 from dataclasses import replace
 import os
@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from rich.cells import cell_len
-from textual.widgets import Collapsible, DataTable, Tree
+from textual.widgets import DataTable, Tree
 
 from acprof.tui.app import AcprofTui
 from acprof.tui.commands import RunConfig
@@ -33,22 +33,25 @@ class AllTablesTests(unittest.IsolatedAsyncioTestCase):
     def make_app(self):
         return AcprofTui(RunConfig.smoke("demo/model"), settings_path=self.directory / "settings.json")
 
-    async def test_matrix_header_drag_changes_width(self):
+    async def test_report_header_drag_pauses_during_measurement(self):
         app = self.make_app()
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause()
-            app._activate_tab("monitor-tab")
-            app.query_one("#matrix-board", Collapsible).collapsed = False
+            app._activate_tab("reports-tab")
+            app._report_view = ReportView(Path("example.json"), "统计", ("指标", "均值"),
+                                          (ReportRow(("Latency", "20 ms"), "来源"),), "说明")
+            app._render_report_view()
             await pilot.pause()
-            table = app.query_one("#matrix-table", DataTable)
-            width = table.columns["case"].get_render_width(table) - 2 * table.cell_padding
+            table = app.query_one("#report-table", DataTable)
+            column = table.ordered_columns[0]
+            width = column.get_render_width(table) - 2 * table.cell_padding
             # 首先按原生表格坐标发送事件，以便缺失功能时确实失败于列宽。
-            start = (table.columns["case"].get_render_width(table) - 1, 0)
+            start = (column.get_render_width(table) - 1, 0)
             await drag(pilot, table, start, 5)
-            self.assertEqual(table.columns["case"].width, width + 5)
-            app._init_matrix_for_run(RunConfig.smoke("demo/model"))
+            self.assertEqual(table.columns[column.key].width, width + 5)
+            app._render_report_view()
             await pilot.pause()
-            self.assertEqual(table.columns["case"].width, width + 5)
+            self.assertEqual(table.columns[column.key].width, width + 5)
             await pilot.mouse_down(table, offset=header_offset(table))
             self.assertIs(app.mouse_captured, table)
             app._latest_snapshot = ProgressSnapshot(measurement_active=True)
@@ -56,11 +59,11 @@ class AllTablesTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertIsNone(app.mouse_captured)
             await pilot.mouse_up(table, offset=(start[0] + 8, 0))
-            self.assertEqual(table.columns["case"].width, width + 5)
+            self.assertEqual(table.columns[column.key].width, width + 5)
             app._latest_snapshot = ProgressSnapshot()
             app._set_busy(False)
             await drag(pilot, table, header_offset(table), 3)
-            self.assertEqual(table.columns["case"].width, width + 8)
+            self.assertEqual(table.columns[column.key].width, width + 8)
 
     async def test_report_header_drag_survives_language_switch(self):
         app = self.make_app()
@@ -141,8 +144,6 @@ class AllTablesTests(unittest.IsolatedAsyncioTestCase):
             app = self.make_app()
             async with app.run_test(size=size) as pilot:
                 await pilot.pause()
-                app._init_matrix_for_run(RunConfig.smoke("demo/model"))
-                app.query_one("#matrix-board", Collapsible).collapsed = False
                 app._report_view = ReportView(Path("example.json"), "统计", ("指标", "均值"),
                                               (ReportRow(("Latency", "20 ms"), "来源"),), "说明")
                 app._render_report_view()
@@ -155,7 +156,6 @@ class AllTablesTests(unittest.IsolatedAsyncioTestCase):
                     app._apply_ui_preferences()
                     await pilot.pause()
                     for tab, view, selector, index, delta in (
-                        ("monitor-tab", "", "#matrix-table", 0, 3),
                         ("reports-tab", "", "#report-table", 0, 3),
                         ("images-tab", "tree", "#image-tree-header", 0, -3),
                         ("images-tab", "list", "#image-table", 1, -3),

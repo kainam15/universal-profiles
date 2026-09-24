@@ -108,7 +108,9 @@ def read_model_spec(path: str | Path) -> dict:
 def task_model_spec(task_info: Any) -> dict:
     override = getattr(task_info, "model_spec", {})
     metadata = getattr(task_info, "repository_metadata", {}) or {}
-    return override or metadata.get("acprof_model.json", {})
+    resolution = getattr(task_info, "model_resolution", {}) or {}
+    generated = resolution.get("generated_spec", {}) if resolution.get("contract", {}).get("status") == "resolved" else {}
+    return override or metadata.get("acprof_model.json", {}) or generated
 
 
 def declared_multimodal_pipeline(task_info: Any) -> bool:

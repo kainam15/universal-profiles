@@ -147,7 +147,9 @@ def discover_model_candidates(task_info: Any, *, override_tag: str | None = None
         candidates.append({"task": task, "family": family, "backend": backend, "evidence": [source]})
 
     add(override_tag, "explicit_task")
-    add(declared_task, "local_model_spec" if getattr(task_info, "model_spec", {}) else "repository_model_spec")
+    spec_source = ("local_model_spec" if getattr(task_info, "model_spec", {}) else
+                   "repository_model_spec" if metadata.get("acprof_model.json") else "generated_contract")
+    add(declared_task, spec_source)
     add(hub_task, "hub_metadata" if task_info.detection_method == "hub_api" else task_info.detection_method)
     for architecture in config.get("architectures") or []:
         if isinstance(architecture, str):

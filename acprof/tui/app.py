@@ -32,7 +32,6 @@ try:
         ContentSwitcher,
         DataTable,
         Header,
-        ProgressBar,
         Select,
         Static,
         TabPane,
@@ -77,6 +76,7 @@ from acprof.tui.table import ResizableDataTable
 
 from acprof.tui.progress import ProgressSnapshot, RunProgressTracker
 from acprof.tui.reports import ReportView, read_report
+from acprof.tui.rendering import CjkScreen
 from acprof.host.image_management import (
     ImageInventory,
     ImageRemoval,
@@ -179,7 +179,6 @@ class AcprofTui(BarCursorApp):
         self._localized_text: dict[tuple[Widget, str], str] = {}
         self._localized_selects: dict[Select, tuple] = {}
         self._applied_language: str | None = None
-        self._matrix_status_text: dict[object, str] = {}
         config = self._saved_settings.run_defaults or RunConfig()
         if self._saved_settings.last_model:
             config = replace(config, model=self._saved_settings.last_model)
@@ -203,7 +202,6 @@ class AcprofTui(BarCursorApp):
         self._ignored_preset_event: str | None = None
         self._initial_preset = self._infer_preset(self.initial_config)
         self._elapsed_timer = None
-        self._matrix_rows: dict[int, object] = {}
         self._report_view: ReportView | None = None
         self._report_loading = False
         self._stats_report_path: Path | None = None
@@ -217,6 +215,9 @@ class AcprofTui(BarCursorApp):
         self._image_view = "tree"
         self._image_sort = ("name", False)
         self._focused_image_id = ""
+
+    def get_default_screen(self) -> CjkScreen:
+        return CjkScreen(id="_default")
 
     def compose(self) -> ComposeResult:
         # A ticking clock would force periodic redraws during RAPL windows.
@@ -249,12 +250,6 @@ class AcprofTui(BarCursorApp):
         self._update_responsive_layout()
         self._form_ready = True
         self._refresh_command_preview(notify=False)
-        table = self.query_one("#matrix-table", DataTable)
-        table.add_column("Case", key="case")
-        table.add_column("CPU", key="cpu")
-        table.add_column("MEM (GB)", key="mem")
-        table.add_column("GPU", key="gpu")
-        table.add_column(self.tr("状态"), key="status")
         self.query_one("#model", Input).focus()
         self._image_refresh_timer = self.set_interval(
             self.IMAGE_REFRESH_INTERVAL, self.refresh_images, pause=True,
@@ -347,14 +342,6 @@ class AcprofTui(BarCursorApp):
                 for key, bindings in self._source_bindings.items()
             }
             self.refresh_bindings()
-            table = self.query_one("#matrix-table", DataTable)
-            if "status" in table.columns:
-                # Status is the final column. Replacing only it uses public
-                # APIs to invalidate cached headers without discarding rows.
-                table.remove_column("status")
-                table.add_column(self.tr("状态"), key="status")
-                for row, source in self._matrix_status_text.items():
-                    table.update_cell(row, "status", self.tr(source))
             if self._report_view is not None:
                 self._render_report_view()
             self._render_images()
@@ -533,14 +520,6 @@ class AcprofTui(BarCursorApp):
     @on(Button.Pressed, "#follow-log")
     def follow_latest_log(self) -> None:
         self.query_one("#run-log", SelectableLog).follow_tail()
-
-    @on(SelectableLog.FollowChanged)
-    def log_follow_changed(self, event: SelectableLog.FollowChanged) -> None:
-        status = message("正在跟随最新" if event.following else "正在查看历史 · 点击“回到最新”继续跟随")
-        self._set_text(
-            self.query_one("#log-hint", Static),
-            message("拖动选择 · Ctrl+C 复制 · F8 放大 · {0}", status),
-        )
 
     @on(Button.Pressed, "#expand-log")
     @on(Button.Pressed, "#restore-log")
@@ -969,11 +948,6 @@ class AcprofTui(BarCursorApp):
         if self._elapsed_timer is not None:
             self._elapsed_timer.stop()
         self._elapsed_timer = self.set_interval(1.0, self._tick_elapsed)
-        # Populate the resource matrix board for run tasks.
-        if pending.kind == "run" and pending.config is not None:
-            self._init_matrix_for_run(pending.config)
-        else:
-            self._clear_matrix()
         log = self.query_one("#run-log", SelectableLog)
         log.write(f"$ {format_command(pending.command, project_dir=PROJECT_DIR)}")
         log.write(self.tr("[TUI] 子进程输出通过管道读取；tmux pane 捕获已对该子进程禁用。"))
@@ -988,36 +962,6 @@ class AcprofTui(BarCursorApp):
             return
         elapsed = self._format_elapsed(time.monotonic() - self._started_monotonic)
         self._set_text(self.query_one('#status-elapsed', Static), elapsed)
-
-    def _init_matrix_for_run(self, config: RunConfig) -> None:
-        """Pre-populate the resource matrix board from the run configuration."""
-        table = self.query_one("#matrix-table", DataTable)
-        table.clear()
-        self._matrix_rows.clear()
-        self._matrix_status_text.clear()
-        # run.py iterates CPU → MEM → GPU (innermost).
-        cpus = config.cpus.split(",")
-        mems = config.mems.split(",")
-        gpus = config.gpus.split(",")
-        case_num = 0
-        for cpu in cpus:
-            for mem in mems:
-                for gpu in gpus:
-                    case_num += 1
-                    key = table.add_row(
-                        str(case_num), cpu.strip(), mem.strip(),
-                        gpu.strip(), self.tr("⋯ 等待"),
-                    )
-                    self._matrix_rows[case_num] = key
-                    self._matrix_status_text[key] = "⋯ 等待"
-        # Keep the matrix collapsed until the user asks to inspect it, so
-        # the running log retains most of the monitor page.
-
-    def _clear_matrix(self) -> None:
-        """Clear the matrix board for non-run tasks."""
-        self.query_one("#matrix-table", DataTable).clear()
-        self._matrix_rows.clear()
-        self._matrix_status_text.clear()
 
     _STAGE_CSS_CLASS = {
         "等待": "stage-idle",
@@ -1037,18 +981,6 @@ class AcprofTui(BarCursorApp):
         "stage-idle", "stage-running", "stage-measuring",
         "stage-success", "stage-error",
     })
-
-    _MATRIX_STATUS = {
-        "启动容器": "▶ 准备中",
-        "构建镜像": "🔧 构建",
-        "规划输入": "📐 规划",
-        "服务就绪": "▶ 就绪",
-        "正式测量": "⏱ 测量中",
-        "清理 case": "⏳ 清理",
-        "case 完成": "✓ 完成",
-        "OOM 剪枝": "⊘ 剪枝",
-        "失败": "✗ 失败",
-    }
 
     @work(thread=True, group="process", exclusive=True, exit_on_error=False)
     def _execute_command(self, command: list[str], kind: str) -> None:
@@ -1234,33 +1166,6 @@ class AcprofTui(BarCursorApp):
         self._set_text(self.query_one("#status-resource", Static), message("CPU={0}  MEM={1}  GPU={2}", cpu, mem, gpu))
         self._set_text(self.query_one('#status-errors', Static), f'{snapshot.warnings} / {snapshot.errors}')
         self._set_text(self.query_one('#status-detail', Static), snapshot.detail)
-        total = max(1, snapshot.total_cases)
-        self.query_one("#case-progress", ProgressBar).update(
-            total=total,
-            progress=min(snapshot.completed_cases, total),
-        )
-        # Update the resource matrix board.
-        self._update_matrix_status(snapshot)
-
-    def _update_matrix_status(self, snapshot: ProgressSnapshot) -> None:
-        """Update the matrix board row for the current case."""
-        case_num = snapshot.current_case
-        if case_num <= 0 or not self._matrix_rows:
-            return
-        table = self.query_one("#matrix-table", DataTable)
-        row_key = self._matrix_rows.get(case_num)
-        if row_key is None:
-            return
-        # Correct resource columns with actual values from the log.
-        if snapshot.cpu != "-":
-            table.update_cell(row_key, "cpu", snapshot.cpu)
-            table.update_cell(row_key, "mem", self.tr(UNKNOWN) if snapshot.mem == "-" else snapshot.mem)
-            table.update_cell(row_key, "gpu", self.tr(UNKNOWN) if snapshot.gpu == "-" else snapshot.gpu)
-        # Update status column.
-        status = self._MATRIX_STATUS.get(snapshot.stage)
-        if status:
-            self._matrix_status_text[row_key] = status
-            table.update_cell(row_key, "status", self.tr(status))
 
     def _process_finished(
         self,
@@ -1309,10 +1214,9 @@ class AcprofTui(BarCursorApp):
             self.notify(message('任务失败，退出码 {0}', returncode), severity="error", timeout=8)
 
         if unsupported_task:
+            # No measurement ran. Do not show an older CSV as this run's result.
             self._latest_snapshot = snapshot
             self._render_snapshot(snapshot)
-            # No measurement ran. Do not show an older CSV as this run's result.
-            self._clear_matrix()
         elif kind == "run":
             if snapshot is not None:
                 self._latest_snapshot = snapshot
@@ -2184,10 +2088,6 @@ class AcprofTui(BarCursorApp):
             self.preset_smoke()
         elif command == "main":
             self.preset_main()
-        elif command in {"matrix", "board"}:
-            board = self.query_one("#matrix-board", Collapsible)
-            board.collapsed = not board.collapsed
-            self._activate_tab("monitor-tab")
         elif command in {"defaults", "default"}:
             self.preset_default()
         elif command == "preview":
@@ -2232,7 +2132,7 @@ class AcprofTui(BarCursorApp):
                 self.tr("[TUI] /run 采集 · /probe 最大输入探测 · /check 环境检查 · "
                 "/status 状态 · /stop 终止 · "
                 "/smoke 最小预设 · /main 主矩阵 · /defaults 默认 · /preview 命令预览 · "
-                "/matrix 切换矩阵看板 · /plot [csv] 绘图 · /profile [dir] [tools] 补采计划 · "
+                "/plot [csv] 绘图 · /profile [dir] [tools] 补采计划 · "
                 "/profile-run [dir] [tools] 执行补采 · /results [csv] 摘要 · "
                 "/stats [csv/dir] 统计 · /report [json] 报告 · /images 镜像管理 · "
                 "/settings 设置 · /log 放大日志 · /clear 清日志 · /quit 退出")

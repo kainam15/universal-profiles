@@ -10,7 +10,6 @@ from rich.cells import cell_len
 from textual.widgets import (
     Button,
     ContentSwitcher,
-    DataTable,
     Input,
     Select,
     Static,
@@ -113,7 +112,7 @@ class TuiLanguageTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.query_one("#run-preset", Select).value, "smoke")
             self.assertFalse(self.settings_path.exists())
 
-    async def test_switch_keeps_drafts_presets_log_selection_matrix_and_loaded_results(self):
+    async def test_switch_keeps_drafts_presets_log_selection_status_and_loaded_results(self):
         config = replace(RunConfig.smoke("demo/model"), gpus="on,off")
         app = self.make_app(config)
         async with app.run_test(size=(120, 30)) as pilot:
@@ -139,7 +138,6 @@ class TuiLanguageTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             old_text, old_selection, old_scroll = log.text, log.selection, log.scroll_y
             self.assertFalse(log.following)
-            app._init_matrix_for_run(config)
             snapshot = ProgressSnapshot(
                 stage="case 完成", current_case=1, completed_cases=1, total_cases=2,
                 cpu="1", mem="4", gpu="on", detail=message("正在准备 case {0}/{1}", 1, 2),
@@ -169,18 +167,15 @@ class TuiLanguageTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.query_one("#status-stage", Static).content, "Case completed")
             self.assertTrue(app.query_one("#status-stage").has_class("stage-success"))
             self.assertIs(app._latest_snapshot, snapshot)
-            table = app.query_one("#matrix-table", DataTable)
-            self.assertEqual(table.get_row(app._matrix_rows[1]), ["1", "1", "4", "on", "✓ Done"])
-            self.assertEqual(table.get_cell(app._matrix_rows[2], "status"), "⋯ Waiting")
-            self.assertEqual(table.columns["status"].label.plain, "Status")
+            self.assertEqual(app.query_one("#status-case", Static).content, "Current 1 · Done 1/2")
+            self.assertEqual(app.query_one("#status-resource", Static).content, "CPU=1  MEM=4GB  GPU=on")
             self.assertEqual((log.text, log.selection, log.scroll_y), (old_text, old_selection, old_scroll))
             self.assertFalse(log.following)
-            self.assertIn("Reading history", app.query_one("#log-hint", Static).content)
             self.assertEqual(self.settings_path.read_bytes(), remembered)
             self.assertEqual(app.query_one("#result-csv", Input).value, str(PROJECT_DIR / "read-once.csv"))
             await self.switch(app, pilot, "zh")
             self.assertEqual(str(app.query_one("#open-run-settings", Button).label), "返回基本配置")
-            self.assertEqual(table.get_cell(app._matrix_rows[1], "status"), "✓ 完成")
+            self.assertEqual(app.query_one("#status-case", Static).content, "当前 1 · 已完成 1/2")
             self.assertEqual((log.text, log.selection, log.scroll_y), (old_text, old_selection, old_scroll))
             self.assertEqual(self.settings_path.read_bytes(), remembered)
 

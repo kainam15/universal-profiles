@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from rich.console import Console
 from textual.widget import Widget
-from textual.widgets import Button, Collapsible, Tabs
+from textual.widgets import Button, Static, Tabs
 from textual.widgets.text_area import Selection
 
 from acprof.tui.app import AcprofTui
@@ -36,22 +36,27 @@ class TuiLogViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(region.bottom, app.size.height, button_id)
         self.assertIs(app.get_widget_at(region.x + 3, region.y)[0], button)
 
-    async def test_matrix_stays_collapsed_during_run_and_log_has_reading_space(self):
+    async def test_monitor_keeps_status_and_log_without_progress_or_matrix(self):
         for size in ((80, 24), (120, 30), (150, 45)):
             with self.subTest(size=size):
                 app = self.make_app()
                 async with app.run_test(size=size) as pilot:
                     await pilot.pause()
                     app._activate_tab("monitor-tab")
-                    app._init_matrix_for_run(RunConfig(model="demo/model"))
                     app._render_snapshot(ProgressSnapshot(
                         stage="正式测量", current_case=1, total_cases=32,
                         measurement_active=True,
                     ))
                     await pilot.pause()
-                    self.assertTrue(app.query_one("#matrix-board", Collapsible).collapsed)
+                    self.assertEqual(len(app.query("#case-progress, #matrix-board, #matrix-table")), 0)
+                    self.assertEqual(app.query_one("#status-stage", Static).content, "正式测量")
+                    self.assertEqual(app.query_one("#status-case", Static).content, "当前 1 · 已完成 0/32")
                     log = app.query_one("#run-log", SelectableLog)
                     self.assertGreaterEqual(log.content_region.height, 5)
+                    self.assertEqual(
+                        log.region.y,
+                        app.query_one("#status-grid").region.bottom,
+                    )
                     if size[1] >= 30:
                         self.assertGreaterEqual(log.content_region.height, 10)
                     self.assertLessEqual(log.region.bottom, app.query_one("#bottom-panel").region.y)

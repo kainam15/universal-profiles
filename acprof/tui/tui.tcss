@@ -72,13 +72,15 @@ Input, Select { width: 1fr; }
 .number-field Input { width: 16; }
 .form-grid .number-field .field-unit { width: auto; margin-left: 1; }
 /* Basic line glyphs avoid seams in terminals that misrender tall block borders. */
-Input {
-    background: $surface;
+Input, SelectCurrent, SelectOverlay {
+    background: transparent;
+    background-tint: transparent;
     border: solid $panel;
+}
+Input {
     padding: 0 1;
 }
 Input:focus { border: solid $accent; }
-SelectCurrent, SelectOverlay { background: $surface; border: solid $panel; }
 Select:focus > SelectCurrent, Select.-expanded > SelectCurrent, SelectOverlay:focus {
     border: solid $accent;
 }
@@ -177,20 +179,18 @@ Select:disabled > SelectCurrent { color: $ui-disabled; border: solid $ui-disable
     height: auto;
     padding: 0 2;
     margin: 0;
-    background: $surface;
+    background: transparent;
 }
 #status-grid .status-label { color: $text-muted; }
 #status-detail { height: 1; text-overflow: ellipsis; }
-#case-progress { margin: 1 2 0 2; }
 #log-panel { width: 100%; height: 1fr; min-height: 5; padding: 0; }
-#log-toolbar { height: 4; }
+#log-toolbar { height: 4; background: transparent; }
 #log-title { width: 1fr; height: 3; content-align: left middle; text-style: bold; color: $accent; }
 #log-toolbar Button {
     min-width: 12;
     padding: 0;
     margin-left: 1;
 }
-#log-hint { height: 1; margin: 0 2; color: $text-muted; text-overflow: ellipsis; }
 #restore-log { display: none; }
 #log-panel.-maximized { padding: 0; }
 #log-panel.-maximized #expand-log { display: none; }
@@ -201,10 +201,17 @@ Select:disabled > SelectCurrent { color: $ui-disabled; border: solid $ui-disable
     border: round $panel;
     padding: 0 1;
     margin: 0 2;
-    background: $surface;
+    background: transparent;
+    background-tint: transparent;
 }
 #run-log:focus { border: round $accent; }
 #run-log .text-area--selection { background: $accent; color: $background; }
+#run-log {
+    scrollbar-background: $background;
+    scrollbar-background-hover: $background;
+    scrollbar-background-active: $background;
+    scrollbar-corner-color: $background;
+}
 #result-summary {
     height: auto;
     background: transparent;
@@ -226,6 +233,11 @@ Rule.content-divider { height: 1; margin: 0; color: $panel; }
 #image-panel { padding: 0 2; height: 1fr; }
 #image-filters { height: 3; }
 #image-scope { width: 24; margin-right: 1; }
+#image-scope > SelectCurrent { padding: 0 1; }
+#image-scope > SelectCurrent, #image-search {
+    background: transparent;
+    background-tint: transparent;
+}
 #image-actions Button { min-width: 7; width: auto; padding: 0 1; }
 .image-view-button { min-width: 9; width: auto; padding: 0 1; margin-left: 1; }
 #image-search { width: 1fr; min-width: 10; }
@@ -250,9 +262,6 @@ Rule.content-divider { height: 1; margin: 0; color: $panel; }
 #image-detail-scroll Collapsible > Contents { padding: 1 1 1 3; }
 #image-diagnostics { color: $text-muted; }
 AcprofTui.narrow #image-actions Button { min-width: 7; padding: 0; }
-#matrix-board { margin: 1 2 0 2; border: none; padding: 0; }
-#matrix-board > Contents { padding: 0 1; }
-#matrix-table { height: auto; max-height: 12; }
 .stage-idle { color: $text-muted; }
 .stage-running { color: $accent; text-style: bold; }
 .stage-measuring { color: $accent; text-style: bold; }
@@ -278,10 +287,7 @@ AcprofTui.short #slash-command-bar { height: 3; padding: 0 2; }
 AcprofTui.short #bottom-panel.command-hidden { height: 0; }
 AcprofTui.short .section-title { margin: 0 0 1 0; }
 AcprofTui.short .page-header { margin-bottom: 0; }
-AcprofTui.short #matrix-table { max-height: 3; }
 AcprofTui.short #report-detail { max-height: 3; margin-top: 0; }
-AcprofTui.short #case-progress { margin-top: 0; }
-AcprofTui.short #matrix-board { margin-top: 0; }
 AcprofTui.short #confirm-dialog { padding: 0 2; }
 /* Keep the image detail groups visible alongside the fixed footer at 80x24. */
 AcprofTui.narrow.short #image-header { layout: horizontal; }

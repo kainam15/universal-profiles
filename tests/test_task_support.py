@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from textual.widgets import Button, DataTable, Static
+from textual.widgets import Button, Static
 
 from acprof.cli import probe, run
 from acprof.tui.app import AcprofTui
@@ -108,7 +108,8 @@ class TaskSupportTests(unittest.TestCase):
             "InstructBlipForConditionalGeneration", "VisionEncoderDecoderModel",
         ):
             with self.subTest(architecture=architecture), tempfile.TemporaryDirectory() as tmp:
-                config = Path(tmp) / "config.json"
+                config = Path(tmp) / "snapshots" / ("a" * 40) / "config.json"
+                config.parent.mkdir(parents=True)
                 config.write_text(json.dumps({"architectures": [architecture]}), encoding="utf-8")
                 with patch("huggingface_hub.hf_hub_download", return_value=str(config)):
                     info = detect._detect_from_config("example/caption-model")
@@ -200,7 +201,7 @@ class TaskSupportTuiTests(unittest.IsolatedAsyncioTestCase):
                                 self.assertIn("image-text-to-text", str(notify.call_args.args[0]))
                                 self.assertFalse(app.query_one("#start-run", Button).disabled)
                                 self.assertFalse(app.query_one("#probe-largest", Button).disabled)
-                                self.assertEqual(app.query_one("#matrix-table", DataTable).row_count, 0)
+                                self.assertEqual(app._latest_snapshot.completed_cases, 0)
                                 self.assertFalse(app._latest_snapshot.measurement_active)
                                 read_old_results.assert_not_called()
                                 self.assertEqual(old_csv.read_text(encoding="utf-8"), "existing measurement\n")

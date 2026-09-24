@@ -27,7 +27,10 @@ IMAGE_KINDS = {
     "model": "推理服务", "debug": "调试镜像", "other": "其它镜像", "untagged": "无标签",
 }
 IMAGE_HINT = "清单自动刷新；点行查看，点 □/☑ 勾选；空格切换，←→ 展开/折叠。"
-IMAGE_PLATFORMS = {"cpu": "CPU", "cu124": "CUDA 12.4", "cu128": "CUDA 12.8"}
+IMAGE_PLATFORMS = {
+    "python-cpu": "Python CPU", "cpu": "PyTorch CPU",
+    "cu124": "PyTorch CUDA 12.4", "cu128": "PyTorch CUDA 12.8",
+}
 # 已知环境别名对应的版本来自依赖锁；不猜测其它名称中的数字含义。
 IMAGE_RUNTIME_NAMES = {
     "moss-transformers560": "moss-transformers5.6.0",

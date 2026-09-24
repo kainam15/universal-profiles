@@ -65,7 +65,8 @@ class MultimodalIntegrationTests(unittest.TestCase):
     def test_specific_architectures_do_not_fall_through_to_text_generation(self):
         for architecture, expected_task in (("Qwen2AudioForConditionalGeneration", "audio-text-to-text"), ("Qwen2_5OmniForConditionalGeneration", "any-to-any"), ("Qwen2_5_VLForConditionalGeneration", "image-text-to-text"), ("ColPaliForRetrieval", "visual-document-retrieval"), ("ViltForQuestionAnswering", "visual-question-answering"), ("LayoutLMv3ForQuestionAnswering", "document-question-answering")):
             with self.subTest(architecture=architecture), tempfile.TemporaryDirectory() as tmp:
-                path = Path(tmp) / "config.json"
+                path = Path(tmp) / "snapshots" / ("a" * 40) / "config.json"
+                path.parent.mkdir(parents=True)
                 path.write_text(json.dumps({"architectures": [architecture]}))
                 with patch("huggingface_hub.model_info", side_effect=RuntimeError("offline")), patch("huggingface_hub.hf_hub_download", return_value=str(path)):
                     detected = detect_task("example/model")

@@ -96,6 +96,7 @@ ONNX 独立验证记录实际 Provider、线程数及制品 SHA256；制品校�
 | `run_state.json` | 主实验状态 schema v1，记录实验 ID、参数、主机与源码/依赖指纹、绑定的镜像和输入计划、case 完成状态与 CSV SHA256、启动/恢复记录、最终完成状态。 |
 | `interrupted_cases/` | 恢复时保存中断 case 的原始 CSV、PCAP 与关联 sidecar；备份完成后才开始该 case 的新测量。 |
 | `static_meta.json` | 单个 JSON object 的静态元数据。记录模型版本、参数/精度/量化/许可证、输入输出格式、per-scale 静态逻辑 FLOPs、推理后端、镜像、GPU/主机 RAM、主机 swap、Docker 存储和环境信息。 |
+| `model_resolution.json` | 存在模型契约报告时在运行准备阶段写入的静态解析报告，包含候选与字段来源；失败 draft 也可独立导出。与可执行 `acprof_model.json` 分离，不是推理／测量成功证据。 |
 | `collection_history.json` | schema v1 的采集/修复 provenance。分别记录 post-hoc profiler 补采、timeout retry、quality retry 和静态元数据回填历史；最新一次状态由对应 history 的最后一项得到。 |
 | `input_scale_plan.json` | 所有任务族共用的 input scale/payload 计划。schema v2 额外记录 workload provenance、per-scale 输入元数据和模型约束；读取端要求 schema v2，拒绝缺少版本或 v1 计划。主采集和 compute profiler 复用同一份 payload。 |
 | `startup_oom_pruning.json` | 仅启用 `--prune-startup-oom` 时生成。记录最低参考 CPU、执行顺序、逐 GPU mode 的实测启动 OOM 前缀、最低启动可行内存、推断跳过 case、排除范围与资源单调性假设。 |
@@ -174,7 +175,7 @@ OOM pruning 继续按原有参考 CPU/内存顺序重建证据，复用与推断
 | `quantization_config` | Hub model config 中的完整量化配置；没有时为空 object。 |
 | `model_license` | Hugging Face model card 许可证，例如 `apache-2.0`、`mit`；无法确认时为 `null`。 |
 | `model_metadata_source` | 参数量、参数 payload、精度、量化和许可证的元数据来源，当前在线 Hub 检测成功时为 `huggingface_hub`。 |
-| `model_resolution` | 可选的静态接口解析 object（内部 schema v1）：任务、backend、library、制品格式、loader、operation、model type、固定 revision、元数据文件和 runtime profile。追加 `candidates/evidence`、`conflicts/missing`、`selection`，以及 `interface_kind`、`pipeline_task`、`code_files/code_revision`、有效 `model_spec`。`candidate` 不是执行成功；`ambiguous/needs_configuration` 在镜像准备前拒绝。历史 v7 缺失字段按未知处理，不推算。无数值单位或测量窗口，不增加 CSV 列。 |
+| `model_resolution` | 可选的静态接口解析 object（内部 schema v1）：任务、backend、library、制品格式、loader、operation、model type、固定 revision、元数据文件和 runtime profile。包含 `candidates/evidence`、`conflicts/missing`、`selection`、`interface_kind`、`pipeline_task`、`code_files/code_revision`、有效 `model_spec`；自动解析追加独立 `contract` provenance 和仅在无缺口时生成的 `generated_spec`，详见[契约生成](Runtime_Compatibility.md#自动生成模型契约m1m3)。`candidate` 不是执行成功；`ambiguous/needs_configuration` 在镜像准备前拒绝。历史 v7 缺失字段按未知处理，不推算。无数值单位或测量窗口，不增加 CSV 列。 |
 | `task_family` | 任务族：`nlp`、`cv`、`audio`、`timeseries`、`diffusion`、`multimodal`、`structured`。 |
 | `pipeline_tag` | Hugging Face pipeline tag，例如 `fill-mask`、`image-classification`。 |
 | `runtime_backend` | 容器内使用的 runtime backend，例如 `transformers_pipeline`、`chronos`、`diffusers`。 |

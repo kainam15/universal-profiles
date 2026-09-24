@@ -69,7 +69,8 @@ class VisionIntegrationTests(unittest.TestCase):
             ("Mask2FormerForUniversalSegmentation", "image-segmentation"),
         ):
             with self.subTest(architecture=arch), tempfile.TemporaryDirectory() as tmp:
-                path = Path(tmp) / "config.json"
+                path = Path(tmp) / "snapshots" / ("a" * 40) / "config.json"
+                path.parent.mkdir(parents=True)
                 path.write_text(json.dumps({"architectures": [arch]}))
                 with patch("huggingface_hub.hf_hub_download", return_value=str(path)):
                     result = detect._detect_from_config("example/model")

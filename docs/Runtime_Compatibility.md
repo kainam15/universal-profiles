@@ -100,7 +100,7 @@ uv 0.12.13；生成目标 wheel 锁需要 Python 3.11+ 的 `tomllib`，只读检
 ### 共享接口解析
 
 主机在同一个模型 commit 读取文件列表及 `config.json`、`model_index.json`、`modules.json`、
-`adapter_config.json`、`acprof_model.json` 和 tokenizer/processor 配置，不执行仓库 Python。
+`adapter_config.json`、`acprof_model.json`、`generation_config.json` 和 tokenizer/processor 配置，不执行仓库 Python。
 即使 Hub 没有 `pipeline_tag`，仍保留 revision、文件与元数据，并从 architecture、`auto_map`、
 `custom_pipelines` 和制品格式汇总候选。选择优先级为显式任务、本地／仓库声明、Hub 任务，
 最后才使用唯一推导候选；多候选为 `ambiguous`，信息不足为 `needs_configuration`。
@@ -141,6 +141,65 @@ Auto 注册表选择 `AutoModelForSeq2SeqLM` 或 `AutoModelForImageTextToText`�
 提前拒绝。已知独立 adapter 缺少 base、GGUF 或缺少 `model_index.json` 的 Diffusers 单文件／组件
 仓库也提前拒绝；本阶段没有增加这些制品的加载器。pyannote、SB3、LeRobot 等生态不能仅凭
 Hub task 标签当作 Transformers 模型加载。
+
+### 自动生成模型契约（M1～M3）
+
+未提供本地或作者 `acprof_model.json` 时，`detect_task` 对声明了唯一 `custom_pipelines` 的
+音频／图像／视频转文字任务收集证据，再生成兼容现有 schema v1 的 draft。
+任务取自 Hub 或显式覆盖，Pipeline 取自 config；README 中 Python 示例的字典键仅作为补充证据。
+已有作者声明保持优先，其任务／backend 与 Hub 或显式覆盖的冲突仍须解决。
+
+主机只读取同一完整 commit SHA 下的 JSON、README 和 Python 文本。config fallback 必须取得
+Hub cache 的固定 snapshot 后才分析内容。AST 沿声明文件和相对 import 读取，最多 32 个源文件、
+总计 2 MiB、单文件 256 KiB、单个 AST 20,000 个节点；不会 import、eval 或执行模型代码。
+结构化 JSON 的读取上限为 1 MiB。
+
+自动解析限于可确认的 Pipeline 子集：
+
+- 本类直接定义的 `preprocess`、`_sanitize_parameters`、`_forward`、`postprocess`。
+- `inputs["key"]`、`inputs.get("key", literal_default)`，保留必填性、默认值和来源行。
+  媒体字段沿用 canonical 名称；字符串文字输入接受 `text` 或 `prompt` 的字符串默认值。
+  需要 `messages`／`turns` 等嵌套结构时保留缺口，不把字符串映射成对话列表。
+- sanitize 的 literal key 集合与 forward 的明确参数签名。生成上限必须直接传入
+  `generate(max_new_tokens=max_new_tokens)`；确定性来自显式 `do_sample` 参数，或源码中
+  `temperature = temperature or None`、`do_sample = temperature is not None` 的直接赋值链。
+  不能仅凭参数名推导 `temperature=0`，动态 kwargs、重写输入映射及不支持的控制路径需要声明／adapter。
+- `register_pipeline` 的 literal 名称用于交叉核对。方法存在不证明 tensor shape、输出类型或真实推理成功。
+
+`model_resolution.contract` 保存独立 provenance：字段的 `value/state/sources`、源文件 hash、
+resolver 版本、锁定环境的 Transformers 版本、draft、依赖候选和未解决字段。状态为
+`declared/derived/verified/ambiguous/unresolved`；本阶段只产生静态证据，绝不产生 `verified`。
+`contract.status=resolved` 表示静态契约完整，外层仍为 `candidate`；真实执行证据继续保存在
+独立 `runtime_validation`。冲突或缺口使外层成为 `ambiguous/needs_configuration`，并在构建前停止。
+`contract.status=needs_confirmation` 汇总未决字段，本阶段没有新增交互确认窗口。
+
+只有无缺口的 draft 才进入 `generated_spec`，由已有模型声明入口传给镜像指纹、通用 handler、
+server 和 profiler；不会修改作者文件或 Hub snapshot。正式运行在准备阶段导出
+`model_resolution.json`，同时保留 `static_meta.json.model_resolution`。单独查看失败 draft 可使用：
+
+```python
+from acprof.host.detect import detect_task
+from acprof.model_contract import write_model_resolution
+
+task = detect_task("fixie-ai/ultravox-v0_5-llama-3_2-1b")
+write_model_resolution(task, "internal-testing/model-resolution")
+```
+
+`cache_key` 包含模型 ID、SHA、resolver 版本、Transformers 版本和证据内容；AST 分析按源文本在
+进程内缓存，Hub 文件复用其内容缓存。本阶段没有跨进程的解析结果缓存，也不复用旧运行验证。
+JSON 元数据 hash 使用 canonical JSON；Python／README hash 使用所分析的 UTF-8 文本，报告会标明前者。
+
+外部 `from_pretrained` 调用按 tokenizer、processor、metadata、weights 等角色记录候选；
+config 中的模型引用和动态表达式也会保留。候选不证明运行时必需，不自动下载权重、不猜 SHA，
+也不自动生成 `allow_patterns`。Ultravox 可以生成 `prompt ← text`、音频／采样率映射和
+`max_new_tokens`／`temperature=0`，其外部依赖仍需[显式固定声明](#外部模型与-processor-的离线依赖)。
+依赖自动闭包、独立 Probe、TUI 按缺口编辑和输入 Transform DSL 属于后续阶段。
+
+实现借鉴 [Transformers 4.57.6 Pipeline](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/pipelines/base.py)
+和[动态模块加载边界](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/dynamic_module_utils.py)
+（Apache-2.0），并以 [Ultravox Pipeline](https://github.com/fixie-ai/ultravox/blob/main/ultravox/model/ultravox_pipeline.py)
+（MIT）核对模式。复用接口思想，以标准库 AST 实现受限分析，不复制 loader、不新增主机推理依赖；
+所有下载、解析和报告写入均位于正式测量窗口外。
 
 ### 本地模型声明与自定义 pipeline
 
@@ -443,7 +502,7 @@ TUI 根据镜像标签和 AC-Prof 元数据判定类型。下表列出常见名�
 
 | 界面类型 | 名称前缀或示例 | 内容与用途 |
 | --- | --- | --- |
-| 公共基础 | `acprof-platform-<platform_id>:<指纹前20位>`；历史 `acprof-base:*` | 新平台镜像包含固定 Python、系统包和 Torch 必需闭包，不含任务族 Python 依赖或模型。 |
+| 公共基础 | `acprof-platform-<platform_id>:<指纹前20位>`；历史 `acprof-base:*` | 平台镜像包含固定 Python 和系统包；`cpu`/CUDA 平台另含 Torch 必需闭包，`python-cpu` 不预装 Torch，供 ONNX Runtime 等独立运行时使用。不含任务族 Python 依赖或模型。 |
 | 运行依赖 | `acprof-runtime-env:<指纹前20位>`；历史 `acprof-runtime-*` | 完整依赖环境，供多个 profile 或模型共用；不含模型权重或 AC-Prof 业务代码。 |
 | 模型文件 | `acprof-weights-*` | 继承运行依赖，加入某个模型固定 commit 的权重、配置、tokenizer／processor 等文件，供该模型的服务镜像复用。 |
 | 推理服务 | `acprof-nlp-*`、`acprof-cv-*` 等任务族前缀 | 在运行环境与模型文件上加入 AC-Prof 服务代码和环境清单，实际运行模型推理。 |
@@ -476,7 +535,7 @@ TUI 根据镜像标签和 AC-Prof 元数据判定类型。下表列出常见名�
 
 TUI“镜像管理”页（`/images`）打开时自动读取当前 Docker 环境，按实际 image ID 合并全部标签。
 页面空闲时，每轮读取完成后 5 秒再次更新；后台查询不重叠，清单未变化时不重建视图。
-默认只显示 AC-Prof 镜像，也可筛选全部镜像、模型相关、公共基础/依赖、CPU、CUDA 12.4/12.8 或无标签镜像。
+默认只显示 AC-Prof 镜像，也可筛选全部镜像、模型相关、公共基础/依赖、PyTorch CPU、PyTorch CUDA 12.4/12.8 或无标签镜像。
 搜索支持模型 ID、逻辑环境名、本层依赖的包名和版本、标签、环境摘要及镜像 ID。三个视图共用筛选与勾选：
 
 | 视图 | 用途与交互 |
@@ -499,10 +558,10 @@ TUI“镜像管理”页（`/images`）打开时自动读取当前 Docker 环境
 镜像树的名称旁显示选择状态与关系标记，依赖清单和完整 image ID 在详情中查看；同名镜像仍按各自 image ID 分别选择和管理。
 当前行的祖先连接线使用主题强调色高亮，经过其它分支时只点亮竖线；切换行、折叠、搜索和缩放后随当前路径更新。
 焦点移到搜索或详情区域后仍保留该路径，高亮与复选框勾选状态独立。
-平台节点显示 `CPU`、`CUDA 12.4`、`CUDA 12.8`。父节点已说明同一平台时，运行依赖子节点显示 `nlp`、`audio` 等名称，省略重复的 `-cpu`、`-cu124`、`-cu128` 后缀。
-列表、层引用和缺少同平台父节点的依赖镜像保留可读的平台说明，例如 `nlp · CUDA 12.4`。
+平台节点统一显示 `Python CPU`、`PyTorch CPU`、`PyTorch CUDA 12.4`、`PyTorch CUDA 12.8`；`Python CPU` 对应不预装 Torch 的 `python-cpu` 平台，其余平台预装相应 CPU/CUDA 版 Torch。父节点已说明同一平台时，运行依赖子节点省略与平台 ID 完全匹配的后缀，如 `nlp-cu124` 显示为 `nlp`。
+列表、层引用和缺少同平台父节点的依赖镜像保留可读的平台说明，例如 `nlp · PyTorch CUDA 12.4`。已有平台筛选项使用相同名称。
 已知环境别名显示为 `moss-transformers5.6.0`、`multimodal-transformers4.57.6`，其它名称中已有的小数点原样保留。
-搜索同时支持可读名称（如 `CUDA 12.8`、`5.6.0`）与原始标签、profile 名称。
+搜索同时支持完整显示名称（如 `PyTorch CUDA 12.8`）、名称片段（如 `CUDA 12.8`、`5.6.0`）与原始标签、profile 名称。
 `acprof-runtime-env:<hash>` 的逻辑名称通过 `org.acprof.environment` 与当前完整依赖锁身份精确匹配，
 相同环境的多个名称并列显示；旧环境无法匹配时显示环境摘要与平台，不凭标签猜任务族。原始 repository/tag 和 Docker 镜像保持原样。
 

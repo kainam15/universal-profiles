@@ -144,7 +144,7 @@ class TuiLayoutSettingsTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(settings_tab.query(".ui-preference")), 5)
             self.assertEqual(app.query_one("#experiment-pages", ContentSwitcher).current, "run-form")
 
-    async def test_monitor_matrix_toggle_keeps_log_and_stop_button_reachable(self):
+    async def test_monitor_keeps_log_and_stop_button_reachable(self):
         for size in ((120, 30), (80, 24), (150, 45)):
             with self.subTest(size=size):
                 config = RunConfig(model="demo/model")
@@ -152,7 +152,6 @@ class TuiLayoutSettingsTests(unittest.IsolatedAsyncioTestCase):
                 async with app.run_test(size=size) as pilot:
                     await pilot.pause()
                     app._activate_tab("monitor-tab")
-                    app._init_matrix_for_run(config)
                     app._render_snapshot(ProgressSnapshot(
                         stage="正式测量", detail="正在执行工作负载", current_case=1,
                         total_cases=32, cpu="1", mem="2", gpu="off", measurement_active=True,
@@ -160,23 +159,20 @@ class TuiLayoutSettingsTests(unittest.IsolatedAsyncioTestCase):
                     app.query_one("#stop-run", Button).disabled = False
                     log = app.query_one("#run-log", SelectableLog)
                     log.write("[case] Running workload...")
-                    for collapsed in (False, True):
-                        with self.subTest(collapsed=collapsed):
-                            app.query_one("#matrix-board", Collapsible).collapsed = collapsed
-                            await pilot.pause()
-                            self.assert_button_reachable(app, "stop-run")
-                            self.assert_button_reachable(app, "clear-log")
-                            self.assertGreaterEqual(log.region.height, 3)
-                            self.assertLessEqual(log.region.bottom, app.query_one("#bottom-panel").region.y)
-                            center = (
-                                log.content_region.x + log.content_region.width // 2,
-                                log.content_region.y + log.content_region.height // 2,
-                            )
-                            self.assertIs(app.get_widget_at(*center)[0], log)
-                            with patch.object(app, "action_request_stop") as stop:
-                                self.assertTrue(await pilot.click("#stop-run", offset=(3, 0)))
-                                await pilot.pause()
-                                stop.assert_called_once_with()
+                    await pilot.pause()
+                    self.assert_button_reachable(app, "stop-run")
+                    self.assert_button_reachable(app, "clear-log")
+                    self.assertGreaterEqual(log.region.height, 3)
+                    self.assertLessEqual(log.region.bottom, app.query_one("#bottom-panel").region.y)
+                    center = (
+                        log.content_region.x + log.content_region.width // 2,
+                        log.content_region.y + log.content_region.height // 2,
+                    )
+                    self.assertIs(app.get_widget_at(*center)[0], log)
+                    with patch.object(app, "action_request_stop") as stop:
+                        self.assertTrue(await pilot.click("#stop-run", offset=(3, 0)))
+                        await pilot.pause()
+                        stop.assert_called_once_with()
 
     async def test_wrapped_log_fits_narrow_terminal_without_horizontal_overflow(self):
         app = AcprofTui(RunConfig.smoke("demo/model"), settings_path=self.settings_path)

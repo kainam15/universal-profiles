@@ -8,7 +8,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from textual.widgets import Button, DataTable, Input, Select, Static, TabbedContent
+from textual.widgets import Button, Input, Select, Static, TabbedContent
 from textual.css.query import NoMatches
 
 from acprof.tui.app import AcprofTui
@@ -684,14 +684,13 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(app._elapsed_timer)
             self.assertFalse(app._is_busy())
 
-    async def test_matrix_board_populates_for_run(self):
-        """The resource matrix DataTable should populate on run launch."""
+    async def test_run_updates_status_and_log_without_monitor_charts(self):
+        """Removing monitor charts must preserve launch and completion updates."""
         config = RunConfig.smoke("demo/model")
         app = AcprofTui(config)
         async with app.run_test(size=(140, 48)) as pilot:
             await pilot.pause()
-            table = app.query_one("#matrix-table", DataTable)
-            self.assertEqual(table.row_count, 0)
+            self.assertEqual(len(app.query("#case-progress, #matrix-board, #matrix-table")), 0)
             script = "\n".join(
                 (
                     "print('Resource matrix: x = 1 cases', flush=True)",
@@ -710,12 +709,15 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
             await pilot.pause(0.1)
-            self.assertEqual(table.row_count, 1)
             for _ in range(40):
                 await pilot.pause(0.05)
                 if not app._is_busy():
                     break
             self.assertFalse(app._is_busy())
+            self.assertEqual(app.query_one("#status-stage", Static).content, "已完成")
+            self.assertEqual(app.query_one("#status-case", Static).content, "当前 1 · 已完成 1/1")
+            self.assertIn("Profiling complete!", app.query_one("#run-log", SelectableLog).text)
+            self.assertEqual(len(app.query("#case-progress, #matrix-board, #matrix-table")), 0)
 
     async def test_stage_gets_color_class(self):
         """The status-stage widget should receive CSS classes for visual state."""
@@ -735,20 +737,28 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertTrue(stage_widget.has_class("stage-measuring"))
 
-    async def test_matrix_slash_command_toggles_board(self):
-        """Slash command /matrix toggles the matrix board collapsible."""
-        from textual.widgets import Collapsible
+    async def test_removed_matrix_commands_are_rejected_and_absent_from_help(self):
         app = AcprofTui(RunConfig.smoke("demo/model"))
         async with app.run_test(size=(140, 48)) as pilot:
             await pilot.pause()
-            board = app.query_one("#matrix-board", Collapsible)
-            self.assertTrue(board.collapsed)
             input_widget = app.query_one("#slash-command", Input)
+            for command in ("matrix", "board"):
+                with self.subTest(command=command), patch.object(app, "notify") as notify:
+                    input_widget.focus()
+                    input_widget.value = f"/{command}"
+                    await pilot.press("enter")
+                    await pilot.pause()
+                    notify.assert_called_once()
+                    self.assertEqual(app.tr(notify.call_args.args[0]), f"未知快捷命令：/{command}")
+                    self.assertEqual(notify.call_args.kwargs["severity"], "error")
             input_widget.focus()
-            input_widget.value = "/matrix"
+            input_widget.value = "/help"
             await pilot.press("enter")
             await pilot.pause()
-            self.assertFalse(board.collapsed)
+            help_text = app.query_one("#run-log", SelectableLog).text
+            self.assertIn("/status", help_text)
+            self.assertNotIn("/matrix", help_text)
+            self.assertNotIn("/board", help_text)
 
 
 if __name__ == "__main__":

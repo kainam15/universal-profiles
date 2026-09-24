@@ -749,6 +749,9 @@ def _run_main():
             sys.exit(1)
 
         os.makedirs(output_dir, exist_ok=True)
+        if task_info.model_resolution.get("contract"):
+            from acprof.model_contract import write_model_resolution
+            write_model_resolution(task_info, output_dir)
 
         static_meta_json = os.path.join(output_dir, "static_meta.json")
         collection_history_json = os.path.join(output_dir, COLLECTION_HISTORY_NAME)

@@ -119,6 +119,7 @@ git diff --check
 | 固定页头、底栏与操作颜色 | `tests/test_tui_page_chrome.py`；中英文、三种尺寸、滚动与缩窗、命令框显隐、八种主题和按钮状态 |
 | 日志、语言与命令 | `tests/test_tui_log_view.py`、`tests/test_tui_i18n.py`、`tests/test_tui.py` |
 | 终端色深与 RGB 输出 | `tests/test_tui_colors.py`；检查缺失/空 `COLORTERM`、真彩色、256 色与自动检测 |
+| 中文浮层缺字 | `tests/test_tui_cjk_rendering.py`；通知覆盖按钮、真实遮挡、宽字符两半的局部刷新、中英文和奇偶列宽缩放 |
 | 统计报告、异步读取与计算 | `tests/test_tui_reports.py`、`tests/test_report_views.py`、`tests/test_uncertainty.py` |
 | Docker 镜像树、层空间、标签删除与采集互斥 | `tests/test_image_management.py`、`tests/test_tui_images.py` |
 | 表头拖动、固定列、滚动范围与鼠标释放 | `tests/test_tui_table_resize.py`、`tests/test_tui_all_tables.py`、`tests/test_tui_images.py` |
@@ -220,6 +221,24 @@ git diff --check
 主机协议／环境选择回归在 `test_custom_multimodal.py`；依赖 commit、文件哈希与镜像复用检查在
 `test_model_download.py`、`test_image_reuse.py`；TUI 输入、命令、持久化和语言切换在
 `test_tui_model_spec.py`。真实 Ultravox checkpoint 还需对应基础仓库访问权限和设备容量。
+
+自动契约的主机回归使用 `test_model_contract.py` 和
+`tests/fixtures/custom_pipeline_audio_like/`：覆盖 SHA 绑定、来源状态、输入映射、确定性参数、
+动态表达式／冲突拒绝、依赖候选、缓存身份和报告导出；恶意源码检查在隔离进程中确认没有执行
+模型顶层代码，也没有导入 Torch／Transformers。生成契约与通用 handler 的真实衔接使用随机小权重：
+
+```bash
+.venv/bin/python scripts/run_tests.py --pattern test_model_contract.py \
+  --report internal-testing/model-contract-tests.json
+.venv/bin/python scripts/check_runtime.py --profile custom-multimodal-cpu \
+  --test-pattern test_model_contract_runtime.py \
+  --output-dir internal-testing/model-contract-runtime
+```
+
+第二条命令核验锁定环境并在断网 CPU 容器执行加载、预处理、推理及输出验证，拒绝跳过。
+真实 Ultravox 的静态 draft 验证不下载权重、不证明依赖完备或大模型推理成功；GPU／profiler
+需各自取得运行证据，不能从这项 CPU fixture 验证外推。
+
 生产模型声明与服务镜像的完整链路可使用 [Iris 示例](Runtime_Compatibility.md#本地模型声明与自定义-pipeline)，
 按实际结果分别验收 basic／full；接口检查、预热、正式行和 profiler 结果分别计数。
 
@@ -299,6 +318,9 @@ Textual 8.2.8 的 `Pilot.pause()` 可能在返回前的布局刷新中才排入 
 由独立的 idle-cursor 测试验证，避免较慢的 `Pilot` 操作跨过闪烁周期而误报失败。
 
 Headless 能检查布局、键盘路径和输出状态；SVG、tmux 与真实 VS Code/SSH 终端是不同证据。
+通知回归需显式使用 `run_test(notifications=True)`；默认测试模式不显示通知，无法发现浮层缺字。
+隐藏快捷命令栏后让通知覆盖底部按钮，核对最终 compositor 输出和终端更新字节中的汉字完整性；
+只断言通知原文或 Toast 自身的内容不能证明叠加后的显示正确。
 颜色回归还需检查实际渲染器输出的 SGR 颜色序列：Textual 的 SVG 导出固定使用真彩色，
 单看 SVG 无法发现终端输出被降级为 256 色的问题。终端颜色变更覆盖输入选中、下拉菜单、
 确认按钮与深浅主题；PTY 输出仍不能代替用户客户端实际显示的验收。
@@ -377,7 +399,7 @@ profiler 调研了 [NVIDIA nsight-python](https://github.com/NVIDIA/nsight-pytho
 升级 Textual 时需运行拖动回归，覆盖中英文 cell 宽度、固定列与横向滚动、表头点击排序、释放后的 Click、
 拖出表格、禁用/隐藏/清空时的鼠标释放，以及三种终端尺寸下的会话列宽保留和采集锁定。
 末列右沿在完整显示、横向滚动及单列表格中均不显示手柄或捕获拖动，普通表头点击仍有效。
-资源矩阵与报告页覆盖数据更新、报告重建和语言切换；镜像树另检查父子行的大小、未知值和容器数量与表头左对齐、横向滚动同步和折叠状态保留。
+报告页覆盖数据更新、报告重建和语言切换；镜像树另检查父子行的大小、未知值和容器数量与表头左对齐、横向滚动同步和折叠状态保留。
 
 ## 文档与 Skill 检查
 

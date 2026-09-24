@@ -127,7 +127,8 @@ class DetectTaskTests(unittest.TestCase):
 
     def test_config_fallback_reads_config_json_without_transformers_dependency(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            config_path = Path(tmp_dir, "config.json")
+            config_path = Path(tmp_dir, "snapshots", "a" * 40, "config.json")
+            config_path.parent.mkdir(parents=True)
             config_path.write_text(
                 json.dumps({"architectures": ["BertForMaskedLM"]}),
                 encoding="utf-8",
@@ -143,6 +144,16 @@ class DetectTaskTests(unittest.TestCase):
         self.assertEqual(info.runtime_backend, "transformers_pipeline")
         self.assertEqual(info.library_name, "transformers")
         self.assertEqual(info.detection_method, "config_infer")
+
+    def test_config_fallback_does_not_analyze_a_file_without_a_pinned_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "config.json")
+            path.write_text(json.dumps({"architectures": ["BertForMaskedLM"]}))
+            diagnostics = []
+            with patch("huggingface_hub.hf_hub_download", return_value=str(path)):
+                result = detect._detect_from_config("unseen/model", diagnostics)
+            self.assertIsNone(result)
+            self.assertIn("SHA", ";".join(diagnostics))
 
     def test_detect_task_reports_auto_detection_failure_reasons(self) -> None:
         stderr = io.StringIO()
