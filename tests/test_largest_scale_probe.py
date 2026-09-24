@@ -476,6 +476,8 @@ class LargestScaleProbeTests(unittest.TestCase):
             "backend": "transformers_pipeline", "library": "transformers", "artifact_format": "transformers",
             "loader": "Transformers Auto/pipeline", "operation": "predict", "model_revision": "1" * 40,
             "metadata_files": [], "model_type": None, "runtime_profile": "nlp-cu128",
+            "interface_kind": "standard", "pipeline_task": "fill-mask",
+            "code_revision": None, "code_files": [], "model_spec": {},
         }
         self.assertEqual(build_image.call_args.args[0], expected_task)
         self.assertIs(plan_scales.call_args.kwargs["image_info"], built_image)
