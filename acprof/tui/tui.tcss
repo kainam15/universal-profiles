@@ -68,14 +68,17 @@ Underline { color: $accent; }
 }
 .form-grid.tool-form-grid { grid-size: 2; grid-columns: 18 1fr; }
 Input, Select { width: 1fr; }
+/* Basic line glyphs avoid seams in terminals that misrender tall block borders. */
 Input {
     background: $surface;
-    border: tall $panel;
+    border: solid $panel;
     padding: 0 1;
 }
-Input:focus { border: tall $accent; }
-SelectCurrent { background: $surface; border: tall $panel; }
-Select:focus > SelectCurrent { border: tall $accent; }
+Input:focus { border: solid $accent; }
+SelectCurrent, SelectOverlay { background: $surface; border: solid $panel; }
+Select:focus > SelectCurrent, Select.-expanded > SelectCurrent, SelectOverlay:focus {
+    border: solid $accent;
+}
 
 #preset-hint { height: 3; content-align: left middle; color: $text-muted; }
 #config-summary { color: $text-muted; }
@@ -146,8 +149,8 @@ Button:disabled, Button:disabled:hover, Button:disabled:focus, Button:disabled.-
 .option-checkbox:focus { border: tall $accent; }
 .option-checkbox:disabled { color: $ui-disabled; }
 .option-checkbox:disabled > .toggle--button { color: $ui-disabled; background: $panel; }
-Input:disabled { color: $ui-disabled; border: tall $ui-disabled; }
-Select:disabled > SelectCurrent { color: $ui-disabled; border: tall $ui-disabled; }
+Input:disabled { color: $ui-disabled; border: solid $ui-disabled; }
+Select:disabled > SelectCurrent { color: $ui-disabled; border: solid $ui-disabled; }
 #profile-tools {
     grid-size: 2;
     grid-columns: 1fr 1fr;

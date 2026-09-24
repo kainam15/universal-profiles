@@ -270,6 +270,13 @@ docker run --rm --network none --cpus 2 --memory 2g \
 
 ## TUI 与终端证据
 
+终端兼容验收面向 Windows Terminal、PyCharm / JetBrains Terminal、VS Code Terminal、
+Linux 原生终端、SSH 会话及浏览器 Web Terminal。SSH 只传输终端数据，记录结果时仍需注明
+客户端终端、版本、字体和窗口列数 / 行数；每种环境分别标记通过、失败或未验证。
+至少检查非浮层控件不重叠、边框可辨认、中文无乱码、`Tab` / `Input` / `Select` 可操作，
+以及缩放后的布局和焦点可达性。字形能力有限的终端应检查基础 Unicode 线框和键盘路径，
+不能依赖 `tall` 块状边框无缝拼接；纯 ASCII 终端不属于当前中文 TUI 的支持范围。
+
 使用 `unittest.IsolatedAsyncioTestCase`、Textual `run_test()` / `Pilot` 和临时 `settings_path`。
 尺寸覆盖用户报告的场景，并按布局变更检查 `80×24`、`120×30`、`150×45` 及运行中 resize。
 七个页面的标题或状态摘要和底部操作栏应保持可见；主要操作在右下角，内容滚动、切换语言和隐藏快捷命令框后仍可点击。
@@ -322,6 +329,12 @@ Headless 能检查布局、键盘路径和输出状态；SVG、tmux 与真实 VS
 普通推理成功不能证明 Torch/NCU/Massif/Nsys 都支持；每种设备、dtype 和工具分别报告实际覆盖范围。
 
 ## 参考实现与复用取舍
+
+表单边框复用 [Textual 8.2.8 的 `solid` 字符集](https://github.com/Textualize/textual/blob/v8.2.8/src/textual/_border.py)，
+并根据 [Select 上游说明](https://github.com/Textualize/textual/discussions/4061)覆盖 `SelectCurrent`
+及[源码中的展开菜单 `SelectOverlay`](https://github.com/Textualize/textual/blob/v8.2.8/src/textual/widgets/_select.py)。
+Textual 为 MIT 许可且由上游维护；这里只覆盖现有 TCSS，
+保留控件尺寸和事件处理，不增加依赖、终端自动探测或测量期间的后台处理。
 
 开发检查复用 [Ruff 官方 hook](https://github.com/astral-sh/ruff-pre-commit)
 和 [pre-commit 官方基础 hooks](https://github.com/pre-commit/pre-commit-hooks)（MIT，持续维护，
