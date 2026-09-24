@@ -1,0 +1,2 @@
+-r multimodal-transformers4576.in
+peft==0.17.1

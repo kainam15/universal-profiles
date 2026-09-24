@@ -127,6 +127,9 @@ for _name, _platform, _inputs in (
     ("transformers560-cpu", "cpu", ("transformers560",)),
     ("transformers560-cu124", "cu124", ("transformers560",)),
     ("transformers560-cu128", "cu128", ("transformers560",)),
+    ("custom-multimodal-cpu", "cpu", ("custom-multimodal",)),
+    ("custom-multimodal-cu124", "cu124", ("custom-multimodal",)),
+    ("custom-multimodal-cu128", "cu128", ("custom-multimodal",)),
 ):
     ENVIRONMENTS[_name] = DependencyEnvironment(
         _name, PLATFORMS[_platform], f"dockerfiles/locks/{_name}.txt",
@@ -173,6 +176,12 @@ for _family in ("nlp", "cv", "audio", "multimodal"):
         PROFILES[_name] = RuntimeProfile(
             _name, _family, ENVIRONMENTS[f"transformers560-{_variant}"], runtime_line="transformers560",
         )
+for _variant in ("cpu", "cu124", "cu128"):
+    _name = f"custom-multimodal-{_variant}"
+    PROFILES[_name] = RuntimeProfile(
+        _name, "multimodal", ENVIRONMENTS[_name], trust_remote_code=True,
+        backends=("transformers_pipeline",), runtime_line="custom-multimodal",
+    )
 
 
 @lru_cache(maxsize=None)
@@ -270,10 +279,16 @@ def select_runtime_profile(task_info: Any) -> RuntimeProfile:
         return profile
     family = task_info.task_family
     default = DEFAULT_PROFILES.get((family, "cu128"), "")
+    from acprof.model_spec import declared_multimodal_pipeline
+    custom_pipeline = declared_multimodal_pipeline(task_info)
+    if custom_pipeline:
+        default = "custom-multimodal-cu128"
     selected = getattr(task_info, "runtime_profile_id", "") or default
     profile = PROFILES.get(selected)
     if profile is None or profile.family != family or profile.adapter != "family-default":
         raise ValueError(f"No registered runtime for {family}/{selected}")
+    if custom_pipeline and profile.runtime_line != "custom-multimodal":
+        raise ValueError("Declared multimodal pipelines require a locked custom-multimodal runtime")
     if _native_compatible(task_info, profile) is False:
         if getattr(task_info, "runtime_profile_id", ""):
             raise ValueError(f"Runtime {selected} does not register {task_info.pipeline_tag}/{task_info.model_config.get('model_type')}")

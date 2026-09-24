@@ -151,6 +151,17 @@ class PrepareImageTests(unittest.TestCase):
                 with patch.object(docker_runtime, '_run', side_effect=self.existing_image), self.assertRaisesRegex(RuntimeError, '文件清单'):
                     docker_runtime.prepare_image(self.task, self.project_dir, reuse_existing=True)
 
+    def test_extra_offline_dependency_is_rejected_even_with_valid_hashes(self):
+        plan = self.manifest['model_download']
+        child = seal_plan({'schema_version': 1, 'model_id': 'example/base', 'model_revision': 'd' * 40,
+                           'selected_bytes': 1, 'verification': 'sha256',
+                           'files': [{'path': 'config.json', 'size': 1, 'sha256': 'e' * 64}]})
+        plan.update(selected_bytes=1, total_selected_bytes=2,
+                    dependencies=[{'repo_id': 'example/base', 'revision': 'd' * 40, 'download': child}])
+        seal_plan(plan)
+        with patch.object(docker_runtime, '_run', side_effect=self.existing_image), self.assertRaisesRegex(RuntimeError, '离线模型依赖'):
+            docker_runtime.prepare_image(self.task, self.project_dir, reuse_existing=True)
+
     def test_mutable_revision_is_resolved_before_choosing_image(self):
         self.task.model_revision = 'main'
         from types import SimpleNamespace

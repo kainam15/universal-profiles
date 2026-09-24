@@ -4,14 +4,68 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 
 SPEC_ENV = "ACPROF_MODEL_SPEC_B64"
+DEPENDENCIES_ENV = "ACPROF_MODEL_DEPENDENCIES_B64"
 MAX_SPEC_BYTES = 64 * 1024
 FORMAT_BACKENDS = {"onnxruntime": "onnxruntime", "transformers-pipeline": "transformers_pipeline",
                    "torchscript": "torchscript", "skops": "skops"}
+MULTIMODAL_PIPELINE_INPUTS = {
+    "audio-text-to-text": {"text", "audio", "sampling_rate"},
+    "image-text-to-text": {"text", "image"},
+    "video-text-to-text": {"text", "video", "fps"},
+}
+
+
+def validate_dependencies(dependencies: Any) -> list[dict]:
+    """Offline repositories are explicit, bounded, and pinned before a build."""
+    if not isinstance(dependencies, list) or len(dependencies) > 16:
+        raise ValueError("model dependencies must be a list of at most 16 repositories")
+    seen = set()
+    for item in dependencies:
+        if not isinstance(item, dict) or set(item) - {"repo_id", "revision", "allow_patterns"}:
+            raise ValueError("invalid model dependency fields")
+        repo = item.get("repo_id")
+        if (not isinstance(repo, str) or not re.fullmatch(r"[\w.-]+(?:/[\w.-]+)?", repo, re.ASCII)
+                or any(part in {".", ".."} for part in repo.split("/")) or repo in seen):
+            raise ValueError("model dependency repo_id must be a unique Hub repository")
+        if not isinstance(item.get("revision"), str) or not re.fullmatch(r"[0-9a-f]{40}", item["revision"]):
+            raise ValueError("model dependency revision must be a fixed commit SHA")
+        patterns = item.get("allow_patterns")
+        if patterns is not None and (not isinstance(patterns, list) or not patterns or len(patterns) > 128 or any(
+            not isinstance(pattern, str) or not pattern or pattern.startswith("/") or "\\" in pattern
+            or ".." in pattern.split("/") for pattern in patterns
+        )):
+            raise ValueError("model dependency allow_patterns must contain relative file patterns")
+        seen.add(repo)
+    return dependencies
+
+
+def validate_multimodal_pipeline(task: str, protocol: Any) -> dict:
+    required = MULTIMODAL_PIPELINE_INPUTS.get(task)
+    if required is None or not isinstance(protocol, dict) or set(protocol) - {"inputs", "forward_kwargs"}:
+        raise ValueError("multimodal pipeline requires a supported text-output task and protocol")
+    inputs = protocol.get("inputs")
+    if (not isinstance(inputs, dict) or not inputs or any(not isinstance(key, str) or not key.isidentifier()
+            or not isinstance(value, str) or value not in required for key, value in inputs.items())
+            or set(inputs.values()) != required):
+        raise ValueError(f"multimodal inputs must map all of {sorted(required)}")
+    kwargs = protocol.get("forward_kwargs", {"max_new_tokens": "$max_new_tokens", "do_sample": "$do_sample"})
+    if (not isinstance(kwargs, dict) or not kwargs or any(not isinstance(key, str) or not key.isidentifier()
+            or not isinstance(value, (str, bool, int, float, type(None))) for key, value in kwargs.items())
+            or any(isinstance(value, str) and value.startswith("$") and value not in {"$max_new_tokens", "$do_sample"}
+                   for value in kwargs.values()) or "$max_new_tokens" not in kwargs.values()):
+        raise ValueError("multimodal forward_kwargs require bounded generation and known parameter references")
+    if (kwargs.get("do_sample", False) not in (False, "$do_sample")
+            or kwargs.get("temperature", 0) not in (0, None)
+            or not ("$do_sample" in kwargs.values() or kwargs.get("do_sample") is False
+                    or ("temperature" in kwargs and kwargs["temperature"] == 0))):
+        raise ValueError("multimodal generation parameters must declare deterministic sampling")
+    return protocol
 
 
 def validate_model_spec(spec: Any) -> dict:
@@ -22,11 +76,14 @@ def validate_model_spec(spec: Any) -> dict:
         raise ValueError("model spec requires a supported format and an explicit task")
     if len(json.dumps(spec, allow_nan=False).encode()) > MAX_SPEC_BYTES:
         raise ValueError("model spec exceeds 64 KiB")
+    validate_dependencies(spec.get("dependencies", []))
     if spec["format"] == "transformers-pipeline":
-        if set(spec) - {"schema_version", "format", "task", "pipeline_task"}:
+        if set(spec) - {"schema_version", "format", "task", "pipeline_task", "multimodal", "dependencies"}:
             raise ValueError("transformers-pipeline model spec has unknown fields")
         if not isinstance(spec.get("pipeline_task"), str) or not spec["pipeline_task"]:
             raise ValueError("transformers-pipeline model spec requires pipeline_task")
+        if "multimodal" in spec:
+            validate_multimodal_pipeline(spec["task"], spec["multimodal"])
     else:
         name = spec.get("model_file")
         path = PurePosixPath(name) if isinstance(name, str) else None
@@ -52,6 +109,31 @@ def task_model_spec(task_info: Any) -> dict:
     override = getattr(task_info, "model_spec", {})
     metadata = getattr(task_info, "repository_metadata", {}) or {}
     return override or metadata.get("acprof_model.json", {})
+
+
+def declared_multimodal_pipeline(task_info: Any) -> bool:
+    spec = task_model_spec(task_info)
+    if not spec or "multimodal" not in spec:
+        return False
+    validate_model_spec(spec)
+    return (spec["format"] == "transformers-pipeline" and spec["task"] == task_info.pipeline_tag
+            and task_info.runtime_backend == "transformers_pipeline")
+
+
+def encode_model_dependencies(spec: dict) -> str:
+    dependencies = validate_dependencies(spec.get("dependencies", []))
+    if not dependencies:
+        return ""
+    return base64.b64encode(json.dumps(dependencies, sort_keys=True, separators=(",", ":")).encode()).decode("ascii")
+
+
+def load_model_dependencies() -> list[dict]:
+    encoded = os.getenv(DEPENDENCIES_ENV, "")
+    if not encoded:
+        return []
+    if len(encoded) > MAX_SPEC_BYTES * 2:
+        raise ValueError("baked model dependencies exceed 64 KiB")
+    return validate_dependencies(json.loads(base64.b64decode(encoded, validate=True)))
 
 
 def encode_model_spec(spec: dict) -> str:

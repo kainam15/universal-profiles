@@ -95,6 +95,12 @@ class MultimodalHandler(BaseHandler):
             "model_revision": model_revision or "main",
             "load_options": dict(load_options or {}),
         }
+        if backend == "transformers_pipeline":
+            from acprof.model_spec import load_model_spec
+            spec = load_model_spec(model_source, task_type, expected_format="transformers-pipeline")
+            if "multimodal" in spec:
+                from acprof.container.handlers.custom_pipeline import load_custom_pipeline
+                return {**ctx, **load_custom_pipeline(model_source, task_type, device, dtype, spec, attention_options)}
         if task_type in _QA_TASKS:
             pipe = transformers.pipeline(
                 task=task_type, model=model_source, **source_kwargs,
@@ -359,14 +365,21 @@ class MultimodalHandler(BaseHandler):
             for key in ("input_features", "audio_values", "audio_features")
         ):
             raise ValueError("processor returned empty audio features")
+        pipeline_kwargs = {}
+        if model_ctx["mode"] == "custom_pipeline":
+            from acprof.container.handlers.custom_pipeline import pipeline_forward_kwargs
+            pipeline_kwargs["forward_kwargs"] = pipeline_forward_kwargs(model_ctx, inputs, params)
         return {
             "inputs": inputs, "prompt_length": int(inputs["input_ids"].shape[-1]),
             "actual_input_tokens": actual_input_tokens,
             "_workload": {"input": modality_facts},
-            "params": params, **self._scale_metadata(raw_input, media_scales),
+            "params": params, **pipeline_kwargs, **self._scale_metadata(raw_input, media_scales),
         }
 
     def _generation_inputs(self, model_ctx, content, media_kwargs):
+        if model_ctx["mode"] == "custom_pipeline":
+            from acprof.container.handlers.custom_pipeline import pipeline_inputs
+            return pipeline_inputs(model_ctx, content, media_kwargs)
         processor = model_ctx["processor"]
         messages = [{"role": "user", "content": content}]
         if model_ctx["task_type"] == "audio-text-to-text":
@@ -458,6 +471,10 @@ class MultimodalHandler(BaseHandler):
 
         mode = model_ctx["mode"]
         with torch.inference_mode():
+            if mode == "custom_pipeline":
+                return {"pipeline_output": model_ctx["pipeline"]._forward(
+                    dict(processed_input["inputs"]), **processed_input["forward_kwargs"],
+                )}
             if mode == "qa":
                 # Document QA pops metadata from its argument: fresh dicts are
                 # essential when repeat-in-window and profilers reuse inputs.
@@ -510,6 +527,11 @@ class MultimodalHandler(BaseHandler):
     def postprocess(self, model_ctx: Dict[str, Any], raw_output: Any) -> Dict[str, Any]:
         task, mode = model_ctx["task_type"], model_ctx["mode"]
         result = {"task": task}
+        if mode == "custom_pipeline":
+            from acprof.container.handlers.custom_pipeline import pipeline_texts
+            texts = pipeline_texts(model_ctx, raw_output["pipeline_output"])
+            return {**result, "output_type": "text", "texts": texts,
+                    **self._text_summary(getattr(model_ctx["pipeline"], "tokenizer", None), texts)}
         if mode == "qa":
             import torch
 

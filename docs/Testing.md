@@ -127,7 +127,7 @@ git diff --check
 
 `test_runtime_image_build.py` 在 Docker 边界模拟环境中验证四层构建、跨 profile 的环境共享、
 模型 commit、Torch 来源、BuildKit secret、标签错配、额外包、输入变化及构建失败停止。
-环境身份测试覆盖 37 个 profile / 24 个环境、无 Torch 环境、跨任务族精确共享及 cu128 的版本差异；CV 新增 timm 后按新包集计算身份。注释、锁文件名
+环境身份测试覆盖 40 个 profile / 27 个环境、无 Torch 环境、跨任务族精确共享及 cu128 的版本差异；CV 新增 timm 后按新包集计算身份。注释、锁文件名
 和条目顺序不影响身份，版本、制品、来源、平台和系统锁影响身份。配方变化改变构建缓存，业务
 代码变化只重建服务层。它们不能替代实际容器构建与推理验证。
 
@@ -144,6 +144,9 @@ git diff --check
 样例验证真实加载与推理；audio 和 multimodal 在同一作业共享一个 CPU 依赖环境，仍分别执行测试。
 网络在容器测试期间关闭。CI Actions 固定为已核验的 commit SHA，作业只授予仓库读取权限。
 另有 `nlp-transformers560-cpu` 矩阵项运行新版原生架构与图像 processor 测试，避免主机缺少推理依赖的 skip 掩盖环境回归。
+`custom-multimodal-cpu` 矩阵项运行 `test_custom_multimodal_runtime.py`：未知 `auto_map` 架构的
+随机小模型经音频、图像、视频输入映射执行，比较共享四阶段与上游 pipeline 结果，并检查
+重复推理、真实 Torch profiler 算子及独立 runtime validation；容器禁止网络和跳过。
 两个 Transformers 版本线均执行 `test_audio_generation_runtime.py`：保存小型原生模型 snapshot，
 再经过共享 Auto 加载、原生音频消息、真实 `generate` 和输出验证；逐参数核对加载权重，防止
 组合模型的前缀处理丢失权重。4.57.6 验证 Voxtral/Qwen2 Audio；5.6.0 另验证 Omni 文本子模型。
@@ -201,6 +204,17 @@ git diff --check
 ```
 
 该证据覆盖锁定环境中的标准文本分类桥接，不证明任意自定义模型、其它任务或 GPU 兼容。
+多模态共享接口的离线测试可运行：
+
+```bash
+.venv/bin/python scripts/check_runtime.py --profile custom-multimodal-cpu \
+  --test-pattern test_custom_multimodal_runtime.py \
+  --output-dir internal-testing/custom-multimodal-runtime
+```
+
+主机协议／环境选择回归在 `test_custom_multimodal.py`；依赖 commit、文件哈希与镜像复用检查在
+`test_model_download.py`、`test_image_reuse.py`；TUI 输入、命令、持久化和语言切换在
+`test_tui_model_spec.py`。真实 Ultravox checkpoint 还需对应基础仓库访问权限和设备容量。
 生产模型声明与服务镜像的完整链路可使用 [Iris 示例](Runtime_Compatibility.md#本地模型声明与自定义-pipeline)，
 按实际结果分别验收 basic／full；接口检查、预热、正式行和 profiler 结果分别计数。
 

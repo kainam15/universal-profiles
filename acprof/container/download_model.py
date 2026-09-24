@@ -6,6 +6,7 @@ Used both during Docker image build and host-side pre-warming.
 from __future__ import annotations
 
 import inspect
+import fnmatch
 import argparse
 import hashlib
 import importlib.metadata
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Sequence
 
 from huggingface_hub import snapshot_download
+from acprof.model_spec import load_model_dependencies
 
 if __package__:
     from .model_files import ModelFilesError, PLAN_FILENAME, plan_download, seal_plan
@@ -121,11 +123,10 @@ def _library_versions() -> dict[str, str]:
     return result
 
 
-def _prepare_plan(endpoint: str) -> dict:
+def _prepare_repository_plan(endpoint: str, model_id: str, revision: str, *, dependency: dict | None = None) -> dict:
     from huggingface_hub import HfApi, hf_hub_download
 
-    revision = os.getenv("MODEL_REVISION", MODEL_REVISION).strip() or "main"
-    info = HfApi(endpoint=endpoint).model_info(MODEL_ID, revision=revision, files_metadata=True)
+    info = HfApi(endpoint=endpoint).model_info(model_id, revision=revision, files_metadata=True)
     if len(revision) == 40 and info.sha != revision:
         raise ModelFilesError("Hub response does not match the requested model commit")
     files = {}
@@ -138,19 +139,46 @@ def _prepare_plan(endpoint: str) -> dict:
         }
 
     def read_json(name: str):
-        path = hf_hub_download(MODEL_ID, name, revision=info.sha, cache_dir=CACHE_DIR, endpoint=endpoint)
+        path = hf_hub_download(model_id, name, revision=info.sha, cache_dir=CACHE_DIR, endpoint=endpoint)
         try:
             return json.loads(Path(path).read_text())
         except (ValueError, UnicodeError) as exc:
             raise ModelFilesError(f"invalid model metadata: {name}") from exc
 
-    return plan_download(
-        model_id=MODEL_ID, revision=info.sha, family=os.getenv("TASK_FAMILY", ""),
+    excluded = []
+    if dependency is not None and dependency.get("allow_patterns"):
+        selected = {name: record for name, record in files.items()
+                    if any(fnmatch.fnmatchcase(name, pattern) for pattern in dependency["allow_patterns"])}
+        excluded = sorted(set(files) - set(selected))
+        files = selected
+        if not files:
+            raise ModelFilesError(f"dependency patterns select no files: {model_id}")
+    plan = plan_download(
+        model_id=model_id, revision=info.sha, family=os.getenv("TASK_FAMILY", "") if dependency is None else "dependency",
         backend=os.getenv("RUNTIME_BACKEND", ""), files=files, read_json=read_json,
-        policy=os.getenv("MODEL_DOWNLOAD_POLICY", "auto"),
+        policy=os.getenv("MODEL_DOWNLOAD_POLICY", "auto") if dependency is None else "full",
         adapter=os.getenv("MODEL_ADAPTER", "family-default"),
         native_model_types=_native_model_types(), library_versions=_library_versions(),
     )
+    if dependency is not None:
+        plan.update(reason="declared_dependency", excluded_files=excluded)
+    return seal_plan(plan)
+
+
+def _prepare_plan(endpoint: str) -> dict:
+    revision = os.getenv("MODEL_REVISION", MODEL_REVISION).strip() or "main"
+    plan = _prepare_repository_plan(endpoint, MODEL_ID, revision)
+    dependencies = load_model_dependencies()
+    if any(item["repo_id"] == MODEL_ID for item in dependencies):
+        raise ModelFilesError("model dependencies must not override the primary snapshot")
+    if dependencies:
+        plan["dependencies"] = [
+            {**item, "download": _prepare_repository_plan(endpoint, item["repo_id"], item["revision"], dependency=item)}
+            for item in dependencies
+        ]
+        sizes = [plan["selected_bytes"], *(item["download"]["selected_bytes"] for item in plan["dependencies"])]
+        plan["total_selected_bytes"] = sum(sizes) if all(isinstance(size, int) for size in sizes) else None
+    return seal_plan(plan)
 
 
 def _download_once(endpoint: str, max_workers: int) -> str:
@@ -158,7 +186,7 @@ def _download_once(endpoint: str, max_workers: int) -> str:
     os.environ["HF_ENDPOINT"] = endpoint
     plan = _prepare_plan(endpoint)
     kwargs = _build_snapshot_kwargs(endpoint, max_workers)
-    kwargs["revision"] = plan["model_revision"]
+    kwargs.update(repo_id=plan["model_id"], revision=plan["model_revision"])
     # Hub 的 allow_patterns 使用 fnmatch；文件名中的通配字符也必须按字面匹配。
     escape = {"[": "[[]", "*": "[*]", "?": "[?]"}
     kwargs["allow_patterns"] = ["".join(escape.get(char, char) for char in item["path"]) for item in plan["files"]]
@@ -172,6 +200,24 @@ def _download_once(endpoint: str, max_workers: int) -> str:
           f"({plan['reason']}); files={len(plan['files'])}, excluded={len(plan['excluded_files'])}, "
           f"selected_bytes={plan['selected_bytes']}", flush=True)
     target = snapshot_download(**kwargs)
+    for dependency in plan.get("dependencies", []):
+        child_plan = dependency["download"]
+        child_kwargs = {**kwargs, "repo_id": dependency["repo_id"], "revision": dependency["revision"],
+                        "allow_patterns": ["".join(escape.get(char, char) for char in item["path"])
+                                           for item in child_plan["files"]]}
+        print(f"[download] dependency={dependency['repo_id']} revision={dependency['revision']}", flush=True)
+        child_target = snapshot_download(**child_kwargs)
+        dependency["download"] = verify_download(child_target, child_plan)
+        cache = Path(CACHE_DIR) / ("models--" + dependency["repo_id"].replace("/", "--"))
+        if Path(child_target).resolve() != (cache / "snapshots" / dependency["revision"]).resolve():
+            raise ModelFilesError("dependency download did not return its pinned cache snapshot")
+        # Custom model code often calls from_pretrained(repo_id) without a revision.
+        # Bind that default only after validating the image-owned dependency files.
+        reference = cache / "refs" / "main"
+        reference.parent.mkdir(parents=True, exist_ok=True)
+        temporary = reference.with_name("main.acprof-tmp")
+        temporary.write_text(dependency["revision"])
+        temporary.replace(reference)
     _LAST_PLAN = plan
     return target
 
@@ -204,6 +250,8 @@ def verify_download(target: str | Path, plan: dict) -> dict:
             raise ModelFilesError(f"model file Git blob mismatch: {item['path']}")
         item.update(size=stat.st_size, sha256=sha256_hex)
     plan["selected_bytes"] = sum(item["size"] for item in plan["files"])
+    if plan.get("dependencies"):
+        plan["total_selected_bytes"] = plan["selected_bytes"] + sum(item["download"]["selected_bytes"] for item in plan["dependencies"])
     plan["verification"] = "sha256"
     return seal_plan(plan)
 

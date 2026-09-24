@@ -97,6 +97,7 @@ class RunConfig:
     gpus: str = "off,on"
     input_scales: str = ""
     workload_spec: str = ""
+    model_spec: str = ""
     output_dir: str = "results"
     batch_size: int = 1
     warmup: int = 2
@@ -259,6 +260,17 @@ class RunConfig:
             if not workload_path.is_file():
                 errors.append(message('Workload manifest 不存在：{0}', workload_spec))
 
+        model_spec = self.model_spec.strip()
+        if model_spec and project_dir is not None:
+            model_path = Path(model_spec).expanduser()
+            if not model_path.is_absolute():
+                model_path = project_dir / model_path
+            try:
+                from acprof.model_spec import read_model_spec
+                read_model_spec(model_path)
+            except (OSError, ValueError) as exc:
+                errors.append(message('模型接口声明无效：{0}；{1}', model_spec, str(exc)))
+
         if errors:
             raise TuiConfigError(errors)
 
@@ -273,6 +285,7 @@ class RunConfig:
             gpus=",".join(gpus),
             input_scales=",".join(_csv_values(self.input_scales)),
             workload_spec=workload_spec,
+            model_spec=model_spec,
             output_dir=self.output_dir.strip(),
             batch_size=int(batch_size),
             warmup=int(warmup),
@@ -351,6 +364,7 @@ def build_run_command(
         ("--backend", config.backend),
         ("--input-scales", config.input_scales),
         ("--workload-spec", config.workload_spec),
+        ("--model-spec", config.model_spec),
     ):
         if value:
             command.extend((option, value))
@@ -394,6 +408,7 @@ def build_probe_command(
         ("--backend", config.backend),
         ("--input-scales", config.input_scales),
         ("--workload-spec", config.workload_spec),
+        ("--model-spec", config.model_spec),
     ):
         if value:
             command.extend((option, value))

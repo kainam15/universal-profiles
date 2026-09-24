@@ -111,6 +111,7 @@ acprof tui --model google-bert/bert-base-uncased --preset smoke
 
 smoke 预设使用 `basic`、CPU 和单次请求，关闭独立 profiler 与通知。
 需要完整指标时，在“高级参数”中改为 `full`，并完成相应的主机检查；开始前可在命令预览中核对参数。
+自定义多模态 pipeline 可在“识别覆盖 → 模型接口声明”填写 JSON；格式与 Ultravox 示例见[模型接口声明](docs/Runtime_Compatibility.md#本地模型声明与自定义-pipeline)。
 页面、快捷键、日志复制、设置与 VS Code 按键问题见 [TUI 用户指南](docs/TUI.md)。
 
 ## 运行正式实验

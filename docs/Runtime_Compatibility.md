@@ -48,9 +48,9 @@ flowchart LR
 
 | 对象 | 声明内容 |
 | --- | --- |
-| `RuntimeProfile` / `PROFILES` | 名称、任务族、adapter、模型/backend 约束、dtype、环境引用和版本线；当前共 37 个 profile。 |
+| `RuntimeProfile` / `PROFILES` | 名称、任务族、adapter、模型/backend 约束、dtype、环境引用和版本线；当前共 40 个 profile。 |
 | `PlatformSpec` / `PLATFORMS` | Linux amd64、固定 Python 基础镜像 digest、Python 3.10.21、系统锁；Torch 字段可省略。旧 CPU / cu128 为 Torch 2.11.0，cu124 为 2.6.0。 |
-| `DependencyEnvironment` / `ENVIRONMENTS` | 平台引用及完整 Python 制品锁；当前有 24 个唯一环境；可用 `RuntimeSpec(type, version, package)` 核验运行时包的锁版本。名称仅用于引用，不决定内容身份。 |
+| `DependencyEnvironment` / `ENVIRONMENTS` | 平台引用及完整 Python 制品锁；当前有 27 个唯一环境；可用 `RuntimeSpec(type, version, package)` 核验运行时包的锁版本。名称仅用于引用，不决定内容身份。 |
 
 `audio-cpu` 与 `multimodal-transformers4576-cpu` 共享 `audio-cpu` 环境；cu124 的对应两个
 profile 共享 `audio-cu124` 环境。cu128 的 audio 使用 `tqdm==4.70.1`，原生 multimodal 使用
@@ -178,8 +178,9 @@ ONNX 图像／文本还需[对应预处理声明](#扩展声明与按需加载)�
 ```
 
 `config.custom_pipelines` 必须包含所选 `pipeline_task` 及其 `impl`。已有 NLP、CV、Audio
-pipeline handler 按该别名加载，输入生成、有效尺度和输出仍按标准 `task` 处理；直接模型路径、
-多模态特殊协议等仍需 adapter。`auto_map` 声明也只产生候选，不保证兼容锁定的 Transformers。
+pipeline handler 按该别名加载，输入生成、有效尺度和输出仍按标准 `task` 处理。
+多模态文字输出可使用下述共享声明；其他自定义协议仍需 adapter。
+`auto_map` 声明也只产生候选，不保证兼容锁定的 Transformers。
 主机静态检查代码引用属于同一固定 snapshot，保存 `code_files/code_revision`；跨仓库代码引用
 或缺少文件明确拒绝。自定义代码保留完整 snapshot，接口验证在无网络容器中执行；缺少依赖需
 登记完整环境锁，不在验证或正式请求期间自动安装。
@@ -187,7 +188,75 @@ pipeline handler 按该别名加载，输入生成、有效尺度和输出仍按
 有效声明进入服务镜像构建指纹及 `runtime_environment.model_spec`，由构建期环境变量
 `ACPROF_MODEL_SPEC_B64` 传入，server、独立验证与 profiler 使用同一份内容。不会改写 Hub
 snapshot；本地文件路径与 SHA256 进入恢复身份，内容改变不能沿用旧实验。依赖层和模型文件层
-仍可复用。发现与输出验证位于测量窗口外；自定义 pipeline 内部处理沿用原有 pipeline 计时口径。
+仍可复用；改变下述离线依赖会重建模型文件层。发现与输出验证位于测量窗口外。
+NLP/CV/Audio 自定义 pipeline 沿用各自 handler 的计时口径。
+
+#### 声明多模态输入与推理参数
+
+`audio-text-to-text`、`image-text-to-text`、`video-text-to-text` 可通过 `multimodal` 声明
+复用 `family-default` handler，无需按模型名称新增分支。以下是音频接口示例：
+
+```json
+{
+  "schema_version": 1,
+  "format": "transformers-pipeline",
+  "task": "audio-text-to-text",
+  "pipeline_task": "ultravox-pipeline",
+  "multimodal": {
+    "inputs": {"prompt": "text", "audio": "audio", "sampling_rate": "sampling_rate"},
+    "forward_kwargs": {"max_new_tokens": "$max_new_tokens", "temperature": 0.0}
+  }
+}
+```
+
+`inputs` 的键是上游 `preprocess` 接收的字典字段，值引用 AC-Prof 解码后的输入：
+
+| 标准任务 | 必须完整映射的输入 |
+| --- | --- |
+| `audio-text-to-text` | `text` 字符串、`audio` 单声道 NumPy 波形、`sampling_rate` |
+| `image-text-to-text` | `text` 字符串、`image` RGB PIL 图像 |
+| `video-text-to-text` | `text` 字符串、`video` 有序 RGB NumPy 帧、`fps` |
+
+`forward_kwargs` 传入上游 `_forward`；`$max_new_tokens` 引用 workload 的生成上限，必须声明。
+`$do_sample` 引用经过校验的 `false`；也可显式用 `do_sample=false` 或 `temperature=0`。
+省略时默认映射 `max_new_tokens` 和 `do_sample`。不允许未知参数引用或随机采样声明。
+当前协议仅支持 batch size 1、返回张量字典的 `preprocess` 和返回一个字符串的 `postprocess`；
+必须保留 `input_ids` 及可识别的模态特征，缺失输入、尺度截断或输出不符会在独立验证时报错。
+
+加载、媒体解码／上游 `preprocess`／设备传输、上游 `_forward`、输出解码分别落在现有四阶段，
+正式推理窗口只调用 `_forward`。输出 token 数仍是对返回文字重新分词的计数；没有实际生成
+token 证据时，相关生成速率／逐 token 工作量保持不可用，不用上限或字符数代替。
+
+共享环境 `custom-multimodal-cpu/cu124/cu128` 在原 4.57.6 锁基础上加入 `peft==0.17.1`，
+保留已有包版本。CPU 使用 FP32，GPU 使用 FP16。参考
+[Transformers Pipeline 契约](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/pipelines/base.py)
+和 [UltravoxPipeline](https://github.com/fixie-ai/ultravox/blob/main/ultravox/model/ultravox_pipeline.py)
+拆分执行阶段；前者与 PEFT 为 Apache-2.0，Ultravox 代码为 MIT。模型代码来自固定 snapshot，
+只在容器中执行。其他依赖组合仍需登记独立完整环境锁。
+
+#### 外部模型与 processor 的离线依赖
+
+可选 `dependencies` 数组声明上游代码在加载时还会读取的 Hub 仓库，每项包含 `repo_id`、
+固定 40 位 commit `revision`，以及可选的相对文件 `allow_patterns`。最多 16 个不同仓库，
+不能覆盖主模型；不声明 patterns 时下载依赖仓库完整 snapshot。构建期校验文件哈希后，
+将镜像内对应缓存的 `refs/main` 绑定到声明 commit，使上游无 revision 的 `from_pretrained(repo_id)`
+也能离线解析。主模型和全部依赖进入下载计划与镜像身份，正式服务保持断网。
+
+[Ultravox 完整声明](../examples/multimodal/ultravox.model.json) 包含固定版本的 Llama 基础权重与
+Whisper processor。Llama 仓库要求账号已获访问许可，并在构建时提供有效 `HF_TOKEN`；
+缺少权限不能靠修改任务覆盖项解决。在 TUI 的“高级参数 → 识别覆盖 → 模型接口声明”填入
+`examples/multimodal/ultravox.model.json`，或在 CLI 使用：
+
+```bash
+.venv/bin/python run.py --model fixie-ai/ultravox-v0_5-llama-3_2-1b \
+  --model-spec examples/multimodal/ultravox.model.json \
+  --profiling-mode basic --cpus 2 --mems 12 --gpus on \
+  --input-scales 1 --batch-size 1 --warmup 1 --repeat 2 \
+  --repeat-in-window 1 --notify none --output-dir results/ultravox-basic
+```
+
+此命令是配置示例，不表示完整 checkpoint 已验证通过；声明后的状态仍为 `candidate`，
+加载、预处理、推理和输出验证均成功后才成为本次运行的 `verified`。
 
 ## 扩展声明与按需加载
 
@@ -538,6 +607,10 @@ Docker 查询只在上述空闲窗口执行，不增加正式测量窗口内的�
 
 镜像内 `/models/model_download_plan.json` 保存所选文件、排除文件、选择原因、框架版本、文件 SHA256 和清单 SHA256。文件大小／内容检查在构建阶段执行，清单写入 `static_meta.json/runtime_environment/model_download`；正式 server 启动不会再次扫描、下载或校验全部权重。`model_cache_bytes` 统计实际缓存 artifacts，`docker_image_bytes` 包含该镜像继承的共享层；判断磁盘节省应查看 `docker system df -v` 的共享／独占占用。保留旧镜像时，它引用的大层仍会占用空间。
 
+声明离线依赖时，下载计划另含 `dependencies[].download` 子清单和 `total_selected_bytes`；
+原 `selected_bytes` 仍只统计主 snapshot，新增总量包括主模型和依赖。子清单分别固定 commit、
+文件大小和 SHA256，并纳入父清单哈希；没有依赖的历史 v1 清单继续有效。
+
 实现参考 [Hugging Face Hub 0.36.2 文件筛选](https://github.com/huggingface/huggingface_hub/blob/v0.36.2/src/huggingface_hub/_snapshot_download.py)、[Transformers 4.57.6 权重解析](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/modeling_utils.py)、[Diffusers 0.39.0 组件下载](https://github.com/huggingface/diffusers/blob/v0.39.0/src/diffusers/pipelines/pipeline_utils.py)（Apache-2.0）和 [Docker 分层缓存](https://docs.docker.com/build/cache/optimize/)。复用现有 Hub 下载和重试机制，以标准库实现有边界的文件规划；不绑定框架私有下载入口，不在主机新增推理框架依赖。
 
 ## 新增一个模型适配
@@ -771,13 +844,13 @@ CV 可使用 `--workload-spec` 指定图片、视频帧、候选标签、姿态�
 
 | Hugging Face 任务 | 后端 / 任务族 | 适配范围与默认输入尺度 |
 | --- | --- | --- |
-| `audio-text-to-text` | Transformers / `multimodal` | 原生 Auto 文本生成模型及其音频 chat processor，如 Voxtral、Qwen2 Audio、Qwen2.5 Omni Thinker；MOSS 保留独立 adapter；真实语音＋文字；1、2、5、10 秒 |
-| `image-text-to-text` | Transformers / `multimodal` | `AutoModelForImageTextToText` 支持且带 chat template 的原生模型；224、336、448 像素输入边长 |
+| `audio-text-to-text` | Transformers / `multimodal` | 原生 Auto 文本生成模型及其音频 chat processor，如 Voxtral、Qwen2 Audio、Qwen2.5 Omni Thinker；或声明多模态接口的 custom pipeline；MOSS 保留独立 adapter；真实语音＋文字；1、2、5、10 秒 |
+| `image-text-to-text` | Transformers / `multimodal` | `AutoModelForImageTextToText` 支持且带 chat template 的原生模型，或声明多模态接口的 custom pipeline；224、336、448 像素输入边长 |
 | `image-text-to-image` | Diffusers / `diffusion` | 原生同时接收 `image` 和 `prompt` 的图像编辑／Img2Img pipeline；128–512 像素输出边长 |
 | `image-text-to-video` | Diffusers / `diffusion` | 原生同时接收图像和文本的 CogVideoX、Wan 等 I2V pipeline；方形帧，默认固定 17 帧 |
 | `visual-question-answering` | Transformers / `multimodal` | 原生 VQA pipeline，区分分类式与生成式回答；224、336、448 像素 |
 | `document-question-answering` | Transformers / `multimodal` | 原生 DocQA pipeline；内置可读票据与词框；外部文档须给出 OCR 词和坐标 |
-| `video-text-to-text` | Transformers / `multimodal` | 同时支持视频 processor 和图文生成 Auto 类的模型；2、4、8 帧，固定 2 FPS |
+| `video-text-to-text` | Transformers / `multimodal` | 同时支持视频 processor 和图文生成 Auto 类的模型，或声明多模态接口的 custom pipeline；2、4、8 帧，固定 2 FPS |
 | `visual-document-retrieval` | Transformers / `multimodal` | ColPali、ColQwen2；每次编码一个 query 和一页文档，再计算 MaxSim 分数 |
 | `any-to-any` | Transformers / `multimodal` | Qwen2.5 Omni 的文字／图像／音频／视频输入 → 文字＋音频输出；默认输入为语音＋文字 |
 

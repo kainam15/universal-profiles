@@ -66,6 +66,25 @@ def validate_plan(plan: dict) -> None:
         if any(not isinstance(item.get("size"), int) or item["size"] < 0 or
                not re.fullmatch(r"[0-9a-f]{64}", str(item.get("sha256", ""))) for item in files):
             raise ModelFilesError("verified model download plan has incomplete file hashes")
+    if "dependencies" in plan:
+        from acprof.model_spec import validate_dependencies
+        dependencies = plan["dependencies"]
+        try:
+            validate_dependencies([{key: value for key, value in item.items() if key != "download"}
+                                   for item in dependencies])
+            for item in dependencies:
+                child = item["download"]
+                if (child.get("dependencies") or child.get("model_id") != item["repo_id"]
+                        or child.get("model_revision") != item["revision"]
+                        or (plan.get("verification") == "sha256" and child.get("verification") != "sha256")):
+                    raise ValueError("dependency snapshot identity or verification differs")
+                validate_plan(child)
+            sizes = [plan.get("selected_bytes"), *(item["download"].get("selected_bytes") for item in dependencies)]
+            total = sum(sizes) if all(isinstance(size, int) for size in sizes) else None
+            if "total_selected_bytes" not in plan or plan["total_selected_bytes"] != total:
+                raise ValueError("dependency total_selected_bytes differs from file plans")
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise ModelFilesError(f"invalid model dependency plan: {exc}") from exc
 
 
 def _checkpoint(names: set[str], read_json: Callable, prefix: str, *, diffusion: bool = False) -> dict | None:

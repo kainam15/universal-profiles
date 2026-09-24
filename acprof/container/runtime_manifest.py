@@ -65,6 +65,19 @@ def collect_manifest() -> dict:
             raise RuntimeError(f"model download plan differs from runtime: {key}")
     if any(not (source / item["path"]).is_file() for item in download["files"]):
         raise RuntimeError("model snapshot is missing files from its download plan")
+    from acprof.model_spec import load_model_dependencies
+    dependencies = download.get("dependencies", [])
+    if [{key: value for key, value in item.items() if key != "download"} for item in dependencies] != load_model_dependencies():
+        raise RuntimeError("model dependency plan differs from the baked declaration")
+    cache_root = Path(os.getenv("HF_HUB_CACHE", str(Path(os.getenv("HF_HOME", "/models/hf")) / "hub")))
+    for item in dependencies:
+        cache = cache_root / ("models--" + item["repo_id"].replace("/", "--"))
+        reference = cache / "refs/main"
+        snapshot = cache / "snapshots" / item["revision"]
+        if not reference.is_file() or reference.read_text().strip() != item["revision"]:
+            raise RuntimeError("offline model dependency revision differs from its pinned plan")
+        if any(not (snapshot / record["path"]).is_file() for record in item["download"]["files"]):
+            raise RuntimeError("offline model dependency is missing files from its download plan")
     return {
         **dependency,
         "schema_version": 1,

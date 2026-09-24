@@ -361,6 +361,13 @@ def compose_run_tab(app: AcprofTui) -> ComposeResult:
                         id="backend",
                         classes="config-control",
                     ))
+                    yield app._localized_widget(Label("模型接口声明"))
+                    yield app._localized_widget(Input(
+                        value=app.initial_config.model_spec,
+                        placeholder="模型接口 JSON，可留空",
+                        id="model-spec",
+                        classes="config-control",
+                    ))
                     yield app._localized_widget(Label("Workload manifest"))
                     yield app._localized_widget(Input(
                         value=app.initial_config.workload_spec,

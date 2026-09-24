@@ -614,6 +614,7 @@ class AcprofTui(BarCursorApp):
             gpus=self._select("gpus"),
             input_scales=self._input("input-scales"),
             workload_spec=self._input("workload-spec"),
+            model_spec=self._input("model-spec"),
             output_dir=self._input("output-dir"),
             batch_size=self._input("batch-size"),  # normalized by RunConfig
             warmup=warmup,
@@ -652,6 +653,7 @@ class AcprofTui(BarCursorApp):
             "mems": config.mems,
             "input-scales": config.input_scales,
             "workload-spec": config.workload_spec,
+            "model-spec": config.model_spec,
             "output-dir": config.output_dir,
             "batch-size": str(config.batch_size),
             "warmup-repeat": f"{config.warmup},{config.repeat}",

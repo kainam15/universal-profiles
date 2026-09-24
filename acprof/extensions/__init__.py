@@ -139,7 +139,12 @@ class ExtensionCatalog:
                 f"No registered runtime/adapter for {task_info.pipeline_tag} architecture {model_type!r}"
             )
         if declaration.require_registered_custom_architecture and not supported and (config.get("auto_map") or {}).get("AutoConfig"):
-            raise UnsupportedExtensionError("Custom multimodal architecture requires a registered runtime/adapter")
+            from acprof.model_spec import declared_multimodal_pipeline
+            if not declared_multimodal_pipeline(task_info):
+                raise UnsupportedExtensionError(
+                    "Custom multimodal architecture requires a registered runtime/adapter or "
+                    "--model-spec declaring its multimodal custom pipeline protocol"
+                )
         return declaration
 
     def default_backend(self, task: str, family: str, library: str, current: str) -> str:

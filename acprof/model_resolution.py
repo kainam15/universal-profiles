@@ -232,12 +232,15 @@ def resolve_model_interface(task_info: Any) -> dict:
         raise ValueError(f"custom code is absent from snapshot: {sorted(code_files - files)}")
     pipeline_name = spec.get("pipeline_task", task_info.pipeline_tag)
     if spec.get("format") == "transformers-pipeline":
-        if task_info.task_family not in {"nlp", "cv", "audio"} or task_info.pipeline_tag in {
+        from acprof.model_spec import declared_multimodal_pipeline
+        if (task_info.task_family not in {"nlp", "cv", "audio"} and not declared_multimodal_pipeline(task_info)) or task_info.pipeline_tag in {
             "video-classification", "keypoint-detection", "sentence-similarity", "text-ranking",
         }:
             raise ValueError("custom pipeline needs an adapter for this task protocol")
         if pipeline_name not in (config.get("custom_pipelines") or {}):
             raise ValueError(f"pipeline_task {pipeline_name!r} is not declared in config.custom_pipelines")
+    if any(item["repo_id"] == task_info.model_id for item in spec.get("dependencies", [])):
+        raise ValueError("model dependencies must not override the primary snapshot")
     format_name, loader, operation = "unknown", backend, "predict"
     if backend in {"transformers_model", "transformers_pipeline", "sentence_transformers", "cross_encoder"}:
         # Unknown ecosystem tags may still wrap a registered native checkpoint;
