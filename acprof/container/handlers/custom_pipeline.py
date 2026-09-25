@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from acprof.model_spec import pipeline_task
+from acprof.model_transforms import transform_inputs
 
 
 def load_custom_pipeline(model_source, task_type, device, dtype, spec, attention_options):
@@ -37,7 +38,7 @@ def pipeline_inputs(model_ctx, content, media_kwargs):
         if plural in media_kwargs:
             values[name] = media_kwargs[plural][0]
     values.update({key: media_kwargs[key] for key in ("sampling_rate", "fps") if key in media_kwargs})
-    payload = {target: values[source] for target, source in model_ctx["pipeline_protocol"]["inputs"].items()}
+    payload = transform_inputs(model_ctx["pipeline_protocol"]["inputs"], values)
     inputs = model_ctx["pipeline"].preprocess(payload)
     if not isinstance(inputs, Mapping):
         raise ValueError("custom multimodal preprocess must return a tensor mapping")

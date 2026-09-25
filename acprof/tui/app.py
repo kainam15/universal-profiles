@@ -196,6 +196,8 @@ class AcprofTui(BarCursorApp):
         self._stop_requested = False
         self._latest_snapshot = ProgressSnapshot()
         self._check_running = False
+        self._resolution_open = False
+        self._last_resolution = None
         self._form_ready = False
         self._applying_config = False
         self._preview_timer = None
@@ -732,7 +734,8 @@ class AcprofTui(BarCursorApp):
 
     def _is_busy(self) -> bool:
         with self._process_lock:
-            return self._process is not None or bool(self._process_kind) or self._report_loading or bool(self._image_operation)
+            return (self._process is not None or bool(self._process_kind) or self._report_loading
+                    or bool(self._image_operation) or self._resolution_open)
 
     def _set_busy(self, busy: bool) -> None:
         # Configuration changes during a run can queue preview redraws and
@@ -753,6 +756,7 @@ class AcprofTui(BarCursorApp):
             "#start-run",
             "#probe-largest",
             "#quick-check",
+            "#inspect-model",
             "#summarize-results",
             "#plot-results",
             "#profile-dry-run",
@@ -1370,6 +1374,48 @@ class AcprofTui(BarCursorApp):
     @on(Button.Pressed, "#quick-check")
     def quick_check_button(self) -> None:
         self.action_quick_check()
+
+    @on(Button.Pressed, "#inspect-model")
+    def inspect_model(self) -> None:
+        if self._is_busy() or self._check_running or self._latest_snapshot.measurement_active:
+            return
+        config = RunConfig(model=self._input("model"), model_spec=self._input("model-spec"),
+                           task=self._input("task"), backend=self._input("backend"),
+                           output_dir=self._input("output-dir") or "results")
+        if not config.model:
+            self.notify("请先填写模型 ID", severity="warning")
+            return
+        from acprof.tui.model_resolution import ModelResolutionScreen
+        task = None
+        previous = self._last_resolution
+        if (previous and previous["task"].model_id == config.model and str(previous["spec"]) == config.model_spec
+                and previous.get("selection") == {"task": config.task, "backend": config.backend}):
+            import json
+            task = previous["task"]
+            report_path = previous["output"] / "model_resolution.json"
+            try:
+                resolution = json.loads(report_path.read_text())
+                if resolution.get("contract", {}).get("revision") == task.model_revision:
+                    task.model_resolution = resolution
+            except (OSError, ValueError):
+                pass
+        self._resolution_open = True
+        self._set_busy(True)
+        self.push_screen(ModelResolutionScreen(config, task=task), self._resolution_closed)
+
+    def _resolution_closed(self, result) -> None:
+        self._resolution_open = False
+        self._set_busy(False)
+        if not result:
+            return
+        self._last_resolution = result
+        self.query_one("#model-spec", Input).value = str(result["spec"])
+        if result["probe"]:
+            from acprof.installation import cli_command
+            command = [*cli_command("inspect", python_executable=PYTHON_EXECUTABLE), result["task"].model_id,
+                       "--model-spec", str(result["spec"]), "--expected-revision", result["task"].model_revision,
+                       "--probe", result["probe"], "--output-dir", str(result["output"]), "--skip-build"]
+            self._launch(PendingLaunch(tuple(command), "inspect"))
 
     def action_quick_check(self) -> None:
         if self._is_busy() or self._check_running:

@@ -12,7 +12,7 @@ from acprof import __version__
 
 COMMANDS = {
     "run": "run", "tui": "tui", "probe": "probe", "plot": "plot", "doctor": "doctor",
-    "profile": "posthoc", "audit": "audit", "stats": "stats",
+    "profile": "posthoc", "audit": "audit", "stats": "stats", "inspect": "inspect",
 }
 WORKERS = {"acprof.host.client", "acprof.packet.sniff_parse_pcap",
            "acprof.packet.merge_packet_latency"}

@@ -45,8 +45,8 @@ def collect_source_evidence(task_info, evidence: ModelEvidence, config: dict,
                             read_text: Callable[[str], str]) -> dict[str, str]:
     files = set(task_info.repository_files)
     queue = custom_code_files(config)
-    for metadata in task_info.repository_metadata.values():
-        if isinstance(metadata, dict):
+    for name, metadata in task_info.repository_metadata.items():
+        if name != "config.json" and isinstance(metadata, dict):
             queue.extend(custom_code_files(metadata))
     sources, total = {}, 0
     while queue:

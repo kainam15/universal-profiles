@@ -113,7 +113,8 @@ vendor 模式的 CPU Advisor 同样适用。阶段状态区分成功、部分失
 ## CLI 参数
 
 安装后的统一入口为 `acprof <command>`；公共子命令有 `run`、`tui`、`probe`、`plot`、
-`doctor`、`profile`、`audit`、`stats`。根脚本仍用于源码运行，参数定义相同。
+`doctor`、`profile`、`audit`、`stats`、`inspect`。现有根脚本仍用于源码运行；所有子命令也可用
+`python -m acprof <command>` 调用。
 `acprof --version` 查看版本，`acprof <command> --help` 查看对应帮助。
 
 ### `acprof doctor`
@@ -140,6 +141,25 @@ vendor 模式的 CPU Advisor 同样适用。阶段状态区分成功、部分失
 默认值与实际选项以当前入口的 `--help` 和 [acprof/config.py](../acprof/config.py) 为准。
 
 [run.py](#runpy) · [probe.py](#probepy) · [profile.py](#profilepy) · [其他入口](#其他入口) · [输入规模与音频清单](#输入规模与音频清单)
+
+### `acprof inspect`
+
+`acprof inspect MODEL --explain` 显示固定 revision、字段来源和未决项；默认只解析文本，不运行模型。
+`--output-dir DIR` 导出 `model_resolution.json`。静态有缺口时退出码为 2，保留 draft。
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `--model-spec`、`--task`、`--backend` | 自动解析 | 声明或选择覆盖，仍检查冲突 |
+| `--expected-revision` | 空 | 要求当前模型 SHA 与已审阅 SHA 相同，变更时拒绝 |
+| `--probe none/basic/full` | `none` | basic 导入／签名；full 最小尺度的一次实际推理 |
+| `--cpus`、`--mems` | `2`、`4` | Probe 的 CPU 核数与 GiB 内存上限，各为单个正整数 |
+| `--gpus off/on` | `off` | basic 只支持 CPU；full 可显式开启 GPU |
+| `--timeout-seconds` | `300` | 单次验证容器超时；不包含镜像构建时间 |
+| `--skip-build` | 关闭 | 复用身份匹配的镜像，不存在时构建 |
+
+Probe 未指定输出目录时使用独立的 `results/inspection/` 子目录；已有验证结果的目录不能复用。
+验证失败或资源不足退出码为 1。准备镜像可能下载模型，Probe 本身断网且不生成测量 CSV。
+契约、依赖与输入模板边界见[自动生成模型契约](Runtime_Compatibility.md#自动生成模型契约m1m6)。
 
 ### `run.py`
 

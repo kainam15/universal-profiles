@@ -58,6 +58,18 @@ def translate(source: str, language: str) -> str:
 
 
 ENGLISH: dict[str, str] = {
+    "模型契约": "Model contract",
+    "解析与验证": "Resolve and validate",
+    "模型契约解析": "Model contract resolution",
+    "正在读取模型证据……": "Reading model evidence...",
+    "填写此字段的 JSON 值": "Enter the JSON value for this field",
+    "没有待确认字段；静态解析不代表推理已验证。": "No unresolved fields; static resolution does not verify inference.",
+    "源码或选择仍有歧义，请提供本地模型声明或 adapter。": "Source or selection is ambiguous; provide a local model spec or adapter.",
+    "已解析字段与证据": "Resolved fields and evidence",
+    "Probe 使用 CPU 2 核、4 GiB、300 秒上限；可能构建镜像和下载模型。": "Probe: 2 CPU cores, 4 GiB, 300 s timeout; may build an image and download the model.",
+    "应用字段": "Apply fields",
+    "使用契约": "Use contract",
+    "请先填写模型 ID": "Enter a model ID first",
     "读取结果 CSV，查看摘要或生成图表。": "Read a result CSV to review the summary or generate plots.",
     "镜像管理": "Images",
     "镜像树": "Tree",

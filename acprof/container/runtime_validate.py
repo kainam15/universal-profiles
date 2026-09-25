@@ -67,7 +67,7 @@ def validate(payload: dict, *, stages: list[dict] | None = None) -> dict:
     validation = check("validate_output", validate_output)
     runtime_metadata = check("metadata", execution.metadata)
     return {
-        "status": "ok", "device": device, "stages": stages,
+        "status": "ok", "mode": "full", "device": device, "stages": stages,
         "dtype": str(getattr(context.get("model"), "dtype", context.get("dtype", "unknown"))),
         "attention_implementation": context.get("attention_implementation", "model_default"),
         **runtime_metadata, "validation": validation,
@@ -84,7 +84,12 @@ def main() -> int:
     stages = []
     try:
         with open(sys.argv[1], encoding="utf-8") as stream:
-            result = validate(json.load(stream), stages=stages)
+            payload = json.load(stream)
+        if os.getenv("ACPROF_CONTRACT_PROBE_MODE", "full") == "basic":
+            from acprof.container.model_probe import validate_basic
+            result = validate_basic(payload)
+        else:
+            result = validate(payload, stages=stages)
     except Exception as exc:
         traceback.print_exc()
         result: dict[str, Any] = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}

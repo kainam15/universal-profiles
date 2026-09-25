@@ -91,7 +91,8 @@ def _synthesize(config: dict, sources: dict[str, str], evidence: ModelEvidence, 
     return draft
 
 
-def resolve_model_contract(task_info, read_text: Callable[[str], str]) -> dict | None:
+def resolve_model_contract(task_info, read_text: Callable[[str], str], *, resolve_repository=None,
+                           selected_pipeline: str | None = None) -> dict | None:
     """Attachable provenance; existing author specs bypass source synthesis."""
     config = (task_info.repository_metadata or {}).get("config.json", task_info.model_config or {})
     spec = task_info.model_spec or (task_info.repository_metadata or {}).get("acprof_model.json", {})
@@ -126,20 +127,27 @@ def resolve_model_contract(task_info, read_text: Callable[[str], str]) -> dict |
         pipelines = config.get("custom_pipelines")
         if not isinstance(pipelines, dict) or not pipelines:
             evidence.unresolved("pipeline_task", "custom_pipelines must be a nonempty object", "config.json")
-        elif len(pipelines) != 1:
+        elif selected_pipeline is not None and selected_pipeline not in pipelines:
+            evidence.unresolved("pipeline_task", "selected Pipeline is not declared", "user.review")
+        elif len(pipelines) != 1 and selected_pipeline is None:
             evidence.add("pipeline_task", None, "ambiguous", "config.json:/custom_pipelines",
                          reason=f"multiple custom pipelines: {sorted(pipelines)}; select one with --model-spec")
         else:
             try:
-                sources = collect_source_evidence(task_info, evidence, config, read_text)
+                selected = {**config, "custom_pipelines": {selected_pipeline: pipelines[selected_pipeline]}} if selected_pipeline else config
+                sources = collect_source_evidence(task_info, evidence, selected, read_text)
                 evidence.add("custom_code", {"required": True, "files": sorted(sources),
                                              "revision": task_info.model_revision}, "declared", "config.json")
-                draft = _synthesize(config, sources, evidence, task)
+                draft = _synthesize(selected, sources, evidence, task)
+                if selected_pipeline:
+                    evidence.add("pipeline_task", selected_pipeline, "declared", "user.review")
                 if evidence.dependency_candidates:
-                    repos = sorted({item["repo_id"] or item.get("expression", "dynamic")
-                                    for item in evidence.dependency_candidates})
-                    evidence.unresolved("dependencies", "dependency candidates need explicit pinned declarations: " +
-                                        ", ".join(repos), "source/config analysis")
+                    from acprof.model_dependencies import resolve_dependencies
+                    dependencies, errors = resolve_dependencies(evidence.dependency_candidates, resolve_repository)
+                    if dependencies:
+                        draft["dependencies"] = dependencies
+                    evidence.add("dependencies", dependencies, "unresolved" if errors else "derived",
+                                 "source/config analysis + pinned Hub file listing", reason="; ".join(errors))
             except (OSError, ValueError, TypeError, KeyError) as exc:
                 evidence.unresolved("pipeline.source", str(exc), "pinned source analysis")
     from acprof.runtime_profiles import ENVIRONMENTS, _transformers_version
@@ -147,8 +155,10 @@ def resolve_model_contract(task_info, read_text: Callable[[str], str]) -> dict |
     return evidence.report(draft_spec=draft, transformers_version=version)
 
 
-def apply_model_contract(task_info, read_text: Callable[[str], str], *, override_tag=None, override_backend=None) -> None:
-    report = resolve_model_contract(task_info, read_text)
+def apply_model_contract(task_info, read_text: Callable[[str], str], *, override_tag=None, override_backend=None,
+                         resolve_repository=None, selected_pipeline=None) -> None:
+    report = resolve_model_contract(task_info, read_text, resolve_repository=resolve_repository,
+                                    selected_pipeline=selected_pipeline)
     task_info.model_resolution.pop("generated_spec", None)
     if report is None:
         return
@@ -174,3 +184,22 @@ def write_model_resolution(task_info, output_dir: str | Path) -> Path:
     path = root / "model_resolution.json"
     atomic_write_json(path, task_info.model_resolution)
     return path
+
+
+def record_runtime_validation(task_info, report: dict) -> None:
+    """Keep runtime facts scoped to the actual image, mode, payload and devices."""
+    from acprof.model_evidence import content_digest
+    contract = task_info.model_resolution["contract"]
+    mode = report["mode"]
+    passed = report["status"] == "ok"
+    status = ("verified" if mode == "full" else "basic_verified") if passed else report["status"]
+    contract["runtime_validation"] = {
+        "status": status, "mode": mode, "image_id": report["image_id"],
+        "build_fingerprint": report["build_fingerprint"], "payload_sha256": report["payload_sha256"],
+        "report_sha256": content_digest(report), "devices": copy.deepcopy(report["devices"]),
+    }
+    # Runtime evidence does not change the static cache identity or erase gaps.
+    contract["fields"]["runtime." + mode] = {
+        "state": "verified" if passed else "unresolved", "value": status,
+        "sources": ["runtime_validation.json"], "image_id": report["image_id"],
+    }

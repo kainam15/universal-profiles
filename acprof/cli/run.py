@@ -820,7 +820,8 @@ def _run_main():
                 capability_report, validation,
                 environment_id=image_info.runtime_environment.get("environment_id", ""),
             )
-            static_meta = enrich_static_meta(static_meta, {"runtime_validation": validation})
+            static_meta = enrich_static_meta(static_meta, {"runtime_validation": validation,
+                                                         "model_resolution": task_info.model_resolution})
             write_static_meta_json(static_meta, static_meta_json)
         except (RuntimeError, OSError, ValueError) as exc:
             print(f"[runtime-check][ERROR] {exc}", file=sys.stderr)

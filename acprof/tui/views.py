@@ -171,6 +171,9 @@ def compose_run_tab(app: AcprofTui) -> ComposeResult:
                         classes="config-control",
                     ))
 
+                    yield app._localized_widget(Label("模型契约"))
+                    yield app._localized_widget(Button("解析与验证", id="inspect-model"))
+
                     yield app._localized_widget(Label("运行预设"))
                     yield app._localized_select(
                         (

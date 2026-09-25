@@ -231,7 +231,8 @@ print(json.dumps(task_model_spec(task)))
         self.tokenizer = AutoTokenizer.from_pretrained("example/tokenizer")
 ''')
         config = dict(CONFIG, audio_model_id="example/audio")
-        task = self.discover(source, config)
+        with patch("acprof.host.detect.dependency_metadata", side_effect=OSError("metadata unavailable")):
+            task = self.discover(source, config)
         self.assertEqual(task.model_resolution["status"], "needs_configuration")
         report = task.model_resolution["contract"]
         self.assertEqual(report["draft_spec"], EXPECTED)

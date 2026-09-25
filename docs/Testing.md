@@ -236,6 +236,13 @@ git diff --check
 ```
 
 第二条命令核验锁定环境并在断网 CPU 容器执行加载、预处理、推理及输出验证，拒绝跳过。
+同一容器测试还覆盖 basic 仅导入／签名、不加载权重，以及经显式审阅生成的嵌套 `turns` 模板。
+M4～M6 的主机回归使用 `test_model_dependencies.py`、`test_model_review.py`、`test_model_transforms.py`、
+`test_model_probe.py`、`test_model_inspection.py`：覆盖依赖角色／SHA／过滤、条件和动态路径、逐字段决策、
+DSL 深度和引用限制、只读断网命令、证据完整性、CLI 导出及失败状态。TUI 的字段编辑、导出、
+Probe 子进程交接、语言／resize 和测量禁用由 `test_tui_model_resolution.py` 在三种终端尺寸验证。
+真实断网容器检查之外，外部依赖验收应保留 Hub SHA、实际选择文件和缓存内容，确认未下载无关权重；
+真实只读 Probe 应使用独立测试镜像和目录，不能只用 mock Docker 命令代替。
 真实 Ultravox 的静态 draft 验证不下载权重、不证明依赖完备或大模型推理成功；GPU／profiler
 需各自取得运行证据，不能从这项 CPU fixture 验证外推。
 

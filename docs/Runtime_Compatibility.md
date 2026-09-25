@@ -142,7 +142,7 @@ Auto 注册表选择 `AutoModelForSeq2SeqLM` 或 `AutoModelForImageTextToText`�
 仓库也提前拒绝；本阶段没有增加这些制品的加载器。pyannote、SB3、LeRobot 等生态不能仅凭
 Hub task 标签当作 Transformers 模型加载。
 
-### 自动生成模型契约（M1～M3）
+### 自动生成模型契约（M1～M6）
 
 未提供本地或作者 `acprof_model.json` 时，`detect_task` 对声明了唯一 `custom_pipelines` 的
 音频／图像／视频转文字任务收集证据，再生成兼容现有 schema v1 的 draft。
@@ -159,7 +159,7 @@ Hub cache 的固定 snapshot 后才分析内容。AST 沿声明文件和相对 i
 - 本类直接定义的 `preprocess`、`_sanitize_parameters`、`_forward`、`postprocess`。
 - `inputs["key"]`、`inputs.get("key", literal_default)`，保留必填性、默认值和来源行。
   媒体字段沿用 canonical 名称；字符串文字输入接受 `text` 或 `prompt` 的字符串默认值。
-  需要 `messages`／`turns` 等嵌套结构时保留缺口，不把字符串映射成对话列表。
+  需要 `messages`／`turns` 等嵌套结构时保留缺口，通过下述输入模板表达，不把字符串直接映射成对话列表。
 - sanitize 的 literal key 集合与 forward 的明确参数签名。生成上限必须直接传入
   `generate(max_new_tokens=max_new_tokens)`；确定性来自显式 `do_sample` 参数，或源码中
   `temperature = temperature or None`、`do_sample = temperature is not None` 的直接赋值链。
@@ -168,38 +168,77 @@ Hub cache 的固定 snapshot 后才分析内容。AST 沿声明文件和相对 i
 
 `model_resolution.contract` 保存独立 provenance：字段的 `value/state/sources`、源文件 hash、
 resolver 版本、锁定环境的 Transformers 版本、draft、依赖候选和未解决字段。状态为
-`declared/derived/verified/ambiguous/unresolved`；本阶段只产生静态证据，绝不产生 `verified`。
+`declared/derived/verified/ambiguous/unresolved`；静态分析只产生声明或推导，`verified` 来自实际 Probe。
 `contract.status=resolved` 表示静态契约完整，外层仍为 `candidate`；真实执行证据继续保存在
 独立 `runtime_validation`。冲突或缺口使外层成为 `ambiguous/needs_configuration`，并在构建前停止。
-`contract.status=needs_confirmation` 汇总未决字段，本阶段没有新增交互确认窗口。
+`contract.status=needs_confirmation` 汇总未决字段；TUI 的“解析与验证”只编辑这些字段，已解析证据默认折叠。
+输入映射和依赖选择写入 `reviews`，来源标为 `user.review`；多 Pipeline 选择会在同一 SHA 上重新分析。
+动态源码、任务冲突等不能由当前字段编辑器解决的问题仍要求显式声明／adapter。
 
 只有无缺口的 draft 才进入 `generated_spec`，由已有模型声明入口传给镜像指纹、通用 handler、
 server 和 profiler；不会修改作者文件或 Hub snapshot。正式运行在准备阶段导出
 `model_resolution.json`，同时保留 `static_meta.json.model_resolution`。单独查看失败 draft 可使用：
 
-```python
-from acprof.host.detect import detect_task
-from acprof.model_contract import write_model_resolution
-
-task = detect_task("fixie-ai/ultravox-v0_5-llama-3_2-1b")
-write_model_resolution(task, "internal-testing/model-resolution")
+```bash
+acprof inspect fixie-ai/ultravox-v0_5-llama-3_2-1b --explain \
+  --output-dir internal-testing/model-resolution
 ```
 
 `cache_key` 包含模型 ID、SHA、resolver 版本、Transformers 版本和证据内容；AST 分析按源文本在
-进程内缓存，Hub 文件复用其内容缓存。本阶段没有跨进程的解析结果缓存，也不复用旧运行验证。
+进程内缓存，Hub 文件复用其内容缓存。依赖 SHA、文件选择和用户决策也参与静态身份；没有跨进程的
+解析结果缓存，也不复用旧运行验证。运行观察单独追加，不改变已经建立的静态身份。
 JSON 元数据 hash 使用 canonical JSON；Python／README hash 使用所分析的 UTF-8 文本，报告会标明前者。
 
 外部 `from_pretrained` 调用按 tokenizer、processor、metadata、weights 等角色记录候选；
-config 中的模型引用和动态表达式也会保留。候选不证明运行时必需，不自动下载权重、不猜 SHA，
-也不自动生成 `allow_patterns`。Ultravox 可以生成 `prompt ← text`、音频／采样率映射和
-`max_new_tokens`／`temperature=0`，其外部依赖仍需[显式固定声明](#外部模型与-processor-的离线依赖)。
-依赖自动闭包、独立 Probe、TUI 按缺口编辑和输入 Transform DSL 属于后续阶段。
+config 中的模型引用和动态表达式也会保留。明确的 repo／loader 通过 Hub 自动固定 SHA，按角色生成
+兼容 v1 的 `dependencies/allow_patterns`：tokenizer／processor 只选根目录配置、词表和模板，以及
+单层 `chat_templates/`；不会因名称前缀匹配而选中子目录快照或权重。metadata
+只选 `config.json`；weights 选择一个标准 Transformers 权重格式。实际下载继续使用镜像构建阶段的
+既有 planner、文件 hash 和离线缓存，主机解析不下载权重。最多 16 个依赖，每个最多 128 个文件。
+候选不等于运行时必需，`pinned` 也不代表文件已下载。条件分支、动态 kwargs／repo、未知 loader、
+多个 revision、非默认分支别名及无法匹配的文件结构保持未决。TUI 依赖项只需给出 `repo_id/role`，
+可用 `required:false` 明确排除未使用的候选；SHA 和 patterns 自动补齐，不推断任意 Python 依赖闭包。
+作者已固定的依赖不会重新解析。Ultravox 的 prompt／音频／生成参数可以静态生成；训练分支、
+fallback 和动态 helper 涉及的依赖仍可能需要确认，不下载所有候选基础模型来掩盖缺口。
+
+`acprof inspect MODEL --probe basic` 在镜像内导入固定代码并绑定实际方法签名，不实例化模型权重、
+不执行 preprocess 或推理。`--probe full` 使用默认 workload 的最小尺度、一个输出 token，执行
+load → preprocess → predict → postprocess → 输出验证。两者默认 CPU 2 核、4 GiB，单次容器上限
+300 秒；准备镜像仍可能下载模型。Probe 使用断网、只读镜像／snapshot／依赖缓存、临时 `/tmp`、
+移除 capabilities 和禁止提升权限；不挂载主机项目、凭据或 Docker socket，只挂载只读请求。
+生成动态模块缓存使用 `/tmp/hf-modules`。同一用户的采集锁防止独立 Probe 与正式实验同时运行。
+
+Probe 写入 `contract_probe_input.json`、`runtime_validation.json` 和设备日志，并更新
+`model_resolution.contract.runtime_validation` 的 mode、image ID、build fingerprint、payload hash 与设备证据。
+basic 成功为 `basic_verified`，full 成功为 `verified`；失败／OOM 保留错误或资源限制，不产生正式 CSV。
+正式采集仍执行自身的完整 runtime validation，不能复用 basic 结果或将其外推为 GPU／profiler 支持。
+TUI 的 Probe 交给现有子进程管理器，支持停止；复查时若主模型 SHA 已变化会拒绝执行。
+
+输入 DSL 在 schema v1 中兼容旧字符串重命名，并增加 `from`、`literal` 和 `template`：
+
+```json
+{
+  "turns": {"template": [{"role": "user", "content": {"from": "text"}}]},
+  "audio": {"from": "audio"},
+  "sampling_rate": "sampling_rate",
+  "speaker": {"literal": "user"}
+}
+```
+
+以上对象放在 `multimodal.inputs`。所有任务要求的 canonical 输入必须被引用；模板只允许 JSON
+结构和已知输入引用，最多 8 层、256 个节点、每个容器 32 项、字符串 4096 字符，整份 spec 仍限
+64 KiB。无 Python、eval、文件／环境访问或字符串插值；每次生成新容器结构，媒体数据保持原值。
+转换在既有 preprocess 阶段完成，server 与 profiler 共用 handler。
 
 实现借鉴 [Transformers 4.57.6 Pipeline](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/pipelines/base.py)
 和[动态模块加载边界](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/dynamic_module_utils.py)
 （Apache-2.0），并以 [Ultravox Pipeline](https://github.com/fixie-ai/ultravox/blob/main/ultravox/model/ultravox_pipeline.py)
 （MIT）核对模式。复用接口思想，以标准库 AST 实现受限分析，不复制 loader、不新增主机推理依赖；
 所有下载、解析和报告写入均位于正式测量窗口外。
+
+依赖规划另参考 [Hugging Face snapshot 下载器](https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/_snapshot_download.py)
+（Apache-2.0）的固定 revision 与文件过滤；TUI 使用 [Textual Workers](https://github.com/Textualize/textual/blob/main/docs/guide/workers.md)
+（MIT）的后台任务边界。均复用现有依赖，不复制上游 loader；DSL 是有界 JSON 解释，不引入模板执行引擎。
 
 ### 本地模型声明与自定义 pipeline
 

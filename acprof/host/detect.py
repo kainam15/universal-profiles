@@ -111,6 +111,32 @@ def _repository_metadata(model_id: str, revision: str, info: Any) -> dict[str, A
     return {"repository_files": files, "repository_metadata": metadata, "metadata_errors": tuple(errors)}
 
 
+def dependency_metadata(repo_id: str, revision: str) -> dict:
+    """Resolve dependency identity and file names only; downloads stay in image builds."""
+    from huggingface_hub import HfApi
+    try:
+        info = HfApi().model_info(repo_id, revision=revision, files_metadata=False)
+        return {"revision": info.sha, "files": [item.rfilename for item in info.siblings or []]}
+    except Exception as exc:
+        raise OSError(_format_failure(exc)) from exc
+
+
+def read_model_source(model_id: str, name: str, revision: str) -> str:
+    from acprof.model_evidence import pinned_revision
+    from acprof.model_source_analysis import MAX_SOURCE_BYTES
+    if not pinned_revision(revision):
+        raise ValueError("source analysis requires a fixed commit SHA")
+    try:
+        path = _download_metadata(model_id, name, revision)
+        with open(path, "rb") as stream:
+            data = stream.read(MAX_SOURCE_BYTES + 1)
+        if len(data) > MAX_SOURCE_BYTES:
+            raise ValueError(f"{name} exceeds {MAX_SOURCE_BYTES} bytes")
+        return data.decode("utf-8")
+    except Exception as exc:
+        raise OSError(f"{name}: {_format_failure(exc)}") from exc
+
+
 _HUB_DTYPE_NAMES = {
     "BOOL": "BOOL",
     "F64": "FP64",
@@ -532,21 +558,10 @@ def detect_task(
     info.model_resolution = discover_model_candidates(info, override_tag=override_tag, override_backend=override_backend)
     if not info.metadata_errors:
         from acprof.model_contract import apply_model_contract
-        from acprof.model_source_analysis import MAX_SOURCE_BYTES
         source_revision = info.model_revision
-
-        def read_source(name: str) -> str:
-            try:
-                path = _download_metadata(model_id, name, source_revision)
-                with open(path, "rb") as stream:
-                    data = stream.read(MAX_SOURCE_BYTES + 1)
-                if len(data) > MAX_SOURCE_BYTES:
-                    raise ValueError(f"{name} exceeds {MAX_SOURCE_BYTES} bytes")
-                return data.decode("utf-8")
-            except Exception as exc:
-                raise OSError(f"{name}: {_format_failure(exc)}") from exc
-
-        apply_model_contract(info, read_source, override_tag=override_tag, override_backend=override_backend)
+        apply_model_contract(info, lambda name: read_model_source(model_id, name, source_revision),
+                             override_tag=override_tag, override_backend=override_backend,
+                             resolve_repository=dependency_metadata)
 
     # Apply CLI overrides (highest priority, still checked against declarations).
     if override_tag:

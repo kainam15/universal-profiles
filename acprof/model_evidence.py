@@ -8,7 +8,7 @@ import re
 from typing import Any
 
 
-RESOLVER_VERSION = "pipeline-contract-v1"
+RESOLVER_VERSION = "pipeline-contract-v2"
 FIELD_STATES = {"declared", "derived", "verified", "ambiguous", "unresolved"}
 
 

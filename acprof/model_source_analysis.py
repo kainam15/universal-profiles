@@ -270,7 +270,9 @@ def _config_value(expression: ast.AST | None, config: dict, model_id: str) -> An
 
 def dependency_candidates(source: str, filename: str, config: dict, model_id: str) -> list[dict]:
     result = []
-    for node in ast.walk(parse_source(source, filename)):
+    tree = parse_source(source, filename)
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute) or node.func.attr != "from_pretrained":
             continue
         loader = ast.unparse(node.func.value).rsplit(".", 1)[-1]
@@ -283,9 +285,22 @@ def dependency_candidates(source: str, filename: str, config: dict, model_id: st
         if repo == model_id:
             continue
         valid = isinstance(repo, str) and re.fullmatch(r"[\w.-]+/[\w.-]+", repo, re.ASCII)
+        revision_node = next((kw.value for kw in node.keywords if kw.arg == "revision"), None)
+        requested = _literal(revision_node) if revision_node is not None else "main"
+        if any(kw.arg is None for kw in node.keywords):
+            requested = None
+        ancestor, conditional = node, False
+        while ancestor in parents:
+            ancestor = parents[ancestor]
+            if isinstance(ancestor, (ast.If, ast.IfExp, ast.For, ast.AsyncFor, ast.While, ast.Try,
+                                     getattr(ast, "TryStar", ast.Try), ast.Match, ast.ListComp,
+                                     ast.SetComp, ast.DictComp, ast.GeneratorExp, ast.comprehension)):
+                conditional = True
         result.append({"repo_id": repo if valid else None, "role": role, "loader": loader,
                        "required": "candidate", "state": "derived" if valid else "unresolved",
-                       "source": f"{filename}:{node.lineno}", "expression": ast.unparse(expression) if expression else ""})
+                       "source": f"{filename}:{node.lineno}", "expression": ast.unparse(expression) if expression else "",
+                       "requested_revision": requested if isinstance(requested, str) else None,
+                       "conditional": conditional})
     return result
 
 
