@@ -2,6 +2,7 @@ import math
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -27,6 +28,123 @@ def _write_rapl_domain(
 
 
 class CPUEnergyMonitorTests(unittest.TestCase):
+    def test_topology_retains_subdomains_aliases_and_unreadable_domains(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            package = _write_rapl_domain(tmp, "intel-rapl:0", "package-0")
+            dram = _write_rapl_domain(package, "intel-rapl:0:0", "dram")
+            _write_rapl_domain(package, "intel-rapl:0:1", "core")
+            missing = _write_rapl_domain(tmp, "intel-rapl:1", "package-1")
+            os.unlink(os.path.join(missing, "energy_uj"))
+            os.symlink(dram, os.path.join(tmp, "intel-rapl:0:0"))
+            os.symlink(package, os.path.join(package, "intel-rapl:9"))
+            topology = energy_cpu.discover_rapl_topology(tmp)
+            self.assertEqual(len(topology['domains']), 4)
+            by_id = {d['id']: d for d in topology['domains']}
+            self.assertEqual(by_id['intel-rapl:0:0']['parent_id'], 'intel-rapl:0')
+            self.assertEqual(len(by_id['intel-rapl:0:0']['aliases']), 2)
+            self.assertEqual(by_id['intel-rapl:1']['status'], 'unavailable')
+            self.assertFalse(by_id['intel-rapl:0:1']['selected'])
+
+    def test_dram_uses_adjacent_wraps_and_explicit_request_denominator(self):
+        from acprof.host.client_metrics import _dram_metrics_from_result
+        domains = [energy_cpu.RaplDomain('dram-0', '', 100), energy_cpu.RaplDomain('dram-1', '', 200)]
+        samples = [energy_cpu.CPUSample(0, [1000], 0, None, [90, 180]),
+                   energy_cpu.CPUSample(1, [2000], 0, None, [10, 20]),
+                   energy_cpu.CPUSample(2, [3000], 0, None, [90, 180]),
+                   energy_cpu.CPUSample(3, [4000], 0, None, [10, 20])]
+        result = energy_cpu._dram_result_from_samples(samples, domains, 10e-6)
+        # Domain 0: 20 + 80 + 20 uJ; domain 1: 40 + 160 + 40 uJ.
+        self.assertAlmostEqual(result.window_energy_j, 360e-6)
+        self.assertAlmostEqual(result.window_effective_energy_j, 330e-6)
+        self.assertAlmostEqual(result.avg_power_w, 120e-6)
+        self.assertEqual(result.status, 'verified')
+        metrics = _dram_metrics_from_result(result, 4)
+        self.assertAlmostEqual(metrics['dram_energy_per_request_j'], 90e-6)
+        self.assertAlmostEqual(metrics['dram_effective_energy_per_request_j'], 82.5e-6)
+        self.assertAlmostEqual(metrics['dram_window_energy_j'], 360e-6)
+        self.assertTrue(math.isnan(_dram_metrics_from_result(result, 0)['dram_energy_per_request_j']))
+
+    def test_dram_missing_mid_window_and_unknown_wrap_never_become_zero(self):
+        domain = energy_cpu.RaplDomain('dram', '', 0)
+        for end in (None, [10]):
+            samples = [energy_cpu.CPUSample(0, [1], 0, None, [90]),
+                       energy_cpu.CPUSample(1, [2], 0, None, end)]
+            result = energy_cpu._dram_result_from_samples(samples, [domain], 0)
+            self.assertEqual(result.status, 'error')
+            self.assertTrue(math.isnan(result.window_energy_j))
+
+    def test_dram_optional_required_off_and_partial_socket_coverage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_rapl_domain(tmp, 'intel-rapl:0', 'package-0')
+            _write_rapl_domain(tmp, 'intel-rapl:1', 'package-1')
+            _write_rapl_domain(tmp, 'intel-rapl:0:0', 'dram')
+            monitor = energy_cpu.CPUEnergyMonitor(powercap_root=tmp)
+            self.assertTrue(monitor.available)
+            self.assertEqual(monitor.dram_status, 'unavailable')
+            with self.assertRaisesRegex(RuntimeError, 'required DRAM'):
+                energy_cpu.CPUEnergyMonitor(powercap_root=tmp, dram_energy='required')
+            disabled = energy_cpu.CPUEnergyMonitor(powercap_root=tmp, dram_energy='off')
+            self.assertEqual(disabled.dram_status, 'not_requested')
+            self.assertEqual(disabled.dram_domains, [])
+            _write_rapl_domain(tmp, 'intel-rapl:1:0', 'dram')
+            enabled = energy_cpu.CPUEnergyMonitor(powercap_root=tmp, dram_energy='required')
+            self.assertEqual(enabled.dram_status, 'available')
+
+    def test_dram_read_failure_preserves_package_sample(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(energy_cpu, '_read_host_active_s', return_value=1):
+            _write_rapl_domain(tmp, 'intel-rapl:0', 'package-0', energy_uj=123)
+            path = _write_rapl_domain(tmp, 'intel-rapl:0:0', 'dram', energy_uj=12)
+            monitor = energy_cpu.CPUEnergyMonitor(powercap_root=tmp)
+            Path(path, 'energy_uj').unlink()
+            sample = monitor._read_sample(1)
+            self.assertEqual(sample.energy_uj, [123])
+            self.assertIsNone(sample.dram_energy_uj)
+            self.assertTrue(monitor._dram_runtime_error)
+
+    def test_alternate_package_interfaces_are_not_additive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_rapl_domain(tmp, 'intel-rapl:0', 'package-0')
+            _write_rapl_domain(tmp, 'intel-rapl-mmio:0', 'package-0')
+            domains = energy_cpu._discover_rapl_domains(tmp)
+            self.assertEqual([d.name for d in domains], ['intel-rapl:0'])
+
+    def test_dram_permission_denied_keeps_full_topology_and_package_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_rapl_domain(tmp, 'intel-rapl:0', 'package-0')
+            dram = _write_rapl_domain(tmp, 'intel-rapl:0:0', 'dram')
+            original_read = Path.read_text
+
+            def read(path, *args, **kwargs):
+                if path == Path(dram, 'energy_uj'):
+                    raise PermissionError('DRAM counter denied')
+                return original_read(path, *args, **kwargs)
+
+            with patch.object(Path, 'read_text', read):
+                monitor = energy_cpu.CPUEnergyMonitor(powercap_root=tmp)
+                self.assertTrue(monitor.available)
+                self.assertEqual(monitor.dram_status, 'permission_denied')
+                self.assertEqual(len(monitor.topology['domains']), 2)
+                self.assertEqual(monitor.topology['dram_missing_packages'], ['intel-rapl:0'])
+                with self.assertRaisesRegex(RuntimeError, 'permission_denied'):
+                    energy_cpu.CPUEnergyMonitor(powercap_root=tmp, dram_energy='required')
+
+    def test_disabled_power_capping_does_not_disable_energy_counters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for identifier, name in (('intel-rapl:0', 'package-0'), ('intel-rapl:0:0', 'dram')):
+                path = _write_rapl_domain(tmp, identifier, name)
+                Path(path, 'enabled').write_text('0\n')
+            monitor = energy_cpu.CPUEnergyMonitor(powercap_root=tmp, dram_energy='required')
+            self.assertTrue(monitor.available)
+            self.assertEqual(monitor.dram_status, 'available')
+            self.assertTrue(all(d['enabled'] is False for d in monitor.topology['domains']))
+
+    def test_sysfs_alias_is_not_counted_twice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write_rapl_domain(tmp, "intel-rapl:0", "package-0")
+            os.symlink(path, os.path.join(tmp, "intel-rapl:9"))
+            domains = energy_cpu._discover_rapl_domains(tmp)
+            self.assertEqual(len(domains), 1)
+
     def test_apply_control_baseline_uses_control_average_and_records_method(self) -> None:
         monitor = object.__new__(energy_cpu.CPUEnergyMonitor)
         monitor.idle_power_w = float("nan")

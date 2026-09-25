@@ -79,6 +79,10 @@ acprof run --model google-bert/bert-base-uncased \
 这个 `basic` 示例只采集基础指标；能耗、抓包和独立 profiler 的字段为 `nan` 属于预期结果。
 完成后按下一节查看结果。重新做一个实验请换新的 `--output-dir`；中断后可用原命令加 `--resume` [恢复实验](docs/Profiling_Protocol.md#结果完整性与断点续跑)。
 
+正式矩阵默认在独立 startup probe 后按 seed `0` 排序并冻结计划；用 `--matrix-seed` 改变顺序，
+或用 `--matrix-order declared` 保持声明顺序。resume 复用冻结计划。full 默认尝试可选 DRAM，
+缺失不导致失败；参数与能量单位见 [CLI](docs/CLI_Reference.md) 和[能耗说明](docs/Energy_Measurement.md#rapl-topology-与-dram)。
+
 ## 查看结果
 
 上面命令行示例的主要文件位于下方目录。通过 `setup.sh` 启动时，输出目录为
@@ -89,6 +93,8 @@ results/first-run/google-bert--bert-base-uncased/
 ├── result_all.csv          # 测量数据
 ├── static_meta.json        # 模型、镜像和运行环境
 ├── input_scale_plan.json   # 本次实验使用的输入
+├── matrix_plan.json        # 冻结的资源与输入尺度顺序
+├── startup_oom_pruning.json # 独立启动探测证据，不含性能结果
 ├── collection_history.json # 补采或修复记录
 └── run_state.json          # 实验完成与恢复状态
 ```

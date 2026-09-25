@@ -290,6 +290,12 @@ GPU_METRIC_FIELDS = [
 ]
 
 
+DRAM_METRIC_FIELDS = [
+    "dram_window_energy_j", "dram_window_duration_s", "dram_energy_per_request_j",
+    "dram_avg_power_w", "dram_peak_power_w", "dram_idle_power_w",
+    "dram_window_effective_energy_j", "dram_effective_energy_per_request_j",
+]
+
 CPU_METRIC_FIELDS = [
     "cpu_idle_power_w",
     "cpu_energy_iters",
@@ -307,6 +313,7 @@ CPU_METRIC_FIELDS = [
     "vcpu_avg_power_eff_w",
     "vcpu_peak_power_eff_w",
     "vcpu_energy_eff_j",
+    *DRAM_METRIC_FIELDS,
 ]
 
 
@@ -456,7 +463,17 @@ def _cpu_metrics_from_result(result: Any, repeat_in_window: int) -> Dict[str, fl
         "vcpu_avg_power_eff_w": _to_float_or_nan(result.vcpu_avg_power_eff_w),
         "vcpu_peak_power_eff_w": _to_float_or_nan(result.vcpu_peak_power_eff_w),
         "vcpu_energy_eff_j": _divide_if_number(result.vcpu_energy_eff_j, float(repeat_in_window)),
+        **_dram_metrics_from_result(getattr(result, "dram", None), repeat_in_window),
     }
+
+
+def _dram_metrics_from_result(result: Any, count: int) -> Dict[str, float]:
+    metrics = {name: _to_float_or_nan(getattr(result, name.removeprefix("dram_"), None))
+               for name in DRAM_METRIC_FIELDS}
+    metrics["dram_energy_per_request_j"] = _per_positive_denominator(metrics["dram_window_energy_j"], count)
+    metrics["dram_effective_energy_per_request_j"] = _per_positive_denominator(
+        metrics["dram_window_effective_energy_j"], float(count))
+    return metrics
 
 
 def _derived_efficiency_metrics(

@@ -12,10 +12,11 @@ import os
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from acprof.config import DEFAULT_IDLE_SECONDS
+from acprof.monitors.rapl_topology import discover_rapl_topology, dram_policy
 
 
 @dataclass
@@ -31,6 +32,19 @@ class CPUSample:
     energy_uj: List[int]
     host_active_s: float
     container_cpu_s: Optional[float]
+    dram_energy_uj: Optional[List[int]] = None
+
+
+@dataclass
+class DRAMEnergyResult:
+    window_energy_j: float = float("nan")
+    window_duration_s: float = float("nan")
+    avg_power_w: float = float("nan")
+    peak_power_w: float = float("nan")
+    idle_power_w: float = float("nan")
+    window_effective_energy_j: float = float("nan")
+    status: str = "unavailable"
+    error: str = ""
 
 
 @dataclass
@@ -51,6 +65,7 @@ class CPUEnergyResult:
     vcpu_avg_power_eff_w: float
     vcpu_peak_power_eff_w: float
     vcpu_energy_eff_j: float
+    dram: DRAMEnergyResult = field(default_factory=DRAMEnergyResult)
 
 
 def _nan_result(cpu_energy_iters: int = 0, cpu_idle_power_w: float = float("nan")) -> CPUEnergyResult:
@@ -86,40 +101,12 @@ def _clock_ticks_per_second() -> float:
 
 
 def _discover_rapl_domains(powercap_root: str = "/sys/class/powercap") -> List[RaplDomain]:
-    if not os.path.isdir(powercap_root):
-        return []
+    return _topology_domains(discover_rapl_topology(powercap_root), "package")
 
-    domains: List[RaplDomain] = []
-    for entry in sorted(os.scandir(powercap_root), key=lambda item: item.name):
-        if not entry.is_dir(follow_symlinks=True):
-            continue
-        if entry.name.count(":") != 1:
-            continue
 
-        name_path = os.path.join(entry.path, "name")
-        if os.path.exists(name_path):
-            try:
-                with open(name_path, "r", encoding="utf-8") as f:
-                    domain_name = f.read().strip()
-            except Exception:
-                continue
-            if not domain_name.startswith("package-"):
-                continue
-
-        energy_path = os.path.join(entry.path, "energy_uj")
-        if not os.path.isfile(energy_path):
-            continue
-
-        max_path = os.path.join(entry.path, "max_energy_range_uj")
-        try:
-            max_range = _read_int(max_path) if os.path.exists(max_path) else 0
-            _read_int(energy_path)
-        except Exception:
-            continue
-
-        domains.append(RaplDomain(entry.name, energy_path, max_range))
-
-    return domains
+def _topology_domains(topology: dict, kind: str) -> List[RaplDomain]:
+    return [RaplDomain(entry["id"], entry["energy_path"], entry["max_energy_range_uj"] or 0)
+            for entry in topology["domains"] if entry["selected"] and entry["kind"] == kind]
 
 
 def detect_cpu_power_source(powercap_root: str = "/sys/class/powercap") -> str:
@@ -310,8 +297,10 @@ def _energy_delta_j(prev: CPUSample, curr: CPUSample, domains: List[RaplDomain])
         elif domain.max_range_uj > 0:
             delta = (domain.max_range_uj - old) + new
         else:
-            delta = new
-        total_uj += max(0, delta)
+            return float("nan")
+        if old < 0 or new < 0 or delta < 0:
+            return float("nan")
+        total_uj += delta
     return float(total_uj) / 1_000_000.0
 
 
@@ -434,6 +423,48 @@ def _result_from_samples(
     )
 
 
+def _dram_result_from_samples(samples, domains, idle_power_w, status="available", error="",
+                              min_power_interval_s=0.0) -> DRAMEnergyResult:
+    result = DRAMEnergyResult(idle_power_w=idle_power_w, status=status, error=error)
+    if status != "available":
+        result.error = error or ("DRAM not requested" if status == "not_requested" else "incomplete DRAM domain coverage")
+        return result
+    if error or len(samples) < 2 or not domains or any(
+        sample.dram_energy_uj is None or len(sample.dram_energy_uj) != len(domains) for sample in samples
+    ):
+        result.status = "error"
+        result.error = error or "missing DRAM samples"
+        return result
+    duration = samples[-1].timestamp - samples[0].timestamp
+    if duration <= 0:
+        result.status, result.error = "error", "invalid DRAM window duration"
+        return result
+    energy = 0.0
+    peaks = []
+    for previous, current in zip(samples, samples[1:]):
+        dt = current.timestamp - previous.timestamp
+        if dt <= 0:
+            result.status, result.error = "error", "invalid DRAM sample interval"
+            return result
+        before = CPUSample(previous.timestamp, previous.dram_energy_uj, 0, None)
+        after = CPUSample(current.timestamp, current.dram_energy_uj, 0, None)
+        interval_energy = _energy_delta_j(before, after, domains)
+        if not math.isfinite(interval_energy):
+            result.status, result.error = "error", "invalid DRAM counter or unknown wrap range"
+            return result
+        energy += interval_energy
+        if dt >= min_power_interval_s:
+            peaks.append(interval_energy / dt)
+    result.window_energy_j = energy
+    result.window_duration_s = duration
+    result.avg_power_w = energy / duration
+    result.peak_power_w = max(peaks) if peaks else float("nan")
+    if math.isfinite(idle_power_w):
+        result.window_effective_energy_j = energy - idle_power_w * duration
+    result.status = "verified"
+    return result
+
+
 class CPUEnergyMonitor:
     def __init__(
         self,
@@ -443,6 +474,7 @@ class CPUEnergyMonitor:
         powercap_root: str = "/sys/class/powercap",
         cgroup_root: str = "/sys/fs/cgroup",
         proc_root: str = "/proc",
+        dram_energy: str = "auto",
     ) -> None:
         self.sample_hz = float(sample_hz)
         self.idle_seconds = float(idle_seconds)
@@ -452,7 +484,16 @@ class CPUEnergyMonitor:
         self.proc_root = proc_root
         self.dt = 1.0 / self.sample_hz
 
-        self.domains = _discover_rapl_domains(powercap_root)
+        dram_policy("full", dram_energy)
+        self.topology = discover_rapl_topology(powercap_root)
+        self.domains = _topology_domains(self.topology, "package")
+        self.dram_energy = dram_energy
+        self.dram_domains = _topology_domains(self.topology, "dram") if dram_energy != "off" else []
+        self.dram_status = self.topology["dram_status"] if dram_energy != "off" else "not_requested"
+        self.dram_idle_power_w = float("nan")
+        self._dram_runtime_error = ""
+        if dram_energy == "required" and self.dram_status != "available":
+            raise RuntimeError(f"required DRAM RAPL unavailable: {self.dram_status}")
         self.idle_power_w = float("nan")
         self.idle_trace: Dict[str, Any] = {}
         self.samples: List[CPUSample] = []
@@ -492,6 +533,7 @@ class CPUEnergyMonitor:
     ) -> float:
         """Use a monitor-matched blank window as the workload baseline."""
         self.idle_power_w = float(result.cpu_avg_power_total_w)
+        self.dram_idle_power_w = getattr(getattr(result, "dram", None), "avg_power_w", float("nan"))
         self.idle_trace = {}
         if trace and len(samples) >= 2:
             self.idle_trace = _build_idle_trace(
@@ -517,6 +559,7 @@ class CPUEnergyMonitor:
             raise RuntimeError("CPU energy monitor is already running")
 
         self.samples = []
+        self._dram_runtime_error = ""
         self._stop_event = threading.Event()
         self._t_start = time.perf_counter()
         self._t_end = None
@@ -544,16 +587,13 @@ class CPUEnergyMonitor:
         ]
         samples.sort(key=lambda item: item.timestamp)
         self.samples = samples
-        return (
-            _result_from_samples(
-                samples,
-                self.idle_power_w,
-                self.domains,
-                min_power_interval_s=0.5 * self.dt,
-            ),
-            self._runtime_error,
-            samples,
-        )
+        result = _result_from_samples(samples, self.idle_power_w, self.domains,
+                                      min_power_interval_s=0.5 * self.dt)
+        result.dram = _dram_result_from_samples(
+            samples, self.dram_domains, self.dram_idle_power_w, self.dram_status,
+            self._dram_runtime_error, min_power_interval_s=0.5 * self.dt)
+        return result, self._runtime_error, samples
+
 
     def close(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -578,7 +618,13 @@ class CPUEnergyMonitor:
         container_cpu_s = None
         if self._container_cpu_reader is not None:
             container_cpu_s = self._container_cpu_reader()
-        return CPUSample(timestamp, energy_uj, host_active_s, container_cpu_s)
+        dram_values = None
+        if self.dram_status == "available":
+            try:
+                dram_values = [_read_int(domain.energy_path) for domain in self.dram_domains]
+            except (OSError, ValueError) as exc:
+                self._dram_runtime_error = str(exc)
+        return CPUSample(timestamp, energy_uj, host_active_s, container_cpu_s, dram_values)
 
     def _append_sample(self, timestamp: float) -> None:
         try:

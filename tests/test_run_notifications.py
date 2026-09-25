@@ -418,8 +418,9 @@ class RunNotificationLifecycleTests(unittest.TestCase):
             side_effect=fake_case,
         ):
             result_csvs = orchestrator.run_matrix(
-                task_info=Mock(),
-                image_info=Mock(),
+                task_info=Mock(model_id="org/model", model_revision="main", task_family="nlp"),
+                image_info=Mock(tag="sha256:" + "b" * 64),
+                matrix_order="declared",
                 cpu_list=[1, 2],
                 mem_list=[4],
                 gpu_list=["off", "on"],
@@ -452,8 +453,9 @@ class RunNotificationLifecycleTests(unittest.TestCase):
             return_value="/tmp/result.csv",
         ), redirect_stderr(io.StringIO()):
             result_csvs = orchestrator.run_matrix(
-                task_info=Mock(),
-                image_info=Mock(),
+                task_info=Mock(model_id="org/model", model_revision="main", task_family="nlp"),
+                image_info=Mock(tag="sha256:" + "b" * 64),
+                matrix_order="declared",
                 cpu_list=[1],
                 mem_list=[4],
                 gpu_list=["off"],

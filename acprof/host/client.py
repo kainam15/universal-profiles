@@ -140,6 +140,7 @@ IDLE_DEBUG_TRACE_INTERVAL_S = float(os.getenv("IDLE_DEBUG_TRACE_INTERVAL_S", "0.
 USE_MIPS = os.getenv("USE_MIPS", "").strip().lower() in {"1", "true", "yes", "on"}
 from acprof.capabilities import measurement_requested, require_profiling_mode  # noqa: E402 -- 代理绕过配置必须先于依赖导入。
 PROFILING_MODE = require_profiling_mode(os.getenv("PROFILING_MODE", "full"))
+DRAM_ENERGY = os.getenv("DRAM_ENERGY", "auto")
 
 _FIRST_PREDICT_APP_S = float("nan")
 
@@ -515,6 +516,14 @@ def _load_input_scale_entries() -> List[Dict[str, Any]]:
                 "workload": plan.get("workload", {}),
             })
 
+        scale_order = os.environ.get("INPUT_SCALE_ORDER", "")
+        if scale_order:
+            order = json.loads(scale_order)
+            available = {entry["input_scale"]: entry for entry in loaded_entries}
+            if (not isinstance(order, list) or len(order) != len(available)
+                    or len(set(order)) != len(order) or set(order) != set(available)):
+                raise ValueError("frozen matrix input-scale order does not match input plan")
+            loaded_entries = [available[scale] for scale in order]
         return loaded_entries
 
     raise ValueError("INPUT_SCALE_PLAN_FILE is required; generate a schema v2 input plan first")
@@ -1111,11 +1120,14 @@ def main() -> None:
                             )
 
                         if measurement_requested(PROFILING_MODE, "cpu_energy") and cpu_energy_mod is not None:
-                            cpu_monitor = cpu_energy_mod.CPUEnergyMonitor(
-                                sample_hz=SAMPLE_HZ,
-                                idle_seconds=IDLE_SECONDS,
-                                container_name=CONTAINER_NAME,
-                            )
+                            try:
+                                cpu_monitor = cpu_energy_mod.CPUEnergyMonitor(
+                                    sample_hz=SAMPLE_HZ, idle_seconds=IDLE_SECONDS,
+                                    container_name=CONTAINER_NAME, dram_energy=DRAM_ENERGY)
+                            except RuntimeError as exc:
+                                if DRAM_ENERGY == "required":
+                                    raise EnergyAbort(str(exc)) from exc
+                                raise
 
                         if resource_usage_mod is not None:
                             resource_usage_monitor = resource_usage_mod.ResourceUsageMonitor(
@@ -1278,6 +1290,10 @@ def main() -> None:
                             cpu_result,
                             actual_repeat_in_window,
                         )
+                    if DRAM_ENERGY == "required" and not all(math.isfinite(cpu_metrics[field]) for field in (
+                        "dram_window_energy_j", "dram_energy_per_request_j", "dram_window_effective_energy_j"
+                    )):
+                        raise EnergyAbort("required DRAM RAPL measurement unavailable or incomplete")
                     if resource_usage_result is not None:
                         if PROFILING_MODE == "basic":
                             if _resource_usage_err:
@@ -1430,6 +1446,11 @@ def main() -> None:
                         else "nan"
                     ),
                     **{field: _fmt_float(cpu_metrics[field]) for field in CPU_METRIC_FIELDS},
+                    "dram_energy_status": (
+                        "not_requested" if PROFILING_MODE == "basic" or DRAM_ENERGY == "off" else
+                        getattr(getattr(cpu_result, "dram", None), "status", "unavailable")
+                    ),
+                    "dram_energy_error": getattr(getattr(cpu_result, "dram", None), "error", ""),
                     **{
                         field: _fmt_float(efficiency_metrics[field])
                         for field in EFFICIENCY_METRIC_FIELDS
@@ -1455,6 +1476,7 @@ def main() -> None:
                     **_cold_start_row_metrics(),
                     "status": status,
                     "error": err_msg,
+                    "result_origin": "formal_measurement",
                 }
                 pixel_counts = pixel_counts_from_metadata(
                     scale_entry.get("input_metadata") if resolved_input_scale == scale_val else None,

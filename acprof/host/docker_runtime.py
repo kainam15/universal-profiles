@@ -50,6 +50,18 @@ class RunningContainer:
     gpu_device: Dict[str, Any] = field(default_factory=dict)
 
 
+class ContainerStartupError(RuntimeError):
+    """Typed evidence captured before removing a container that never reached /ready."""
+
+    def __init__(self, message: str, *, state=None, timed_out=False):
+        super().__init__(message)
+        self.state = state
+        confirmed = (isinstance(state, dict) and state.get("OOMKilled") is True
+                     and state.get("Running") is False and state.get("Restarting") is not True)
+        # A timeout boundary is ambiguous even if a later inspect observes OOM.
+        self.outcome = "timeout" if timed_out else "startup_oom" if confirmed else "error"
+
+
 DEFAULT_NLP_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu128"
 CUDA124_NLP_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu124"
 DEFAULT_NLP_TORCH_SPEC = "torch>=2.7"
@@ -410,13 +422,16 @@ def _start_container_session(
     base_url = f"http://127.0.0.1:{host_port}"
     deadline = time.perf_counter() + READY_TIMEOUT_S
 
-    def fail_startup(reason: str) -> None:
+    def fail_startup(reason: str, *, timed_out: bool = False) -> None:
+        state = _inspect_container_state(container_name)
         logs = _run(["docker", "logs", container_name, "--tail", "200"], check=False)
         diagnostic = ((logs.stdout or "") + "\n" + (logs.stderr or "")).strip()
         if diagnostic:
             print(diagnostic[-8000:], file=sys.stderr)
         _run(["docker", "rm", "-f", container_name], check=False)
-        raise RuntimeError(reason + ("; container_log_tail=" + diagnostic[-4000:] if diagnostic else ""))
+        raise ContainerStartupError(
+            reason + ("; container_log_tail=" + diagnostic[-4000:] if diagnostic else ""),
+            state=state, timed_out=timed_out)
 
     while time.perf_counter() < deadline:
         try:
@@ -483,7 +498,8 @@ def _start_container_session(
     startup_exit_error = _container_startup_exit_error(container_name, mem)
     fail_startup(
         startup_exit_error
-        or f"server not ready after {READY_TIMEOUT_S}s for container {container_name}"
+        or f"server not ready after {READY_TIMEOUT_S}s for container {container_name}",
+        timed_out=True,
     )
 
 

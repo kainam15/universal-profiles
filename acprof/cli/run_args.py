@@ -44,6 +44,12 @@ Examples:
     parser.add_argument("--cpus", default="1,2,4,8", help="CPU core counts (comma-separated)")
     parser.add_argument("--mems", default="2,4,8,16", help="Memory caps in GB (comma-separated)")
     parser.add_argument("--gpus", default="off,on", help="GPU modes (comma-separated: off,on)")
+    parser.add_argument("--matrix-order", choices=("seeded", "declared"), default="seeded",
+                        help="Frozen case/scale execution order (default: seeded)")
+    parser.add_argument("--matrix-seed", type=int, default=0,
+                        help="Seed for domain-separated deterministic case and input-scale ordering")
+    parser.add_argument("--dram-energy", choices=("auto", "off", "required"), default="auto",
+                        help="Optional host DRAM RAPL measurement; only required makes absence fatal")
     parser.add_argument("--gpu-device", default=None, help="One physical GPU index or UUID (default: ACPROF_GPU_DEVICE, DEVICE_INDEX, then 0)")
     startup_oom_pruning_group = parser.add_mutually_exclusive_group()
     startup_oom_pruning_group.add_argument(
@@ -51,7 +57,7 @@ Examples:
         dest="prune_startup_oom",
         action="store_true",
         help=(
-            "Explicitly enable the default startup-OOM pruning behavior"
+            "Probe startup-only OOM evidence before freezing the formal matrix (default)"
         ),
     )
     startup_oom_pruning_group.add_argument(

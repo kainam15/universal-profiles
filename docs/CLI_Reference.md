@@ -186,7 +186,10 @@ Probe 未指定输出目录时使用独立的 `results/inspection/` 子目录；
 | `--mems` | `2,4,8,16` | Memory cap GB 列表。 |
 | `--gpus` | `off,on` | GPU mode 列表。`on` 只向容器暴露选定的物理 GPU。 |
 | `--gpu-device` | 环境变量或 `0` | 单个主机 GPU index 或完整 UUID，优先级为此参数、`ACPROF_GPU_DEVICE`、`DEVICE_INDEX`、`0`。运行前解析并固定 UUID；不接受 `all`、设备列表或 MIG。`probe.py` 使用同样的环境变量，post-hoc GPU 补采使用原实验记录的 UUID。 |
-| `--prune-startup-oom` / `--no-prune-startup-oom` | enabled | 默认以最低选中 CPU 为参考，按内存升序完整采集；仅把 Docker 明确 `OOMKilled` 的连续低内存启动失败前缀推断到后续更高 CPU。跳过 case 保留占位行和独立 provenance。运行期/CUDA OOM、timeout 与普通启动失败不触发剪枝。使用 `--no-prune-startup-oom` 可恢复逐格独立尝试。 |
+| `--prune-startup-oom` / `--no-prune-startup-oom` | enabled | 正式矩阵前，用最低选中 CPU、内存升序执行独立 startup probe，只启动并等待 `/ready`，不产生性能结果。仅 Docker 确认启动 OOM 的连续低内存前缀用于剪枝；遇到 ready、timeout、CUDA OOM 或普通错误即停止扩展。所有被剪枝 case 标为 `inferred_not_measured`。禁用后逐格正式尝试。 |
+| `--matrix-order` | `seeded` | `seeded` 用版本化的确定性 hash 排序资源 case，并用每个 case 的独立派生 seed 排列 input scale；`declared` 保持资源参数与物化输入尺度的顺序。probe 完成后将实际顺序冻结到 `matrix_plan.json`。 |
+| `--matrix-seed` | `0` | 整数 seed；相同实验身份、probe 结论、算法版本和 seed 生成相同计划。resume 校验并复用已冻结顺序，不重新排序；不能在原目录改变 seed 或 order。 |
+| `--dram-energy` | `auto` | `full` 中独立采集可用的 DRAM RAPL 域；缺失或不可读时保持 `nan`，不因此使 full 失败。`off` 不采集，`required` 要求所有选中 package 的 DRAM 都可用且取得有效测量；不能与 `basic` 同用。DRAM 不加入 container-attributed energy。 |
 
 #### 请求窗口与采样
 

@@ -78,6 +78,8 @@ flowchart TD
 | `image_dependencies` | 匹配镜像身份与本地锁，核对构建阶段并生成本层依赖增量；不启动容器或扫描包 |
 | `runtime_validation` | 矩阵前的独立 CPU／GPU 完整推理验证及报告，不生成测量行 |
 | `input_plan` | 手动和自动尺度规划、规划用 probe、payload 物化与输入计划写入 |
+| `startup_probe` | 独立 readiness-only 启动探测、Docker OOM 证据与保守连续前缀，不采集性能 |
+| `matrix_plan` | 资源 case 与 input scale 的独立确定性排序、冻结计划、hash 与恢复校验，不采样硬件 |
 | `model_schema` | 任务输入输出描述与推理精度说明 |
 | `static_metadata` | 主机、镜像、模型和 profiler 计划的静态元数据 |
 | `packet_capture` | tcpdump 前置检查及 capture/parser 命令构造 |
@@ -85,6 +87,7 @@ flowchart TD
 | `run_state` | 目录锁、实验身份、已完成 case 校验、中断备份和恢复；仅在测量窗口外运行 |
 | `client` | 环境与 workload 初始化、请求、对照窗口和正式窗口控制、结果写入 |
 | `client_metrics` | 已完成采样结果到指标字段的纯计算与格式化 |
+| `monitors/rapl_topology` | powercap 完整域发现、alias 去重、package/DRAM 来源选择与可用性；独立于矩阵计划 |
 | `compute_profile` / `execution_profile` | profiler 计划、采集、断点与汇总 |
 | `profilers/compute_parsers` / `profilers/execution_parsers` | Advisor/NCU CSV、Massif snapshot 和 Nsys stats 的纯标准库解析 |
 | `profilers/tool_discovery` | 可执行文件、版本目录优先级和完整工具挂载路径 |

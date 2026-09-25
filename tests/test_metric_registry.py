@@ -8,10 +8,10 @@ from acprof.config import CSV_FIELDS
 
 class MetricRegistryTests(unittest.TestCase):
     def test_historical_field_order_is_unchanged(self):
-        additions = {'workload_contract', 'gpu_device_uuid', 'gpu_energy_source',
+        additions = {'result_origin', 'workload_contract', 'gpu_device_uuid', 'gpu_energy_source',
                      'gpu_energy_fallback_reason', 'gpu_idle_energy_source',
                      'cpu_cycles_per_request', 'cpu_ref_cycles_per_request', 'cpu_ipc', 'cpu_perf_running_pct'}
-        historical_fields = [name for name in CSV_FIELDS if name not in additions]
+        historical_fields = [name for name in CSV_FIELDS if name not in additions and not name.startswith('dram_')]
         self.assertEqual(hashlib.sha256(json.dumps(historical_fields).encode()).hexdigest(),
                          "1422b14ebaa48586573923cea2d33f615e6dc180d099cdf773678f453e3268f3")
 
@@ -33,6 +33,10 @@ class MetricRegistryTests(unittest.TestCase):
     def test_units_windows_and_text_are_explicit(self):
         from acprof.metric_registry import METRICS, NUMERIC_FIELDS
         self.assertEqual(METRICS["gpu_energy_total_j"].unit, "J/request")
+        self.assertEqual(METRICS["dram_window_energy_j"].unit, "J/window")
+        self.assertEqual(METRICS["dram_energy_per_request_j"].unit, "J/request")
+        self.assertNotIn("dram_energy_status", NUMERIC_FIELDS)
+        self.assertNotIn("result_origin", NUMERIC_FIELDS)
         self.assertEqual(METRICS["container_mem_peak_cgroup_bytes"].window, "cgroup_lifetime")
         self.assertEqual(METRICS["cpu_heap_peak_bytes_massif"].window, "profiler_process_lifetime")
         self.assertNotIn("gpu_pstate", NUMERIC_FIELDS)

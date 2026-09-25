@@ -17,6 +17,23 @@
 
 ## 开发质量检查
 
+矩阵计划或 RAPL/DRAM 协议改动的定向入口：
+
+```bash
+.venv/bin/python scripts/run_tests.py \
+  --pattern 'test_matrix_plan.py' --pattern 'test_startup_probe.py' \
+  --pattern 'test_run_recovery.py' --pattern 'test_energy_cpu.py' \
+  --pattern 'test_capabilities.py' --pattern 'test_client_energy_warnings.py' \
+  --pattern 'test_metric_registry.py' \
+  --report internal-testing/matrix-dram-tests.json
+.venv/bin/python scripts/render_metric_reference.py --check
+```
+
+这些用例验证同 seed 的实际计划、resume 不重排、probe 不写性能结果、异常不扩大 OOM
+前缀，以及模拟 sysfs 的 alias、不同 package、回绕、部分覆盖和读取失败。
+mock 测试不证明物理服务器的 DRAM 域可读或实际 Docker OOM 行为；真实验收须另查
+拓扑、启动失败的 Docker State，以及可读 RAPL/DRAM 设备上的 full 测量产物。
+
 Ruff、pre-commit 和锁生成工具 uv 由 [`requirements-dev.in`](../requirements-dev.in) 声明，
 完整版本与制品哈希保存在 [`requirements-dev.lock`](../requirements-dev.lock)。开发锁以主机锁
 为约束，避免在同一个 `.venv` 安装时引入冲突；不加入主机运行依赖或容器环境身份。

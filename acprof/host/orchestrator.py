@@ -2,14 +2,11 @@
 from __future__ import annotations
 
 import csv
-import datetime
 import json
 import math
 import os
-import stat
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -71,7 +68,6 @@ class MIPSProfilingError(RuntimeError):
 
 
 IDLE_POWER_RELATIVE_RANGE_THRESHOLD = 0.05
-STARTUP_OOM_PRUNING_PLAN_NAME = "startup_oom_pruning.json"
 
 
 def _format_watts(values: List[float]) -> str:
@@ -282,6 +278,8 @@ def run_single_case(
     execution_profile_plan_file: Optional[str] = None,
     require_packet_latency: bool = True,
     profiling_mode: str = "full",
+    input_scale_order: Optional[List[float]] = None,
+    dram_energy: str = "auto",
 ) -> str:
     """Run one profiling case and return result CSV path."""
     require_profiling_mode(profiling_mode)
@@ -414,6 +412,8 @@ def run_single_case(
             "CONTAINER_NAME": container_name,
             "USE_MIPS": "1" if measurement_requested(profiling_mode, "cpu_instructions") else "0",
             "PROFILING_MODE": profiling_mode,
+            "DRAM_ENERGY": dram_energy,
+            "INPUT_SCALE_ORDER": json.dumps(input_scale_order) if input_scale_order is not None else "",
             "SAMPLE_HZ": str(sample_hz),
             "IDLE_SECONDS": str(idle_seconds),
             "IDLE_COOLDOWN_SECONDS": str(idle_cooldown_seconds),
@@ -627,6 +627,7 @@ def _write_case_error_csv(
     preserve_existing: bool = False,
     annotate_existing_error_rows: bool = False,
     timeout_context: Optional[Dict[str, Any]] = None,
+    result_origin: str = "formal_attempt",
 ) -> Tuple[int, int]:
     """Write missing error rows and return successful-preserved/added counts."""
     if not str(error or "").strip():
@@ -648,6 +649,7 @@ def _write_case_error_csv(
             TORCH_ERROR_FIELD: "not_run",
             "status": "error",
             "error": error,
+            "result_origin": result_origin,
         })
         if gpu == "on":
             row[NCU_ERROR_FIELD] = "not_run"
@@ -842,161 +844,6 @@ def _annotate_timeout_placeholder_rows(
         )
 
 
-def _case_startup_outcome(csv_path: str) -> Tuple[str, str]:
-    """Classify whether a completed case reached the server-ready state.
-
-    Only Docker's explicit ``OOMKilled`` startup diagnostic is strong enough
-    for cross-case pruning. Runtime OOMs, request timeouts, and generic startup
-    failures deliberately remain outside this classification.
-    """
-    try:
-        with open(csv_path, "r", encoding="utf-8", newline="") as f:
-            rows = list(csv.DictReader(f))
-    except (OSError, csv.Error) as exc:
-        return "unknown", f"cannot_read_case_csv:{type(exc).__name__}"
-
-    if not rows:
-        return "unknown", "empty_case_csv"
-
-    errors = [str(row.get("error") or "").strip() for row in rows]
-    all_error_rows = all(_row_has_error_status(row) for row in rows)
-    startup_oom_marker = "container_oom_killed during startup"
-    startup_failure_marker = "container_start_failed:"
-
-    if all_error_rows and all(
-        startup_oom_marker in error.lower()
-        for error in errors
-    ):
-        return "startup_oom", errors[0]
-
-    if all_error_rows and all(
-        startup_failure_marker in error.lower()
-        for error in errors
-    ):
-        return "startup_failure", errors[0]
-
-    # The case may subsequently fail during workload collection, but reaching
-    # this branch proves that model startup itself was feasible at this cap.
-    return "startup_feasible", ""
-
-
-def _write_json_payload_atomic(payload: Dict[str, Any], output_path: str) -> None:
-    """Atomically persist a JSON provenance payload without changing schemas."""
-    output_dir = os.path.dirname(os.path.abspath(output_path))
-    os.makedirs(output_dir, exist_ok=True)
-    fd, temporary_path = tempfile.mkstemp(
-        dir=output_dir,
-        prefix=f".{os.path.basename(output_path)}.",
-        suffix=".tmp",
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-            f.flush()
-            os.fsync(f.fileno())
-        output_mode = (
-            stat.S_IMODE(os.stat(output_path).st_mode)
-            if os.path.exists(output_path)
-            else 0o644
-        )
-        os.chmod(temporary_path, output_mode)
-        os.replace(temporary_path, output_path)
-        temporary_path = ""
-    finally:
-        if temporary_path:
-            try:
-                os.unlink(temporary_path)
-            except FileNotFoundError:
-                pass
-
-
-def _utc_now_iso() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).isoformat()
-
-
-def _new_startup_oom_pruning_plan(
-    *,
-    task_info: TaskInfo,
-    image_info: ImageInfo,
-    cpu_list: List[int],
-    mem_list: List[int],
-    gpu_list: List[str],
-    reference_cpu: int,
-) -> Dict[str, Any]:
-    gpu_modes = []
-    for gpu in gpu_list:
-        normalized = _normalize_gpu_mode(gpu)
-        if normalized not in gpu_modes:
-            gpu_modes.append(normalized)
-
-    return {
-        "schema_version": 1,
-        "status": "running",
-        "created_at": _utc_now_iso(),
-        "updated_at": _utc_now_iso(),
-        "strategy": "minimum_cpu_contiguous_startup_oom_prefix",
-        "scope": "container_startup_oom_only",
-        "model_id": task_info.model_id,
-        "model_revision": task_info.model_revision,
-        "image_tag": image_info.tag,
-        "reference_cpu_cores": reference_cpu,
-        "selected_cpu_cores": list(cpu_list),
-        "selected_mem_caps_gb": list(mem_list),
-        "selected_gpu_modes": gpu_modes,
-        "execution_cpu_order": [
-            reference_cpu,
-            *[cpu for cpu in cpu_list if cpu != reference_cpu],
-        ],
-        "execution_mem_order": sorted(mem_list),
-        "assumption": (
-            "A memory cap that Docker explicitly OOM-kills during model startup "
-            "at the minimum selected CPU count is treated as startup-infeasible "
-            "for larger selected CPU counts in the same GPU mode. Pruned cases "
-            "are inferred, never represented as measured performance rows."
-        ),
-        "exclusions": [
-            "runtime_oom",
-            "cuda_oom",
-            "request_timeout",
-            "generic_startup_failure",
-        ],
-        "gpu_mode_results": {
-            gpu: {
-                "confirmed_startup_oom_prefix_gb": [],
-                "minimum_startup_feasible_mem_cap_gb": None,
-                "first_non_oom_mem_cap_gb": None,
-                "first_non_oom_outcome": None,
-                "reference_cases": [],
-            }
-            for gpu in gpu_modes
-        },
-        "pruned_cases": [],
-        "planned_case_count": len(cpu_list) * len(mem_list) * len(gpu_list),
-        "pruned_case_count": 0,
-    }
-
-
-def _validate_startup_oom_pruning_matrix(
-    cpu_list: List[int],
-    mem_list: List[int],
-    gpu_list: List[str],
-) -> None:
-    if not cpu_list or not mem_list or not gpu_list:
-        raise ValueError("startup OOM pruning requires non-empty resource lists")
-    if len(set(cpu_list)) != len(cpu_list):
-        raise ValueError("startup OOM pruning requires unique CPU values")
-    if len(set(mem_list)) != len(mem_list):
-        raise ValueError("startup OOM pruning requires unique memory values")
-    normalized_gpu = [_normalize_gpu_mode(gpu) for gpu in gpu_list]
-    if len(set(normalized_gpu)) != len(normalized_gpu):
-        raise ValueError("startup OOM pruning requires unique GPU modes")
-    if any(cpu <= 0 for cpu in cpu_list):
-        raise ValueError("startup OOM pruning requires positive CPU values")
-    if any(mem <= 0 for mem in mem_list):
-        raise ValueError("startup OOM pruning requires positive memory values")
-
-
 def _write_startup_oom_pruned_case_csv(
     *,
     task_info: TaskInfo,
@@ -1033,6 +880,7 @@ def _write_startup_oom_pruned_case_csv(
         repeat_in_window=repeat_in_window,
         input_scales=input_scales,
         error=error,
+        result_origin="inferred_not_measured",
     )
     return out_csv
 
@@ -1064,217 +912,80 @@ def run_matrix(
     prune_startup_oom: bool = False,
     run_state=None,
     profiling_mode: str = "full",
+    matrix_order: str = "seeded",
+    matrix_seed: int = 0,
+    dram_energy: str = "auto",
 ) -> List[str]:
-    """Sweep all resource combinations, optionally pruning proven startup OOMs.
+    """Run a frozen resource plan after independent readiness-only probes."""
+    from pathlib import Path
+    from acprof.host.matrix_plan import MATRIX_PLAN_NAME, matrix_identity, load_matrix_plan, freeze_matrix_plan
+    from acprof.host.startup_probe import PROBE_NAME, run_startup_probes, startup_oom_prefixes
 
-    Pruning is intentionally limited to a contiguous low-memory prefix that
-    Docker explicitly OOM-killed at the minimum selected CPU count. Every
-    skipped cell still receives planned error rows, while feasible cells retain
-    the exact same collection protocol as an unpruned run.
-    """
     request_timeout_seconds = float(request_timeout_seconds)
     require_profiling_mode(profiling_mode)
-    if (
-        request_timeout_seconds <= 0.0
-        or not math.isfinite(request_timeout_seconds)
-    ):
+    if request_timeout_seconds <= 0 or not math.isfinite(request_timeout_seconds):
         raise ValueError("request_timeout_seconds must be a finite value > 0")
     os.makedirs(output_dir, exist_ok=True)
+    scales = resolve_input_scales(task_info.task_family, input_scales)
+    identity = matrix_identity(task_info, image_info, cpu_list, mem_list, gpu_list, scales,
+                               order=matrix_order, seed=matrix_seed, prune=prune_startup_oom,
+                               input_plan_file=input_scale_plan_file)
+    plan_path = Path(output_dir) / MATRIX_PLAN_NAME
+    if plan_path.exists():
+        plan = load_matrix_plan(plan_path, identity)
+        if prune_startup_oom:
+            evidence = json.loads((Path(output_dir) / PROBE_NAME).read_text())
+            if (evidence.get("schema_version") != 2 or evidence.get("status") != "complete"
+                    or evidence.get("identity") != identity
+                    or startup_oom_prefixes(evidence) != plan["startup_oom_prefixes"]):
+                raise ValueError("matrix plan startup probe evidence mismatch")
+    else:
+        if run_state is not None and run_state.data.get("cases"):
+            raise ValueError("missing frozen matrix plan for existing cases; start a new experiment")
+        prefixes = {}
+        if prune_startup_oom:
+            evidence = run_startup_probes(output_dir, identity, task_info, image_info,
+                                          request_timeout_seconds=request_timeout_seconds)
+            prefixes = startup_oom_prefixes(evidence)
+        plan = freeze_matrix_plan(plan_path, identity, prefixes)
+    if run_state is not None:
+        run_state.bind_matrix_plan(plan)
+    print(f"[matrix] Frozen plan: {plan_path}; order={matrix_order}, seed={matrix_seed}, hash={plan['plan_sha256']}")
     result_csvs = []
-
-    total = len(cpu_list) * len(mem_list) * len(gpu_list)
-    current = 0
-    execution_cpu_list = list(cpu_list)
-    execution_mem_list = list(mem_list)
-    reference_cpu: Optional[int] = None
-    pruning_plan: Optional[Dict[str, Any]] = None
-    pruning_plan_path: Optional[str] = None
-
-    if prune_startup_oom:
-        _validate_startup_oom_pruning_matrix(cpu_list, mem_list, gpu_list)
-        reference_cpu = min(cpu_list)
-        execution_cpu_list = [
-            reference_cpu,
-            *[cpu for cpu in cpu_list if cpu != reference_cpu],
-        ]
-        execution_mem_list = sorted(mem_list)
-        pruning_plan = _new_startup_oom_pruning_plan(
-            task_info=task_info,
-            image_info=image_info,
-            cpu_list=cpu_list,
-            mem_list=mem_list,
-            gpu_list=gpu_list,
-            reference_cpu=reference_cpu,
-        )
-        pruning_plan_path = os.path.join(
-            output_dir,
-            STARTUP_OOM_PRUNING_PLAN_NAME,
-        )
-        _write_json_payload_atomic(pruning_plan, pruning_plan_path)
-        print(
-            "[oom-prune] Enabled: reference CPU="
-            f"{reference_cpu}, memory order={execution_mem_list}; "
-            "only confirmed startup OOM prefixes may be inferred"
-        )
-
-    def persist_pruning_plan() -> None:
-        if pruning_plan is None or pruning_plan_path is None:
-            return
-        pruning_plan["updated_at"] = _utc_now_iso()
-        pruning_plan["pruned_case_count"] = len(pruning_plan["pruned_cases"])
-        _write_json_payload_atomic(pruning_plan, pruning_plan_path)
-
-    for cpu in execution_cpu_list:
-        for mem in execution_mem_list:
-            for gpu in gpu_list:
-                current += 1
-                print(f"\n{'#'*60}")
-                print(f"# Case {current}/{total}: CPU={cpu}, MEM={mem}GB, GPU={gpu}")
-                print(f"{'#'*60}")
-
-                normalized_gpu = _normalize_gpu_mode(gpu)
-                gpu_pruning_result = (
-                    pruning_plan["gpu_mode_results"][normalized_gpu]
-                    if pruning_plan is not None
-                    else None
-                )
-                prunable_mem_caps = (
-                    gpu_pruning_result["confirmed_startup_oom_prefix_gb"]
-                    if gpu_pruning_result is not None
-                    else []
-                )
-                should_prune = bool(
-                    pruning_plan is not None
-                    and reference_cpu is not None
-                    and cpu != reference_cpu
-                    and mem in prunable_mem_caps
-                )
-                filename = f"result_case_{_sanitize_model_id(task_info.model_id)}_{cpu}c_{mem}g_{gpu}.csv"
-                cached_case = run_state.prepare_case(filename, cpu, mem, normalized_gpu) if run_state else None
-
-                if should_prune:
-                    print(
-                        "[oom-prune] Skipping inferred startup-infeasible case: "
-                        f"CPU={cpu}, MEM={mem}GB, GPU={normalized_gpu}; "
-                        f"evidence CPU={reference_cpu}, MEM={mem}GB"
-                    )
-                    csv_path = cached_case or _write_startup_oom_pruned_case_csv(
-                        task_info=task_info,
-                        output_dir=output_dir,
-                        cpu=cpu,
-                        mem=mem,
-                        gpu=gpu,
-                        reference_cpu=reference_cpu,
-                        warmup=warmup,
-                        repeat=repeat,
-                        repeat_in_window=repeat_in_window,
-                        input_scales=input_scales,
-                    )
-                    pruning_plan["pruned_cases"].append({
-                        "cpu_cores": cpu,
-                        "mem_cap_gb": mem,
-                        "gpu_mode": normalized_gpu,
-                        "reason": "confirmed_startup_oom_at_reference_cpu",
-                        "reference_cpu_cores": reference_cpu,
-                        "reference_mem_cap_gb": mem,
-                        "result_origin": "inferred_not_measured",
-                    })
-                    persist_pruning_plan()
-                else:
-                    csv_path = cached_case or run_single_case(
-                        task_info=task_info,
-                        cpu=cpu,
-                        mem=mem,
-                        gpu=gpu,
-                        image_info=image_info,
-                        output_dir=output_dir,
-                        project_dir=project_dir,
-                        batch_size=batch_size,
-                        warmup=warmup,
-                        repeat=repeat,
-                        repeat_in_window=repeat_in_window,
-                        repeat_window_seconds=repeat_window_seconds,
-                        request_timeout_seconds=request_timeout_seconds,
-                        sample_hz=sample_hz,
-                        idle_seconds=idle_seconds,
-                        idle_cooldown_seconds=idle_cooldown_seconds,
-                        idle_debug=idle_debug,
-                        sniff_iface=sniff_iface,
-                        input_scales=input_scales,
-                        input_scale_plan_file=input_scale_plan_file,
-                        compute_profile_plan_file=compute_profile_plan_file,
-                        execution_profile_plan_file=execution_profile_plan_file,
-                        profiling_mode=profiling_mode,
-                    )
-
-                    if (
-                        pruning_plan is not None
-                        and reference_cpu is not None
-                        and cpu == reference_cpu
-                        and csv_path
-                    ):
-                        outcome, diagnostic = _case_startup_outcome(csv_path)
-                        gpu_pruning_result["reference_cases"].append({
-                            "cpu_cores": cpu,
-                            "mem_cap_gb": mem,
-                            "gpu_mode": normalized_gpu,
-                            "outcome": outcome,
-                            "diagnostic": diagnostic,
-                        })
-                        if gpu_pruning_result["first_non_oom_outcome"] is None:
-                            if outcome == "startup_oom":
-                                gpu_pruning_result[
-                                    "confirmed_startup_oom_prefix_gb"
-                                ].append(mem)
-                            else:
-                                gpu_pruning_result["first_non_oom_mem_cap_gb"] = mem
-                                gpu_pruning_result["first_non_oom_outcome"] = outcome
-                                if outcome == "startup_feasible":
-                                    gpu_pruning_result[
-                                        "minimum_startup_feasible_mem_cap_gb"
-                                    ] = mem
-                        persist_pruning_plan()
-
-                if run_state is not None and csv_path:
-                    if cached_case:
-                        print(f"[resume] 已完成，复用 case：{filename}")
-                    else:
-                        run_state.finish_case(csv_path, cpu, mem, normalized_gpu)
-                if csv_path:
-                    result_csvs.append(csv_path)
-                if progress_callback is not None:
-                    try:
-                        progress_callback(
-                            MatrixProgress(
-                                completed_cases=current,
-                                total_cases=total,
-                                cpu=cpu,
-                                mem=mem,
-                                gpu=gpu,
-                                result_csv=csv_path or None,
-                            )
-                        )
-                    except Exception as exc:
-                        # Progress reporting is ancillary and must never abort
-                        # or change the result of an experiment matrix.
-                        print(
-                            "[progress][WARN] Progress callback failed: "
-                            f"{type(exc).__name__}",
-                            file=sys.stderr,
-                        )
-
-    if pruning_plan is not None:
-        pruning_plan["status"] = "complete"
-        pruning_plan["completed_at"] = _utc_now_iso()
-        pruning_plan["attempted_case_count"] = (
-            total - len(pruning_plan["pruned_cases"])
-        )
-        persist_pruning_plan()
-        print(
-            f"[oom-prune] Plan: {pruning_plan_path}; "
-            f"pruned={len(pruning_plan['pruned_cases'])}/{total} cases"
-        )
-
+    total = len(plan["cases"])
+    for current, case in enumerate(plan["cases"], 1):
+        cpu, mem, gpu = case["cpu_cores"], case["mem_cap_gb"], case["gpu_mode"]
+        print(f"[matrix] Case {current}/{total}: CPU={cpu}, MEM={mem}GB, GPU={gpu}")
+        filename = f"result_case_{_sanitize_model_id(task_info.model_id)}_{cpu}c_{mem}g_{gpu}.csv"
+        cached_case = run_state.prepare_case(filename, cpu, mem, gpu) if run_state else None
+        if cached_case:
+            csv_path = cached_case
+            print(f"[resume] 已完成，复用 case：{filename}")
+        elif case["result_origin"] == "inferred_not_measured":
+            csv_path = _write_startup_oom_pruned_case_csv(
+                task_info=task_info, output_dir=output_dir, cpu=cpu, mem=mem, gpu=gpu,
+                reference_cpu=min(cpu_list), warmup=warmup, repeat=repeat,
+                repeat_in_window=repeat_in_window, input_scales=input_scales)
+        else:
+            csv_path = run_single_case(
+                task_info=task_info, cpu=cpu, mem=mem, gpu=gpu, image_info=image_info,
+                output_dir=output_dir, project_dir=project_dir, batch_size=batch_size,
+                warmup=warmup, repeat=repeat, repeat_in_window=repeat_in_window,
+                repeat_window_seconds=repeat_window_seconds, request_timeout_seconds=request_timeout_seconds,
+                sample_hz=sample_hz, idle_seconds=idle_seconds, idle_cooldown_seconds=idle_cooldown_seconds,
+                idle_debug=idle_debug, sniff_iface=sniff_iface, input_scales=input_scales,
+                input_scale_plan_file=input_scale_plan_file, compute_profile_plan_file=compute_profile_plan_file,
+                execution_profile_plan_file=execution_profile_plan_file, profiling_mode=profiling_mode,
+                input_scale_order=case["input_scales"], dram_energy=dram_energy)
+        if run_state is not None and csv_path and not cached_case:
+            run_state.finish_case(csv_path, cpu, mem, gpu)
+        if csv_path:
+            result_csvs.append(csv_path)
+        if progress_callback is not None:
+            try:
+                progress_callback(MatrixProgress(current, total, cpu, mem, gpu, csv_path or None))
+            except Exception as exc:
+                print(f"[progress][WARN] Progress callback failed: {type(exc).__name__}", file=sys.stderr)
     return result_csvs
 
 

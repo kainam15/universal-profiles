@@ -550,6 +550,11 @@ def _run_main():
     parser = _build_parser(default_notify_provider=DEFAULT_NOTIFY_PROVIDER)
 
     args = parser.parse_args()
+    from acprof.monitors.rapl_topology import dram_policy, discover_rapl_topology
+    try:
+        dram_enabled = dram_policy(args.profiling_mode, args.dram_energy)
+    except ValueError as exc:
+        parser.error(str(exc))
     run_command = _format_run_command(sys.argv)
     compute_profile_disabled = args.compute_profile_tool == "none"
     if args.repeat_in_window < 0:
@@ -598,6 +603,10 @@ def _run_main():
     cgroup_collection_mode = "strict_v2"
 
     preflight_measurements = {}
+    rapl_topology = discover_rapl_topology()
+    if dram_enabled and args.dram_energy == "required" and rapl_topology["dram_status"] != "available":
+        parser.error(f"required DRAM RAPL unavailable: {rapl_topology['dram_status']}; "
+                     f"missing packages={rapl_topology['dram_missing_packages']}")
     if measurement_requested(args.profiling_mode, "packet_latency"):
         try:
             require_packet_latency_prerequisites(sniff_iface=args.sniff_iface)
@@ -778,6 +787,7 @@ def _run_main():
         capability_report = measurement_report(
             args.profiling_mode, gpu_modes=gpu_list, compute_tool=args.compute_profile_tool,
             execution_tool=args.execution_profile_tool,
+            dram_energy=args.dram_energy, rapl_topology=rapl_topology,
         )
         capability_report.measurement.update({name: item for name, item in preflight_measurements.items() if isinstance(item, Capability)})
         from acprof.extensions import select_extension
@@ -993,6 +1003,9 @@ def _run_main():
                 else None
             ),
             prune_startup_oom=args.prune_startup_oom,
+            matrix_order=args.matrix_order,
+            matrix_seed=args.matrix_seed,
+            dram_energy=args.dram_energy,
             run_state=run_state,
             profiling_mode=args.profiling_mode,
         )
@@ -1032,9 +1045,10 @@ def _run_main():
             print("  [WARN] 请求指标存在缺失；能力报告保留具体状态，结果不标记为完整画像。")
         print(f"  Static meta:      {static_meta_json}")
         print(f"  Collection log:   {collection_history_json}")
+        print(f"  Frozen matrix:    {os.path.join(output_dir, 'matrix_plan.json')}")
         if args.prune_startup_oom:
             print(
-                "  OOM pruning plan:  "
+                "  Startup evidence: "
                 f"{os.path.join(output_dir, 'startup_oom_pruning.json')}"
             )
         print(f"  Merged results:   {final_csv}")

@@ -14,6 +14,7 @@ MEASUREMENT_OPTIONS = (
     "profiling_mode", "warmup", "repeat", "repeat_in_window", "repeat_window_seconds",
     "request_timeout_seconds", "sample_hz", "idle_seconds", "idle_cooldown_seconds",
     "compute_profile_tool", "execution_profile_tool", "prune_startup_oom",
+    "matrix_order", "matrix_seed", "dram_energy",
 )
 RUNTIME_ENVIRONMENT = (set(RUNTIME_ENV_NAMES) - {"ACPROF_REQUEST_TIMEOUT_S"}) | {"OMP_NUM_THREADS", "MKL_NUM_THREADS"}
 

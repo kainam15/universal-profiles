@@ -6,12 +6,13 @@
 
 ## 采集生命周期
 
-根 CLI 先完成环境与任务预检、镜像准备、输入计划和独立接口验证，再运行所选 profiler 与资源矩阵。
+根 CLI 先完成环境与任务预检、镜像准备、输入计划和独立接口验证，再运行所选 profiler。
+启用启动剪枝时，先执行独立 startup-OOM probe，再冻结正式矩阵计划并开始采集。
 每个正式 case 创建新容器；client 控制已有预热、冷却、无请求对照与 workload 窗口，
 监控停止后才计算派生值和写行。case 产物经抓包解析与校验后合并；图表及通知属于测量之外的操作。
 模块顺序见[主机编排](Architecture.md#主机编排与测量)，镜像与独立验证见[运行兼容](Runtime_Compatibility.md#构建复用和验证)。
 
-独立接口验证可能预热宿主机文件缓存。冷启动描述全新容器的进程和模型初始化，
+独立接口验证与 startup probe 可能预热宿主机文件缓存。冷启动描述全新容器的进程和模型初始化，
 不承诺磁盘冷缓存；`cold_start_first_predict_app_s` 不计入 `/ready` 前的分段和，也不新增推理请求。
 
 ## 协议不变量
@@ -29,6 +30,11 @@
 和抓包要求。`basic` 仍需前三项，仅要求 application latency、throughput、容器 CPU/memory；
 能耗、PMU、packet latency 不请求、不启动、数值保持 `nan`。两种模式不能混作同一画像。
 Torch、NCU、Massif、Nsys 仍是显式选择的额外工具，`full` 不意味着自动开启全部工具。
+
+`--dram-energy auto` 在 full 中尝试 DRAM，作为可选能力记录；缺失不改变原有 full 必需项。
+`off` 和 basic 的 DRAM 状态为 `not_requested`。只有 `required` 将 DRAM 加入
+`requested_measurements`，要求完整 package 覆盖及有效的原始、effective J/request；
+权限错误、部分覆盖、采样失败不能标为 verified。`required` 与 basic 组合明确报错。
 
 `capability_report.json` 保存统一的 execution/measurement 对象：`available`（已声明或预检可用）、
 `verified`（有当前运行证据）、`unsupported`、`permission_denied`、`not_requested`、`unavailable`、`error`。
@@ -52,6 +58,34 @@ not_measured、unfinished。OOM／timeout 是已结束的失败；剪枝未尝�
 
 模式参与实验恢复身份；旧参数中缺失模式解释为历史默认 full，历史结果不会凭空补出能力证据。
 新增 `profiling_mode`、`capability_report` 是 static schema v7 的可选字段，旧 v7 文件继续可读。
+
+## Startup probe 与冻结矩阵
+
+startup probe 使用独立容器，只启动服务、等待 `/ready`、检查 Docker State 并记录证据。
+它不发送 `/predict`，不启动 client、能耗监控、抓包或 profiler，也不写正式 CSV。
+每种 GPU mode 在最低选中 CPU 下，按内存升序探测；仅 `ready=false`、
+`State.OOMKilled=true`、`State.Running=false` 且未 restarting 的启动失败计入连续前缀。
+第一个非 confirmed startup OOM 就停止该 GPU mode 的后续探测，不能跨过缺口扩大前缀。
+错误文本、CUDA OOM、timeout、ready 后或正式采集中的运行期 OOM 均不能增加剪枝依据。
+该前缀按现有资源单调性假设推广到其它选中 CPU；所有被剪枝资源配置（包括参考 CPU）
+只生成 `result_origin=inferred_not_measured` 的占位行，指标为 `nan`，不冒充 probe 实测性能。
+
+probe 证据使用 `startup_oom_pruning.json` schema v2，逐次原子保存启动结果、Docker State、
+错误和时间。中断恢复可复用已记录的尝试；全部 probe 结束后才生成 `matrix_plan.json` schema v1。
+禁用剪枝时直接冻结矩阵。正式 case 重新创建容器，不复用 probe 的容器或启动计时。
+
+`matrix_plan.json` 保存完整实验身份、实际 case 顺序、每个 case 的实际 input scale 顺序、
+`matrix_order`、`seed`（CLI 的 `--matrix-seed`）、`algorithm_version=sha256-sort-v1` 和 `plan_sha256`。
+`seeded` 按 seed 与资源键的 SHA256 排序；input scale 由 seed 与该资源键派生独立 seed 后排序，
+不共享可变 RNG 状态，也不受其它 case 数量影响。`declared` 保持参数和输入计划的声明顺序。
+hash 对不含 `plan_sha256` 的规范 JSON 计算；探测时间戳不进入计划。
+相同身份、probe 前缀、算法和 seed 得到相同计划；输入 payload 本身保持原物化计划不变。
+独立随机源的设计参考 [MLPerf LoadGen TestSettings](https://github.com/mlcommons/inference/blob/master/loadgen/test_settings.h)，未引入 LoadGen 依赖。
+
+resume 读取实际冻结顺序并校验身份、内容 hash、case/scale 覆盖及 probe 结论，不重新 shuffle。
+`run_state.json` 同时绑定矩阵和 probe 文件 hash，已完成实验恢复时也检查这两份证据。
+改变 order、seed、输入计划或剪枝选项须使用新输出目录；已有 case 却没有冻结计划、旧版
+startup pruning schema v1、损坏或被改写的计划均明确拒绝恢复，不猜测历史执行顺序。
 
 ## Workload Contract
 
@@ -100,7 +134,8 @@ ONNX 独立验证记录实际 Provider、线程数及制品 SHA256；制品校�
 | `model_resolution.json` | 存在模型契约报告时在运行准备阶段写入的静态解析报告，包含候选与字段来源；失败 draft 也可独立导出。与可执行 `acprof_model.json` 分离，不是推理／测量成功证据。 |
 | `collection_history.json` | schema v1 的采集/修复 provenance。分别记录 post-hoc profiler 补采、timeout retry、quality retry 和静态元数据回填历史；最新一次状态由对应 history 的最后一项得到。 |
 | `input_scale_plan.json` | 所有任务族共用的 input scale/payload 计划。schema v2 额外记录 workload provenance、per-scale 输入元数据和模型约束；读取端要求 schema v2，拒绝缺少版本或 v1 计划。主采集和 compute profiler 复用同一份 payload。 |
-| `startup_oom_pruning.json` | 仅启用 `--prune-startup-oom` 时生成。记录最低参考 CPU、执行顺序、逐 GPU mode 的实测启动 OOM 前缀、最低启动可行内存、推断跳过 case、排除范围与资源单调性假设。 |
+| `startup_oom_pruning.json` | 独立 startup probe 证据 schema v2；记录最低 CPU、逐次启动结果、Docker State、错误、时间与连续 confirmed OOM 前缀，不含性能测量。 |
+| `matrix_plan.json` | probe 完成后冻结的正式计划 schema v1；含实际资源与 input scale 执行顺序、算法版本、seed、剪枝来源与内容 hash。resume 原样复用。 |
 | `compute_profile_plan.json` | per-scale FLOP profiling 结果。每个 CPU/GPU scale 可同时记录独立的 `torch_profiler_eager` 与 `ncu` profile；NCU 只存在于 GPU profile。失败信息按工具保存，只读取当前按 profiler 分层的 plan 结构。 |
 | `execution_profile_plan.json` | 显式 execution profiling 的采样与 per-resource-config/per-scale 汇总。Massif 条目对应 `gpu_mode=off`，Nsight Systems 条目对应 `gpu_mode=on`；复用 entry 记录实际 source resource 与 sampling strategy，失败按工具记录且不阻断主实验。 |
 | `compute_profiles/` | 默认保留的原始 compute profiler artifacts；`--discard-compute-profiles` 可在汇总后删除。 |
@@ -223,6 +258,7 @@ OOM pruning 继续按原有参考 CPU/内存顺序重建证据，复用与推断
 | `cgroup_version` | 本次 preflight 实际检测到的 hierarchy：仅支持 `v2`，其它 hierarchy 在预检退出。 |
 | `cgroup_collection_mode` | 当前唯一采集策略为 `strict_v2`。分析正式数据集时应同时要求 `cgroup_version=v2` 和 `cgroup_collection_mode=strict_v2`。 |
 | `cpu_power_source` | CPU package 功耗来源。`rapl` 表示使用 Linux RAPL powercap 真实计数器；`unavailable` 表示当前环境没有可用 RAPL。 |
+| `rapl_topology` | static schema v7 可选对象。记录全部发现的 powercap 域、父域、真实路径、sysfs aliases、计数器范围、enabled、可读状态、选中来源及 DRAM 覆盖缺口。子域与 MSR/MMIO 重复接口保留元数据，只有明确选中的 package/DRAM 分别计量。历史缺失表示未知。 |
 | `vcpu_power_method` | estimated vCPU 功耗计算方法。`rapl_cgroup_cpu_share` 表示对 RAPL package energy 逐采样区间按 container cgroup CPU share 归因；`unavailable` 表示无法估算。 |
 | `cpu_governor` | Host CPU frequency governor 汇总值，例如 `performance`、`powersave`、`schedutil`；如果各 CPU policy 不一致，会写成 `mixed:<governor>=<count>,...`；无法读取时为 `unavailable`。 |
 | `cpu_boost` | Host CPU boost / turbo 状态。`on` 表示 boost 可用，`off` 表示关闭；无法读取时为 `unavailable`。 |

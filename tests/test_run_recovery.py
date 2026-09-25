@@ -18,6 +18,31 @@ from acprof.host.static_metadata import StaticMeta
 
 
 class RunRecoveryTests(unittest.TestCase):
+    def test_seeded_resume_reuses_frozen_order_without_plan_generation(self):
+        seen = []
+        def interrupted(**kwargs):
+            seen.append(kwargs['cpu'])
+            if len(seen) == 2:
+                raise KeyboardInterrupt()
+            return self.write_case(**kwargs)
+        with self.assertRaises(KeyboardInterrupt):
+            self.invoke('--matrix-order', 'seeded', '--matrix-seed', '37', case=interrupted)
+        path = self.directory / 'matrix_plan.json'
+        original = path.read_bytes()
+        plan = json.loads(original)
+        self.assertEqual(seen, [c['cpu_cores'] for c in plan['cases']])
+        with patch('acprof.host.matrix_plan.build_matrix_plan', side_effect=AssertionError('reshuffle')):
+            self.invoke('--matrix-order', 'seeded', '--matrix-seed', '37', '--resume')
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(self.calls, [c['cpu_cores'] for c in plan['cases']])
+
+    def test_resume_rejects_tampered_frozen_plan(self):
+        self.invoke()
+        path = self.directory / 'matrix_plan.json'
+        path.write_text(path.read_text() + ' ')
+        with self.assertRaises(SystemExit):
+            self.invoke('--resume')
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -67,7 +92,7 @@ class RunRecoveryTests(unittest.TestCase):
                 "run.py", "--model", "org/model", "--cpus", "1,2", "--mems", "4",
                 "--gpus", "off", "--input-scales", "64", "--warmup", "0", "--repeat", "1",
                 "--repeat-in-window", "1", "--notify", "none", "--no-prune-startup-oom",
-                "--output-dir", str(self.root), *extra,
+                "--output-dir", str(self.root), "--matrix-order", "declared", *extra,
             ]))
             for name in ("bootstrap_project_env", "require_native_linux_host", "require_native_docker",
                          "require_packet_latency_prerequisites", "require_cpu_energy_prerequisites",

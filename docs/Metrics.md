@@ -53,13 +53,19 @@
 
 字段按用途分组，列顺序、类型、单位、来源和窗口由 [metric_registry.py](../acprof/metric_registry.py) 统一登记；
 `config.CSV_FIELDS` 引用同一字段列表。完整元数据见[字段速查](Metric_Reference.md)，绘图数值转换和补采完成条件复用登记表。
-`*_per_request` 和能量列按窗口内请求数归一化；`*_delta` 若未注明归一化，则表示整个窗口的增量。
+`*_per_request` 以及历史 CPU/GPU/vCPU 能量列按窗口内请求数归一化；DRAM 的
+`dram_window_energy_j` / `dram_window_effective_energy_j` 保留整段窗口能量，
+对应 `*_per_request_j` 才是 J/request。`*_delta` 若未注明归一化，则表示整个窗口的增量。
+
+`result_origin` 区分 `formal_measurement`（正式 client 窗口）、`formal_attempt`（正式尝试失败）
+与 `inferred_not_measured`（startup OOM 剪枝占位）。是否成功仍读取 `status`；
+独立 startup probe 只有 JSON 证据，没有性能 CSV。历史缺少此列不补造来源。
 
 | 查阅方向 | 字段组 |
 | --- | --- |
 | 配置、输入与请求 | [资源配置、输入与网络](#资源配置输入与网络)、[延迟与吞吐](#延迟与吞吐)、[两种延迟的区别](#latency_s-和-latency_app_s-的区别) |
 | Profiler | [Torch 与 NCU](Profilers.md#torch-与-ncu-计算指标)、[Massif 与 Nsight Systems](Profilers.md#massif-与-nsight-systems-执行指标) |
-| 能耗与归一化 | [GPU](Energy_Measurement.md#gpu-功率与能耗)、[CPU package](Energy_Measurement.md#cpu-package-功率与能耗)、[估算 vCPU](Energy_Measurement.md#估算-vcpu-能耗与派生能效)、[像素口径](#像素归一化口径) |
+| 能耗与归一化 | [GPU](Energy_Measurement.md#gpu-功率与能耗)、[CPU package](Energy_Measurement.md#cpu-package-功率与能耗)、[DRAM](Energy_Measurement.md#rapl-topology-与-dram)、[估算 vCPU](Energy_Measurement.md#估算-vcpu-能耗与派生能效)、[像素口径](#像素归一化口径) |
 | 资源与 PMU | [CPU](#cpu-资源频率与-pmu)、[容器内存、swap、I/O 与 PID](#容器内存swapio-与-pid)、[GPU 资源](#gpu-资源与运行状态) |
 | 生命周期与失败 | [冷启动](Profiling_Protocol.md#冷启动)、[运行状态与错误](#运行状态与错误) |
 

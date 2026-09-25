@@ -12,6 +12,7 @@ import tempfile
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional, Tuple
 
+from acprof.monitors.rapl_topology import discover_rapl_topology
 from acprof.config import STATIC_META_FIELDS, STATIC_META_SCHEMA_VERSION
 from acprof.host.detect import TaskInfo
 from acprof.host.docker_runtime import (
@@ -55,6 +56,7 @@ class StaticMeta:
     gpu_device: Dict[str, Any] = field(default_factory=dict)
     profiling_mode: str = "full"
     capability_report: Dict[str, Any] = field(default_factory=dict)
+    rapl_topology: Dict[str, Any] = field(default_factory=dict)
     cgroup_version: str = "unknown"
     cgroup_collection_mode: str = "unknown"
     host_mem_total_bytes: Optional[int] = None
@@ -758,6 +760,7 @@ def collect_static_meta(
         cgroup_collection_mode=cgroup_collection_mode,
         cpu_power_source=cpu_power_source,
         vcpu_power_method=vcpu_power_method,
+        rapl_topology=discover_rapl_topology(),
         cpu_governor=cpu_governor,
         cpu_boost=cpu_boost,
     )

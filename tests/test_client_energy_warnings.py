@@ -5,9 +5,10 @@ import math
 import os
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import ExitStack, redirect_stderr
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from acprof.host import client
 from acprof.monitors import energy_cpu
@@ -37,6 +38,74 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
             mocked = patch.object(client, name, 0.0)
             mocked.start()
             self.addCleanup(mocked.stop)
+
+    def test_frozen_scale_order_changes_execution_without_changing_payloads(self):
+        entries = [{"input_scale": scale, "payload": {"text": f"payload-{scale}"}}
+                   for scale in (16, 32, 64)]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "input_scale_plan.json")
+            path.write_text(json.dumps({"schema_version": 2, "entries": entries}))
+            original = path.read_bytes()
+            with patch.object(client, "INPUT_SCALE_PLAN_FILE", str(path)), patch.dict(
+                os.environ, {"INPUT_SCALE_ORDER": "[64,16,32]"}
+            ):
+                loaded = client._load_input_scale_entries()
+                self.assertEqual([e["input_scale"] for e in loaded], [64, 16, 32])
+                self.assertEqual([e["payload"]["text"] for e in loaded],
+                                 ["payload-64", "payload-16", "payload-32"])
+                self.assertEqual(path.read_bytes(), original)
+                for invalid in ("[16,32]", "[16,32,32]", "[16,32,128]"):
+                    with self.subTest(order=invalid), patch.dict(os.environ, {"INPUT_SCALE_ORDER": invalid}):
+                        with self.assertRaisesRegex(ValueError, "frozen matrix input-scale"):
+                            client._load_input_scale_entries()
+
+    def test_full_client_dram_policy_and_separate_window_request_units(self):
+        for policy, available in (("auto", False), ("required", False), ("required", True)):
+            with self.subTest(policy=policy, available=available), tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
+                result = energy_cpu._nan_result(cpu_idle_power_w=1.0)
+                result.cpu_energy_total_j = 12.0
+                result.vcpu_energy_eff_j = 6.0
+                if available:
+                    result.dram = energy_cpu.DRAMEnergyResult(
+                        window_energy_j=10.0, window_duration_s=2.0, avg_power_w=5.0,
+                        peak_power_w=7.0, idle_power_w=1.0,
+                        window_effective_energy_j=8.0, status="verified")
+                monitor = Mock()
+                monitor.idle_power_w = 1.0
+                monitor.idle_trace = {}
+                monitor.stop.return_value = (result, "", [])
+                path = Path(tmp, "result.csv")
+                settings = {
+                    "OUT_CSV": str(path), "PROFILING_MODE": "full", "DRAM_ENERGY": policy,
+                    "WARMUP": 0, "REPEAT": 1, "REPEAT_IN_WINDOW": 2,
+                    "USE_ENERGY": False, "USE_MIPS": False, "GPU_MODE": "off",
+                    "energy_mod": None, "resource_usage_mod": None,
+                    "cpu_energy_mod": SimpleNamespace(CPUEnergyMonitor=Mock(return_value=monitor)),
+                    "input_scale_entries": [{"input_scale": 1.0, "scale_label": "one", "payload": {}}],
+                }
+                for name, value in settings.items():
+                    stack.enter_context(patch.object(client, name, value))
+                stack.enter_context(patch.object(client.requests, "get",
+                    return_value=SimpleNamespace(status_code=200, text="ok")))
+                stack.enter_context(patch.object(client, "_one_request",
+                    return_value={"latency_app_s": 0.5, "effective_input_scale": 1.0}))
+                if policy == "required" and not available:
+                    with self.assertRaisesRegex(client.EnergyAbort, "required DRAM"):
+                        client.main()
+                    continue
+                client.main()
+                with path.open() as stream:
+                    row = next(csv.DictReader(stream))
+                self.assertEqual(row["status"], "ok", row["error"])
+                self.assertEqual(float(row["container_attributed_energy_eff_j"]), 3.0)
+                self.assertEqual(row["result_origin"], "formal_measurement")
+                if available:
+                    self.assertEqual(float(row["dram_window_energy_j"]), 10.0)
+                    self.assertEqual(float(row["dram_energy_per_request_j"]), 5.0)
+                    self.assertEqual(float(row["dram_effective_energy_per_request_j"]), 4.0)
+                else:
+                    self.assertEqual(row["dram_energy_status"], "unavailable")
+                    self.assertEqual(row["dram_window_energy_j"], "nan")
 
     def test_latency_metrics_use_the_current_client_slow_threshold(self) -> None:
         latencies = [0.01, 0.06, 0.2, float("nan"), float("inf")]

@@ -1,6 +1,6 @@
 # 能耗测量与归因
 
-解释 GPU、CPU package、估算 vCPU 能耗或 idle baseline 时查阅。请求窗口与对照生命周期见 [采集协议](Profiling_Protocol.md#每行测量窗口)。
+解释 GPU、CPU package、DRAM、估算 vCPU 能耗或 idle baseline 时查阅。请求窗口与对照生命周期见 [采集协议](Profiling_Protocol.md#每行测量窗口)。
 
 [文档导航](README.md)
 
@@ -71,6 +71,43 @@ CSV 中两种能量最后再除以成功请求数；有效的零差值保留为�
 | `cpu_avg_power_eff_w` | 扣除 CPU idle baseline 后的 CPU package effective average power，单位 W。 |
 | `cpu_peak_power_eff_w` | 扣除 CPU idle baseline 后的 CPU package effective peak power，单位 W。peak 口径同 `cpu_peak_power_total_w`。 |
 | `cpu_energy_eff_j` | 本行平均到单 request 的 effective CPU package energy，单位 J。 |
+
+## RAPL topology 与 DRAM
+
+`static_meta.json.rapl_topology` 保留所有发现的 package、DRAM、core、uncore、psys 等域，
+包括父域、真实路径、alias 路径、`max_energy_range_uj`、enabled、读取状态和是否选中。
+发现阶段按 sysfs realpath 去重并防止链接循环；同名 package 的 MSR/MMIO 接口只选一个，
+优先非 MMIO。package 只累加选中根域，DRAM 只累加这些 package 下选中的 DRAM 域，
+其余子域保留拓扑但不重复相加。发现与元数据写入在正式测量窗口外完成。
+`enabled` 表示功率限制控制状态，`enabled=0` 不阻止读取有效能量计数器，参见
+[Linux powercap ABI](https://docs.kernel.org/power/powercap/powercap.html#common-zone-and-control-type-attributes)。
+
+`--dram-energy auto` 在 full 中采集可用 DRAM。所有选中 package 必须有可读 DRAM 才提供汇总；
+域缺失、无权限或采样失败时 DRAM 为 `nan` 并记录状态，CPU package 仍独立采集。
+`off` 不读 DRAM 采样值；`required` 在预检及运行时要求完整 DRAM 结果，否则失败。
+basic 不采集 DRAM，不能使用 required。缺失不填零；有效的零能量仍为零。
+
+| 字段 | 含义 |
+| --- | --- |
+| `dram_window_energy_j` | 完整 workload window 的 DRAM 能量，J/window，未除请求数。 |
+| `dram_window_duration_s` | DRAM 首尾采样时间差，秒。 |
+| `dram_energy_per_request_j` | `dram_window_energy_j / repeat_in_window`，J/request。分母非正时为 `nan`。 |
+| `dram_avg_power_w` / `dram_peak_power_w` | 窗口能量除实际时长 / 相邻有效采样区间的最大功率，W；peak 排除短于半个采样周期的区间。 |
+| `dram_idle_power_w` | 同一 monitor 生命周期下 matched control 的窗口能量除实际时长，W。 |
+| `dram_window_effective_energy_j` | `dram_window_energy_j - dram_idle_power_w × dram_window_duration_s`，J/window，允许为负。 |
+| `dram_effective_energy_per_request_j` | effective window energy 除窗口实际请求数，J/request。 |
+| `dram_energy_status` / `dram_energy_error` | `verified`、`unavailable`、`permission_denied`、`error` 或 `not_requested`，及不可用原因。Capability Report 再根据实际 CSV 数值核验完整性。 |
+
+DRAM 使用已有 CPU monitor 的采样线程和 matched control，不增加请求或独立采集轮次。
+逐域逐相邻样本计算 counter delta；倒退时仅用该域已知的 `max_energy_range_uj` 修正一次回绕，
+范围未知的倒退视为无效，不猜测能量。多个采样区间各自回绕可正确累加；同一区间发生多次
+回绕无法从计数器确定，拓扑明确记录“每个相邻采样区间至多一次回绕”的假设。
+该设计参考 [Zeus RAPL 实现](https://github.com/ml-energy/zeus/blob/master/zeus/device/cpu/rapl.py)
+的域区分与回绕处理思想，沿用本项目采样与归因，不引入 Zeus 依赖或额外后台采样进程。
+
+DRAM 是主机内存域测量，缺少容器内存能量归因模型，因此不加入
+`container_attributed_energy_eff_j`。历史 CPU/GPU/vCPU 的 `*_energy_total_j` 继续表示
+J/request，避免改变旧结果含义；新增 DRAM 明确区分 window 与 per-request，禁止用含糊的 total 名称。
 
 ## 估算 vCPU 能耗与派生能效
 

@@ -163,6 +163,7 @@ STATIC_META_FIELDS = [
     "cgroup_collection_mode",
     "cpu_power_source",
     "vcpu_power_method",
+    "rapl_topology",
     "cpu_governor",
     "cpu_boost",
     "compute_profile_tools",

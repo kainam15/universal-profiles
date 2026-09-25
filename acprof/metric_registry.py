@@ -217,6 +217,17 @@ _DECLARATIONS = (
     Metric('cpu_ref_cycles_per_request', 'ref_cycle/request', 'perf_stat', 'request_window'),
     Metric('cpu_ipc', 'instruction/cycle', 'perf_stat', 'request_window'),
     Metric('cpu_perf_running_pct', '%', 'perf_stat', 'request_window'),
+    Metric('dram_window_energy_j', 'J/window', 'rapl_dram', 'request_window', applicability='dram'),
+    Metric('dram_window_duration_s', 's', 'rapl_dram', 'request_window', applicability='dram'),
+    Metric('dram_energy_per_request_j', 'J/request', 'rapl_dram', 'request_window', applicability='dram'),
+    Metric('dram_avg_power_w', 'W', 'rapl_dram', 'request_window', applicability='dram'),
+    Metric('dram_peak_power_w', 'W', 'rapl_dram', 'request_window', applicability='dram'),
+    Metric('dram_idle_power_w', 'W', 'rapl_dram', 'control_window', applicability='dram'),
+    Metric('dram_window_effective_energy_j', 'J/window', 'rapl_dram', 'request_window', applicability='dram'),
+    Metric('dram_effective_energy_per_request_j', 'J/request', 'rapl_dram', 'request_window', applicability='dram'),
+    Metric('dram_energy_status', 'text', 'rapl_dram', 'request_window', applicability='dram', kind='text'),
+    Metric('dram_energy_error', 'text', 'rapl_dram', 'request_window', applicability='dram', kind='text'),
+    Metric('result_origin', 'text', 'protocol', 'row', kind='text'),
 )
 METRICS = MappingProxyType({metric.name: metric for metric in _DECLARATIONS})
 if len(METRICS) != len(_DECLARATIONS):

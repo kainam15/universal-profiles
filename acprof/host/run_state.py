@@ -188,11 +188,34 @@ class RunState:
         # A finalized result may subsequently be changed by documented post-hoc tools.
         if self.complete:
             read_result_csv(self.directory / "result_all.csv", expected=self.expected())
+            for name in ("matrix_plan.json", "startup_oom_pruning.json"):
+                if name in self.data.get("artifacts", {}):
+                    path = self.artifact_path(name)
+                    if not path.is_file() or file_sha256(path) != self.data["artifacts"][name]:
+                        raise RunStateError(f"冻结执行计划或探测证据缺失/改变：{path}")
             return
         for name, digest in self.data.get("artifacts", {}).items():
             path = self.artifact_path(name)
             if not path.is_file() or file_sha256(path) != digest:
                 raise RunStateError(f"恢复产物缺失或已改变：{path}；请恢复原文件或使用新输出目录")
+
+    def bind_matrix_plan(self, plan: dict) -> None:
+        from acprof.host.matrix_plan import MATRIX_PLAN_NAME
+        from acprof.host.startup_probe import PROBE_NAME
+        previous = self.data.get("matrix_plan_sha256")
+        if previous is not None and previous != plan["plan_sha256"]:
+            raise RunStateError("冻结 matrix plan 身份已改变")
+        names = [MATRIX_PLAN_NAME]
+        if plan["identity"]["prune_startup_oom"]:
+            names.append(PROBE_NAME)
+        for name in names:
+            checksum = file_sha256(self.artifact_path(name))
+            recorded = self.data["artifacts"].get(name)
+            if recorded is not None and recorded != checksum:
+                raise RunStateError(f"冻结计划或 probe 证据已改变：{name}")
+            self.data["artifacts"][name] = checksum
+        self.data["matrix_plan_sha256"] = plan["plan_sha256"]
+        self.save()
 
     def bind_runtime(self, task, image, planned, compute_plan: str, execution_plan: str) -> None:
         paths = ["static_meta.json", "collection_history.json", "input_scale_plan.json"]

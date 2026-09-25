@@ -159,8 +159,19 @@ def declared_profiler_error(task_info: Any, tool: str) -> str:
     return ""
 
 
-def measurement_report(mode: str, *, gpu_modes=(), compute_tool="none", execution_tool="none") -> CapabilityReport:
+def measurement_report(mode: str, *, gpu_modes=(), compute_tool="none", execution_tool="none",
+                       dram_energy="auto", rapl_topology=None) -> CapabilityReport:
+    from acprof.monitors.rapl_topology import dram_policy
     report = CapabilityReport(mode)
+    topology = rapl_topology or {}
+    dram_enabled = dram_policy(mode, dram_energy)
+    report.measurement["dram_energy"] = Capability(
+        topology.get("dram_status", "unavailable") if dram_enabled else "not_requested",
+        detail="optional host DRAM domain" if dram_enabled else "DRAM sampling disabled",
+        source="rapl_topology", evidence={"policy": dram_energy,
+                                          "missing_packages": topology.get("dram_missing_packages", [])})
+    if dram_energy == "required":
+        report.requested.add("dram_energy")
     gpu = "on" in gpu_modes
     cpu = "off" in gpu_modes
     for name in ("latency", "throughput", "container_cpu", "container_memory",
@@ -259,6 +270,7 @@ def apply_profiler_plan(report: CapabilityReport, plan: Mapping, *, source: str)
 
 
 REQUIRED_MEASUREMENT_FIELDS = {
+    "dram_energy": ("dram_window_energy_j", "dram_energy_per_request_j", "dram_window_effective_energy_j"),
     "latency": ("latency_app_s",), "throughput": ("throughput_samples_per_s",),
     "container_cpu": ("container_cpu_util_avg_pct",), "container_memory": ("container_mem_usage_avg_bytes",),
     "packet_latency": ("latency_s",), "cpu_energy": ("cpu_energy_total_j", "vcpu_energy_total_j"),
@@ -306,7 +318,10 @@ def apply_collection_result(report: CapabilityReport, rows: list[Mapping]) -> No
     report.row_counts = outcomes["row_counts"]
     report.collection_complete = outcomes["succeeded"]
     for name, metrics in REQUIRED_MEASUREMENT_FIELDS.items():
-        if name not in report.requested:
+        if name not in report.requested and not (
+            name == "dram_energy" and name in report.measurement
+            and report.measurement[name].status != CapabilityStatus.NOT_REQUESTED
+        ):
             continue
         relevant = [row for row in rows if row.get("status") in {"ok", "warn"}
                     and (name != "gpu_power" or row.get("gpu_mode") == "on")]
@@ -318,6 +333,14 @@ def apply_collection_result(report: CapabilityReport, rows: list[Mapping]) -> No
         if relevant and all(finite(row) for row in relevant):
             report.measurement[name] = Capability("verified", source="result_all.csv", evidence={"fields": list(metrics), "rows": len(relevant)})
         else:
+            if name == "dram_energy":
+                statuses = {row.get("dram_energy_status") for row in relevant}
+                status = next((candidate for candidate in ("permission_denied", "error", "unavailable")
+                               if candidate in statuses), "unavailable")
+                detail = "; ".join(sorted({str(row.get("dram_energy_error") or "") for row in relevant}))
+                report.measurement[name] = Capability(status, detail or "no complete DRAM window evidence",
+                                                      "result_all.csv", {"fields": list(metrics)})
+                continue
             errors = "; ".join(str(row.get("error") or "") for row in rows if row.get("status") == "error")
             report.measurement[name] = (
                 capability_from_error(errors, source="result_all.csv") if errors.strip("; ")

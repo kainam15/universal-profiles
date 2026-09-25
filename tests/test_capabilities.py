@@ -10,6 +10,41 @@ from acprof.cli.run_args import build_parser
 
 
 class CapabilityTests(unittest.TestCase):
+    def test_optional_dram_is_verified_without_becoming_a_full_prerequisite(self):
+        caps = self.capabilities()
+        report = caps.measurement_report('full', gpu_modes=['off'], dram_energy='auto')
+        self.assertNotIn('dram_energy', report.requested)
+        rows = [{'status': 'ok', 'gpu_mode': 'off', 'latency_app_s': '0.1',
+                 'throughput_samples_per_s': '10', 'container_cpu_util_avg_pct': '1',
+                 'container_mem_usage_avg_bytes': '1024', 'latency_s': '.09',
+                 'cpu_energy_total_j': '1', 'vcpu_energy_total_j': '.2',
+                 'cpu_instructions_per_request': '1', 'dram_energy_status': 'unavailable'}]
+        caps.apply_collection_result(report, rows)
+        self.assertTrue(report.to_dict()['full_profile_complete'])
+        required = caps.measurement_report('full', gpu_modes=['off'], dram_energy='required')
+        caps.apply_collection_result(required, rows)
+        self.assertEqual(caps.missing_required_measurements(required, rows), ['dram_energy'])
+        self.assertFalse(required.to_dict()['full_profile_complete'])
+        rows[0].update(dram_window_energy_j='0', dram_energy_per_request_j='0',
+                       dram_window_effective_energy_j='0', dram_energy_status='verified')
+        caps.apply_collection_result(report, rows)
+        self.assertEqual(report.measurement['dram_energy'].status.value, 'verified')
+
+    def test_dram_off_and_basic_do_not_claim_measurement_and_required_basic_is_rejected(self):
+        caps = self.capabilities()
+        for mode, selection in [('full', 'off'), ('basic', 'auto')]:
+            report = caps.measurement_report(mode, dram_energy=selection)
+            self.assertEqual(report.measurement['dram_energy'].status.value, 'not_requested')
+        with self.assertRaisesRegex(ValueError, 'full'):
+            caps.measurement_report('basic', dram_energy='required')
+
+    def test_dram_permission_evidence_is_preserved(self):
+        caps = self.capabilities()
+        report = caps.measurement_report('full')
+        caps.apply_collection_result(report, [{'status': 'ok', 'dram_energy_status': 'permission_denied',
+                                               'dram_energy_error': 'energy_uj permission denied'}])
+        self.assertEqual(report.measurement['dram_energy'].status.value, 'permission_denied')
+
     def capabilities(self):
         self.assertIsNotNone(importlib.util.find_spec("acprof.capabilities"),
                              "a shared capability contract is required")

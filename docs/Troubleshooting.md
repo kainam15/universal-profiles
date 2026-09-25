@@ -70,7 +70,7 @@ Docker 数据可能在另一挂载点，磁盘问题还需对实际 `DockerRootD
 - 容器在模型加载期间触达 `--memory` cgroup 上限并被内核终止；错误会同时记录 memory cap、Docker 状态和 exit code。
 - 该 case 的占位行保留为 `status=error`，latency、throughput、energy 和 resource usage 等未执行指标保持 `nan`。`plot.py` 的性能图与 latency model 只使用 `status=ok` 行；资源可行性热力图会单独读取这些占位行，用来展示失败边界。
 - 增大 memory cap，或改用更小/量化模型；不要用推测值回填失败 case 的指标。
-- 默认的启动 OOM 剪枝不会改变任何可运行 case 的 warmup、repeat 或指标，只在后续 CPU 上为已确认的连续启动 OOM 前缀写入未执行占位行。热力图中实测启动 OOM 为 `OOM-S`，剪枝推断为 `P-OOM`；论文中必须区分两者。需要每个资源格独立实测时使用 `--no-prune-startup-oom`。
+- 默认剪枝在正式矩阵前执行独立 startup probe，按最低 CPU 的连续低内存 confirmed Docker OOM 前缀推断；probe 不写性能 CSV。对应全部 CPU（含参考 CPU）的正式 case 写为 `result_origin=inferred_not_measured`，热力图显示 `P-OOM`。正式尝试自身发生启动 OOM 才显示 `OOM-S`，不会回头扩大冻结计划的剪枝范围。需要每个资源格独立实测时使用 `--no-prune-startup-oom`；冻结顺序与证据见[采集协议](Profiling_Protocol.md#startup-probe-与冻结矩阵)。
 
 ### 运行期 OOM
 

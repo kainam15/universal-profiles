@@ -205,3 +205,14 @@
 | `cpu_ref_cycles_per_request` | `ref_cycle/request` | `perf_stat` | `request_window` | `all` | `number` |
 | `cpu_ipc` | `instruction/cycle` | `perf_stat` | `request_window` | `all` | `number` |
 | `cpu_perf_running_pct` | `%` | `perf_stat` | `request_window` | `all` | `number` |
+| `dram_window_energy_j` | `J/window` | `rapl_dram` | `request_window` | `dram` | `number` |
+| `dram_window_duration_s` | `s` | `rapl_dram` | `request_window` | `dram` | `number` |
+| `dram_energy_per_request_j` | `J/request` | `rapl_dram` | `request_window` | `dram` | `number` |
+| `dram_avg_power_w` | `W` | `rapl_dram` | `request_window` | `dram` | `number` |
+| `dram_peak_power_w` | `W` | `rapl_dram` | `request_window` | `dram` | `number` |
+| `dram_idle_power_w` | `W` | `rapl_dram` | `control_window` | `dram` | `number` |
+| `dram_window_effective_energy_j` | `J/window` | `rapl_dram` | `request_window` | `dram` | `number` |
+| `dram_effective_energy_per_request_j` | `J/request` | `rapl_dram` | `request_window` | `dram` | `number` |
+| `dram_energy_status` | `text` | `rapl_dram` | `request_window` | `dram` | `text` |
+| `dram_energy_error` | `text` | `rapl_dram` | `request_window` | `dram` | `text` |
+| `result_origin` | `text` | `protocol` | `row` | `all` | `text` |
