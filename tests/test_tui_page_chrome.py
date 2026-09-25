@@ -34,7 +34,18 @@ class TuiPageChromeTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(region.width, 0, button.id)
         self.assertEqual(region.height, 3, button.id)
         self.assertLessEqual(cell_len(button.label.plain), button.content_region.width, button.id)
-        self.assertIs(self.app.get_widget_at(*region.center)[0], button, button.id)
+        center_x, center_y = region.center
+        for x in (region.x + 1, center_x, region.right - 2):
+            self.assertIs(self.app.get_widget_at(x, center_y)[0], button, button.id)
+
+    def assert_actions_aligned(self, pane, secondary_ids, primary):
+        secondary = [pane.query_one("#" + widget_id) for widget_id in secondary_ids]
+        self.assertEqual(secondary[0].region.x, pane.region.x + 2)
+        for left, right in zip(secondary, secondary[1:]):
+            self.assertEqual(right.region.x, left.region.right + 1, right.id)
+        for action in secondary:
+            self.assertEqual(action.region.y, primary.region.y, action.id)
+        self.assertGreaterEqual(primary.region.x, secondary[-1].region.right + 1)
 
     async def test_all_pages_keep_headers_and_rightmost_actions_fixed_when_scrolling_and_resizing(self):
         app = self.app
@@ -44,11 +55,14 @@ class TuiPageChromeTests(unittest.IsolatedAsyncioTestCase):
                 for language in ("zh", "en"):
                     app.ui_preferences = replace(app.ui_preferences, language=language)
                     app._apply_ui_preferences()
-                    for page, primary in (
-                        ("run-tab", "start-run"), ("monitor-tab", "stop-run"),
-                        ("plot-tab", "plot-results"), ("reports-tab", "report-calculate"),
-                        ("profile-tab", "profile-run"), ("images-tab", "image-delete"),
-                        ("settings-tab", "save-ui-settings"),
+                    for page, primary, secondary in (
+                        ("run-tab", "start-run", ("open-run-settings", "quick-check", "probe-largest")),
+                        ("monitor-tab", "stop-run", ("log-title", "copy-log", "follow-log", "expand-log", "clear-log")),
+                        ("plot-tab", "plot-results", ("summarize-results",)),
+                        ("reports-tab", "report-calculate", ("report-current", "report-open")),
+                        ("profile-tab", "profile-run", ("profile-dry-run",)),
+                        ("images-tab", "image-delete", ("image-toggle", "image-model", "image-clear")),
+                        ("settings-tab", "save-ui-settings", ("restore-ui-defaults",)),
                     ):
                         with self.subTest(size=size, language=language, page=page):
                             app._activate_tab(page)
@@ -58,6 +72,7 @@ class TuiPageChromeTests(unittest.IsolatedAsyncioTestCase):
                             self.assert_reachable(button)
                             self.assertEqual(button.region.bottom, pane.region.bottom)
                             self.assertEqual(button.region.right, pane.region.right - 2)
+                            self.assert_actions_aligned(pane, secondary, button)
                             header = pane.query_one(".page-header")
                             header_region, button_region = header.region, button.region
                             self.assertEqual(header_region.y, pane.region.y)
@@ -67,6 +82,7 @@ class TuiPageChromeTests(unittest.IsolatedAsyncioTestCase):
                             await pilot.pause()
                             self.assertEqual(header.region, header_region)
                             self.assertEqual(button.region, button_region)
+                            self.assert_actions_aligned(pane, secondary, button)
                             for action in pane.query(".action-bar Button"):
                                 if action.display:
                                     self.assert_reachable(action)
@@ -76,6 +92,7 @@ class TuiPageChromeTests(unittest.IsolatedAsyncioTestCase):
                             await pilot.pause()
                             self.assertEqual(button.region.bottom, pane.region.bottom)
                             self.assert_reachable(button)
+                            self.assert_actions_aligned(pane, secondary, button)
                             app.ui_preferences = replace(app.ui_preferences, show_command_bar=True)
                             app._apply_ui_preferences()
 

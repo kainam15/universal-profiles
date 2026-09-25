@@ -388,11 +388,12 @@ def compose_run_tab(app: AcprofTui) -> ComposeResult:
                     yield app._localized_widget(Button("记住实验配置", id="save-run-default"))
 
         with Horizontal(id="run-actions", classes="action-bar"):
-            yield app._localized_widget(Button("高级参数", id="open-run-settings"))
-            yield app._localized_widget(Static("", id="action-spacer"))
-            yield app._localized_widget(Button("环境检查", id="quick-check"))
-            yield app._localized_widget(Button("探测最大输入", id="probe-largest"))
-            yield app._localized_widget(Button("开始采集", id="start-run", variant="primary"))
+            with Horizontal(classes="action-secondary"):
+                yield app._localized_widget(Button("高级参数", id="open-run-settings"))
+                yield app._localized_widget(Button("环境检查", id="quick-check"))
+                yield app._localized_widget(Button("探测最大输入", id="probe-largest"))
+            with Horizontal(classes="action-primary"):
+                yield app._localized_widget(Button("开始采集", id="start-run", variant="primary"))
 
 
 def compose_monitor_tab(app: AcprofTui) -> ComposeResult:
@@ -416,16 +417,18 @@ def compose_monitor_tab(app: AcprofTui) -> ComposeResult:
 
             with LogPanel(id="log-panel"):
                 with Horizontal(id="log-toolbar", classes="action-bar"):
-                    yield app._localized_widget(Static("日志", id="log-title", markup=False))
-                    yield app._localized_widget(Button("复制选区", id="copy-log", classes="log-tool"))
-                    yield app._localized_widget(Button("回到最新", id="follow-log", classes="log-tool"))
-                    yield app._localized_widget(Button("放大日志", id="expand-log", classes="log-tool"))
-                    yield app._localized_widget(Button("返回监控", id="restore-log", classes="log-tool"))
-                    yield app._localized_widget(Button("清空日志", id="clear-log", classes="log-tool"))
-                    yield app._localized_widget(Button(
-                        "终止任务", id="stop-run", classes="log-tool",
-                        variant="error", disabled=True,
-                    ))
+                    with Horizontal(classes="action-secondary"):
+                        yield app._localized_widget(Static("日志", id="log-title", markup=False))
+                        yield app._localized_widget(Button("复制选区", id="copy-log", classes="log-tool"))
+                        yield app._localized_widget(Button("回到最新", id="follow-log", classes="log-tool"))
+                        yield app._localized_widget(Button("放大日志", id="expand-log", classes="log-tool"))
+                        yield app._localized_widget(Button("返回监控", id="restore-log", classes="log-tool"))
+                        yield app._localized_widget(Button("清空日志", id="clear-log", classes="log-tool"))
+                    with Horizontal(classes="action-primary"):
+                        yield app._localized_widget(Button(
+                            "终止任务", id="stop-run", classes="log-tool",
+                            variant="error", disabled=True,
+                        ))
                 yield SelectableLog(
                     id="run-log",
                     max_lines=app.ui_preferences.log_max_lines,
@@ -450,8 +453,10 @@ def compose_plot_tab(app: AcprofTui) -> ComposeResult:
                 markup=False,
             ))
         with Horizontal(id="plot-actions", classes="action-bar"):
-            yield app._localized_widget(Button("读取摘要", id="summarize-results"))
-            yield app._localized_widget(Button("生成图表", id="plot-results", variant="primary"))
+            with Horizontal(classes="action-secondary"):
+                yield app._localized_widget(Button("读取摘要", id="summarize-results"))
+            with Horizontal(classes="action-primary"):
+                yield app._localized_widget(Button("生成图表", id="plot-results", variant="primary"))
 
 
 def compose_reports_tab(app: AcprofTui) -> ComposeResult:
@@ -475,10 +480,11 @@ def compose_reports_tab(app: AcprofTui) -> ComposeResult:
                 id="report-detail", markup=False,
             ))
         with Horizontal(id="report-actions", classes="action-bar"):
-            yield app._localized_widget(Button("当前结果", id="report-current", classes="report-control"))
-            yield Static("", classes="action-spacer")
-            yield app._localized_widget(Button("查看报告", id="report-open", classes="report-control"))
-            yield app._localized_widget(Button("计算统计", id="report-calculate", classes="report-control", variant="primary"))
+            with Horizontal(classes="action-secondary"):
+                yield app._localized_widget(Button("当前结果", id="report-current", classes="report-control"))
+                yield app._localized_widget(Button("查看报告", id="report-open", classes="report-control"))
+            with Horizontal(classes="action-primary"):
+                yield app._localized_widget(Button("计算统计", id="report-calculate", classes="report-control", variant="primary"))
 
 
 def compose_profile_tab(app: AcprofTui) -> ComposeResult:
@@ -510,8 +516,10 @@ def compose_profile_tab(app: AcprofTui) -> ComposeResult:
                             tooltip=tooltip,
                         ))
         with Horizontal(id="profile-actions", classes="action-bar"):
-            yield app._localized_widget(Button("补采计划（dry-run）", id="profile-dry-run"))
-            yield app._localized_widget(Button("执行补采", id="profile-run", variant="warning"))
+            with Horizontal(classes="action-secondary"):
+                yield app._localized_widget(Button("补采计划（dry-run）", id="profile-dry-run"))
+            with Horizontal(classes="action-primary"):
+                yield app._localized_widget(Button("执行补采", id="profile-run", variant="warning"))
 
 
 def compose_settings_tab(app: AcprofTui) -> ComposeResult:
@@ -554,8 +562,10 @@ def compose_settings_tab(app: AcprofTui) -> ComposeResult:
                 ))
             yield app._localized_widget(Static("", id="settings-location", classes="page-hint", markup=False))
         with Horizontal(id="settings-actions", classes="action-bar"):
-            yield app._localized_widget(Button("恢复界面默认", id="restore-ui-defaults"))
-            yield app._localized_widget(Button("保存设置", id="save-ui-settings", variant="primary"))
+            with Horizontal(classes="action-secondary"):
+                yield app._localized_widget(Button("恢复界面默认", id="restore-ui-defaults"))
+            with Horizontal(classes="action-primary"):
+                yield app._localized_widget(Button("保存设置", id="save-ui-settings", variant="primary"))
 
 
 def compose_images_tab(app: AcprofTui) -> ComposeResult:
@@ -599,10 +609,11 @@ def compose_images_tab(app: AcprofTui) -> ComposeResult:
                 yield app._localized_widget(ImageDetailResizeHandle(id="image-detail-resize", classes="image-control"))
                 yield ImageDetailPanel(id="image-detail-scroll")
         with Horizontal(id="image-actions", classes="action-bar"):
-            for label, widget_id in (("勾选/取消", "image-toggle"),
-                                     ("选择同模型", "image-model"), ("清空选择", "image-clear")):
-                yield app._localized_widget(Button(label, id=widget_id, classes="image-control", disabled=True))
-            yield Static("", classes="action-spacer")
-            yield app._localized_widget(Button(
-                "删除所选", id="image-delete", classes="image-control", variant="error", disabled=True,
-            ))
+            with Horizontal(classes="action-secondary"):
+                for label, widget_id in (("勾选/取消", "image-toggle"),
+                                         ("选择同模型", "image-model"), ("清空选择", "image-clear")):
+                    yield app._localized_widget(Button(label, id=widget_id, classes="image-control", disabled=True))
+            with Horizontal(classes="action-primary"):
+                yield app._localized_widget(Button(
+                    "删除所选", id="image-delete", classes="image-control", variant="error", disabled=True,
+                ))

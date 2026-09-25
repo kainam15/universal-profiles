@@ -95,9 +95,19 @@ Select:focus > SelectCurrent, Select.-expanded > SelectCurrent, SelectOverlay:fo
     dock: bottom;
     height: 4;
     padding: 0 2;
-    align-horizontal: right;
     border-top: solid $panel;
     background: $surface;
+}
+.action-secondary {
+    width: 1fr;
+    height: 3;
+    align-horizontal: left;
+}
+.action-primary {
+    width: auto;
+    height: 3;
+    margin-left: 1;
+    align-horizontal: right;
 }
 /* Transparent fill keeps the terminal cells outside rounded corners clear. */
 Button {
@@ -141,8 +151,6 @@ Button:disabled, Button:disabled:hover, Button:disabled:focus, Button:disabled.-
     opacity: 65%;
 }
 .action-bar Button { margin-left: 1; }
-#open-run-settings { margin-left: 0; width: 18; }
-#action-spacer, .action-spacer { width: 1fr; }
 .action-bar Button:first-child { margin-left: 0; }
 .button-row { height: auto; margin: 1 0; }
 .button-row Button { margin-right: 1; }
@@ -185,11 +193,10 @@ Select:disabled > SelectCurrent { color: $ui-disabled; border: solid $ui-disable
 #status-detail { height: 1; text-overflow: ellipsis; }
 #log-panel { width: 100%; height: 1fr; min-height: 5; padding: 0; }
 #log-toolbar { height: 4; background: transparent; }
-#log-title { width: 1fr; height: 3; content-align: left middle; text-style: bold; color: $accent; }
+#log-title { width: auto; height: 3; content-align: left middle; text-style: bold; color: $accent; }
 #log-toolbar Button {
     min-width: 12;
     padding: 0;
-    margin-left: 1;
 }
 #restore-log { display: none; }
 #log-panel.-maximized { padding: 0; }

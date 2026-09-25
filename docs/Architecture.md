@@ -164,6 +164,8 @@ dry-run、已有数据完整性判断、计划复用、备份和发布顺序沿�
 ## TUI 与兼容维护
 
 `app` 保留事件、状态和进程生命周期；`views` 使用页面构建函数输出 TabPane 子树。
+七页底栏共用 `.action-bar`，内部由 `.action-secondary` 和 `.action-primary` 两个 `Horizontal`
+分别承载左侧次要／导航动作与右侧主操作；间距由容器分配，按钮宽度随标签变化。
 `commands` 定义唯一的 `RunConfig` 及命令构造，`progress` 解析运行日志，
 `diagnostics` 负责提示性预检和结果摘要。TUI 提示性检查与 CLI 权威检查保留各自用途。
 `presentation` 统一数值输入格式与不适用、计算中、未知的显示标记，不改动配置、进度或结果协议。

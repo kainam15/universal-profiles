@@ -68,22 +68,15 @@ VS Code 的 Source Control 面板中，点击 ✨ **Generate Commit Message** �
 {
   "github.copilot.chat.localeOverride": "en",
   "github.copilot.chat.commitMessageGeneration.instructions": [
-    { "file": ".github/commit-message.instructions.md" },
-    {
-      "text": "Generate one commit message for the entire staged diff, with exactly one English Conventional Commits subject of at most 72 characters. Prefer a single-line message. If a body is necessary, leave a blank line after the subject and use prose or bullets, not additional commit subjects. Treat the message as an English repository artifact regardless of the UI language or recent commit language."
-    }
+    { "file": ".github/commit-message.instructions.md" }
   ]
 }
 ```
 
-生成规则放在 [commit-message.instructions.md](../.github/commit-message.instructions.md)：
-英文 Conventional Commits，格式为 `type(scope): description`；允许 `feat`、`fix`、
-`refactor`、`perf`、`test`、`docs`、`ci`、`build`、`chore`。scope 使用组件的小写名称，
-全仓改动可省略；标题最多 72 字符、使用祈使句且不以句号结尾。说明必须有 diff 依据，
-不编造测试结果或性能提升。先暂存本次提交的改动再生成，并在提交前核对内容。
-整批 diff 只生成一个标题，默认使用单行；若需要正文，在标题后空一行，随后用普通说明或
-项目符号展开，不按文件分别生成多条 `type(scope): description`。开发工具配置使用 `chore`，
-纯文档改动使用 `docs`，测试代码改动使用 `test`。
+生成规则只在 [commit-message.instructions.md](../.github/commit-message.instructions.md)
+维护两句短提示：依据 diff 写简短的英文 `type: description`，只返回最多 72 字符且不带
+句号的标题。工作区设置只引用该文件。AI 只生成标题；需要正文时由提交者补充，
+并在标题后空一行。先暂存本次提交的改动再生成，并在提交前核对内容。
 
 工作区设置若被个人 `.git/info/exclude` 或全局规则忽略，换电脑或新 clone 时需重新合并
 上述设置。规则文件本身可随仓库保存。模型沿用 VS Code 当前的 utility model 配置；
@@ -411,7 +404,9 @@ Linux 原生终端、SSH 会话及浏览器 Web Terminal。SSH 只传输终端�
 
 使用 `unittest.IsolatedAsyncioTestCase`、Textual `run_test()` / `Pilot` 和临时 `settings_path`。
 尺寸覆盖用户报告的场景，并按布局变更检查 `80×24`、`120×30`、`150×45` 及运行中 resize。
-七个页面的标题或状态摘要和底部操作栏应保持可见；主要操作在右下角，内容滚动、切换语言和隐藏快捷命令框后仍可点击。
+七个页面的标题或状态摘要和底部操作栏应保持可见；次要／导航动作在左下角，主要操作在右下角，
+内容滚动、切换语言和隐藏快捷命令框后仍可点击。检查按钮标签完整、左右边缘未被容器裁切、
+`Tab` / `Shift+Tab` 按左右分组顺序切换；实验页切入高级参数及监控页放大日志后仍满足该布局。
 按钮颜色检查主题切换、悬停、聚焦、禁用与恢复；删除和终止的红色、补采的黄色不能在交互中丢失，服务就绪和保存成功使用绿色。
 镜像树路径高亮检查最终屏幕的连接线颜色，覆盖点击、方向键、折叠、搜索、失焦和中英文/深浅主题切换，防止祖先线未重绘或其它分支误亮。
 镜像详情检查摘要与诊断分离、默认折叠、长包清单的末项可达、点击/Enter 展开，以及换行选择、空筛选、语言切换和缩放时的折叠状态；这些操作不得触发额外 Docker 查询。

@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from rich.cells import cell_len
 from textual.widgets import (
     Button, Checkbox, Collapsible, ContentSwitcher, Input, Select, Static, TabbedContent,
 )
@@ -128,6 +129,44 @@ class TuiLayoutSettingsTests(unittest.IsolatedAsyncioTestCase):
                         self.assertTrue(await pilot.click("#open-run-settings", offset=(3, 1)))
                         await pilot.pause()
                         self.assertEqual(app.query_one("#experiment-pages", ContentSwitcher).current, "run-form")
+
+    async def test_action_bar_keyboard_order_survives_language_resize_and_navigation(self):
+        app = AcprofTui(RunConfig.smoke("demo/model"), settings_path=self.settings_path)
+        async with app.run_test(size=(150, 45)) as pilot:
+            for size, language in product(((80, 24), (120, 30), (150, 45)), ("zh", "en")):
+                with self.subTest(size=size, language=language):
+                    await pilot.resize_terminal(*size)
+                    app.ui_preferences = replace(app.ui_preferences, language=language)
+                    app._apply_ui_preferences()
+                    navigation = app.query_one("#open-run-settings", Button)
+                    navigation.focus()
+                    await pilot.pause()
+                    await pilot.press("enter")
+                    await pilot.pause()
+                    self.assertEqual(app.query_one("#experiment-pages", ContentSwitcher).current, "advanced-form")
+                    navigation.focus()
+                    await pilot.pause()
+                    for button_id in ("quick-check", "probe-largest", "start-run"):
+                        await pilot.press("tab")
+                        button = app.query_one("#" + button_id, Button)
+                        self.assertIs(app.focused, button)
+                        self.assert_button_reachable(app, button_id)
+                    await pilot.press("enter")
+                    await pilot.pause()
+                    self.assertIsInstance(app.screen, ConfirmActionScreen)
+                    self.assertEqual(app._pending_launch.kind, "run")
+                    await pilot.press("escape")
+                    await pilot.pause()
+                    self.assertIsNone(app._pending_launch)
+                    app.query_one("#start-run", Button).focus()
+                    await pilot.pause()
+                    for button_id in ("probe-largest", "quick-check", "open-run-settings"):
+                        await pilot.press("shift+tab")
+                        self.assertIs(app.focused, app.query_one("#" + button_id, Button))
+                    self.assertLessEqual(cell_len(navigation.label.plain), navigation.content_region.width)
+                    await pilot.press("enter")
+                    await pilot.pause()
+                    self.assertEqual(app.query_one("#experiment-pages", ContentSwitcher).current, "run-form")
 
     async def test_f2_changes_page_from_focused_input(self):
         app = AcprofTui(RunConfig.smoke("demo/model"), settings_path=self.settings_path)
