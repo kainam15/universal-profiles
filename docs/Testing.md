@@ -227,7 +227,9 @@ git diff --check
 自动契约的主机回归使用 `test_model_contract.py` 和
 `tests/fixtures/custom_pipeline_audio_like/`：覆盖 SHA 绑定、来源状态、输入映射、确定性参数、
 动态表达式／冲突拒绝、依赖候选、缓存身份和报告导出；恶意源码检查在隔离进程中确认没有执行
-模型顶层代码，也没有导入 Torch／Transformers。生成契约与通用 handler 的真实衔接使用随机小权重：
+模型顶层代码，也没有导入 Torch／Transformers。共享 fixture 的 Hub mock 按仓库 ID 区分主模型
+与依赖；依赖测试通过 `dependency_lookup` 注入响应并检查调用，避免内外两层 patch 同一个
+`HfApi.model_info` 时覆盖依赖 SHA 和文件列表。生成契约与通用 handler 的真实衔接使用随机小权重：
 
 ```bash
 .venv/bin/python scripts/run_tests.py --pattern test_model_contract.py \
@@ -320,6 +322,11 @@ Linux 原生终端、SSH 会话及浏览器 Web Terminal。SSH 只传输终端�
 镜像自动刷新检查首次打开、定时更新、失败重试与有效勾选/浏览位置保留；验证后台页面、确认框、并发操作和测量窗口不启动扫描，以及任务结束后恢复。
 退出阶段还需验证已排队的 timer 和 worker 回调：Textual 停止应用后、控件部分卸载而 `on_unmount` 尚未执行时，不再扫描或访问页面控件。
 页面切换、挂载和布局更新后等待框架处理事件，再判断点击和焦点，不用堆叠固定 `sleep` 掩盖竞态。
+`scripts/run_tui_validation.py` 在子进程结束后，通过 `call_after_refresh` 等待监控页显示且日志控件
+进入实际屏幕布局，再保存 `tui-finished.svg` 并返回退出码。排队的焦点事件若切回配置页，辅助入口
+会重新选中监控页并等待刷新；10 秒内未就绪则明确报错。`test_tui_validation_runner.py` 覆盖真实子进程、
+首次刷新前立即完成、排队的页面切换及启动失败；这些检查仅验证辅助入口的
+headless 画面，不代表真实采集或用户终端已通过。
 Textual 8.2.8 的 `Pilot.pause()` 可能在返回前的布局刷新中才排入 `Hide`；隐藏后的鼠标捕获断言需继续等待目标控件的 `wait_for_refresh()`，并设置超时，确保已排队的事件完成处理。
 拖动中断的各个场景使用独立 `run_test()` 应用实例，避免某次断言失败遗留的页面或 busy 状态引发连带失败。
 光标阶段与点击、编辑后恢复的测试只将光标闪烁 Timer 以 `pause=True` 创建，由测试显式推进阶段，

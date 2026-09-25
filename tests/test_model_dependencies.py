@@ -2,7 +2,7 @@
 import copy
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock
 
 import test_model_contract as fixture
 from acprof.model_spec import task_model_spec
@@ -11,8 +11,8 @@ from acprof.model_spec import task_model_spec
 class ModelDependencyTests(unittest.TestCase):
     def discover(self, source, files, *, sha="b" * 40):
         hub = SimpleNamespace(sha=sha, siblings=[SimpleNamespace(rfilename=name) for name in files])
-        with patch("huggingface_hub.HfApi.model_info", return_value=hub) as lookup:
-            task = fixture.ModelContractTests().discover(source)
+        lookup = Mock(return_value=hub)
+        task = fixture.ModelContractTests().discover(source, dependency_lookup=lookup)
         return task, lookup
 
     def test_tokenizer_is_pinned_without_downloading_weights(self):
@@ -20,6 +20,7 @@ class ModelDependencyTests(unittest.TestCase):
         task, lookup = self.discover(source, ["config.json", "tokenizer.json", "tokenizer_config.json", "model.safetensors"])
         spec = task_model_spec(task)
         self.assertTrue(spec, task.model_resolution)
+        self.assertEqual(task.model_revision, fixture.SHA)
         dep = spec["dependencies"][0]
         self.assertEqual(dep["revision"], "b" * 40)
         self.assertEqual(dep["allow_patterns"], ["config.json", "tokenizer.json", "tokenizer_config.json"])
@@ -63,8 +64,8 @@ class ModelDependencyTests(unittest.TestCase):
     def test_author_dependencies_are_not_re_resolved(self):
         declaration = copy.deepcopy(fixture.EXPECTED)
         declaration["dependencies"] = [{"repo_id": "example/tokenizer", "revision": "c" * 40}]
-        with patch("huggingface_hub.HfApi.model_info") as lookup:
-            task = fixture.ModelContractTests().discover(spec=declaration)
+        lookup = Mock(side_effect=AssertionError("Author dependencies must stay pinned"))
+        task = fixture.ModelContractTests().discover(spec=declaration, dependency_lookup=lookup)
         lookup.assert_not_called()
         self.assertEqual(task_model_spec(task), declaration)
 

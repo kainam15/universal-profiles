@@ -3,6 +3,7 @@ import argparse
 import json
 from pathlib import Path
 import sys
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -25,8 +26,22 @@ def main():
 
         def _process_finished(self, kind, returncode, snapshot, launch_error):
             super()._process_finished(kind, returncode, snapshot, launch_error)
+            self.call_after_refresh(
+                self._save_finished_screen, returncode if not launch_error else 1, time.monotonic() + 10,
+            )
+
+        def _save_finished_screen(self, returncode, deadline):
+            # Queued focus events can change tabs after a refresh callback was
+            # scheduled. Require the log to occupy the actual screen layout.
+            if not self.query_one("#monitor-tab").display or not self.query_one("#run-log").region:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Monitor log did not render before the final screenshot")
+                self._activate_tab("monitor-tab")
+                self.refresh(layout=True)
+                self.call_after_refresh(self._save_finished_screen, returncode, deadline)
+                return
             self.save_screenshot(str(args.command.parent / "tui-finished.svg"))
-            self.exit(returncode if not launch_error else 1)
+            self.exit(returncode)
 
     app = ValidationTui(initial_config=config, settings_path=args.command.parent / "tui-settings.json")
     return app.run(headless=args.ui == "headless", size=(120, 30) if args.ui == "headless" else None) or 0

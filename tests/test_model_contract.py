@@ -27,7 +27,8 @@ EXPECTED: dict = {
 
 
 class ModelContractTests(unittest.TestCase):
-    def discover(self, source=SOURCE, config=None, *, revision=SHA, spec=None, readme=None, **options):
+    def discover(self, source=SOURCE, config=None, *, revision=SHA, spec=None, readme=None,
+                 dependency_lookup=None, **options):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             documents = {"config.json": json.dumps(CONFIG if config is None else config), "pipeline.py": source}
@@ -46,7 +47,16 @@ class ModelContractTests(unittest.TestCase):
                 self.downloads.append(kwargs["filename"])
                 return str(root / kwargs["filename"])
 
-            with patch("huggingface_hub.HfApi.model_info", return_value=hub), patch(
+            def model_info(repo_id, **kwargs):
+                # Route all Hub reads through one mock so dependency responses
+                # cannot be overwritten by a nested main-repository patch.
+                if repo_id == "arbitrary/audio-model":
+                    return hub
+                if dependency_lookup is None:
+                    raise AssertionError(f"Unexpected dependency lookup: {repo_id}")
+                return dependency_lookup(repo_id, **kwargs)
+
+            with patch("huggingface_hub.HfApi.model_info", side_effect=model_info), patch(
                 "huggingface_hub.hf_hub_download", side_effect=download,
             ):
                 return detect_task("arbitrary/audio-model", **options)
