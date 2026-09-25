@@ -147,4 +147,5 @@ smoke 预设使用 `basic`、CPU 和单次请求，关闭独立 profiler 与通�
 
 项目代码采用 [Apache-2.0](LICENSE)，延续原始项目定义的许可声明。
 AC-Prof 属于 JNU DISTINT 的 DOR 项目，原始贡献者及后续维护来源见 [NOTICE](NOTICE)。
+原始仓库、当前扩展范围与历史参考边界见[项目来源与演进](docs/Project_Origin.md)。
 内置 LibriSpeech 音频保留 [CC-BY-4.0](licenses/CC-BY-4.0.txt)；模型代码和权重遵循各自仓库的许可。
