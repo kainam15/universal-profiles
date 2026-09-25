@@ -542,7 +542,7 @@ def _cleanup_intermediate_results(csv_paths: list[str], output_dir: str, final_c
 
 
 @gpu_device_scope()
-def _run_main():
+def _run_main(*, args=None, prepared_task=None, preparation_artifacts=None):
     global _ACTIVE_TMUX_TERMINAL_LOG, _ACTIVE_RUN_STATE
 
     start_time = time.perf_counter()
@@ -550,7 +550,7 @@ def _run_main():
 
     parser = _build_parser(default_notify_provider=DEFAULT_NOTIFY_PROVIDER)
 
-    args = parser.parse_args()
+    args = parser.parse_args() if args is None else args
     try:
         latency_slo_rules = parse_latency_slo_rules(
             args.latency_slo, environment_threshold=os.environ.get("SLOW_LATENCY_THRESHOLD_S"),
@@ -636,6 +636,8 @@ def _run_main():
     if saved_run.get("runtime"):
         from acprof.host.detect import TaskInfo
         task_info = TaskInfo(**saved_run["runtime"]["task"])
+    elif prepared_task is not None:
+        task_info = prepared_task
     else:
         task_info = detect_task(
             model_id=args.model,
@@ -643,6 +645,7 @@ def _run_main():
             override_family=args.task_family,
             override_backend=args.backend,
             model_spec_path=args.model_spec,
+            **({"revision": args.revision} if args.revision else {}),
         )
     require_task_support(task_info, batch_size=args.batch_size)
     from acprof.runtime_profiles import select_runtime_profile
@@ -675,7 +678,8 @@ def _run_main():
     )
     if "on" in [part.strip().lower() for part in args.gpus.split(",")]:
         pin_gpu_device(args.gpu_device)
-    _ACTIVE_RUN_STATE = RunState(output_dir, run_options(args), resume=args.resume, project_dir=PROJECT_DIR)
+    _ACTIVE_RUN_STATE = RunState(output_dir, run_options(args), resume=args.resume, project_dir=PROJECT_DIR,
+                                **({"preparation_artifacts": preparation_artifacts} if preparation_artifacts else {}))
     run_state = _ACTIVE_RUN_STATE
     if run_state.complete:
         print(f"[resume] 实验已经完成：{os.path.join(output_dir, 'result_all.csv')}")
@@ -774,7 +778,7 @@ def _run_main():
             sys.exit(1)
 
         os.makedirs(output_dir, exist_ok=True)
-        if task_info.model_resolution.get("contract"):
+        if task_info.model_resolution:
             from acprof.model_contract import write_model_resolution
             write_model_resolution(task_info, output_dir)
 
@@ -852,6 +856,8 @@ def _run_main():
             static_meta = enrich_static_meta(static_meta, {"runtime_validation": validation,
                                                          "model_resolution": task_info.model_resolution})
             write_static_meta_json(static_meta, static_meta_json)
+            if prepared_task is not None and validation.get("status") != "ok":
+                raise RuntimeError("automatic collection requires successful full validation on every requested device")
         except (RuntimeError, OSError, ValueError) as exc:
             print(f"[runtime-check][ERROR] {exc}", file=sys.stderr)
             sys.exit(1)
@@ -1079,7 +1085,7 @@ def _run_main():
         _record_run_completion(final_csv=None, completed_cases=0)
 
 
-def main():
+def main(*, args=None, prepared_task=None, preparation_artifacts=None):
     """Run profiling, finalize terminal logging, then notify best-effort."""
     global _ACTIVE_TMUX_TERMINAL_LOG, _ACTIVE_RUN_NOTIFICATION, _ACTIVE_RUN_STATE
 
@@ -1087,7 +1093,7 @@ def main():
     _ACTIVE_RUN_NOTIFICATION = None
     _ACTIVE_RUN_STATE = None
     try:
-        return _run_main()
+        return _run_main(args=args, prepared_task=prepared_task, preparation_artifacts=preparation_artifacts) if args is not None else _run_main()
     except (TaskSupportError, RunStateError) as exc:
         print(str(exc), file=sys.stderr)
         _record_run_termination("failed", str(exc))

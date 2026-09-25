@@ -12,6 +12,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("model", help="Hugging Face model ID")
     parser.add_argument("--model-spec", help="Explicit local model declaration")
+    parser.add_argument("--revision", help="Model branch, tag or full commit SHA")
     parser.add_argument("--expected-revision", help="Refuse a model commit that changed since review")
     parser.add_argument("--task", help="Explicit task selection")
     parser.add_argument("--backend", help="Explicit backend selection")
@@ -31,7 +32,8 @@ def main(argv=None) -> int:
     from acprof.model_contract import write_model_resolution
 
     bootstrap_project_env(Path.cwd())
-    task = detect_task(args.model, model_spec_path=args.model_spec, override_tag=args.task, override_backend=args.backend)
+    task = detect_task(args.model, model_spec_path=args.model_spec, override_tag=args.task, override_backend=args.backend,
+                       **({"revision": args.revision} if args.revision else {}))
     if args.expected_revision and task.model_revision != args.expected_revision:
         print("[contract-probe][ERROR] Model revision changed; resolve and review it again", file=sys.stderr)
         return 2

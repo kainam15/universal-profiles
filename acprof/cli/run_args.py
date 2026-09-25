@@ -11,7 +11,7 @@ from acprof.config import (
 )
 
 
-def build_parser(*, default_notify_provider: str = "auto") -> argparse.ArgumentParser:
+def build_parser(*, default_notify_provider: str = "auto", automatic: bool = False) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="AC-Prof: Universal HuggingFace Model Profiler",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -25,7 +25,13 @@ Examples:
     )
 
     # Required
-    parser.add_argument("--model", required=True, help="HuggingFace model ID")
+    if automatic:
+        parser.description = "AC-Prof: resolve, preflight and collect an exact Hugging Face model ID"
+        parser.epilog = "Example: acprof auto openai-community/gpt2 --profiling-mode auto --gpus off"
+        parser.add_argument("model", help="Exact Hugging Face model ID; ambiguous names are not searched")
+    else:
+        parser.add_argument("--model", required=True, help="HuggingFace model ID")
+    parser.add_argument("--revision", help="Model branch, tag or full commit SHA")
     parser.add_argument("--resume", action="store_true",
                         help="Resume the same experiment using its recorded image, input plan and completed cases")
 
@@ -73,7 +79,7 @@ Examples:
 
     # Experiment parameters
     parser.add_argument(
-        "--profiling-mode", choices=("full", "basic"), default="full",
+        "--profiling-mode", choices=("full", "basic", "auto") if automatic else ("full", "basic"), default="full",
         help="full requires packet latency, RAPL and perf (default); basic measures application latency, throughput, CPU and memory",
     )
     parser.add_argument("--batch-size", type=int, default=1, help="Batch size")

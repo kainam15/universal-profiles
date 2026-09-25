@@ -91,6 +91,23 @@ _AUTO_TASKS = {
 }
 
 
+@lru_cache(maxsize=None)
+def _architecture_tasks(architecture: str) -> tuple[str, ...]:
+    """Reverse locked Auto registries, retaining ambiguity between task protocols."""
+    tasks = set()
+    for version in ("4.57.6", "5.6.0"):
+        mappings = transformers_support(version)
+        for task, operations in _TASK_MAPPINGS.items():
+            if task in {"conversational", "sentence-similarity"}:
+                continue
+            for operation in operations:
+                name = f"MODEL_FOR_{operation}_MAPPING_NAMES" if operation else "MODEL_MAPPING_NAMES"
+                for classes in mappings.get(name, {}).values():
+                    if architecture in ([classes] if isinstance(classes, str) else classes):
+                        tasks.add(task)
+    return tuple(sorted(tasks))
+
+
 def discover_model_candidates(task_info: Any, *, override_tag: str | None = None,
                               override_backend: str | None = None) -> dict:
     """Collect static evidence before selecting a route. Never import model code."""
@@ -114,6 +131,16 @@ def discover_model_candidates(task_info: Any, *, override_tag: str | None = None
     if spec.get("pipeline_task") and hub_task == spec["pipeline_task"]:
         hub_task = spec["task"]
     declared_task = spec.get("task")
+    hub_metadata = getattr(task_info, "hub_metadata", {}) or {}
+    transformers_info = hub_metadata.get("transformers_info", {})
+    transformers_task = transformers_info.get("pipeline_tag")
+    if spec.get("pipeline_task") and transformers_task == spec["pipeline_task"]:
+        transformers_task = declared_task
+    observed_tasks = {value for value in (declared_task, hub_task, transformers_task) if value}
+    overridden_conflicts = []
+    if len(observed_tasks) > 1:
+        disagreement = "task conflict between declarations/Hub: " + ", ".join(sorted(observed_tasks))
+        (overridden_conflicts if override_tag else conflicts).append(disagreement)
     if declared_task and hub_task and hub_task != declared_task and not override_tag:
         conflicts.append(f"task conflict: Hub={hub_task}, model spec={declared_task}; select --task explicitly")
     if override_tag and declared_task and override_tag != declared_task:
@@ -151,9 +178,17 @@ def discover_model_candidates(task_info: Any, *, override_tag: str | None = None
                    "repository_model_spec" if metadata.get("acprof_model.json") else "generated_contract")
     add(declared_task, spec_source)
     add(hub_task, "hub_metadata" if task_info.detection_method == "hub_api" else task_info.detection_method)
+    add(transformers_task, "hub.transformers_info.pipeline_tag")
+    if not transformers_task:
+        add(_AUTO_TASKS.get(transformers_info.get("auto_model")), "hub.transformers_info.auto_model")
+    elif transformers_info.get("auto_model"):
+        # A loader hint is correlated metadata, not another semantic vote.
+        add(_AUTO_TASKS.get(transformers_info["auto_model"]), "hub.transformers_info.auto_model")
     for architecture in config.get("architectures") or []:
         if isinstance(architecture, str):
-            add(CATALOG.infer_task([architecture], str(config.get("model_type") or "")), "config.architectures")
+            inferred = CATALOG.infer_task([architecture], str(config.get("model_type") or ""))
+            for task in (inferred,) if inferred else _architecture_tasks(architecture):
+                add(task, "config.architectures")
     if config.get("model_type"):
         add(CATALOG.infer_task([], str(config["model_type"])), "config.model_type")
     auto_map = config.get("auto_map") or {}
@@ -168,7 +203,17 @@ def discover_model_candidates(task_info: Any, *, override_tag: str | None = None
     if not candidates and "modules.json" in metadata:
         add("feature-extraction", "modules.json")
 
-    selected = override_tag or declared_task or hub_task
+    selected = override_tag or declared_task or hub_task or transformers_task
+    selected_operations = set(_TASK_MAPPINGS.get(selected, ()))
+    hints = [("transformersInfo.auto_model", (_AUTO_TASKS.get(transformers_info.get("auto_model")),))]
+    if not config.get("auto_map") and not config.get("custom_pipelines"):
+        hints.extend((f"config.architectures:{architecture}", _architecture_tasks(architecture))
+                     for architecture in config.get("architectures") or [] if isinstance(architecture, str))
+    for source, hint_tasks in hints:
+        hint_operations = {operation for task in hint_tasks for operation in _TASK_MAPPINGS.get(task, ())}
+        if selected_operations and hint_operations and selected_operations.isdisjoint(hint_operations):
+            disagreement = f"task conflict: {selected} is incompatible with {source}"
+            (overridden_conflicts if override_tag else conflicts).append(disagreement)
     status = "candidate"
     if not selected:
         if len(candidates) == 1:
@@ -191,7 +236,20 @@ def discover_model_candidates(task_info: Any, *, override_tag: str | None = None
         task_info.pipeline_tag = selected
         task_info.task_family = CATALOG.task_families.get(selected, "unknown")
         task_info.runtime_backend = backend_for(selected)
+    from acprof.model_evidence import resolution_provenance
+    provenance = resolution_provenance(task_info, candidates, hub_task=hub_task, selected=selected,
+                                        status=status, explicit_task=override_tag, explicit_backend=override_backend,
+                                        overridden_conflicts=overridden_conflicts)
+    semantic_status = ("conflict" if conflicts else "unresolved" if errors or not selected else
+                       "explicit" if override_tag else "declared" if declared_task and spec_source != "generated_contract" or hub_task or transformers_task else "inferred")
     return {"schema_version": 1, "status": status, "model_revision": task_info.model_revision,
+            "provenance": provenance, "semantics": {"status": semantic_status, "task": selected,
+                                                     "scope": "selected_workload; not_author_intent_or_model_quality"},
+            "benchmark_kind": "task_pipeline", "adapter_origin": "repository" if spec.get("format") == "transformers-pipeline" else "builtin",
+            "execution": {"interface": task_info.runtime_backend if selected else None,
+                          "entrypoint": "handler.predict", "stages": ["preprocess", "predict", "completion", "postprocess"],
+                          "timing_protocol": "acprof_task_pipeline"},
+            "runtime_validation": {"status": "not_run"},
             "candidates": candidates, "conflicts": conflicts, "missing": errors,
             "selection": {"task": selected, "backend": task_info.runtime_backend if selected else None,
                           "source": "explicit" if override_tag or override_backend or
@@ -200,7 +258,8 @@ def discover_model_candidates(task_info: Any, *, override_tag: str | None = None
 
 def require_resolved_candidate(task_info: Any) -> None:
     resolution = getattr(task_info, "model_resolution", {}) or {}
-    if resolution.get("status") in {"ambiguous", "needs_configuration"}:
+    if (resolution.get("status") in {"ambiguous", "needs_configuration"}
+            or resolution.get("semantics", {}).get("status") in {"conflict", "unresolved"}):
         choices = ", ".join(f"{item['task']}/{item['backend']}" for item in resolution.get("candidates", []))
         details = "; ".join([*resolution.get("conflicts", []), *resolution.get("missing", [])])
         raise ValueError(f"model resolution {resolution['status']}: {details}; candidates: {choices or 'none'}; "

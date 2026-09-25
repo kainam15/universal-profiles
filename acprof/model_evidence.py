@@ -21,6 +21,51 @@ def content_digest(value: Any) -> str:
                                      separators=(",", ":")).encode()).hexdigest()
 
 
+def resolution_provenance(task_info, candidates: list[dict], *, hub_task: str | None,
+                          selected: str | None, status: str, explicit_task: str | None,
+                          explicit_backend: str | None, overridden_conflicts: list[str]) -> dict:
+    """Capture correlated observations; no counting of fields as independent votes."""
+    from acprof.model_spec import task_model_spec
+    revision = task_info.model_revision
+    snapshot = {"model_id": task_info.model_id, "revision": revision,
+                "files_sha256": content_digest(sorted(task_info.repository_files or ())),
+                "derived_from": []}
+    sources = {"repository_snapshot": snapshot}
+    hub = {**getattr(task_info, "hub_metadata", {}), "pipeline_tag": hub_task}
+    values = {
+        "hub": (hub, "repository_metadata", ["repository_snapshot"]),
+        "repository_config": (task_info.model_config or {}, "repository_metadata", ["repository_snapshot"]),
+        "repository_spec": ((task_info.repository_metadata or {}).get("acprof_model.json", {}), "declaration", ["repository_snapshot"]),
+        "local_spec": (getattr(task_info, "model_spec", {}), "user", []),
+        "explicit": ({"task": explicit_task, "backend": explicit_backend}, "user", []),
+        "generated_contract": (task_model_spec(task_info), "derived", ["repository_config"]),
+    }
+    for name, (value, family, parents) in values.items():
+        sources[name] = {"sha256": content_digest(value), "revision": revision,
+                         "family": family, "derived_from": parents}
+    observations = []
+    for candidate in candidates:
+        for field_name in candidate["evidence"]:
+            source = ("explicit" if field_name == "explicit_task" else
+                      "local_spec" if field_name == "local_model_spec" else
+                      "repository_spec" if field_name == "repository_model_spec" else
+                      "generated_contract" if field_name == "generated_contract" else
+                      "hub" if field_name.startswith("hub") else "repository_config")
+            observations.append({"field": field_name, "source_id": source,
+                                 "task": candidate["task"], "backend": candidate["backend"]})
+    for field_name, value in hub.get("transformers_info", {}).items():
+        if field_name in {"processor", "custom_class"}:
+            observations.append({"field": f"hub.transformers_info.{field_name}", "source_id": "hub",
+                                 "task": selected, "value": value, "backend": task_info.runtime_backend})
+    identity = {"schema_version": 1, "resolver_version": "model-selection-v1",
+                "model_id": task_info.model_id, "revision": revision, "sources": sources,
+                "observations": observations, "selected_task": selected, "status": status,
+                "overridden_conflicts": overridden_conflicts}
+    return {**identity, "identity_sha256": content_digest(identity),
+            "decision": "abstain" if status in {"ambiguous", "needs_configuration"} else
+                        "explicit" if explicit_task else "consistent_evidence"}
+
+
 @dataclass
 class ModelEvidence:
     model_id: str

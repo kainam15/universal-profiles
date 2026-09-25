@@ -33,7 +33,7 @@ def main(argv=None) -> int:
 
         run(["--version"])
         run(["--help"])
-        for command in ("run", "probe", "plot", "tui", "doctor", "profile", "audit", "stats"):
+        for command in ("run", "probe", "plot", "tui", "doctor", "profile", "audit", "stats", "inspect", "auto", "coverage"):
             run([command, "--help"])
         run(["invalid-command"], accepted=(2,))
         # Simulate a machine without Docker; JSON must still include valid bundled resources.

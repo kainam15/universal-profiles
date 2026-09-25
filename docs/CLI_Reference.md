@@ -122,7 +122,7 @@ vendor 模式的 CPU Advisor 同样适用。阶段状态区分成功、部分失
 ## CLI 参数
 
 安装后的统一入口为 `acprof <command>`；公共子命令有 `run`、`tui`、`probe`、`plot`、
-`doctor`、`profile`、`audit`、`stats`、`inspect`。现有根脚本仍用于源码运行；所有子命令也可用
+`doctor`、`profile`、`audit`、`stats`、`inspect`、`auto`、`coverage`。现有根脚本仍用于源码运行；所有子命令也可用
 `python -m acprof <command>` 调用。
 `acprof --version` 查看版本，`acprof <command> --help` 查看对应帮助。
 
@@ -160,6 +160,7 @@ vendor 模式的 CPU Advisor 同样适用。阶段状态区分成功、部分失
 | --- | --- | --- |
 | `--model-spec`、`--task`、`--backend` | 自动解析 | 声明或选择覆盖，仍检查冲突 |
 | `--expected-revision` | 空 | 要求当前模型 SHA 与已审阅 SHA 相同，变更时拒绝 |
+| `--revision` | Hub 默认分支 | 在指定分支、tag 或完整 SHA 上解析，读到的文件绑定解析后的 SHA |
 | `--probe none/basic/full` | `none` | basic 导入／签名；full 最小尺度的一次实际推理 |
 | `--cpus`、`--mems` | `2`、`4` | Probe 的 CPU 核数与 GiB 内存上限，各为单个正整数 |
 | `--gpus off/on` | `off` | basic 只支持 CPU；full 可显式开启 GPU |
@@ -167,8 +168,63 @@ vendor 模式的 CPU Advisor 同样适用。阶段状态区分成功、部分失
 | `--skip-build` | 关闭 | 复用身份匹配的镜像，不存在时构建 |
 
 Probe 未指定输出目录时使用独立的 `results/inspection/` 子目录；已有验证结果的目录不能复用。
+full 支持普通已适配模型；basic 的导入／签名检查仍要求 Pipeline contract。
 验证失败或资源不足退出码为 1。准备镜像可能下载模型，Probe 本身断网且不生成测量 CSV。
 契约、依赖与输入模板边界见[自动生成模型契约](Runtime_Compatibility.md#自动生成模型契约m1m6)。
+
+### `acprof auto`
+
+`acprof auto MODEL` 接受精确 Hub ID 或 Hub 本身支持的别名，检查主模型及声明依赖的访问权限，
+导出静态裁决，检查主机，然后复用 `run` 的镜像准备、输入规划、独立 full runtime validation、
+正式矩阵和报告。模糊名称不按下载量替换，访问失败不改选其他模型；语义冲突保留解释和 draft 后退出。
+
+除模型改为位置参数外，其余资源、输入、窗口和 profiler 参数与 `run` 相同，默认矩阵也相同。
+首次验证建议显式限制矩阵：
+
+```bash
+acprof auto google-bert/bert-base-uncased --profiling-mode basic \
+  --cpus 1 --mems 4 --gpus off --input-scales 32 --warmup 0 --repeat 1 \
+  --repeat-in-window 1 --output-dir results/auto-first
+```
+
+默认仍为 `--profiling-mode full`。只有显式选择 `--profiling-mode auto`，才允许因
+RAPL/perf/packet 不可用而选择 basic；Docker、Linux/cgroup、安装资源或所选 GPU 不可用时仍停止。
+`--dram-energy required` 等显式要求仍由正式入口检查，不能通过 auto 绕过。
+Probe 的 basic/full 与采集模式是两个概念，basic 采集也必须完成真实推理验证。
+
+`auto_report.json` 位于 `OUTPUT/MODEL--NAME/`，保存请求模式、实际模式、来源身份、预检和最终状态。
+只有主采集与所需指标均成功才退出 0；冲突、缺条件或部分失败退出 2。已有实验不会覆盖；
+`--resume` 需要原资源/输入/模式选项，并复用记录的模型 SHA、镜像和计划，不重新解析浮动分支。
+恢复时显式指定 `--revision` 必须与保存的完整 SHA 一致。换模式、依赖或输入计划需使用新目录。
+当前不做环境修复、pad token 替换、缩小尺度或预算重规划。
+
+### `acprof coverage`
+
+固定回归集与滚动样本使用同一个 schema v1 manifest。每个条目需有 `model_id`、完整
+`revision` 和非负 `weight`，顶层需说明 `sampling`、`weight_basis`。样本、权重和 SHA 一经
+冻结不在运行中刷新；重新 snapshot 才产生新一轮滚动样本。
+
+```bash
+acprof coverage run examples/coverage/regression.json \
+  --output-dir internal-testing/coverage-fixed
+acprof coverage snapshot --stratum fill-mask:transformers \
+  --stratum image-classification:transformers --limit 5 \
+  --output internal-testing/coverage-sample.json
+acprof coverage run internal-testing/coverage-sample.json \
+  --output-dir internal-testing/coverage-static
+# 显式运行容器验证；可能构建镜像和下载权重
+acprof coverage run internal-testing/coverage-sample.json --probe full \
+  --cpus 2 --mems 4 --gpus off --timeout-seconds 300 \
+  --output-dir internal-testing/coverage-runtime
+```
+
+snapshot 按 `TASK:LIBRARY` 各取下载量前 N 个，属于所选样本统计，不代表全 Hub 或随机长尾。
+run 默认只做静态检查；full 验证时间限制不包含构建和下载。`coverage.json` 的分母始终是
+冻结样本总权重，分别报告解析、适配、运行、拒绝、权限与资源限制；静态检查不检查权重读取权限，
+运行成功率、权限拒绝率与资源限制率均为 null。
+独立审阅的 `semantic_reference: {"task": "...", "source": "..."}` 才用于语义正确率；
+snapshot 不把 Hub 标签自动当成正确答案。零总权重和没有审阅样本的比率为 null。
+报告生成成功退出 0 不表示所有模型成功；逐模型失败保留在 rows 中，不生成正式性能 CSV。
 
 ### `run.py`
 
@@ -177,6 +233,7 @@ Probe 未指定输出目录时使用独立的 `results/inspection/` 子目录；
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `--model` | required | Hugging Face model ID，例如 `google-bert/bert-base-uncased`。 |
+| `--revision` | Hub 默认分支 | 指定模型分支、tag 或完整 commit SHA；运行时固定解析后的 SHA。 |
 | `--task` | auto | 覆盖 `pipeline_tag`，例如 `fill-mask`、`text-generation`。 |
 | `--task-family` | auto | 覆盖任务族：`nlp`、`cv`、`audio`、`timeseries`、`diffusion`、`multimodal`、`structured`。 |
 | `--backend` | auto | 覆盖声明清单中的 runtime backend，例如 `transformers_pipeline`、`chronos`、`diffusers`、`onnxruntime`。 |

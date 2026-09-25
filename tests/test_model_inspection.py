@@ -12,6 +12,46 @@ from acprof.cli.main import main
 
 
 class ModelInspectionTests(unittest.TestCase):
+    def test_native_probe_uses_family_defaults_when_generator_has_no_declared_scales(self):
+        from types import SimpleNamespace
+        from acprof.host.detect import TaskInfo
+        from acprof.host.model_inspection import probe_model_contract
+        for family, tag, expected_scale, field in (
+                ("nlp", "fill-mask", 64, "text"), ("cv", "image-classification", 0.1, "image_base64")):
+            task = TaskInfo("example/native", tag, family, "transformers_pipeline", "transformers", "a" * 40, "hub")
+            with self.subTest(family=family), tempfile.TemporaryDirectory() as directory, patch(
+                    "acprof.host.docker_runtime.prepare_image", return_value=SimpleNamespace(tag="sha256:" + "b" * 64)), patch(
+                    "acprof.host.preflight.require_native_linux_host"), patch(
+                    "acprof.host.preflight.require_native_docker"), patch(
+                    "acprof.host.run_state.MeasurementLock"), patch(
+                    "acprof.host.runtime_validation.validate_runtime", return_value={"status": "ok"}) as validate:
+                probe_model_contract(task, directory, mode="full")
+                entry = json.loads(Path(validate.call_args.kwargs["planned"].plan_file).read_text())["entries"][0]
+                self.assertEqual(entry["input_scale"], expected_scale)
+                self.assertTrue(entry["payload"][field])
+                if family == "nlp":
+                    self.assertIn("[MASK]", entry["payload"][field])
+
+    def test_full_probe_accepts_native_models_and_preserves_feature_width(self):
+        from types import SimpleNamespace
+        from acprof.host.detect import TaskInfo
+        from acprof.host.model_inspection import probe_model_contract
+        task = TaskInfo("example/iris", "tabular-classification", "structured", "onnxruntime",
+                        "onnx", "a" * 40, "manual")
+        task.model_spec = {"schema_version": 1, "format": "onnxruntime", "task": "tabular-classification",
+                           "model_file": "iris.onnx", "feature_dim": 4}
+        with tempfile.TemporaryDirectory() as directory, patch("acprof.host.docker_runtime.prepare_image",
+                return_value=SimpleNamespace(tag="sha256:" + "b" * 64)), patch(
+                "acprof.host.preflight.require_native_linux_host"), patch(
+                "acprof.host.preflight.require_native_docker"), patch(
+                "acprof.host.run_state.MeasurementLock"), patch(
+                "acprof.host.runtime_validation.validate_runtime", return_value={"status": "ok"}) as validate:
+            report = probe_model_contract(task, directory, mode="full")
+            self.assertEqual(report["status"], "ok")
+            plan = json.loads(Path(validate.call_args.kwargs["planned"].plan_file).read_text())
+            self.assertEqual(len(plan["entries"][0]["payload"]["features"][0]), 4)
+            self.assertNotIn("params", plan["entries"][0]["payload"])
+
     def test_review_provenance_survives_export_and_subprocess_inspection(self):
         from acprof.model_contract import write_model_resolution
         from acprof.model_spec import task_model_spec

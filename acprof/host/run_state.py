@@ -59,6 +59,8 @@ def run_options(args) -> dict:
     from acprof.host.gpu_device import selected_gpu_device
     ignored = {"resume", "skip_build", "output_dir", "notify"}
     options = {name: value for name, value in vars(args).items() if name not in ignored}
+    if options.get("revision") is None:
+        options.pop("revision", None)
     device = selected_gpu_device()
     if device:
         options["gpu_device"] = device["uuid"]
@@ -134,7 +136,8 @@ class MeasurementLock(ResultDirectoryLock):
 
 
 class RunState:
-    def __init__(self, directory: str | Path, options: dict, *, resume: bool, project_dir: str):
+    def __init__(self, directory: str | Path, options: dict, *, resume: bool, project_dir: str,
+                 preparation_artifacts: dict[str, str] | None = None):
         self.directory = Path(directory).resolve()
         self.path = self.directory / RUN_STATE_NAME
         self.lock = ResultDirectoryLock(self.directory)
@@ -152,8 +155,15 @@ class RunState:
                     raise RunStateError("恢复时主机、Python 依赖或 AC-Prof 源码已变化；请使用新输出目录")
                 self.verify_artifacts()
             else:
+                prepared = preparation_artifacts or {}
+                if set(prepared) - {"auto_report.json", "model_resolution.json"}:
+                    raise RunStateError("自动准备产物包含不允许的文件")
+                for name, digest in prepared.items():
+                    path = self.directory / name
+                    if not path.is_file() or file_sha256(path) != digest:
+                        raise RunStateError(f"自动准备产物缺失或已改变：{path}")
                 occupied = [p for p in self.directory.iterdir()
-                            if p.name not in {RESULT_LOCK_NAME, "probes"}]
+                            if p.name not in {RESULT_LOCK_NAME, "probes", *prepared}]
                 if occupied:
                     raise RunStateError(f"结果目录已有实验产物：{self.directory}；续跑请加 --resume，新实验请更换 --output-dir")
                 self.data = {"schema_version": 1, "run_id": uuid4().hex, "created_at": utc_now(),

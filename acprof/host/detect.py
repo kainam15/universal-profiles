@@ -49,6 +49,7 @@ class TaskInfo:
     metadata_errors: tuple[str, ...] = ()
     model_resolution: dict[str, Any] = field(default_factory=dict)
     model_spec: dict[str, Any] = field(default_factory=dict)
+    hub_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def _architecture_metadata(config: Any) -> dict[str, Any]:
@@ -399,13 +400,14 @@ def _diffusers_task_from_index(
 def _detect_from_hub(
     model_id: str,
     diagnostics: Optional[list[str]] = None,
+    *, revision: str | None = None,
 ) -> Optional[TaskInfo]:
     """Level 1: Query HuggingFace Hub API."""
     try:
         from huggingface_hub import HfApi
         from acprof.hf_endpoints import hf_endpoints
 
-        info = HfApi(endpoint=hf_endpoints()[0]).model_info(model_id)
+        info = HfApi(endpoint=hf_endpoints()[0]).model_info(model_id, **({"revision": revision} if revision else {}))
     except Exception as exc:
         _record_failure(diagnostics, "hub_api", _format_failure(exc))
         return None
@@ -413,6 +415,14 @@ def _detect_from_hub(
     pipeline_tag = getattr(info, "pipeline_tag", None)
     library_name = getattr(info, "library_name", None) or ""
     sha = getattr(info, "sha", None) or "main"
+    from acprof.model_evidence import pinned_revision
+    if pinned_revision(revision) and sha != revision:
+        raise ValueError("Hub returned a different commit than the requested revision")
+    transformers_info = getattr(info, "transformers_info", None)
+    transformers_info = {key: value for key in ("auto_model", "pipeline_tag", "processor", "custom_class")
+                         if isinstance(value := getattr(transformers_info, key, None), str)} if not isinstance(transformers_info, dict) else {
+                             key: value for key, value in transformers_info.items()
+                             if key in {"auto_model", "pipeline_tag", "processor", "custom_class"} and isinstance(value, str)}
     repository = _repository_metadata(model_id, sha, info)
     model_config = _architecture_metadata(getattr(info, "config", None))
     model_config.update(_architecture_metadata(repository["repository_metadata"].get("config.json")))
@@ -452,6 +462,7 @@ def _detect_from_hub(
         model_revision=sha,
         detection_method="hub_api",
         model_config=model_config,
+        hub_metadata={"pipeline_tag": pipeline_tag, "transformers_info": transformers_info},
         **repository,
         **_hub_model_metadata(info),
     )
@@ -460,6 +471,7 @@ def _detect_from_hub(
 def _detect_from_config(
     model_id: str,
     diagnostics: Optional[list[str]] = None,
+    *, requested_revision: str | None = None,
 ) -> Optional[TaskInfo]:
     """Level 2: Infer task from model architecture name."""
     architectures = []
@@ -467,11 +479,13 @@ def _detect_from_config(
     revision = "main"
     try:
         from acprof.model_evidence import pinned_revision
-        config_path = _download_metadata(model_id, "config.json")
+        config_path = _download_metadata(model_id, "config.json", requested_revision) if requested_revision else _download_metadata(model_id, "config.json")
         # hf_hub_download pins the ref before returning the cache snapshot.
         revision = Path(config_path).parent.name
         if not pinned_revision(revision) or Path(config_path).parent.parent.name != "snapshots":
             raise ValueError("config fallback requires a pinned snapshot commit SHA")
+        if pinned_revision(requested_revision) and revision != requested_revision:
+            raise ValueError("config fallback returned a different model revision")
         with open(config_path, "r", encoding="utf-8") as f:
             config_data = json.load(f)
         architectures = config_data.get("architectures") or []
@@ -521,13 +535,14 @@ def detect_task(
     override_family: Optional[str] = None,
     override_backend: Optional[str] = None,
     model_spec_path: Optional[str] = None,
+    *, revision: str | None = None,
 ) -> TaskInfo:
     """Discover candidates and apply CLI overrides, checking declaration conflicts."""
     # Start with auto-detection
     diagnostics: list[str] = []
-    info = _detect_from_hub(model_id, diagnostics)
+    info = _detect_from_hub(model_id, diagnostics, **({"revision": revision} if revision else {}))
     if info is None:
-        info = _detect_from_config(model_id, diagnostics)
+        info = _detect_from_config(model_id, diagnostics, **({"requested_revision": revision} if revision else {}))
 
     # If auto-detection failed entirely, require manual override
     if info is None:
@@ -550,7 +565,7 @@ def detect_task(
             task_family=override_family or "nlp",
             runtime_backend=override_backend or DEFAULT_BACKEND,
             library_name="unknown",
-            model_revision="main",
+            model_revision=revision or "main",
             detection_method="manual",
         )
 

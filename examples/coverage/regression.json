@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "sampling": "fixed_regression; two native loader families",
+  "weight_basis": "uniform fixture weights; not download share",
+  "models": [
+    {
+      "model_id": "google-bert/bert-base-uncased",
+      "revision": "86b5e0934494bd15c9632b12f734a8a67f723594",
+      "weight": 1
+    },
+    {
+      "model_id": "timm/mobilenetv3_small_100.lamb_in1k",
+      "revision": "1824797e7887cbec1990e4adbd6675960a36c589",
+      "weight": 1
+    }
+  ]
+}

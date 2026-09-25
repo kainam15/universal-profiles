@@ -79,6 +79,11 @@ acprof run --model google-bert/bert-base-uncased \
 这个 `basic` 示例只采集基础指标；能耗、抓包和独立 profiler 的字段为 `nan` 属于预期结果。
 完成后按下一节查看结果。重新做一个实验请换新的 `--output-dir`；中断后可用原命令加 `--resume` [恢复实验](docs/Profiling_Protocol.md#结果完整性与断点续跑)。
 
+也可使用 [`acprof auto MODEL`](docs/CLI_Reference.md#acprof-auto) 完成权限和主机预检后采集；
+资源参数与 `run` 相同。只有显式指定 `--profiling-mode auto` 才按能力选择 full/basic，
+语义冲突仍会停止并保存解释。模型覆盖率可通过 [`acprof coverage`](docs/CLI_Reference.md#acprof-coverage)
+冻结样本后单独检查。
+
 正式矩阵默认在独立 startup probe 后按 seed `0` 排序并冻结计划；用 `--matrix-seed` 改变顺序，
 或用 `--matrix-order declared` 保持声明顺序。resume 复用冻结计划。full 默认尝试可选 DRAM，
 缺失不导致失败；参数与能量单位见 [CLI](docs/CLI_Reference.md) 和[能耗说明](docs/Energy_Measurement.md#rapl-topology-与-dram)。

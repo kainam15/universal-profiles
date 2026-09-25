@@ -230,6 +230,12 @@ git diff --check
 模型接口新增解析字段时，同步更新 CLI 委派测试中独立声明的完整 `model_resolution`
 期望值，保留完整对象比较，不从被测函数的返回值生成期望。
 
+自动解析与编排回归使用 `test_resolution_decisions.py`、`test_auto.py`、`test_model_coverage.py`
+和 `test_model_inspection.py`，覆盖同源证据、显式冲突处理、Probe 不提升语义、固定 SHA、
+主机失败与模式选择、原生模型 Probe、冻结覆盖率分母及人工语义参考。已有模型／契约／镜像／
+恢复测试继续保护协议。滚动模型检查使用 [coverage 命令](CLI_Reference.md#acprof-coverage)，
+其静态、容器 full Probe 与正式测量证据分别验收；4 GiB 或超时限制不等同于模型语义错误。
+
 ## CI 与环境测试
 
 独立 `lint` job 在 Python 3.10 上只安装开发锁，执行 `pip check` 和完整 pre-commit hooks；

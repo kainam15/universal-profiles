@@ -76,6 +76,7 @@ def request_fingerprint(task_info: Any, project_dir: str | Path = PROJECT_ROOT) 
         "model_download_policy": download_policy(task_info),
         "hf_endpoints": hf_endpoints(),
         "model_spec": task_model_spec(task_info),
+        "resolution_identity": getattr(task_info, "model_resolution", {}).get("provenance", {}).get("identity_sha256"),
     }, sort_keys=True).encode())
     paths = sorted((root / "acprof").rglob("*.py"))
     paths += sorted((root / "acprof" / "extensions").rglob("*.json"))

@@ -73,7 +73,7 @@ acprof tui
 `uv tool install git+https://github.com/kainam15/universal-profiles.git`；复现实验应固定 Git tag 或 commit。
 这里只使用源码和 Release 制品，不假设 PyPI 已有同名官方发行包。
 
-安装后的公共命令是 `acprof run / tui / probe / plot / doctor / profile / audit / stats`，
+安装后的公共命令是 `acprof run / tui / probe / plot / doctor / profile / audit / stats / inspect / auto / coverage`，
 也支持 `python -m acprof`。根目录的 Python 脚本保留给源码使用。
 `run --help` 等命令沿用各自的参数定义；顶层帮助和版本查询不会加载 Textual、绘图库或推理框架。
 Python 依赖声明位于 `pyproject.toml`；开发和 Release 构建采用 `requirements.lock` 中已验证的制品。

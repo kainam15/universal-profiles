@@ -121,6 +121,37 @@ CPU/CUDA 平台切换保留所选版本线。该候选选择目前面向 Transfo
 Sentence Transformers/CrossEncoder 继续使用其既有 4.57.6 环境；自定义 `auto_map` 由扩展与容器验证。
 Auto 中存在类不保证 processor、pipeline、dtype 或所有 profiler 兼容。
 
+### 解析证据与自动裁决
+
+所有模型的 `model_resolution` schema v1 增加以下可选字段；历史报告缺字段表示未知，
+不能补写为已验证。可执行 `acprof_model.json` 的 schema 和职责保持独立。
+
+| 字段 | 含义 |
+| --- | --- |
+| `provenance` | schema v1 的来源图、观察项、resolver 版本、选择理由和 `identity_sha256`；只包含静态决策，不包含运行结果或时间戳 |
+| `semantics` | `explicit/declared/inferred/conflict/unresolved`；表示所选 workload 的依据，不证明作者意图或模型质量 |
+| `benchmark_kind` | 当前为 `task_pipeline`，沿用现有任务和四阶段 handler 协议；没有实现 `model_forward` 自动兜底 |
+| `execution` | backend、handler 调用入口、执行阶段与计时协议；不把 pipeline 与其内部的 generation 当成互斥等级 |
+| `adapter_origin` | 内置 handler 为 `builtin`，声明的 repository Pipeline 为 `repository`；生成声明不等于生成 adapter |
+| `runtime_validation` | 初始为 `not_run`，之后记录实际 mode、镜像、payload hash、设备及验证结果；与静态语义分开 |
+
+解析器读取 Hub `transformers_info` 的任务、Auto class 与 processor 提示。Hub 字段共享同一
+source，Hub 与仓库配置保留共同 snapshot 的派生关系，不按字段数量投票，也不输出未经校准的
+数值置信度。缺少已有架构匹配时，反查固定 4.57.6 / 5.6.0 Auto 注册表；多个任务仍保持歧义。
+裸 `AutoModel` 不证明应执行哪一种任务。共享同一 Auto loader 的 translation/summarization
+等任务不会仅因名称不同被判为结构冲突。
+
+声明、Hub task、`transformers_info.pipeline_tag` 冲突，或原生模型的明确 head 与任务操作
+不相容时，保留候选并 abstain。显式 `--task` 可以解决元数据冲突，原冲突进入
+`provenance.overridden_conflicts`；它仍不能违背有效的模型声明。
+basic/full Probe 成功不能修改这些静态裁决。静态来源摘要进入服务镜像 request fingerprint，
+模型 SHA、声明与依赖仍沿用已有模型层和服务层身份规则。
+
+实现复用 [Hugging Face Hub 的 ModelInfo/TransformersInfo](https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/hf_api.py)，
+借鉴 [Optimum TasksManager](https://github.com/huggingface/optimum/blob/main/optimum/exporters/tasks.py)
+集中维护映射的方式。两者为 Apache-2.0 项目；使用现有 Hub 依赖和锁定静态注册表，不引入
+Optimum 或主机端推理依赖，也不在正式测量窗口执行来源分析。
+
 `audio-text-to-text` 的预检与容器加载共用 `model_resolution.audio_text_loader`，依据相同版本的
 Auto 注册表选择 `AutoModelForSeq2SeqLM` 或 `AutoModelForImageTextToText`。对于组合模型，
 可选择 config 中唯一已注册的多模态文本子模型；不会抽取普通语言模型而丢失音频编码器。
@@ -202,7 +233,8 @@ config 中的模型引用和动态表达式也会保留。明确的 repo／loade
 fallback 和动态 helper 涉及的依赖仍可能需要确认，不下载所有候选基础模型来掩盖缺口。
 
 `acprof inspect MODEL --probe basic` 在镜像内导入固定代码并绑定实际方法签名，不实例化模型权重、
-不执行 preprocess 或推理。`--probe full` 使用默认 workload 的最小尺度、一个输出 token，执行
+不执行 preprocess 或推理。basic 仍要求 Pipeline contract；full 同时支持已登记的普通模型。
+`--probe full` 使用默认 workload 的最小尺度；多模态 Pipeline contract 使用一个输出 token，执行
 load → preprocess → predict → postprocess → 输出验证。两者默认 CPU 2 核、4 GiB，单次容器上限
 300 秒；准备镜像仍可能下载模型。Probe 使用断网、只读镜像／snapshot／依赖缓存、临时 `/tmp`、
 移除 capabilities 和禁止提升权限；不挂载主机项目、凭据或 Docker socket，只挂载只读请求。

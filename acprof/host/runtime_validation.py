@@ -129,7 +129,7 @@ def validate_runtime(
     )
     from acprof.artifacts import atomic_write_json
     atomic_write_json(root / "runtime_validation.json", report)
-    if getattr(task_info, "model_resolution", {}).get("contract"):
+    if getattr(task_info, "model_resolution", {}):
         from acprof.model_contract import record_runtime_validation, write_model_resolution
         record_runtime_validation(task_info, report)
         write_model_resolution(task_info, root)
