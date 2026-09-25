@@ -14,6 +14,18 @@ from acprof.installation import cli_command, module_command
 
 
 class DoctorTests(unittest.TestCase):
+    def test_retired_environment_setting_keeps_json_error_contract(self):
+        stream = io.StringIO()
+        with patch.object(cli, "load_project_env", side_effect=ValueError(
+            "ACPROF_SUDO_PASSWORD is no longer supported",
+        )), patch.object(cli, "collect_checks", return_value=[]), redirect_stdout(stream):
+            status = cli.main(["--json", "--profiling-mode", "basic"])
+        report = json.loads(stream.getvalue())
+        self.assertEqual(status, 1)
+        self.assertFalse(report["ready"])
+        self.assertEqual(report["checks"][0]["name"], "environment")
+        self.assertIn("ACPROF_SUDO_PASSWORD", report["checks"][0]["detail"])
+
     def collect(self, mode="basic", **overrides):
         with ExitStack() as stack:
             for target, value in {

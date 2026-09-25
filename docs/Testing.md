@@ -77,9 +77,11 @@ PyCharm 2026.2.3（build `262.10968.92`）已复现一种 MCP 兼容问题：
 实现依据见 [JetBrains Call Hierarchy](https://github.com/JetBrains/intellij-community/blob/master/plugins/mcp-server/mcpserver.toolsets/src/general/CallHierarchyAnalysisSupport.kt)
 与 [Python Usage View](https://github.com/JetBrains/intellij-community/blob/master/python/src/com/jetbrains/python/findUsages/PyElementDescriptionProvider.java)。
 
-项目使用 unittest。若从代码位置创建的 Run Configuration 自动选择 pytest，而解释器没有
-安装 pytest，应选择 unittest 配置，或通过 IDE 终端运行本页的 `scripts/run_tests.py` 入口；
-无需为该 IDE 默认值引入另一套测试依赖。执行证据必须包含实际输出和退出码。
+测试用例使用 `unittest`；GitHub Actions 的 host job 执行 `scripts/run_tests.py`，
+以 unittest runner 生成 evidence JSON。本地 PyCharm Run Configuration 可以用已安装的 pytest
+运行同一批 unittest 用例，这不代表 CI 已迁移为 pytest。pytest 是可选本地 runner，
+不在当前项目开发锁中；解释器未安装时选择 unittest 配置或本页的 `scripts/run_tests.py` 入口。
+本地 pytest 输出不能代替项目要求的 evidence JSON。执行证据必须包含实际输出和退出码。
 `build_project` 若提示无法收集构建诊断，不能替代 Python 编译和相关测试；
 依赖查询返回空列表也不能证明 Python 环境没有安装依赖。
 临时重命名和工具测试文件放在任务独立的 `internal-testing/` 子目录中。

@@ -59,14 +59,55 @@ find /sys/class/powercap -name energy_uj -readable -print -quit
 perf stat -e instructions -- true
 ```
 
-如果 `tcpdump` 尚未配置：
+权限安装见下一节；`run.py` 会在下载模型之前执行完整 preflight，权限不足时报告错误。
+
+### 最小权限安装
+
+以下为 Ubuntu 上由管理员一次执行的安装方案；`setup.sh`、`doctor`、TUI 和采集进程
+均不会执行 sudo 或自动授予 capability。basic 模式无需 perf/tcpdump 权限。
+已退役的 `ACPROF_SUDO_PASSWORD` 应从 shell、`.env` 和 `.env.local` 删除；发现该键时明确报错。
+无需降低整台机器的 `perf_event_paranoid`，也无需 sudoers 免密规则。
 
 ```bash
-sudo apt-get install -y tcpdump tshark libcap2-bin
-sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v tcpdump)"
+sudo apt-get install -y "linux-tools-$(uname -r)" linux-tools-common tcpdump tshark libcap2-bin
+
+# Ubuntu 的 /usr/bin/perf 通常是脚本；给当前内核对应的真实 ELF 文件授权。
+acprof_perf_bin="$(readlink -f "/usr/lib/linux-tools/$(uname -r)/perf")"
+acprof_tcpdump_bin="$(readlink -f "$(command -v tcpdump)")"
+file "$acprof_perf_bin" "$acprof_tcpdump_bin"
+stat -c '%n %U:%G %a' "$acprof_perf_bin" "$acprof_tcpdump_bin"
+getcap "$acprof_perf_bin" "$acprof_tcpdump_bin"
 ```
 
-`run.py` 会在下载模型之前执行完整 preflight，并在条件不满足时给出对应修复命令。
+确认两个路径均指向系统包安装的 ELF 可执行文件后，保存原权限输出，再执行：
+
+```bash
+sudo groupadd -f acprof-perf
+sudo groupadd -f acprof-capture
+sudo usermod -aG acprof-perf,acprof-capture "$USER"
+sudo chown root:acprof-perf "$acprof_perf_bin"
+sudo chmod 0750 "$acprof_perf_bin"
+sudo setcap cap_perfmon=ep "$acprof_perf_bin"
+sudo chown root:acprof-capture "$acprof_tcpdump_bin"
+sudo chmod 0750 "$acprof_tcpdump_bin"
+sudo setcap cap_net_raw=ep "$acprof_tcpdump_bin"
+getcap "$acprof_perf_bin" "$acprof_tcpdump_bin"
+```
+
+从普通用户登录会话执行这些 sudo 命令；`$USER` 是待授权用户。两组应仅包含可信采集用户：
+`CAP_PERFMON` 允许性能观测，`CAP_NET_RAW` 允许抓包，并不只限于 AC-Prof 的进程或端口。
+AC-Prof 使用 `tcpdump -p` 关闭 promiscuous mode，不要求 `CAP_NET_ADMIN`；perf stat 只授予
+`CAP_PERFMON`，不授予 `CAP_SYS_ADMIN`。Linux 5.9+ 支持以 `CAP_PERFMON` 附加其他用户的进程，
+实际容器 PID 仍需在采集前探测；LSM、capability bounding set 或 `nosuid` 挂载可能继续限制访问。
+
+重新登录以取得组权限，然后用普通用户执行 `perf stat -e instructions -- sleep 0.01` 和
+`acprof doctor --profiling-mode full --gpus off`。抓包检查只证明工具、网卡及文件 capability 存在，
+不代替真实抓包。内核或工具包升级后需重新检查真实文件路径和 capability。
+撤销时由管理员对这两个真实文件执行 `setcap -r`，移除用户的采集组成员身份，并按保存的原值恢复 owner/group/mode。
+
+方案参考 [Linux perf 安全文档](https://github.com/torvalds/linux/blob/master/Documentation/admin-guide/perf-security.rst)
+和 [libpcap Linux 权限说明](https://github.com/the-tcpdump-group/libpcap/blob/master/pcap.3pcap.in)，
+仅使用系统已有 capability 机制，不新增采集依赖或测量窗口内的授权操作。
 
 ### 2. 安装 Python 依赖
 
@@ -87,8 +128,9 @@ python -m pip install --require-hashes -r requirements.lock
 python -m pip install --no-deps -e .
 ```
 
-容器运行依赖由独立的平台和完整制品锁管理：保留 7 个任务族，37 个逻辑 profile 共享为
-24 个依赖环境，其中 `onnxruntime-cpu` 完全不安装 Torch。镜像按需构建和复用；只读检查可运行 `python scripts/compile_locks.py --check`，
+容器运行依赖由独立的平台和完整制品锁管理：7 个任务族的逻辑 profile 共享依赖环境，
+当前数量和版本统一见[当前配置](Runtime_Compatibility.md#当前配置)，其中 `onnxruntime-cpu` 完全不安装 Torch。
+镜像按需构建和复用；只读检查可运行 `python scripts/compile_locks.py --check`，
 分层及锁更新命令见[运行兼容](Runtime_Compatibility.md#当前配置)。
 
 ### Hugging Face 认证
@@ -97,8 +139,8 @@ python -m pip install --no-deps -e .
 
 ```env
 HF_TOKEN=hf_xxx
-# 可选：仅在 host 侧 perf/tcpdump 需要 sudo 且 sudo -n 不可用时设置
-ACPROF_SUDO_PASSWORD=your_sudo_password
+# 可选：显式使用镜像；不设置时使用 https://huggingface.co
+# HF_ENDPOINT=https://hf-mirror.com
 ```
 
 `.env.local` 已被 Git 忽略，可用 `chmod 600 .env.local` 限制读取权限。程序自动读取

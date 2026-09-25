@@ -2140,56 +2140,16 @@ class DetectEnvironmentTests(unittest.TestCase):
         self.assertEqual(runtime.tcpdump_cmd[0], "/usr/bin/tcpdump")
         self.assertNotIn("sudo", runtime.tcpdump_cmd)
 
-    def test_resolve_packet_latency_runtime_bootstraps_tcpdump_capability(self) -> None:
-        def fake_which(name: str) -> str | None:
-            return {
-                "tcpdump": "/usr/bin/tcpdump",
-                "tshark": "/usr/bin/tshark",
-            }.get(name)
-
-        calls = []
-        has_capability = False
-
-        def fake_run(cmd, check=True, capture=True, **kwargs):
-            nonlocal has_capability
-            calls.append((cmd, kwargs))
-            if cmd[:2] == ["getcap", "/usr/bin/tcpdump"]:
-                stdout = (
-                    "/usr/bin/tcpdump cap_net_admin,cap_net_raw=eip\n"
-                    if has_capability
-                    else ""
-                )
-                return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
-            if cmd[:5] == ["sudo", "-S", "-p", "", "setcap"]:
-                self.assertEqual(kwargs.get("input"), "secret\n")
-                has_capability = True
-                return SimpleNamespace(returncode=0, stdout="", stderr="")
-            return SimpleNamespace(returncode=1, stdout="", stderr="")
-
-        with patch("acprof.host.packet_capture.shutil.which", side_effect=fake_which), patch(
-            "acprof.host.packet_capture.os.geteuid",
-            return_value=1000,
-        ), patch.dict(
-            "acprof.host.packet_capture.os.environ",
-            {"ACPROF_SUDO_PASSWORD": "secret"},
-            clear=True,
-        ), patch(
-            "acprof.host.packet_capture._run",
-            side_effect=fake_run,
-        ):
-            runtime = packet_capture._resolve_packet_latency_runtime(
-                project_dir="/repo",
-                pcap_file="/repo/results/sniff_case.pcap",
-                sniff_iface="docker0",
-            )
-
-        self.assertIsNotNone(runtime)
-        assert runtime is not None
-        self.assertEqual(runtime.tcpdump_cmd[0], "/usr/bin/tcpdump")
-        self.assertNotIn("sudo", runtime.tcpdump_cmd)
-        self.assertTrue(
-            any(call[0][:5] == ["sudo", "-S", "-p", "", "setcap"] for call in calls)
-        )
+    def test_resolve_packet_latency_runtime_requires_administrator_setup(self):
+        with patch('acprof.host.packet_capture.shutil.which', side_effect=lambda name: '/usr/bin/' + name), patch(
+            'acprof.host.packet_capture.os.geteuid', return_value=1000,
+        ), patch('acprof.host.packet_capture._run', return_value=SimpleNamespace(
+            returncode=0, stdout='', stderr='',
+        )) as run:
+            with self.assertRaisesRegex(packet_capture.PacketLatencyError, 'capture capability'):
+                packet_capture._resolve_packet_latency_runtime('/repo', '/tmp/test.pcap', 'docker0')
+        self.assertEqual(run.call_args_list[0].args[0], ['getcap', '/usr/bin/tcpdump'])
+        self.assertEqual(run.call_count, 1)
 
     def test_run_single_case_fails_when_packet_latency_runtime_unavailable(self) -> None:
         task_info = TaskInfo(

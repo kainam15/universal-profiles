@@ -33,10 +33,10 @@ AC-Prof 对 Docker 中的 Hugging Face 推理服务进行可复现分析，输�
 3. 重命名 Python 符号优先使用 `rename_refactoring`，核对引用更新和实际差异。
 4. 修改后使用 `lint_files` / `get_file_problems` 检查受影响文件的 IDE diagnostics，处理本次改动引入的问题。
 5. 使用 `get_run_configurations` 选择相关的已有 Run Configuration，通过 `execute_run_configuration` 执行测试和 smoke test。
-6. 最后按[验证范围](docs/Testing.md#验证范围)运行相关 pytest、Ruff 及真实 workload，保留仓库要求的 unittest / evidence 产物。局部修改不默认跑完整测试集；只有新改动、失败或未解决问题才扩大或重复验证。
+6. 最后按[验证范围](docs/Testing.md#验证范围)运行相关 unittest / evidence runner、Ruff 及真实 workload；本地 PyCharm 可用 pytest 执行同一批用例，但不替代 evidence 产物或代表 CI 已迁移。局部修改不默认跑完整测试集；只有新改动、失败或未解决问题才扩大或重复验证。
 7. 使用 `git_status` 检查最终改动范围，核对新增、被忽略文件，并结合 diff 确认没有混入无关变更。
 
-MCP 不可用、索引不完整或没有适用 Run Configuration 时，说明限制并用源码分析和项目 CLI 入口继续；不把空调用树当作没有依赖。pytest 不可用时执行现有 unittest / evidence 入口并报告缺口，不宣称 pytest 通过。
+MCP 不可用、索引不完整或没有适用 Run Configuration 时，说明限制并用源码分析和项目 CLI 入口继续；不把空调用树当作没有依赖。pytest 为可选本地 runner；不可用时继续执行现有 unittest / evidence 入口，不宣称 pytest 通过。
 
 在已授权范围内完成修改、验证和必要修复，无需逐步确认。真实 workload 缺少 Docker、GPU、模型等运行条件时，明确标为未验证，不用 IDE diagnostics 或 smoke test 代替。
 

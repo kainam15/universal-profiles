@@ -209,7 +209,6 @@ DOCKER_IMAGE_PREFIX = "acprof"
 # ─────────────────────────────────────────────
 # HF 环境变量（中国网络可选镜像）
 # ─────────────────────────────────────────────
-HF_MIRROR_ENDPOINT = "https://hf-mirror.com"
 PYPI_MIRROR_INDEX = "https://pypi.tuna.tsinghua.edu.cn/simple"
 CONTAINER_HF_HOME = "/models/hf"
 CONTAINER_MODEL_LOCAL_PATH = "/models/model-snapshot"

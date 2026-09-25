@@ -8,6 +8,9 @@ dynamic = ["version"]
 description = "Reproducible profiling of containerized Hugging Face inference services"
 readme = "README.md"
 requires-python = ">=3.10"
+# The distribution includes the CC-BY-4.0 LibriSpeech excerpt described in NOTICE.
+license = "Apache-2.0 AND CC-BY-4.0"
+license-files = ["LICENSE", "NOTICE", "licenses/CC-BY-4.0.txt"]
 dependencies = [
     "requests>=2.31,<3",
     "huggingface-hub>=1.0,<2",
@@ -43,6 +46,7 @@ include = [
     "/packaging", "/docs", "/README.md", "/pyproject.toml", "/hatch_build.py",
     "/requirements*", "/run.py", "/probe.py", "/profile.py", "/plot.py",
     "/tui.py", "/audit.py", "/stats.py", "/.dockerignore", "/setup.sh",
+    "/LICENSE", "/NOTICE", "/licenses",
 ]
 exclude = ["**/AGENTS.md", "**/__pycache__", "**/*.pyc"]
 

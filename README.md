@@ -58,6 +58,7 @@ Docker 或基础采集条件缺失时会给出处理建议，修复后可重新�
 后续可从任意工作目录启动，结果写入该目录；`setup.sh` 启动的工作目录为源码根目录。
 模型推理依赖优先复用经过核验的 GHCR 预构建镜像，不可用时自动本机构建；模型权重仍按需下载。
 私有或 gated 模型在当前工作目录的 `.env.local` 中配置 `HF_TOKEN`，并将该文件加入 Git 忽略。
+默认连接官方 Hugging Face Hub；镜像需[显式配置](docs/CLI_Reference.md#主机环境与-hugging-face-认证)。
 详见[认证配置](docs/Getting_Started.md#hugging-face-认证)、[开发环境安装](docs/Getting_Started.md#2-安装-python-依赖)和[发行包说明](docs/Distribution.md)。
 
 ### 3. 跑通第一个 CPU 实验
@@ -141,3 +142,9 @@ smoke 预设使用 `basic`、CPU 和单次请求，关闭独立 profiler 与通�
 
 模块职责见[代码架构](docs/Architecture.md)，开发依赖、pre-commit 和测试入口见[测试指南](docs/Testing.md#开发质量检查)。
 新增模型或 backend 参见[适配契约](docs/Runtime_Compatibility.md#新增一个模型适配)；Agent 协作规则见 [AGENTS.md](AGENTS.md)。
+
+## 许可与来源
+
+项目代码采用 [Apache-2.0](LICENSE)，延续原始项目定义的许可声明。
+AC-Prof 属于 JNU DISTINT 的 DOR 项目，原始贡献者及后续维护来源见 [NOTICE](NOTICE)。
+内置 LibriSpeech 音频保留 [CC-BY-4.0](licenses/CC-BY-4.0.txt)；模型代码和权重遵循各自仓库的许可。

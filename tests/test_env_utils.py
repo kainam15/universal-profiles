@@ -8,8 +8,8 @@ from acprof.host import env_utils
 from acprof.config import (
     CONTAINER_HF_HOME,
     CONTAINER_MODEL_LOCAL_PATH,
-    HF_MIRROR_ENDPOINT,
 )
+from acprof.hf_endpoints import HF_DEFAULT_ENDPOINT, hf_endpoints
 
 
 class BootstrapProjectEnvTests(unittest.TestCase):
@@ -20,17 +20,17 @@ class BootstrapProjectEnvTests(unittest.TestCase):
             root = Path(tmp_dir)
             (root / ".env").write_text("EXPLICIT_SETTING=file value\n", encoding="utf-8")
             (root / ".env.local").write_text(
-                "ACPROF_SUDO_PASSWORD='test-only-password'\n", encoding="utf-8",
+                "LOCAL_SETTING='test-only-value'\n", encoding="utf-8",
             )
             probe_environ = os.environ.copy()
 
             env_utils.load_project_env(root, environ=probe_environ)
 
             self.assertEqual(probe_environ["EXPLICIT_SETTING"], "process value")
-            self.assertEqual(probe_environ["ACPROF_SUDO_PASSWORD"], "test-only-password")
-            self.assertNotIn("ACPROF_SUDO_PASSWORD", os.environ)
+            self.assertEqual(probe_environ["LOCAL_SETTING"], "test-only-value")
+            self.assertNotIn("LOCAL_SETTING", os.environ)
 
-    def test_bootstrap_sets_default_hf_endpoint_and_bypasses_proxy_for_it(self) -> None:
+    def test_bootstrap_defaults_to_official_hub_and_preserves_proxy_policy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir, patch.dict(
             "acprof.host.env_utils.os.environ",
             {
@@ -44,10 +44,10 @@ class BootstrapProjectEnvTests(unittest.TestCase):
         ), patch("acprof.host.env_utils.resolve_hf_token", return_value=None):
             env_utils.bootstrap_project_env(tmp_dir)
 
-            self.assertEqual(env_utils.os.environ["HF_ENDPOINT"], HF_MIRROR_ENDPOINT)
-            self.assertEqual(env_utils.os.environ["HF_HUB_ENDPOINT"], HF_MIRROR_ENDPOINT)
-            self.assertIn("hf-mirror.com", env_utils.os.environ["NO_PROXY"].split(","))
-            self.assertIn("hf-mirror.com", env_utils.os.environ["no_proxy"].split(","))
+            self.assertEqual(env_utils.os.environ["HF_ENDPOINT"], "https://huggingface.co")
+            self.assertEqual(env_utils.os.environ["HF_HUB_ENDPOINT"], "https://huggingface.co")
+            self.assertEqual(env_utils.os.environ["NO_PROXY"], "localhost,127.0.0.1")
+            self.assertEqual(env_utils.os.environ["no_proxy"], "localhost,127.0.0.1")
 
     def test_bootstrap_preserves_explicit_endpoint_from_env_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir, patch.dict(
@@ -61,7 +61,7 @@ class BootstrapProjectEnvTests(unittest.TestCase):
 
             self.assertEqual(env_utils.os.environ["HF_ENDPOINT"], "https://example.invalid")
             self.assertEqual(env_utils.os.environ["HF_HUB_ENDPOINT"], "https://example.invalid")
-            self.assertIn("example.invalid", env_utils.os.environ["NO_PROXY"].split(","))
+            self.assertNotIn("NO_PROXY", env_utils.os.environ)
 
     def test_bootstrap_replaces_blank_endpoint_env_vars(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir, patch.dict(
@@ -71,8 +71,8 @@ class BootstrapProjectEnvTests(unittest.TestCase):
         ), patch("acprof.host.env_utils.resolve_hf_token", return_value=None):
             env_utils.bootstrap_project_env(tmp_dir)
 
-            self.assertEqual(env_utils.os.environ["HF_ENDPOINT"], HF_MIRROR_ENDPOINT)
-            self.assertEqual(env_utils.os.environ["HF_HUB_ENDPOINT"], HF_MIRROR_ENDPOINT)
+            self.assertEqual(env_utils.os.environ["HF_ENDPOINT"], HF_DEFAULT_ENDPOINT)
+            self.assertEqual(env_utils.os.environ["HF_HUB_ENDPOINT"], HF_DEFAULT_ENDPOINT)
 
     def test_blank_primary_endpoint_uses_configured_fallback(self) -> None:
         for blank in ("", " \t "):
@@ -84,7 +84,13 @@ class BootstrapProjectEnvTests(unittest.TestCase):
                 self.assertEqual(env_utils.configure_hf_network(), "https://example.invalid")
                 self.assertEqual(os.environ["HF_ENDPOINT"], "https://example.invalid")
                 self.assertEqual(os.environ["HF_HUB_ENDPOINT"], "https://example.invalid")
-                self.assertIn("example.invalid", os.environ["NO_PROXY"].split(","))
+                self.assertNotIn("NO_PROXY", os.environ)
+
+    def test_endpoint_rejects_credentials_without_echoing_them(self):
+        for url in ("https://user:test-secret@host.example", "https://host.example?token=test-secret"):
+            with self.subTest(url_type="credential"), self.assertRaises(ValueError) as raised:
+                hf_endpoints({"HF_ENDPOINT": url})
+            self.assertNotIn("test-secret", str(raised.exception))
 
     def test_explicit_endpoint_retains_priority_and_preserves_nonblank_alias(self) -> None:
         with patch.dict(

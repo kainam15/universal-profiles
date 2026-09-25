@@ -25,7 +25,7 @@ class MultimodalIntegrationTests(unittest.TestCase):
         for task in MULTIMODAL_TASKS + ("image-text-to-image", "image-text-to-video", "image-to-image", "image-to-video"):
             diffusion = task in {"image-text-to-image", "image-text-to-video", "image-to-image", "image-to-video"}
             family = "diffusion" if diffusion else "multimodal"
-            with self.subTest(task=task), patch("huggingface_hub.model_info", return_value=SimpleNamespace(pipeline_tag=task, library_name="diffusers" if diffusion else "transformers", sha="rev")):
+            with self.subTest(task=task), patch("huggingface_hub.HfApi.model_info", return_value=SimpleNamespace(pipeline_tag=task, library_name="diffusers" if diffusion else "transformers", sha="rev")):
                 detected = detect_task("example/model")
                 self.assertEqual(detected.task_family, family)
                 require_task_support(detected)
@@ -68,6 +68,6 @@ class MultimodalIntegrationTests(unittest.TestCase):
                 path = Path(tmp) / "snapshots" / ("a" * 40) / "config.json"
                 path.parent.mkdir(parents=True)
                 path.write_text(json.dumps({"architectures": [architecture]}))
-                with patch("huggingface_hub.model_info", side_effect=RuntimeError("offline")), patch("huggingface_hub.hf_hub_download", return_value=str(path)):
+                with patch("huggingface_hub.HfApi.model_info", side_effect=RuntimeError("offline")), patch("huggingface_hub.hf_hub_download", return_value=str(path)):
                     detected = detect_task("example/model")
                 self.assertEqual((detected.pipeline_tag, detected.task_family), (expected_task, "multimodal"))

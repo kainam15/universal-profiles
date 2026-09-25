@@ -11,8 +11,13 @@ CLI 启动时先读取当前工作目录的 `.env`，再读取 `.env.local`，�
 
 读取完成后，Hugging Face 初始化按去除首尾空白后的非空值选择配置：
 
-- 地址依次取 `HF_ENDPOINT`、`HF_HUB_ENDPOINT`，都为空时使用默认镜像地址；
-  缺失或仅含空白的地址变量回填选中值，同时将对应主机加入 `NO_PROXY` 和 `no_proxy`。
+- 地址依次取 `HF_ENDPOINT`、`HF_HUB_ENDPOINT`，都为空时使用官方 `https://huggingface.co`。
+  `HF_ENDPOINT` 规范化为实际选中值，缺失或空白的别名回填该值。镜像需要显式设置，例如
+  `HF_ENDPOINT=https://hf-mirror.com`；不会自动改写 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 或 `no_proxy`。
+- `HF_FALLBACK_ENDPOINTS` 是显式备用地址列表，以逗号或分号分隔；先尝试主地址，再按顺序尝试备用地址。
+  未配置时只使用主地址，不隐式添加镜像或官方回退。主地址只接受单个 URL；URL 不得带凭据、查询或片段。
+  模型下载对已声明的地址重试；主机元数据下载仅在缺少 Hub 元数据响应头时尝试显式备用地址，
+  不把认证、文件不存在或离线缓存错误变成跨站请求。
 - 令牌依次取 `HF_TOKEN`、`HUGGING_FACE_HUB_TOKEN`，都为空时调用已有
   `huggingface_hub.utils.get_token()`；找到令牌后回填缺失或仅含空白的令牌变量。
   两个变量都有非空值时保留各自值，解析结果以 `HF_TOKEN` 为准；没有令牌或本地读取失败时返回匿名状态。
@@ -23,6 +28,10 @@ CLI 启动时先读取当前工作目录的 `.env`，再读取 `.env.local`，�
 项目沿用已安装的公开接口，只在自身初始化层处理空白值和变量回填，不复制上游内部实现、
 不新增依赖；该初始化发生在主机准备阶段，不进入正式测量窗口。
 模型构建仅通过 BuildKit secret 使用令牌，正式推理容器继续离线加载模型。
+配置自定义 endpoint 也决定 Hugging Face 请求及认证令牌的接收方，应只选择信任的服务。
+主地址与备用列表同时传给 Docker 构建并进入模型层、服务层指纹；切换来源不会复用旧来源的模型层。
+实际成功请求的 Hub 基地址写入 `runtime_environment.model_download.endpoint`，依赖模型分别记录，
+随 `static_meta.json` 保存；这是 Hub endpoint，不是重定向后的 CDN/Xet URL 或本地缓存文件的首次来源。
 
 ## TUI 本地设置
 

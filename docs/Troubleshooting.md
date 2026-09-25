@@ -85,8 +85,8 @@ Docker 数据可能在另一挂载点，磁盘问题还需对实际 `DockerRootD
 
 ### MIPS、cache miss 与 dTLB miss
 
-- `cpu_mips_*` 字段来自 Linux `perf` 的 `instructions` 硬件事件，不是 CPU frequency 推导值。`run.py` 会在 task detection 前检查 `perf` 权限，失败时打印 `[mips][ERROR]`、当前 `perf_event_paranoid`、sudo 状态和恢复步骤。
-- TUI 快速检查与正式启动共用 `resolve_perf_command_prefix()`：按 `perf`、`sudo -n perf`、已配置凭据的 `sudo -S perf` 顺序尝试，每次最多 5 秒，须实际读到有效 `instructions` 计数才通过。使用 sudo 成功时会标明方式；全部失败时保留各次尝试的错误并隐藏凭据。TUI 每次把 `.env` / `.env.local` 读入独立环境副本，沿用正式启动的环境变量优先级，不把文件凭据留在 TUI 进程环境中，也不修改系统权限设置。这只验证主机指令事件，附加实际容器 PID 的权限仍由采集时的探测验证。
+- `cpu_mips_*` 字段来自 Linux `perf` 的 `instructions` 硬件事件，不是 CPU frequency 推导值。`run.py` 会在 task detection 前检查 `perf` 权限，失败时打印 `[mips][ERROR]`、当前 `perf_event_paranoid` 和恢复步骤。
+- TUI 快速检查与正式启动共用 `resolve_perf_command_prefix()`：只直接运行 `perf`，最多 5 秒，须实际读到有效 `instructions` 计数才通过。权限不足时保留错误并指向[最小权限安装](Getting_Started.md#最小权限安装)，不尝试 sudo 或自动 setcap。`ACPROF_SUDO_PASSWORD` 已移除，须从进程和本地 env 文件删除。TUI 使用独立环境副本，并将旧配置报告为迁移错误。这只验证主机指令事件，附加实际容器 PID 的权限仍由采集时的探测验证。
 - `cpu_cache_*` 和 `cpu_dtlb_*` 字段来自 Linux `perf` generic PMU events。可先用 `perf list` 和 `perf stat -e cache-references,cache-misses,dTLB-loads,dTLB-load-misses -- true` 检查当前 CPU / kernel 是否支持；事件不支持不表示 miss 为 0。
 - 这些 cache / dTLB 字段用于描述访存行为，不提供 DRAM GB/s。实际 read/write bandwidth 需要 uncore memory-controller、Intel PCM、AMD IBS/DF 或其他硬件专用计数器，不能由 miss 数直接换算。
 

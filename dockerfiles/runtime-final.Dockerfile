@@ -19,5 +19,7 @@ LABEL org.acprof.build-fingerprint=${BUILD_FINGERPRINT} \
       org.acprof.runtime-profile=${RUNTIME_PROFILE} org.acprof.model-adapter=${MODEL_ADAPTER} \
       org.acprof.image-kind="model"
 COPY acprof/ /app/acprof/
+COPY LICENSE NOTICE /usr/share/licenses/acprof/
+COPY licenses/ /usr/share/licenses/acprof/third-party/
 RUN python -m acprof.container.runtime_manifest
 CMD ["python", "-m", "acprof.container.server"]

@@ -5,7 +5,7 @@ import argparse
 import json
 from pathlib import Path
 
-from acprof.host.doctor import collect_checks, report_dict
+from acprof.host.doctor import DoctorCheck, collect_checks, report_dict
 from acprof.host.env_utils import load_project_env
 
 
@@ -17,9 +17,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", type=Path, default=Path.cwd())
     parser.add_argument("--json", action="store_true", help="输出 JSON；必要条件缺失时 exit 1")
     args = parser.parse_args(argv)
-    load_project_env(Path.cwd())
-    checks = collect_checks(profiling_mode=args.profiling_mode, gpus=args.gpus,
-                            sniff_iface=args.sniff_iface, output_dir=args.output_dir)
+    checks = []
+    try:
+        load_project_env(Path.cwd())
+    except ValueError as exc:
+        checks.append(DoctorCheck("environment", "unavailable", str(exc),
+                                  "删除旧密码配置，按 docs/Getting_Started.md#最小权限安装配置权限。"))
+    checks.extend(collect_checks(profiling_mode=args.profiling_mode, gpus=args.gpus,
+                                sniff_iface=args.sniff_iface, output_dir=args.output_dir))
     report = report_dict(checks, profiling_mode=args.profiling_mode, gpus=args.gpus)
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))

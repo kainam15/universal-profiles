@@ -166,7 +166,7 @@ class PrepareImageTests(unittest.TestCase):
         self.task.model_revision = 'main'
         from types import SimpleNamespace
 
-        with patch('huggingface_hub.model_info', return_value=SimpleNamespace(sha='3' * 40)) as lookup, patch.object(
+        with patch('huggingface_hub.HfApi.model_info', return_value=SimpleNamespace(sha='3' * 40)) as lookup, patch.object(
             docker_runtime, 'build_image', return_value=docker_runtime.ImageInfo(tag=self.image_id),
         ):
             docker_runtime.prepare_image(self.task, self.project_dir)

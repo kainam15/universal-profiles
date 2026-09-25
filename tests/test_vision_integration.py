@@ -39,7 +39,7 @@ class VisionIntegrationTests(unittest.TestCase):
     def test_all_nineteen_hub_tasks_route_to_collection(self):
         for task in CV_TASKS + GENERATION_TASKS:
             expected = task_info(task)
-            with self.subTest(task=task), patch("huggingface_hub.model_info", return_value=SimpleNamespace(
+            with self.subTest(task=task), patch("huggingface_hub.HfApi.model_info", return_value=SimpleNamespace(
                 pipeline_tag=task, library_name=expected.library_name, sha="pinned-revision",
             )):
                 actual = detect.detect_task("example/model")
@@ -89,13 +89,13 @@ class VisionIntegrationTests(unittest.TestCase):
             with self.subTest(pipeline=pipeline), tempfile.TemporaryDirectory() as tmp:
                 path = Path(tmp) / "model_index.json"
                 path.write_text(json.dumps({"_class_name": pipeline}))
-                with patch("huggingface_hub.model_info", return_value=SimpleNamespace(
+                with patch("huggingface_hub.HfApi.model_info", return_value=SimpleNamespace(
                     pipeline_tag=None, library_name="diffusers", sha="pinned-revision",
                 )), patch("huggingface_hub.hf_hub_download", return_value=str(path)) as download:
                     result = detect.detect_task("example/model")
                 self.assertEqual(result.pipeline_tag, task)
                 self.assertEqual(result.model_revision, "pinned-revision")
-                download.assert_called_once_with(repo_id="example/model", filename="model_index.json", revision="pinned-revision")
+                download.assert_called_once_with(repo_id="example/model", filename="model_index.json", revision="pinned-revision", endpoint="https://huggingface.co")
 
     def test_cv_manifest_reaches_materialized_plan_and_preserves_parameters(self):
         with tempfile.TemporaryDirectory() as tmp:

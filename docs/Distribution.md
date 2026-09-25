@@ -4,6 +4,13 @@ AC-Prof 支持源码开发、`uv tool install` 隔离安装和 Linux x86_64 stan
 三种入口执行相同的主机采集代码；Docker Engine、cgroup v2、GPU driver 和采集工具仍由主机提供。
 安装与首次运行见[安装指南](Getting_Started.md)，环境检查参数见 [doctor](CLI_Reference.md#acprof-doctor)。
 
+分发包的 `License-Expression` 为 `Apache-2.0 AND CC-BY-4.0`：项目代码采用 Apache-2.0，
+内置 LibriSpeech 音频采用 CC-BY-4.0。`LICENSE`、`NOTICE` 和 `licenses/CC-BY-4.0.txt`
+通过 `project.license-files` 随 sdist/wheel 分发；`NOTICE` 保留原始项目贡献者和音频变换来源。
+standalone 从 wheel 收集同一份 dist-info 元数据。wheel 的 Docker 构建资源也携带许可文件，
+最终服务镜像在 `/usr/share/licenses/acprof/` 保存它们；许可文件变化参与服务层指纹。
+外部依赖和下载的模型分别保留原许可。
+
 ## Clone 后初始化
 
 准备原生 Linux x86_64、本机 Docker Engine/Buildx、cgroup v2 和 Git 后：

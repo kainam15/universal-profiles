@@ -1,0 +1,43 @@
+AC-Prof
+https://github.com/kainam15/universal-profiles
+
+Project origin and attribution
+------------------------------
+AC-Prof is part of the DOR project of the DISTINT group at Jinan University:
+https://github.com/wingter562/DISTINT_open_data
+
+The original project definition credits Dr. Wentai Wu (Jinan University),
+with primary contribution by Dr. Shenghai Li (South China University of
+Technology), and lists these contributors:
+  Wentai Wu, JNU
+  Shenghai Li, SCUT
+  Qinan Wu, JNU
+  Kaizhe Song, JNU
+  Yukai Wang, JNU
+
+The attribution above follows the original AC-Prof project definition.
+This repository continues that project with the current Python package,
+runtime profiles, measurement protocol, CLI and Textual interface. Source
+history records the subsequent changes and contributors.
+Project code is licensed under Apache-2.0; see LICENSE.
+
+Bundled third-party material
+---------------------------
+assets/audio/librispeech-clean-test-en-30s/audio.wav is derived from
+LibriSpeech, prepared by Vassil Panayotov with assistance from Daniel Povey.
+Source: https://www.openslr.org/12
+Mirror: https://huggingface.co/datasets/openslr/librispeech_asr
+Dataset revision: 71cacbfb7e2354c4226d01e70d77d5fca3d04ba1
+License: Creative Commons Attribution 4.0 International (CC-BY-4.0).
+See licenses/CC-BY-4.0.txt and https://creativecommons.org/licenses/by/4.0/.
+
+AC-Prof concatenated clean/test recordings 6930-75918-0001,
+6930-75918-0002 and 6930-75918-0003, then retained the first 30 seconds as
+16 kHz mono PCM16 WAV. It did not normalize, resample, apply gain or trim
+silence. The source identities, hashes and transformation details are in
+assets/audio/librispeech-clean-test-en-30s/source.json.
+The audio retains CC-BY-4.0 and is not relicensed under Apache-2.0.
+
+Downloaded model code, weights, external datasets and separately installed
+dependencies retain their respective licenses. Their inclusion or use does
+not imply endorsement by their authors or by the original project team.

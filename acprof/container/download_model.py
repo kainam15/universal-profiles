@@ -20,6 +20,7 @@ from typing import Sequence
 
 from huggingface_hub import snapshot_download
 from acprof.model_spec import load_model_dependencies
+from acprof.hf_endpoints import hf_endpoints
 
 if __package__:
     from .model_files import ModelFilesError, PLAN_FILENAME, plan_download, seal_plan
@@ -30,7 +31,6 @@ MODEL_ID = ""
 MODEL_REVISION = "main"
 CACHE_DIR = "/models/hf"
 DEFAULT_LOCAL_MODEL_PATH = "/models/model-snapshot"
-DEFAULT_ENDPOINT = "https://huggingface.co"
 DEFAULT_WORKERS = "8,2,1"
 DEFAULT_BACKOFF_S = 5.0
 DEFAULT_ETAG_TIMEOUT_S = 30.0
@@ -41,26 +41,8 @@ def _split_csv(raw: str) -> list[str]:
     return [part.strip() for part in raw.replace(";", ",").split(",") if part.strip()]
 
 
-def _normalize_endpoint(endpoint: str) -> str:
-    return endpoint.rstrip("/")
-
-
 def _candidate_endpoints() -> list[str]:
-    endpoints: list[str] = []
-    for endpoint in _split_csv(os.getenv("HF_ENDPOINT", "")):
-        normalized = _normalize_endpoint(endpoint)
-        if normalized not in endpoints:
-            endpoints.append(normalized)
-
-    for endpoint in _split_csv(os.getenv("HF_FALLBACK_ENDPOINTS", "")):
-        normalized = _normalize_endpoint(endpoint)
-        if normalized not in endpoints:
-            endpoints.append(normalized)
-
-    if DEFAULT_ENDPOINT not in endpoints:
-        endpoints.append(DEFAULT_ENDPOINT)
-
-    return endpoints
+    return hf_endpoints()
 
 
 def _worker_plan() -> list[int]:
@@ -162,6 +144,7 @@ def _prepare_repository_plan(endpoint: str, model_id: str, revision: str, *, dep
     )
     if dependency is not None:
         plan.update(reason="declared_dependency", excluded_files=excluded)
+    plan["endpoint"] = endpoint
     return seal_plan(plan)
 
 
@@ -183,7 +166,6 @@ def _prepare_plan(endpoint: str) -> dict:
 
 def _download_once(endpoint: str, max_workers: int) -> str:
     global _LAST_PLAN
-    os.environ["HF_ENDPOINT"] = endpoint
     plan = _prepare_plan(endpoint)
     kwargs = _build_snapshot_kwargs(endpoint, max_workers)
     kwargs.update(repo_id=plan["model_id"], revision=plan["model_revision"])

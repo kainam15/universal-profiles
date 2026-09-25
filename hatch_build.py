@@ -24,6 +24,10 @@ class CustomBuildHook(BuildHookInterface):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(path, target)
         shutil.copyfile(root / ".dockerignore", destination / ".dockerignore")
+        for relative in ("LICENSE", "NOTICE", "licenses/CC-BY-4.0.txt"):
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(root / relative, target)
         build_data["force_include"][str(destination)] = "acprof/_bundle"
 
     def finalize(self, version, build_data, artifact_path):

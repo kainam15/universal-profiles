@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from acprof.dependency_locks import content_digest
+from acprof.hf_endpoints import hf_endpoints
 from acprof.host.dependency_images import (
     platform_fingerprint, prepare_environment_image, require_image_source, runtime_fingerprint,
     verify_labels, verify_manifest,
@@ -73,11 +74,13 @@ def request_fingerprint(task_info: Any, project_dir: str | Path = PROJECT_ROOT) 
         "dependency_build": runtime_fingerprint(profile.environment, root),
         "build_overrides": overrides,
         "model_download_policy": download_policy(task_info),
+        "hf_endpoints": hf_endpoints(),
         "model_spec": task_model_spec(task_info),
     }, sort_keys=True).encode())
     paths = sorted((root / "acprof").rglob("*.py"))
     paths += sorted((root / "acprof" / "extensions").rglob("*.json"))
     paths += [root / "dockerfiles" / name for name in ("runtime-model.Dockerfile", "runtime-final.Dockerfile")]
+    paths += [root / "LICENSE", root / "NOTICE", *sorted((root / "licenses").rglob("*.txt"))]
     for path in paths:
         digest.update(str(path.relative_to(root)).encode())
         digest.update(path.read_bytes())
@@ -98,8 +101,9 @@ def model_fingerprint(task_info: Any, runtime_id: str, project_dir: str | Path =
         "family": task_info.task_family, "backend": task_info.runtime_backend,
         "adapter": select_runtime_profile(task_info).adapter, "policy": download_policy(task_info),
         "dependencies": task_model_spec(task_info).get("dependencies", []),
+        "hf_endpoints": hf_endpoints(),
     }, sort_keys=True).encode())
-    for relative in ("acprof/container/download_model.py", "acprof/container/model_files.py", "acprof/model_spec.py", "dockerfiles/runtime-model.Dockerfile"):
+    for relative in ("acprof/container/download_model.py", "acprof/container/model_files.py", "acprof/model_spec.py", "acprof/hf_endpoints.py", "dockerfiles/runtime-model.Dockerfile"):
         digest.update((root / relative).read_bytes())
     return digest.hexdigest()
 
@@ -208,10 +212,11 @@ def prepare_runtime_image(task_info: Any, project_dir: str, *, reuse_existing: b
     profile = configure_runtime_profile(task_info)
     task_info.runtime_profile_id, task_info.model_adapter = profile.profile_id, profile.adapter
     if not re.fullmatch(r"[0-9a-f]{40}", task_info.model_revision or ""):
-        from huggingface_hub import model_info
+        from huggingface_hub import HfApi
 
         try:
-            revision = model_info(task_info.model_id, revision=task_info.model_revision or "main").sha
+            revision = HfApi(endpoint=hf_endpoints()[0]).model_info(
+                task_info.model_id, revision=task_info.model_revision or "main").sha
         except Exception as exc:
             raise RuntimeError(f"无法固定模型 revision，尚未构建或复用镜像：{exc}") from exc
         if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
@@ -232,9 +237,9 @@ def prepare_runtime_image(task_info: Any, project_dir: str, *, reuse_existing: b
 
 def build_runtime_image(task_info: Any, project_dir: str):
     from acprof.host.docker_runtime import ImageInfo, _model_image_tag, _run, _sanitize_model_id
-    from acprof.config import HF_MIRROR_ENDPOINT
 
     profile = select_runtime_profile(task_info)
+    endpoints = hf_endpoints()
     task_info.runtime_profile_id, task_info.model_adapter = profile.profile_id, profile.adapter
     if not re.fullmatch(r"[0-9a-f]{40}", task_info.model_revision or ""):
         raise RuntimeError("镜像构建要求固定 model revision；请通过 prepare_image 准备镜像")
@@ -276,7 +281,8 @@ def build_runtime_image(task_info: Any, project_dir: str):
     if model_identity is None:
         candidate = build("runtime-model.Dockerfile", {
             "RUNTIME_IMAGE": runtime_source, "MODEL_ID": task_info.model_id,
-            "MODEL_REVISION": task_info.model_revision, "HF_ENDPOINT": HF_MIRROR_ENDPOINT,
+            "MODEL_REVISION": task_info.model_revision, "HF_ENDPOINT": endpoints[0],
+            "HF_FALLBACK_ENDPOINTS": ",".join(endpoints[1:]),
             "TASK_FAMILY": task_info.task_family, "RUNTIME_BACKEND": task_info.runtime_backend,
             "MODEL_ADAPTER": profile.adapter, "MODEL_DOWNLOAD_POLICY": download_policy(task_info),
             "MODEL_FILES_KEY": model_key,

@@ -197,7 +197,6 @@ def _perf_attach_probe_command(prefix: List[str], pid: int) -> List[str]:
 
 def _run_perf_probe(
     prefix: List[str],
-    password: str = "",
     *,
     env: Optional[Mapping[str, str]] = None,
 ) -> subprocess.CompletedProcess:
@@ -209,9 +208,8 @@ def _run_perf_probe(
         "errors": "replace",
         "timeout": PERF_PROBE_TIMEOUT_S,
     }
-    # Close stdin after the configured password, or immediately without one.
     # A preflight must never wait for input from the user's terminal.
-    kwargs["input"] = f"{password}\n" if password else ""
+    kwargs["input"] = ""
     if env is not None:
         kwargs["env"] = env
     return subprocess.run(_perf_probe_command(prefix), **kwargs)
@@ -220,7 +218,6 @@ def _run_perf_probe(
 def _run_perf_attach_probe(
     prefix: List[str],
     pid: int,
-    password: str = "",
 ) -> subprocess.CompletedProcess:
     kwargs = {
         "capture_output": True,
@@ -230,8 +227,7 @@ def _run_perf_attach_probe(
         "errors": "replace",
         "timeout": PERF_PROBE_TIMEOUT_S,
     }
-    if password:
-        kwargs["input"] = f"{password}\n"
+    kwargs["input"] = ""
     return subprocess.run(_perf_attach_probe_command(prefix, pid), **kwargs)
 
 
@@ -255,40 +251,22 @@ def _attach_probe_succeeded(result: subprocess.CompletedProcess) -> bool:
 def resolve_perf_command_prefix(
     *, env: Optional[Mapping[str, str]] = None,
 ) -> List[str]:
-    """Probe real instruction counts using the collection privilege fallbacks."""
+    """Probe real instruction counts without changing the caller's privileges."""
     probe_environ = os.environ if env is None else env
     perf_path = shutil.which("perf", path=probe_environ.get("PATH", os.defpath))
     if not perf_path:
         raise MIPSProfilingError("Linux perf command was not found.")
 
-    attempts = [
-        ("perf", ["perf"], ""),
-        ("sudo -n perf", ["sudo", "-n", "perf"], ""),
-    ]
-    sudo_password = probe_environ.get("ACPROF_SUDO_PASSWORD", "").strip()
-    if sudo_password:
-        attempts.append(
-            ("sudo -S perf", ["sudo", "-S", "-p", "", "perf"], sudo_password)
-        )
-
-    errors = []
-    for label, prefix, password in attempts:
-        try:
-            result = _run_perf_probe(prefix, password=password, env=env)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            detail = f"{type(exc).__name__}: {exc}"
-        else:
-            if _probe_succeeded(result):
-                return prefix
-            detail = "\n".join(
-                part.strip() for part in (result.stderr, result.stdout) if part and part.strip()
-            ) or f"perf did not report valid instructions (exit={result.returncode})"
-        errors.append(f"{label}: {detail}")
-
-    detail = "\n".join(errors)
-    if sudo_password:
-        detail = detail.replace(sudo_password, "[redacted]")
-    raise MIPSProfilingError(detail)
+    try:
+        result = _run_perf_probe(["perf"], env=env)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise MIPSProfilingError(f"{type(exc).__name__}: {exc}") from exc
+    if _probe_succeeded(result):
+        return ["perf"]
+    detail = "\n".join(
+        part.strip() for part in (result.stderr, result.stdout) if part and part.strip()
+    ) or f"perf did not report valid instructions (exit={result.returncode})"
+    raise MIPSProfilingError(f"perf: {detail}; see docs/Getting_Started.md#最小权限安装")
 
 
 def get_perf_command_prefix() -> List[str]:
@@ -303,53 +281,32 @@ def resolve_perf_command_prefix_for_pid(pid: int) -> List[str]:
     if not perf_path:
         raise MIPSProfilingError("Linux perf command was not found.")
 
-    direct = _run_perf_attach_probe(["perf"], pid)
+    try:
+        direct = _run_perf_attach_probe(["perf"], pid)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise MIPSProfilingError(f"{type(exc).__name__}: {exc}") from exc
     if _attach_probe_succeeded(direct):
         return ["perf"]
 
-    sudo_noninteractive = _run_perf_attach_probe(["sudo", "-n", "perf"], pid)
-    if _attach_probe_succeeded(sudo_noninteractive):
-        return ["sudo", "-n", "perf"]
-
-    sudo_with_password: Optional[subprocess.CompletedProcess] = None
-    sudo_password = os.environ.get("ACPROF_SUDO_PASSWORD", "").strip()
-    if sudo_password:
-        sudo_with_password = _run_perf_attach_probe(
-            ["sudo", "-S", "-p", "", "perf"],
-            pid,
-            password=sudo_password,
-        )
-        if _attach_probe_succeeded(sudo_with_password):
-            return ["sudo", "-S", "-p", "", "perf"]
-
-    last_error_result = sudo_with_password or sudo_noninteractive or direct
-    last_error = (
-        last_error_result.stderr
-        or last_error_result.stdout
-        or "perf attach probe failed"
-    ).strip()
-    raise MIPSProfilingError(last_error)
+    last_error = (direct.stderr or direct.stdout or "perf attach probe failed").strip()
+    raise MIPSProfilingError(f"{last_error}; see docs/Getting_Started.md#最小权限安装")
 
 
 def _friendly_mips_error(detail: str) -> str:
     perf_path = shutil.which("perf") or "not found"
     paranoid = read_perf_event_paranoid()
-    password_state = "set" if os.environ.get("ACPROF_SUDO_PASSWORD", "").strip() else "not set"
     return (
         "[mips][ERROR] MIPS profiling requires Linux perf access to hardware "
         f"event {PERF_EVENT!r}.\n\n"
         "Detected:\n"
         f"  perf={perf_path}\n"
         f"  perf_event_paranoid={paranoid}\n"
-        f"  ACPROF_SUDO_PASSWORD={password_state}\n"
         f"  last_error={detail.strip() or 'unavailable'}\n\n"
         "Recovery steps:\n"
         "  1. Install perf if missing, for example: sudo apt-get install -y linux-tools-common linux-tools-generic\n"
-        "  2. Temporary permission fix for this boot:\n"
-        "     echo 0 | sudo tee /proc/sys/kernel/perf_event_paranoid\n"
-        "  3. Or set ACPROF_SUDO_PASSWORD in .env.local so AC-Prof can run sudo -S perf.\n\n"
-        "Note: profiling Docker container PIDs may still require sudo perf even when "
-        "perf_event_paranoid=0, because those processes are often owned by root.\n\n"
+        "  2. Have an administrator grant cap_perfmon=ep to the real perf executable, "
+        "restricted to the profiling group. See docs/Getting_Started.md#最小权限安装.\n"
+        "  3. Log in again after group membership changes, then rerun acprof doctor.\n\n"
         "After fixing permissions, rerun AC-Prof as your normal user. Avoid "
         "`sudo python run.py ...` because it can leave result files owned by root."
     )
@@ -384,10 +341,6 @@ def _docker_container_pid(container_name: str) -> int:
     if pid <= 0:
         raise MIPSProfilingError(f"container is not running: {container_name}")
     return pid
-
-
-def _prefix_uses_password(prefix: List[str]) -> bool:
-    return len(prefix) >= 3 and prefix[0] == "sudo" and "-S" in prefix
 
 
 def _per_request(total: float, repeat: int) -> float:
@@ -430,13 +383,8 @@ class PerfMIPSMonitor:
 
         pid = _docker_container_pid(self.container_name)
         prefix = list(self.command_prefix or resolve_perf_command_prefix_for_pid(pid))
-        password = ""
-        if _prefix_uses_password(prefix):
-            password = os.environ.get("ACPROF_SUDO_PASSWORD", "").strip()
-            if not password:
-                raise MIPSProfilingError(
-                    "sudo -S perf was selected but ACPROF_SUDO_PASSWORD is not set"
-                )
+        if len(prefix) != 1 or os.path.basename(prefix[0]) != "perf":
+            raise MIPSProfilingError("Only a direct perf executable is supported; configure cap_perfmon first")
         cmd = [
             *prefix,
             "stat",
@@ -450,11 +398,10 @@ class PerfMIPSMonitor:
             "--timeout",
             str(PERF_TIMEOUT_MS),
         ]
-        stdin = subprocess.PIPE if _prefix_uses_password(prefix) else subprocess.DEVNULL
         try:
             self._proc = subprocess.Popen(
                 cmd,
-                stdin=stdin,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -462,12 +409,6 @@ class PerfMIPSMonitor:
                 errors="replace",
             )
             self._t_start = time.perf_counter()
-            if _prefix_uses_password(prefix):
-                assert self._proc.stdin is not None
-                self._proc.stdin.write(f"{password}\n")
-                self._proc.stdin.flush()
-                self._proc.stdin.close()
-                self._proc.stdin = None
         except OSError as exc:
             raise MIPSProfilingError(f"failed to start perf: {exc}") from exc
 

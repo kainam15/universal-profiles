@@ -77,85 +77,46 @@ class TuiPreflightTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[0][0], "perf")
         self.assertEqual(run.call_args.kwargs["input"], "")
 
-    def test_noninteractive_sudo_is_reported_as_available(self):
-        check, run = self.run_check([
-            self.result(1, "Access to performance monitoring is limited."), self.result(),
-        ])
-        self.assertEqual(check.status, "ok")
-        self.assertIn("sudo perf 可用（无需交互输入）", check.detail)
-        self.assertEqual(run.call_count, 2)
-        self.assertEqual(run.call_args.args[0][:3], ["sudo", "-n", "perf"])
+    def test_permission_denial_is_reported_without_privilege_fallback(self):
+        check, run = self.run_check([self.result(1, 'Permission denied')])
+        self.assertEqual(check.status, 'fail')
+        self.assertEqual(run.call_count, 1)
+        self.assertIn('Permission denied', check.detail)
 
-    def test_local_password_sudo_is_used_and_reloaded_without_retaining_credentials(self):
-        for password in ("test-first-password", "test-updated-password"):
-            with self.subTest(password_source="updated local file"):
-                (self.project_dir / ".env.local").write_text(
-                    f"ACPROF_SUDO_PASSWORD={password}\n", encoding="utf-8",
-                )
-                check, run = self.run_check([
-                    self.result(1, "Permission denied"),
-                    self.result(1, "sudo: a password is required"),
-                    self.result(),
-                ])
-                self.assertEqual(check.status, "ok")
-                self.assertIn("sudo perf 可用（已配置凭据）", check.detail)
-                self.assertEqual(run.call_count, 3)
-                self.assertEqual(run.call_args.args[0][:5], ["sudo", "-S", "-p", "", "perf"])
-                self.assertEqual(run.call_args.kwargs["input"], password + "\n")
-                self.assertEqual(run.call_args.kwargs["env"]["ACPROF_SUDO_PASSWORD"], password)
-                self.assertNotIn(password, str(run.call_args.args[0]))
-                self.assertNotIn(password, check.detail)
-                self.assertNotIn("ACPROF_SUDO_PASSWORD", os.environ)
+    def test_local_password_configuration_has_a_migration_error(self):
+        (self.project_dir / '.env.local').write_text('ACPROF_SUDO_PASSWORD=test-file-secret\n')
+        check, run = self.run_check([])
+        self.assertEqual(check.status, 'fail')
+        self.assertIn('ACPROF_SUDO_PASSWORD', check.detail)
+        self.assertNotIn('test-file-secret', check.detail)
+        run.assert_not_called()
 
-    def test_explicit_process_credential_takes_precedence_over_local_file(self):
-        (self.project_dir / ".env.local").write_text(
-            "ACPROF_SUDO_PASSWORD=test-file-password\n", encoding="utf-8",
-        )
-        with patch.dict(os.environ, {"ACPROF_SUDO_PASSWORD": "test-process-password"}):
-            check, run = self.run_check([
-                self.result(1, "Permission denied"),
-                self.result(1, "sudo: a password is required"),
-                self.result(),
-            ])
-            self.assertEqual(check.status, "ok")
-            self.assertEqual(run.call_args.kwargs["input"], "test-process-password\n")
-            self.assertEqual(os.environ["ACPROF_SUDO_PASSWORD"], "test-process-password")
+    def test_process_password_configuration_has_a_migration_error(self):
+        with patch.dict(os.environ, {'ACPROF_SUDO_PASSWORD': 'test-process-secret'}):
+            check, run = self.run_check([])
+        self.assertEqual(check.status, 'fail')
+        self.assertNotIn('test-process-secret', check.detail)
+        run.assert_not_called()
 
-    def test_failures_keep_all_attempt_details_and_redact_password(self):
-        password = "test-diagnostic-password"
-        (self.project_dir / ".env.local").write_text(
-            f"ACPROF_SUDO_PASSWORD={password}\n", encoding="utf-8",
-        )
-        check, run = self.run_check([
-            self.result(1, "Permission denied\nperf_event_paranoid setting is 4"),
-            self.result(1, "sudo: a password is required"),
-            self.result(1, f"rejected {password}\ninstructions event not supported"),
-        ])
-        self.assertEqual(check.status, "fail")
-        self.assertEqual(run.call_count, 3)
-        self.assertIn("Permission denied\nperf_event_paranoid setting is 4", check.detail)
-        self.assertIn("sudo -n perf: sudo: a password is required", check.detail)
-        self.assertIn("sudo -S perf:", check.detail)
-        self.assertIn("instructions event not supported", check.detail)
-        self.assertNotIn(password, check.detail)
+    def test_failure_keeps_perf_diagnostic_and_setup_guidance(self):
+        check, run = self.run_check([self.result(1, 'Permission denied\nperf_event_paranoid setting is 4')])
+        self.assertEqual(check.status, 'fail')
+        self.assertEqual(run.call_count, 1)
+        self.assertIn('perf_event_paranoid setting is 4', check.detail)
+        self.assertIn('Getting_Started.md', check.detail)
 
     def test_zero_exit_without_an_instruction_count_is_failure(self):
-        check, _ = self.run_check([
-            self.result(0, "<not supported>,,instructions,0.00,,\n"),
-            self.result(0, "<not counted>,,instructions,0.00,,\n"),
-        ])
-        self.assertEqual(check.status, "fail")
-        self.assertIn("<not supported>", check.detail)
-        self.assertIn("<not counted>", check.detail)
+        for detail in ('<not supported>', '<not counted>'):
+            with self.subTest(detail=detail):
+                check, _ = self.run_check([self.result(0, detail + ',,instructions,0.00,,\n')])
+                self.assertEqual(check.status, 'fail')
+                self.assertIn(detail, check.detail)
 
-    def test_timeout_and_missing_sudo_are_visible_without_stopping_gpu_check(self):
-        check, _ = self.run_check([
-            subprocess.TimeoutExpired(["perf", "stat"], PERF_PROBE_TIMEOUT_S),
-            FileNotFoundError("sudo not installed"),
-        ])
-        self.assertEqual(check.status, "fail")
-        self.assertIn("TimeoutExpired", check.detail)
-        self.assertIn("sudo not installed", check.detail)
+    def test_timeout_is_visible_without_stopping_gpu_check(self):
+        check, run = self.run_check([subprocess.TimeoutExpired(['perf', 'stat'], PERF_PROBE_TIMEOUT_S)])
+        self.assertEqual(check.status, 'fail')
+        self.assertIn('TimeoutExpired', check.detail)
+        self.assertEqual(run.call_count, 1)
 
     def test_missing_perf_is_reported_without_running_a_probe(self):
         self.which.side_effect = lambda command, **kwargs: None if command == "perf" else f"/usr/bin/{command}"

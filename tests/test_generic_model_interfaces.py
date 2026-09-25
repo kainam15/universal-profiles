@@ -134,6 +134,18 @@ class SentenceTransformerInterfaceTests(unittest.TestCase):
 
 
 class ModelDetectionInterfaceTests(unittest.TestCase):
+    def test_mirror_metadata_failure_does_not_contact_undeclared_endpoint(self):
+        from acprof.host.detect import _download_metadata
+        from huggingface_hub.errors import FileMetadataError, LocalEntryNotFoundError
+        error = LocalEntryNotFoundError("metadata request failed")
+        error.__cause__ = FileMetadataError("missing X-Repo-Commit")
+        with patch.dict("os.environ", {"HF_ENDPOINT": "https://mirror.example"}, clear=True), patch(
+            "huggingface_hub.hf_hub_download", side_effect=error,
+        ) as download, self.assertRaises(LocalEntryNotFoundError):
+            _download_metadata("unseen/encoder", "config.json", "a" * 40)
+        download.assert_called_once_with(repo_id="unseen/encoder", filename="config.json",
+                                         revision="a" * 40, endpoint="https://mirror.example")
+
     def test_offline_metadata_miss_does_not_retry_another_endpoint(self):
         from acprof.host.detect import _repository_metadata
         from huggingface_hub.errors import LocalEntryNotFoundError
@@ -152,8 +164,8 @@ class ModelDetectionInterfaceTests(unittest.TestCase):
             config.write_text(json.dumps({"model_type": "bert"}))
             hub = SimpleNamespace(pipeline_tag="fill-mask", library_name="transformers", sha="c" * 40,
                                   config={}, tags=[], siblings=[SimpleNamespace(rfilename="config.json")])
-            with patch("huggingface_hub.model_info", return_value=hub), patch(
-                "huggingface_hub.constants.ENDPOINT", "https://hf-mirror.com",
+            with patch("huggingface_hub.HfApi.model_info", return_value=hub), patch.dict(
+                "os.environ", {"HF_ENDPOINT": "https://hf-mirror.com", "HF_FALLBACK_ENDPOINTS": "https://huggingface.co"}, clear=True,
             ), patch("huggingface_hub.hf_hub_download", side_effect=[error, str(config)]) as download:
                 info = detect_task("unseen/encoder")
         self.assertFalse(info.metadata_errors)
@@ -172,7 +184,7 @@ class ModelDetectionInterfaceTests(unittest.TestCase):
     def test_feature_extraction_library_selects_sentence_encoder_for_any_id(self):
         hub = SimpleNamespace(pipeline_tag="feature-extraction", library_name="sentence-transformers",
                               sha="a" * 40, config={"model_type": "bert"}, siblings=[], tags=[])
-        with patch("huggingface_hub.model_info", return_value=hub):
+        with patch("huggingface_hub.HfApi.model_info", return_value=hub):
             info = detect_task("unseen/encoder")
         self.assertEqual(info.runtime_backend, "sentence_transformers")
         require_task_support(info)
@@ -185,7 +197,7 @@ class ModelDetectionInterfaceTests(unittest.TestCase):
             hub = SimpleNamespace(pipeline_tag="time-series-forecasting", library_name="chronos-forecasting",
                                   sha="b" * 40, config={}, tags=[],
                                   siblings=[SimpleNamespace(rfilename="config.json")])
-            with patch("huggingface_hub.model_info", return_value=hub), patch(
+            with patch("huggingface_hub.HfApi.model_info", return_value=hub), patch(
                 "huggingface_hub.hf_hub_download", return_value=str(config),
             ) as download:
                 info = detect_task("unseen/forecaster")

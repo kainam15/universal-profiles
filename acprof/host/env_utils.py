@@ -5,12 +5,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Iterable, MutableMapping
-from urllib.parse import urlparse
+
+from acprof.hf_endpoints import hf_endpoints
 
 from acprof.config import (
     CONTAINER_HF_HOME,
     CONTAINER_MODEL_LOCAL_PATH,
-    HF_MIRROR_ENDPOINT,
 )
 
 
@@ -27,6 +27,10 @@ def load_project_env(
 ) -> None:
     """Load local KEY=VALUE pairs into the process or an isolated environment."""
     target_environ = os.environ if environ is None else environ
+    retired_setting = "ACPROF_SUDO_PASSWORD"
+    migration = f"{retired_setting} is no longer supported; remove it and follow docs/Getting_Started.md#最小权限安装"
+    if retired_setting in target_environ:
+        raise ValueError(migration)
     for env_file in _iter_env_files(project_dir):
         if not env_file.exists():
             continue
@@ -40,6 +44,8 @@ def load_project_env(
             key = key.strip()
             if not key:
                 continue
+            if key == retired_setting:
+                raise ValueError(migration)
 
             value = value.strip()
             if value[:1] == value[-1:] and value[:1] in {"'", '"'}:
@@ -48,40 +54,16 @@ def load_project_env(
             target_environ.setdefault(key, value)
 
 
-def _endpoint_host(endpoint: str) -> str:
-    parsed = urlparse(endpoint)
-    host = parsed.netloc or parsed.path
-    return host.strip().lower().rstrip("/")
-
-
-def _append_no_proxy_host(host: str) -> None:
-    if not host:
-        return
-
-    for key in ("NO_PROXY", "no_proxy"):
-        current = os.environ.get(key, "")
-        parts = [part.strip() for part in current.split(",") if part.strip()]
-        known = {part.lower() for part in parts}
-        if host not in known:
-            os.environ[key] = ",".join(parts + [host]) if parts else host
-
-
 def _set_default_if_blank(key: str, value: str) -> None:
     if not os.environ.get(key, "").strip():
         os.environ[key] = value
 
 
 def configure_hf_network() -> str:
-    """Normalize host-side Hugging Face endpoint and proxy bypass for metadata calls."""
-    endpoint = (
-        os.environ.get("HF_ENDPOINT", "").strip()
-        or os.environ.get("HF_HUB_ENDPOINT", "").strip()
-        or HF_MIRROR_ENDPOINT
-    )
-
-    _set_default_if_blank("HF_ENDPOINT", endpoint)
+    """Normalize the selected endpoint while preserving the user's proxy policy."""
+    endpoint = hf_endpoints()[0]
+    os.environ["HF_ENDPOINT"] = endpoint
     _set_default_if_blank("HF_HUB_ENDPOINT", endpoint)
-    _append_no_proxy_host(_endpoint_host(endpoint))
     return endpoint
 
 

@@ -271,6 +271,12 @@ OOM pruning 继续按原有参考 CPU/内存顺序重建证据，复用与推断
 
 `runtime_environment.model_download` 是可选的独立 schema v1 清单，历史结果可缺失。`requested_policy` 保存 `auto/full`，`effective_policy` 保存实际 `selected/full`，`reason` 说明筛选或回退原因；`weights` 记录组件、格式、variant 和索引／分片文件。`files` 保存路径、实际逻辑大小和构建时计算的 SHA256，另保留 Hub 提供的 Git blob／LFS 标识；`excluded_files` 是未下载文件的远端元数据。`verification=sha256` 表示构建阶段已完成完整性检查，`plan_sha256` 校验规范化 JSON（不含自身字段）。`selected_bytes` 按清单路径求和，不对相同内容的多个路径去重，因此不等同于 `model_cache_bytes`、镜像大小或释放的磁盘空间。新增清单不改变 CSV 字段和历史指标定义。
 
+新构建在该清单的 `endpoint` 字符串中记录成功使用的 Hugging Face Hub 基地址，依赖模型在
+`dependencies[].download.endpoint` 分别记录。该字段来自执行 metadata/snapshot 请求的地址，
+参与 `plan_sha256`，无单位，不属于测量窗口；它不表示重定向后的 CDN/Xet URL，
+也不能追溯本地 cache 最初从哪里取得文件。历史清单缺失时视为 unknown，不默认补成官方或镜像。
+主地址和显式备用列表参与模型层、服务层指纹；下载失败不发布已验证清单或模型镜像。
+
 `runtime_validation.json` 使用独立 schema v1：`devices.off/on` 分别保存 CPU／GPU 的 `ok`、`error` 或明确 cgroup OOM 的 `resource_limit`；总状态为 `ok`、`error` 或 `resource_limited`。每个模式只执行一次最小计划输入，资源上限为本次配置的最大 CPU／内存。错误会在矩阵之前退出；资源限制允许正式矩阵继续测定 OOM 边界。stdout/stderr 保存在 `runtime_validation_off/on.log`，超时也清理验证容器。它们不是 warmup、测量行或 profiler 结果。验证前已有的结果不因此变为本次成功结果。
 
 每个设备的可选 `stages` 依次记录 `execution/load/preprocess/predict/completion/postprocess/validate_output/metadata`，

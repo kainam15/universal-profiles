@@ -97,6 +97,19 @@ class RuntimeImageBuildTests(unittest.TestCase):
     def build_commands(self):
         return [command for command in self.commands if command[:2] == ["docker", "build"]]
 
+    def test_endpoint_policy_reaches_build_and_invalidates_only_model_and_service(self):
+        runtime_images.build_runtime_image(self.task, str(PROJECT_ROOT))
+        self.commands.clear()
+        with patch.dict(os.environ, {"HF_ENDPOINT": "https://mirror.example",
+                                    "HF_FALLBACK_ENDPOINTS": "https://huggingface.co"}):
+            runtime_images.build_runtime_image(self.task, str(PROJECT_ROOT))
+        builds = self.build_commands()
+        self.assertEqual([Path(cmd[cmd.index("-f") + 1]).name for cmd in builds], [
+            "runtime-model.Dockerfile", "runtime-final.Dockerfile",
+        ])
+        self.assertIn("HF_ENDPOINT=https://mirror.example", builds[0])
+        self.assertIn("HF_FALLBACK_ENDPOINTS=https://huggingface.co", builds[0])
+
     def test_prebuilt_images_are_verified_and_used_without_dependency_builds(self):
         from acprof.host.dependency_images import prepare_environment_image
         from acprof.runtime_profiles import ENVIRONMENTS

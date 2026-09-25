@@ -37,6 +37,11 @@ class ImageLayerIdentityTests(unittest.TestCase):
             self.assertEqual(runtime, runtime_fingerprint(profile.environment, root))
             self.assertEqual(model, model_fingerprint(task, "sha256:" + "b" * 64, root))
             self.assertNotEqual(final, request_fingerprint(task, root))
+            final = request_fingerprint(task, root)
+            (root / "NOTICE").write_text("Updated attribution\n")
+            self.assertNotEqual(final, request_fingerprint(task, root))
+            self.assertEqual(model, model_fingerprint(task, "sha256:" + "b" * 64, root))
+            self.assertEqual(runtime, runtime_fingerprint(profile.environment, root))
             # 筛选规则与模型声明解析变更影响模型和最终层，不重新安装依赖。
             changed_model = model
             for relative, content in (

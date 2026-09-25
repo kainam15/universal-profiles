@@ -106,7 +106,7 @@ flowchart TD
 界面刷新、绘图、通知与额外文件操作继续位于正式测量窗口之外。
 
 `runtime_profiles` 是标准库声明层，分别登记 `RuntimeProfile`、`PlatformSpec`、`DependencyEnvironment`；
-7 个任务族共用 37 个逻辑 profile、24 个依赖环境。`dependency_locks` 规范化和验证
+7 个任务族通过逻辑 profile 共享依赖环境，当前数量见[运行配置](Runtime_Compatibility.md#当前配置)。`dependency_locks` 规范化和验证
 制品锁，环境内容身份独立于 profile、adapter、模型及业务代码。主机检测只读元数据；handler 注册表
 供 server、输入规划和 profiler 共用。`extensions/*/manifest.json` 同时提供 config 映射、任务支持、
 profile 和延迟入口，读取声明不导入推理框架；声明文件参与服务镜像指纹。

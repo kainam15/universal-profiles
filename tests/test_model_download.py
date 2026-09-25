@@ -11,6 +11,16 @@ from acprof.container.model_files import ModelFilesError, plan_download, seal_pl
 
 
 class ModelDownloadTests(unittest.TestCase):
+    def test_explicit_mirror_has_no_implicit_fallback(self):
+        with patch.dict(os.environ, {"HF_ENDPOINT": "https://mirror.example/"}, clear=True):
+            self.assertEqual(download_model._candidate_endpoints(), ["https://mirror.example"])
+
+    def test_default_precedes_explicit_fallback(self):
+        with patch.dict(os.environ, {"HF_FALLBACK_ENDPOINTS": "https://mirror.example"}, clear=True):
+            self.assertEqual(download_model._candidate_endpoints(), [
+                "https://huggingface.co", "https://mirror.example",
+            ])
+
     def dependency_plan(self):
         def plan(repo, revision):
             return plan_download(model_id=repo, revision=revision, family="multimodal",
@@ -102,6 +112,7 @@ class ModelDownloadTests(unittest.TestCase):
             self.assertEqual(set(calls[-1].get("allow_patterns") or files), {
                 "config.json", "model.safetensors",
             })
+            self.assertEqual(download_model._LAST_PLAN["endpoint"], "https://huggingface.co")
 
 
 if __name__ == "__main__":

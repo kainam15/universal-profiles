@@ -558,8 +558,6 @@ ENGLISH: dict[str, str] = {
     "未找到 ip 命令": "ip command not found",
     "没有可读 energy_uj": "No readable energy_uj counter",
     "普通用户 perf 可用，已读到 instructions 计数": "Unprivileged perf works; instructions count read",
-    "sudo perf 可用（已配置凭据），已读到 instructions 计数": "sudo perf works with configured credentials; instructions count read",
-    "sudo perf 可用（无需交互输入），已读到 instructions 计数": "Non-interactive sudo perf works; instructions count read",
     "GPU 查询失败": "GPU query failed",
     "未找到 nvidia-smi": "nvidia-smi not found",
     "命令格式错误：{0}": "Invalid command syntax: {0}",

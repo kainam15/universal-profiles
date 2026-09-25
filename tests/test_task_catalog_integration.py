@@ -48,7 +48,7 @@ class TaskCatalogIntegrationTests(unittest.TestCase):
             ("robotics", "unknown", "structured", "torchscript"),
             ("graph-ml", "unknown", "structured", "torchscript"),
         ):
-            with self.subTest(task=task), patch("huggingface_hub.model_info", return_value=SimpleNamespace(
+            with self.subTest(task=task), patch("huggingface_hub.HfApi.model_info", return_value=SimpleNamespace(
                 pipeline_tag=task, library_name=library, sha="fixed-revision",
             )):
                 actual = detect.detect_task("example/model")

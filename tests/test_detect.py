@@ -21,7 +21,7 @@ class DetectTaskTests(unittest.TestCase):
             tags=["diffusers"],
         )
 
-        with patch("huggingface_hub.model_info", return_value=hub_info):
+        with patch("huggingface_hub.HfApi.model_info", return_value=hub_info):
             info = detect._detect_from_hub(
                 "stable-diffusion-v1-5/stable-diffusion-v1-5"
             )
@@ -47,7 +47,7 @@ class DetectTaskTests(unittest.TestCase):
             tags=["transformers", "license:apache-2.0"],
         )
 
-        with patch("huggingface_hub.model_info", return_value=hub_info):
+        with patch("huggingface_hub.HfApi.model_info", return_value=hub_info):
             info = detect._detect_from_hub(
                 "google-bert/bert-base-uncased"
             )
@@ -85,7 +85,7 @@ class DetectTaskTests(unittest.TestCase):
             tags=["gptq", "license:mit"],
         )
 
-        with patch("huggingface_hub.model_info", return_value=hub_info):
+        with patch("huggingface_hub.HfApi.model_info", return_value=hub_info):
             info = detect._detect_from_hub("example/quantized-model")
 
         self.assertIsNotNone(info)
@@ -158,7 +158,7 @@ class DetectTaskTests(unittest.TestCase):
     def test_detect_task_reports_auto_detection_failure_reasons(self) -> None:
         stderr = io.StringIO()
 
-        with patch("huggingface_hub.model_info", side_effect=RuntimeError("hub timeout")), patch(
+        with patch("huggingface_hub.HfApi.model_info", side_effect=RuntimeError("hub timeout")), patch(
             "huggingface_hub.hf_hub_download", side_effect=OSError("config missing")
         ), patch("sys.stderr", stderr):
             with self.assertRaises(SystemExit) as raised:

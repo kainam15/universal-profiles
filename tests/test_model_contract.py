@@ -46,7 +46,7 @@ class ModelContractTests(unittest.TestCase):
                 self.downloads.append(kwargs["filename"])
                 return str(root / kwargs["filename"])
 
-            with patch("huggingface_hub.model_info", return_value=hub), patch(
+            with patch("huggingface_hub.HfApi.model_info", return_value=hub), patch(
                 "huggingface_hub.hf_hub_download", side_effect=download,
             ):
                 return detect_task("arbitrary/audio-model", **options)

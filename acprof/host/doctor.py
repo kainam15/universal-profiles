@@ -75,16 +75,14 @@ def _capability(probe: Callable) -> str:
 
 
 def _packet(sniff_iface: str) -> str:
-    from acprof.host.packet_capture import TCPDUMP_CAPTURE_CAPABILITY
+    from acprof.host.packet_capture import TCPDUMP_CAPTURE_CAPABILITY, _tcpdump_can_capture_without_sudo
     for tool in ("tcpdump", "tshark"):
         if not shutil.which(tool):
             raise RuntimeError(f"未安装 {tool}")
     if not (Path("/sys/class/net") / sniff_iface).exists():
         raise RuntimeError(f"网卡不存在：{sniff_iface}")
-    if os.geteuid() != 0:
-        capabilities = _command(["getcap", str(shutil.which("tcpdump"))])
-        if not all(cap in capabilities for cap in ("cap_net_raw", "cap_net_admin")):
-            raise RuntimeError(f"tcpdump 缺少 {TCPDUMP_CAPTURE_CAPABILITY}")
+    if not _tcpdump_can_capture_without_sudo(str(shutil.which("tcpdump"))):
+        raise RuntimeError(f"tcpdump 缺少 {TCPDUMP_CAPTURE_CAPABILITY}；见 docs/Getting_Started.md#最小权限安装")
     _command(["tshark", "--version"])
     return f"tcpdump/tshark、capture capabilities 和 {sniff_iface} 可用；未实际抓包"
 

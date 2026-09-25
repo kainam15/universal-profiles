@@ -173,21 +173,19 @@ def quick_preflight(
         )
     )
 
-    # Do not retain .env.local credentials in the long-lived TUI process.
-    probe_environ = os.environ.copy()
-    load_project_env(
-        project_dir if project_dir is not None else Path.cwd(),
-        environ=probe_environ,
-    )
-    perf = probe_perf_instructions(env=probe_environ) if measurement_requested(config.profiling_mode, "cpu_instructions") else Capability("not_requested", "basic", "profiling_mode")
-    if perf.status.value == "available":
-        prefix = perf.evidence["command_prefix"]
-        if prefix[0] != "sudo":
-            detail = message('普通用户 perf 可用，已读到 instructions 计数')
-        elif "-S" in prefix:
-            detail = message('sudo perf 可用（已配置凭据），已读到 instructions 计数')
+    perf = Capability("not_requested", "basic", "profiling_mode")
+    if measurement_requested(config.profiling_mode, "cpu_instructions"):
+        probe_environ = os.environ.copy()
+        try:
+            load_project_env(
+                project_dir if project_dir is not None else Path.cwd(), environ=probe_environ,
+            )
+        except ValueError as exc:
+            perf = Capability("error", str(exc), "environment")
         else:
-            detail = message('sudo perf 可用（无需交互输入），已读到 instructions 计数')
+            perf = probe_perf_instructions(env=probe_environ)
+    if perf.status.value == "available":
+        detail = message('普通用户 perf 可用，已读到 instructions 计数')
         checks.append(PreflightCheck("perf instructions", "ok", detail, perf.status.value))
     else:
         checks.append(PreflightCheck("perf instructions", "ok" if perf.status.value == "not_requested" else "fail", f"{perf.status.value}: {perf.detail}", perf.status.value))

@@ -477,6 +477,9 @@ Dockerfile 和安装脚本；环境镜像再计对应配方及不可变平台 im
 服务标签使用 `request_fingerprint` 前 20 位查找候选，覆盖逻辑 profile、环境/构建声明、
 模型 commit、下载策略、后端、构建参数和 AC-Prof 代码；完整 `build_fingerprint` 再绑定实际模型
 父镜像 ID。模型层指纹绑定实际环境 image ID。标签是查找入口，执行与补采始终使用不可变 ID。
+主地址及显式备用列表也进入模型层、服务层指纹；切换 endpoint 会重建这两层，但复用依赖环境。
+默认官方 Hub，镜像与备用地址均需[显式配置](CLI_Reference.md#主机环境与-hugging-face-认证)。
+实际成功地址随 `model_download.endpoint` 保存，历史缺失字段不推算。
 
 分层构建与文件选择细节见[模型文件选择规则](#模型文件选择规则)。
 

@@ -34,7 +34,7 @@ class ModelDiscoveryTests(unittest.TestCase):
                 self.assertEqual(kwargs.get("revision"), REVISION)
                 return str(root / kwargs["filename"])
 
-            with patch("huggingface_hub.model_info", return_value=hub), patch(
+            with patch("huggingface_hub.HfApi.model_info", return_value=hub), patch(
                 "huggingface_hub.hf_hub_download", side_effect=download,
             ), patch("sys.stderr", io.StringIO()):
                 return detect_task("example/model", **options)

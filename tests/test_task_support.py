@@ -88,7 +88,7 @@ class TaskSupportTests(unittest.TestCase):
 
     def test_hub_task_without_adapter_is_preserved_instead_of_guessed_as_nlp(self):
         hub = SimpleNamespace(pipeline_tag="unregistered-vision-task", library_name="transformers", sha="rev")
-        with patch("huggingface_hub.model_info", return_value=hub), patch.object(
+        with patch("huggingface_hub.HfApi.model_info", return_value=hub), patch.object(
             detect, "_detect_from_config", return_value=task_info("text2text-generation", "nlp")
         ) as fallback:
             info = detect.detect_task("example/multimodal")
@@ -98,7 +98,7 @@ class TaskSupportTests(unittest.TestCase):
 
     def test_manual_override_can_correct_hub_metadata(self):
         hub = SimpleNamespace(pipeline_tag="unregistered-task", library_name="transformers", sha="rev")
-        with patch("huggingface_hub.model_info", return_value=hub):
+        with patch("huggingface_hub.HfApi.model_info", return_value=hub):
             info = detect.detect_task("example/model", override_tag="image-classification")
         self.assertEqual((info.pipeline_tag, info.task_family), ("image-classification", "cv"))
 

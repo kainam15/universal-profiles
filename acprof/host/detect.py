@@ -63,21 +63,22 @@ def _architecture_metadata(config: Any) -> dict[str, Any]:
 
 
 def _download_metadata(model_id: str, name: str, revision: str | None = None) -> str:
-    from huggingface_hub import constants, hf_hub_download
+    from huggingface_hub import hf_hub_download
     from huggingface_hub.errors import FileMetadataError, LocalEntryNotFoundError
+    from acprof.hf_endpoints import hf_endpoints
 
     kwargs = {"repo_id": model_id, "filename": name}
     if revision is not None:
         kwargs["revision"] = revision
-    try:
-        return hf_hub_download(**kwargs)
-    except LocalEntryNotFoundError as exc:
-        # Some mirrors redirect HEAD across hosts without the Hub metadata
-        # headers. Keep Hub cache/integrity checks and the requested revision;
-        # do not turn authentication, missing files or offline errors into retries.
-        if not isinstance(exc.__cause__, FileMetadataError) or constants.ENDPOINT.rstrip("/") == "https://huggingface.co":
-            raise
-        return hf_hub_download(**kwargs, endpoint="https://huggingface.co")
+    endpoints = hf_endpoints()
+    for index, endpoint in enumerate(endpoints):
+        try:
+            return hf_hub_download(**kwargs, endpoint=endpoint)
+        except LocalEntryNotFoundError as exc:
+            # Retry missing metadata headers only on explicitly configured endpoints.
+            if not isinstance(exc.__cause__, FileMetadataError) or index == len(endpoints) - 1:
+                raise
+    raise AssertionError("endpoint policy must contain a primary endpoint")
 
 
 def _repository_metadata(model_id: str, revision: str, info: Any) -> dict[str, Any]:
@@ -114,8 +115,9 @@ def _repository_metadata(model_id: str, revision: str, info: Any) -> dict[str, A
 def dependency_metadata(repo_id: str, revision: str) -> dict:
     """Resolve dependency identity and file names only; downloads stay in image builds."""
     from huggingface_hub import HfApi
+    from acprof.hf_endpoints import hf_endpoints
     try:
-        info = HfApi().model_info(repo_id, revision=revision, files_metadata=False)
+        info = HfApi(endpoint=hf_endpoints()[0]).model_info(repo_id, revision=revision, files_metadata=False)
         return {"revision": info.sha, "files": [item.rfilename for item in info.siblings or []]}
     except Exception as exc:
         raise OSError(_format_failure(exc)) from exc
@@ -400,9 +402,10 @@ def _detect_from_hub(
 ) -> Optional[TaskInfo]:
     """Level 1: Query HuggingFace Hub API."""
     try:
-        from huggingface_hub import model_info as hf_model_info
+        from huggingface_hub import HfApi
+        from acprof.hf_endpoints import hf_endpoints
 
-        info = hf_model_info(model_id)
+        info = HfApi(endpoint=hf_endpoints()[0]).model_info(model_id)
     except Exception as exc:
         _record_failure(diagnostics, "hub_api", _format_failure(exc))
         return None
