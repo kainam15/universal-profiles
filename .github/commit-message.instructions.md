@@ -1,2 +1,5 @@
-Write a concise English Conventional Commit message describing the diff: `type: description`.
-Return only the subject, at most 72 characters, without a trailing period.
+type(scope): concise summary
+
+- core change 1
+- core change 2
+- tests / behavior changes / compatibility notes

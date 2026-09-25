@@ -73,10 +73,10 @@ VS Code 的 Source Control 面板中，点击 ✨ **Generate Commit Message** �
 }
 ```
 
-生成规则只在 [commit-message.instructions.md](../.github/commit-message.instructions.md)
-维护两句短提示：依据 diff 写简短的英文 `type: description`，只返回最多 72 字符且不带
-句号的标题。工作区设置只引用该文件。AI 只生成标题；需要正文时由提交者补充，
-并在标题后空一行。先暂存本次提交的改动再生成，并在提交前核对内容。
+生成模板只在 [commit-message.instructions.md](../.github/commit-message.instructions.md)
+维护：`type(scope): concise summary` 标题、空行，以及核心改动、测试或兼容性说明的列表。
+scope 可选，标题保持简洁但不设字符数上限。工作区设置只引用该文件。
+先暂存本次提交的改动再生成，并在提交前核对内容。
 
 工作区设置若被个人 `.git/info/exclude` 或全局规则忽略，换电脑或新 clone 时需重新合并
 上述设置。规则文件本身可随仓库保存。模型沿用 VS Code 当前的 utility model 配置；
@@ -90,8 +90,9 @@ Copilot 0.67.0 的提交生成提示包含 `ResponseTranslationRules`；默认 `
 
 [`commitlint`](https://github.com/conventional-changelog/commitlint) 在 `commit-msg` 阶段读取
 [.commitlintrc.json](../.commitlintrc.json)，强制检查 Conventional Commits 结构、允许的类型、
-标题长度、scope 大小写及正文/页脚前的空行。不合规的消息会阻止提交；修改消息后重试。
-英文、祈使句和事实准确性由生成规则指导并由提交者复核，格式校验不能证明内容属实。
+scope 大小写及正文/页脚前的空行；标题、正文和页脚均不限制行长度。
+不合规的消息会阻止提交；修改消息后重试。提交内容由生成模板指导并由提交者复核，
+格式校验不能证明内容属实。
 保留 commitlint 对 Git 自动生成的 merge、revert、fixup!/squash! 等消息的默认豁免。
 
 commitlint 需要 Node.js 22.12+，依赖安装在 pre-commit 的隔离缓存中，不进入 Python 开发锁
@@ -483,7 +484,7 @@ hooks 固定完整 commit SHA，CI 直接执行同一份配置，避免维护第
 语言冲突依据本机 Copilot 0.67.0 和上游
 [提交生成提示](https://github.com/microsoft/vscode-copilot-chat/blob/main/src/extension/prompts/node/git/gitCommitMessagePrompt.tsx)、
 [ResponseTranslationRules](https://github.com/microsoft/vscode-copilot-chat/blob/main/src/extension/prompts/node/base/responseTranslationRules.tsx)
-确认；生成提示还会引用近期提交风格，因此显式要求整批 diff 只输出一个英文标题。
+确认；生成提示还会引用近期提交风格，项目输出格式由仓库中的提交消息模板维护。
 格式检查复用 [commitlint](https://github.com/conventional-changelog/commitlint) 和
 [现成的 pre-commit adapter](https://github.com/alessandrojcm/commitlint-pre-commit-hook)（均为 MIT，
 由上游维护），保留现有 pre-commit 管理方式；adapter 固定完整 commit SHA，CLI 和规则包固定
