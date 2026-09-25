@@ -184,13 +184,14 @@ def _percentile_nearest_rank(xs: List[float], percentile: float) -> float:
     return values[index]
 
 
-def _slow_ratio(xs: List[float], *, slow_latency_threshold_s: float) -> float:
+def _slow_ratio(xs: List[float], *, slow_latency_threshold_s: float | None) -> float:
     values = [
         value
         for value in (_to_float_or_nan(item) for item in xs)
         if math.isfinite(value)
     ]
-    if not values:
+    if (not values or slow_latency_threshold_s is None
+            or not math.isfinite(slow_latency_threshold_s) or slow_latency_threshold_s <= 0):
         return float("nan")
     return sum(value > slow_latency_threshold_s for value in values) / float(len(values))
 
@@ -199,7 +200,7 @@ def _latency_distribution_metrics(
     prefix: str,
     latencies: List[float],
     *,
-    slow_latency_threshold_s: float,
+    slow_latency_threshold_s: float | None = None,
 ) -> Dict[str, float]:
     values = [
         value
@@ -212,11 +213,14 @@ def _latency_distribution_metrics(
         if len(values) >= 2
         else float("nan")
     )
+    p50 = _percentile_nearest_rank(values, 50.0)
+    p95 = _percentile_nearest_rank(values, 95.0)
     return {
         f"{prefix}_request_count": float(len(values)),
-        f"{prefix}_p50_s": _percentile_nearest_rank(values, 50.0),
+        f"{prefix}_p50_s": p50,
         f"{prefix}_p90_s": _percentile_nearest_rank(values, 90.0),
-        f"{prefix}_p95_s": _percentile_nearest_rank(values, 95.0),
+        f"{prefix}_p95_s": p95,
+        f"{prefix}_tail_ratio": p95 / p50 if p50 > 0 and math.isfinite(p95) else float("nan"),
         f"{prefix}_std_s": std,
         f"{prefix}_cv": (
             std / mean
@@ -372,6 +376,7 @@ LATENCY_PACKET_DISTRIBUTION_FIELDS = [
     "latency_p50_s",
     "latency_p90_s",
     "latency_p95_s",
+    "latency_tail_ratio",
     "latency_std_s",
     "latency_cv",
     "latency_iqr_s",
@@ -385,6 +390,7 @@ LATENCY_APP_DISTRIBUTION_FIELDS = [
     "latency_app_p50_s",
     "latency_app_p90_s",
     "latency_app_p95_s",
+    "latency_app_tail_ratio",
     "latency_app_std_s",
     "latency_app_cv",
     "latency_app_iqr_s",

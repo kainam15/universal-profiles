@@ -21,6 +21,7 @@ from pathlib import Path
 
 from acprof.config import SCALING_DIMENSIONS
 from acprof.installation import cli_command, resource_root
+from acprof.latency_slo import parse_latency_slo_rules, resolve_latency_slo
 from acprof.capabilities import (
     measurement_requested, measurement_report, apply_extension,
     apply_runtime_validation, apply_profiler_plan, apply_collection_result,
@@ -550,6 +551,12 @@ def _run_main():
     parser = _build_parser(default_notify_provider=DEFAULT_NOTIFY_PROVIDER)
 
     args = parser.parse_args()
+    try:
+        latency_slo_rules = parse_latency_slo_rules(
+            args.latency_slo, environment_threshold=os.environ.get("SLOW_LATENCY_THRESHOLD_S"),
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     from acprof.monitors.rapl_topology import dram_policy, discover_rapl_topology
     try:
         dram_enabled = dram_policy(args.profiling_mode, args.dram_energy)
@@ -638,6 +645,11 @@ def _run_main():
             model_spec_path=args.model_spec,
         )
     require_task_support(task_info, batch_size=args.batch_size)
+    from acprof.runtime_profiles import select_runtime_profile
+    latency_slo = resolve_latency_slo(
+        latency_slo_rules, pipeline_tag=task_info.pipeline_tag,
+        runtime_profile_id=select_runtime_profile(task_info).profile_id,
+    )
 
     print(f"\n  Model:    {task_info.model_id}")
     print(f"  Task:     {task_info.pipeline_tag} (family={task_info.task_family})")
@@ -792,7 +804,9 @@ def _run_main():
         capability_report.measurement.update({name: item for name, item in preflight_measurements.items() if isinstance(item, Capability)})
         from acprof.extensions import select_extension
         apply_extension(capability_report, select_extension(task_info))
-        static_meta = enrich_static_meta(static_meta, {"capability_report": capability_report.to_dict()})
+        static_meta = enrich_static_meta(static_meta, {
+            "capability_report": capability_report.to_dict(), "latency_slo": latency_slo,
+        })
         write_static_meta_json(static_meta, static_meta_json)
         write_collection_history_json(
             empty_collection_history(),

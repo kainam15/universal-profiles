@@ -85,7 +85,8 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
             static_meta = os.path.join(tmp, "static_meta.json")
 
             with open(static_meta, "w", encoding="utf-8") as f:
-                json.dump({"schema_version": 7, "batch_size": 1}, f)
+                json.dump({"schema_version": 7, "batch_size": 1,
+                           "latency_slo": {"threshold_s": 0.06, "source": "default"}}, f)
 
             fieldnames = [
                 "sniff_group_id",
@@ -221,7 +222,7 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
         self.assertEqual(rows[0]["latency_cv"], "0.877478")
         self.assertEqual(rows[0]["latency_iqr_s"], "0.180000")
         self.assertEqual(rows[0]["latency_max_s"], "0.300000")
-        self.assertEqual(rows[0]["latency_slow_ratio"], "0.600000")
+        self.assertEqual(rows[0]["latency_slow_ratio"], "nan")
 
     def test_merges_schema_v2_network_and_normalized_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

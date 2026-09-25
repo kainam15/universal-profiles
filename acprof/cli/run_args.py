@@ -97,6 +97,10 @@ Examples:
         default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
         help="Timeout for each formal /predict request",
     )
+    parser.add_argument(
+        "--latency-slo", action="append", default=[], metavar="SELECTOR=SECONDS",
+        help="Latency SLO (repeatable): task:TAG=SECONDS, profile:ID=SECONDS or default=SECONDS; no implicit threshold",
+    )
     parser.add_argument("--sample-hz", type=float, default=20.0, help="GPU energy sampling rate")
     parser.add_argument(
         "--idle-seconds",

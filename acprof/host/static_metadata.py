@@ -53,6 +53,9 @@ class StaticMeta:
     image_name: str = ""
     runtime_environment: Dict[str, Any] = field(default_factory=dict)
     runtime_validation: Dict[str, Any] = field(default_factory=dict)
+    latency_slo: Dict[str, Any] = field(
+        default_factory=lambda: {"threshold_s": None, "source": "unconfigured"}
+    )
     gpu_device: Dict[str, Any] = field(default_factory=dict)
     profiling_mode: str = "full"
     capability_report: Dict[str, Any] = field(default_factory=dict)

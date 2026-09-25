@@ -7,9 +7,10 @@ from collections import defaultdict
 from typing import Sequence
 
 from acprof.pixel_metrics import per_megapixel
+from acprof.artifacts import read_static_metadata
+from acprof.latency_slo import latency_slo_threshold
 
 SNIFF_GROUP_FIELD = "sniff_group_id"
-SLOW_LATENCY_THRESHOLD_S = float(os.getenv("SLOW_LATENCY_THRESHOLD_S", "0.06"))
 NETWORK_RECORD_TO_CSV_FIELD = {
     "request_wire_bytes": "packet_request_wire_bytes_per_request",
     "response_wire_bytes": "packet_response_wire_bytes_per_request",
@@ -17,12 +18,6 @@ NETWORK_RECORD_TO_CSV_FIELD = {
     "tcp_payload_bytes": "packet_tcp_payload_bytes_per_request",
     "protocol_overhead_bytes": "packet_protocol_overhead_bytes_per_request",
 }
-
-
-def _read_static_batch_size(csv_path: str) -> float:
-    from acprof.artifacts import read_static_metadata
-    metadata = read_static_metadata(os.path.dirname(csv_path) or ".")
-    return _to_float(metadata.get("batch_size", "nan"))
 
 
 def _to_float(value: object) -> float:
@@ -95,14 +90,17 @@ def _percentile_nearest_rank(values: list[float], percentile: float) -> float:
     return finite_values[index]
 
 
-def _slow_ratio(values: list[float]) -> float:
+def _slow_ratio(values: list[float], *, slow_latency_threshold_s: float | None) -> float:
     finite_values = [value for value in values if math.isfinite(value)]
-    if not finite_values:
+    if (not finite_values or slow_latency_threshold_s is None
+            or not math.isfinite(slow_latency_threshold_s) or slow_latency_threshold_s <= 0):
         return float("nan")
-    return sum(value > SLOW_LATENCY_THRESHOLD_S for value in finite_values) / float(len(finite_values))
+    return sum(value > slow_latency_threshold_s for value in finite_values) / float(len(finite_values))
 
 
-def _distribution_metrics(values: list[float]) -> dict[str, float]:
+def _distribution_metrics(
+    values: list[float], *, slow_latency_threshold_s: float | None = None,
+) -> dict[str, float]:
     finite_values = [value for value in values if math.isfinite(value)]
     mean = _mean(finite_values)
     std = (
@@ -113,11 +111,14 @@ def _distribution_metrics(values: list[float]) -> dict[str, float]:
         if len(finite_values) >= 2
         else float("nan")
     )
+    p50 = _percentile_nearest_rank(finite_values, 50.0)
+    p95 = _percentile_nearest_rank(finite_values, 95.0)
     return {
         "latency_request_count": float(len(finite_values)),
-        "latency_p50_s": _percentile_nearest_rank(finite_values, 50.0),
+        "latency_p50_s": p50,
         "latency_p90_s": _percentile_nearest_rank(finite_values, 90.0),
-        "latency_p95_s": _percentile_nearest_rank(finite_values, 95.0),
+        "latency_p95_s": p95,
+        "latency_tail_ratio": p95 / p50 if p50 > 0 and math.isfinite(p95) else float("nan"),
         "latency_std_s": std,
         "latency_cv": (
             std / mean
@@ -131,7 +132,7 @@ def _distribution_metrics(values: list[float]) -> dict[str, float]:
             else float("nan")
         ),
         "latency_max_s": max(finite_values) if finite_values else float("nan"),
-        "latency_slow_ratio": _slow_ratio(finite_values),
+        "latency_slow_ratio": _slow_ratio(finite_values, slow_latency_threshold_s=slow_latency_threshold_s),
     }
 
 
@@ -248,7 +249,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     with open(lat_json, "r", encoding="utf-8") as f:
         packet_payload = json.load(f)
     request_records = _request_records(packet_payload)
-    static_batch_size = _read_static_batch_size(in_csv)
+    metadata = read_static_metadata(os.path.dirname(in_csv) or ".")
+    static_batch_size = _to_float(metadata.get("batch_size", "nan"))
+    slow_latency_threshold_s = latency_slo_threshold(metadata)
 
     group_records = defaultdict(list)
     for req_id, record in request_records.items():
@@ -281,7 +284,9 @@ def main(argv: Sequence[str] | None = None) -> None:
                     r[field] = _fmt_float(per_megapixel(
                         r["latency_s"], r.get(f"{direction}_pixels_per_request")
                     ))
-            for field, value in _distribution_metrics(latencies).items():
+            for field, value in _distribution_metrics(
+                latencies, slow_latency_threshold_s=slow_latency_threshold_s,
+            ).items():
                 r[field] = _fmt_float(value)
             try:
                 bs = static_batch_size

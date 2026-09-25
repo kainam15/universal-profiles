@@ -116,7 +116,6 @@ AUTO_WARMUP_REQUESTS = int(os.getenv("AUTO_WARMUP_REQUESTS", "5"))
 REQUEST_TIMEOUT_SECONDS = float(
     os.getenv("REQUEST_TIMEOUT_SECONDS", str(DEFAULT_REQUEST_TIMEOUT_SECONDS))
 )
-SLOW_LATENCY_THRESHOLD_S = float(os.getenv("SLOW_LATENCY_THRESHOLD_S", "0.06"))
 
 COLD_START_S = os.getenv("COLD_START_S", "nan")
 COLD_START_STARTED_AT = os.getenv("COLD_START_STARTED_AT", "nan")
@@ -306,15 +305,11 @@ def _canonical_task_param(payload: Optional[Dict[str, Any]]) -> str:
     )
 
 
-def _slow_ratio(xs: List[float]) -> float:
-    return _client_metrics._slow_ratio(
-        xs, slow_latency_threshold_s=SLOW_LATENCY_THRESHOLD_S
-    )
-
-
-def _latency_distribution_metrics(prefix: str, latencies: List[float]) -> Dict[str, float]:
+def _latency_distribution_metrics(
+    prefix: str, latencies: List[float], *, slow_latency_threshold_s: float | None = None,
+) -> Dict[str, float]:
     return _client_metrics._latency_distribution_metrics(
-        prefix, latencies, slow_latency_threshold_s=SLOW_LATENCY_THRESHOLD_S
+        prefix, latencies, slow_latency_threshold_s=slow_latency_threshold_s,
     )
 
 
@@ -965,6 +960,11 @@ def _append_row(
 
 
 def main() -> None:
+    from acprof.artifacts import read_static_metadata
+    from acprof.latency_slo import latency_slo_threshold
+    slow_latency_threshold_s = latency_slo_threshold(
+        read_static_metadata(os.path.dirname(OUT_CSV) or ".")
+    )
     global input_scale_entries
     if not input_scale_entries:
         input_scale_entries = _load_input_scale_entries()
@@ -1278,6 +1278,7 @@ def main() -> None:
                     latency_app_distribution_metrics = _latency_distribution_metrics(
                         "latency_app",
                         latency_app_values,
+                        slow_latency_threshold_s=slow_latency_threshold_s,
                     )
 
                     if gpu_result is not None:

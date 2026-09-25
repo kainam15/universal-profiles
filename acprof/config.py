@@ -138,6 +138,7 @@ STATIC_META_FIELDS = [
     "runtime_environment",
     "runtime_validation",
     "batch_size",
+    "latency_slo",
     "input_scale_type",
     "workload",
     "input_scale_plan_sha256",

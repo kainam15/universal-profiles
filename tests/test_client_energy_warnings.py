@@ -107,15 +107,14 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                     self.assertEqual(row["dram_energy_status"], "unavailable")
                     self.assertEqual(row["dram_window_energy_j"], "nan")
 
-    def test_latency_metrics_use_the_current_client_slow_threshold(self) -> None:
+    def test_latency_metrics_use_the_explicit_slo_threshold(self) -> None:
         latencies = [0.01, 0.06, 0.2, float("nan"), float("inf")]
         for threshold, expected in ((0.05, 2 / 3), (0.1, 1 / 3)):
-            with self.subTest(threshold=threshold), patch.object(
-                client, "SLOW_LATENCY_THRESHOLD_S", threshold
-            ):
-                self.assertAlmostEqual(client._slow_ratio(latencies), expected)
+            with self.subTest(threshold=threshold):
                 self.assertAlmostEqual(
-                    client._latency_distribution_metrics("latency_app", latencies)[
+                    client._latency_distribution_metrics(
+                        "latency_app", latencies, slow_latency_threshold_s=threshold,
+                    )[
                         "latency_app_slow_ratio"
                     ],
                     expected,
@@ -737,6 +736,10 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             out_csv = f"{tmp_dir}/result.csv"
+            Path(tmp_dir, "static_meta.json").write_text(json.dumps({
+                "schema_version": 7,
+                "latency_slo": {"threshold_s": 0.2, "source": "task:fill-mask"},
+            }), encoding="utf-8")
             with patch.object(
                 client, "OUT_CSV", out_csv
             ), patch.object(
@@ -747,8 +750,8 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                 client, "REPEAT", 1
             ), patch.object(
                 client, "REPEAT_IN_WINDOW", 5
-            ), patch.object(
-                client, "SLOW_LATENCY_THRESHOLD_S", 0.06, create=True
+            ), patch.dict(
+                os.environ, {"SLOW_LATENCY_THRESHOLD_S": "0.001"}
             ), patch.object(
                 client, "USE_ENERGY", False
             ), patch.object(
@@ -794,7 +797,8 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(rows[0]["latency_app_cv"], "0.877478")
         self.assertEqual(rows[0]["latency_app_iqr_s"], "0.180000")
         self.assertEqual(rows[0]["latency_app_max_s"], "0.300000")
-        self.assertEqual(rows[0]["latency_app_slow_ratio"], "0.600000")
+        self.assertEqual(rows[0]["latency_app_slow_ratio"], "0.200000")
+        self.assertEqual(rows[0]["latency_app_tail_ratio"], "3.000000")
 
     def test_efficiency_metrics_are_derived_without_new_measurements(self) -> None:
         metrics = client._derived_efficiency_metrics(
