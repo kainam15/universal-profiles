@@ -1,4 +1,6 @@
 minimum_pre_commit_version: '4.6.2'
+default_install_hook_types: [pre-commit, commit-msg]
+default_stages: [pre-commit]
 # 临时证据与原始项目定义不参与自动修改。
 exclude: '^(internal-testing/|results/|evidence/|docs/Original_Project_Definition\.md$)'
 
@@ -22,3 +24,14 @@ repos:
     rev: 2eeb5678de71a00c0902cbda7105d328432f72cb # v0.16.8
     hooks:
       - id: ruff-check
+
+  - repo: https://github.com/alessandrojcm/commitlint-pre-commit-hook
+    rev: 1f1ac45c93d1c2ce36b71330252c489a5f4f2724 # v9.27.0
+    hooks:
+      - id: commitlint
+        stages: [commit-msg]
+        # 将 Git 提供的消息文件传给 --edit，也支持手动校验指定文件。
+        pass_filenames: true
+        additional_dependencies:
+          - '@commitlint/cli@21.2.2'
+          - '@commitlint/config-conventional@21.2.2'

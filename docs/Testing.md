@@ -52,11 +52,78 @@ Ruff、pre-commit 和锁生成工具 uv 由 [`requirements-dev.in`](../requireme
 .venv/bin/python -m pre_commit run --all-files --show-diff-on-failure
 ```
 
-`install` 仅给当前 clone 安装 Git hook；新 clone 需执行一次。手动运行和 CI 读取同一份
+`install` 给当前 clone 安装 `pre-commit` 和 `commit-msg` 两个 Git hooks；新 clone 需执行一次。
+手动运行和 CI 读取同一份
 [`.pre-commit-config.yaml`](../.pre-commit-config.yaml)，检查尾随空白、文件末尾换行、YAML、JSON、
 TOML、冲突标记、文件大小和 Python 代码。大文件检查对所有文件执行，限额为 1 MiB，覆盖现有
 约 938 KiB 的固定音频输入；Markdown 的两个行尾空格保留为换行。临时证据目录和禁止修改的
 `docs/Original_Project_Definition.md` 不参与 hooks。
+
+### AI 提交信息与格式校验
+
+VS Code 的 Source Control 面板中，点击 ✨ **Generate Commit Message** 生成提交信息。
+在工作区 `.vscode/settings.json` 中合并以下设置，保留已有配置：
+
+```json
+{
+  "github.copilot.chat.localeOverride": "en",
+  "github.copilot.chat.commitMessageGeneration.instructions": [
+    { "file": ".github/commit-message.instructions.md" },
+    {
+      "text": "Generate one commit message for the entire staged diff, with exactly one English Conventional Commits subject of at most 72 characters. Prefer a single-line message. If a body is necessary, leave a blank line after the subject and use prose or bullets, not additional commit subjects. Treat the message as an English repository artifact regardless of the UI language or recent commit language."
+    }
+  ]
+}
+```
+
+生成规则放在 [commit-message.instructions.md](../.github/commit-message.instructions.md)：
+英文 Conventional Commits，格式为 `type(scope): description`；允许 `feat`、`fix`、
+`refactor`、`perf`、`test`、`docs`、`ci`、`build`、`chore`。scope 使用组件的小写名称，
+全仓改动可省略；标题最多 72 字符、使用祈使句且不以句号结尾。说明必须有 diff 依据，
+不编造测试结果或性能提升。先暂存本次提交的改动再生成，并在提交前核对内容。
+整批 diff 只生成一个标题，默认使用单行；若需要正文，在标题后空一行，随后用普通说明或
+项目符号展开，不按文件分别生成多条 `type(scope): description`。开发工具配置使用 `chore`，
+纯文档改动使用 `docs`，测试代码改动使用 `test`。
+
+工作区设置若被个人 `.git/info/exclude` 或全局规则忽略，换电脑或新 clone 时需重新合并
+上述设置。规则文件本身可随仓库保存。模型沿用 VS Code 当前的 utility model 配置；
+需要更换时，在 Settings 中搜索 `Chat: Utility Small Model` 并选择账号可用的模型。
+
+Copilot 0.67.0 的提交生成提示包含 `ResponseTranslationRules`；默认 `localeOverride: auto`
+会按 VS Code 界面语言加入系统级语言要求。上述工作区配置使用 `en` 去掉自动追加的中文
+要求，使英文提交规则不再与它冲突；该设置也影响当前项目 Copilot Chat 的默认输出语言，
+不会改变 VS Code 界面语言。修改设置后清空旧提交消息，再点击 ✨ 重新生成；旧消息不会
+自动重写，必要时执行 **Developer: Reload Window**。
+
+[`commitlint`](https://github.com/conventional-changelog/commitlint) 在 `commit-msg` 阶段读取
+[.commitlintrc.json](../.commitlintrc.json)，强制检查 Conventional Commits 结构、允许的类型、
+标题长度、scope 大小写及正文/页脚前的空行。不合规的消息会阻止提交；修改消息后重试。
+英文、祈使句和事实准确性由生成规则指导并由提交者复核，格式校验不能证明内容属实。
+保留 commitlint 对 Git 自动生成的 merge、revert、fixup!/squash! 等消息的默认豁免。
+
+commitlint 需要 Node.js 22.12+，依赖安装在 pre-commit 的隔离缓存中，不进入 Python 开发锁
+或推理环境。安装 hooks 后，首次提交可能需要联网初始化依赖；可提前执行：
+
+```bash
+.venv/bin/python -m pre_commit install --install-hooks
+```
+
+手动校验一个已存在的消息文件（不创建 Git commit）：
+
+```bash
+.venv/bin/python -m pre_commit run commitlint --hook-stage commit-msg \
+  --commit-msg-filename /path/to/commit-message.txt
+```
+
+`pre_commit run --all-files` 执行文件检查，不校验提交消息或历史提交；当前 CI 的 `lint` job
+也仅检查文件。AI 生成功能还需要当前 VS Code 中的 Copilot 或可用的 utility model；
+本地格式校验通过不代表已经验证界面中的模型生成结果。
+
+VS Code 提交失败弹窗可能只显示 hook 输出的第一行；点击“显示命令输出”查找真正的
+`Failed` 和具体规则名。`body-leading-blank` 表示标题后直接出现正文，缺少空行；应改为
+一个标题，或在标题与正文之间加入空行。不要通过关闭该规则来接受拼接的多个标题。
+
+### Ruff 与代码检查
 
 Ruff 版本由 [`pyproject.toml`](../pyproject.toml) 的 `required-version` 强制核验，Python 目标为
 3.10，显式启用 `E4`、`E7`、`E9`、`F`。第一版不启用 import 排序、`E501` 或 formatter；
@@ -409,6 +476,17 @@ Textual 为 MIT 许可且由上游维护；这里只覆盖现有 TCSS，
 把 Ruff 规则放在 `pyproject.toml`，保留本项目的 unittest 与 evidence runner。
 hooks 固定完整 commit SHA，CI 直接执行同一份配置，避免维护第二份检查清单；只新增开发依赖，
 没有采集期间的后台进程或测量开销。
+
+提交信息配置依据 [VS Code 官方 instructions 设置](https://code.visualstudio.com/docs/agent-customization/custom-instructions#specify-instructions-for-generated-content)
+及 [Copilot Chat 的设置定义](https://github.com/microsoft/vscode-copilot-chat/blob/main/package.json)。
+语言冲突依据本机 Copilot 0.67.0 和上游
+[提交生成提示](https://github.com/microsoft/vscode-copilot-chat/blob/main/src/extension/prompts/node/git/gitCommitMessagePrompt.tsx)、
+[ResponseTranslationRules](https://github.com/microsoft/vscode-copilot-chat/blob/main/src/extension/prompts/node/base/responseTranslationRules.tsx)
+确认；生成提示还会引用近期提交风格，因此显式要求整批 diff 只输出一个英文标题。
+格式检查复用 [commitlint](https://github.com/conventional-changelog/commitlint) 和
+[现成的 pre-commit adapter](https://github.com/alessandrojcm/commitlint-pre-commit-hook)（均为 MIT，
+由上游维护），保留现有 pre-commit 管理方式；adapter 固定完整 commit SHA，CLI 和规则包固定
+直接版本，不引入 Husky 或项目级 npm package。仅在提交和手动校验时运行。
 
 结果原子发布采用 [CPython 的 tempfile](https://github.com/python/cpython/blob/main/Lib/tempfile.py)
 和标准库文件同步、替换机制；实验身份参考 [ASV 的结果管理](https://github.com/airspeed-velocity/asv/blob/main/asv/results.py)。
