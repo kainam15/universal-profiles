@@ -44,6 +44,7 @@ Examples:
     parser.add_argument("--cpus", default="1,2,4,8", help="CPU core counts (comma-separated)")
     parser.add_argument("--mems", default="2,4,8,16", help="Memory caps in GB (comma-separated)")
     parser.add_argument("--gpus", default="off,on", help="GPU modes (comma-separated: off,on)")
+    parser.add_argument("--gpu-device", default=None, help="One physical GPU index or UUID (default: ACPROF_GPU_DEVICE, DEVICE_INDEX, then 0)")
     startup_oom_pruning_group = parser.add_mutually_exclusive_group()
     startup_oom_pruning_group.add_argument(
         "--prune-startup-oom",

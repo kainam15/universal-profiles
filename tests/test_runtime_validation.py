@@ -14,6 +14,14 @@ from acprof.host.profiler_common import _base_docker_cmd
 
 
 class RuntimeValidationTests(unittest.TestCase):
+    def setUp(self):
+        selection = patch('acprof.host.gpu_device.resolve_gpu_device', return_value={
+            'uuid': 'GPU-fixture', 'index': 1, 'name': 'Fixture', 'memory_total_bytes': 8 * 1024 ** 3,
+            'pci_bus_id': '00000000:02:00.0',
+        })
+        selection.start()
+        self.addCleanup(selection.stop)
+
     def task(self):
         return TaskInfo('Example/model', 'audio-text-to-text', 'multimodal',
                         'transformers_model', 'transformers', 'a' * 40, 'unit',

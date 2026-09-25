@@ -397,6 +397,10 @@ EFFICIENCY_METRIC_FIELDS = [
 
 
 MIPS_METRIC_FIELDS = [
+    "cpu_cycles_per_request",
+    "cpu_ref_cycles_per_request",
+    "cpu_ipc",
+    "cpu_perf_running_pct",
     "cpu_instructions_per_request",
     "cpu_mips_app",
     "cpu_mips_packet",
@@ -729,6 +733,10 @@ def _gpu_runtime_metrics_from_result(resource_usage_result: Any) -> Dict[str, An
 
 def _mips_metrics_from_result(result: Any) -> Dict[str, float]:
     return {
+        "cpu_cycles_per_request": _to_float_or_nan(getattr(result, "cycles_per_request", float("nan"))),
+        "cpu_ref_cycles_per_request": _to_float_or_nan(getattr(result, "ref_cycles_per_request", float("nan"))),
+        "cpu_ipc": _to_float_or_nan(getattr(result, "ipc", float("nan"))),
+        "cpu_perf_running_pct": _to_float_or_nan(getattr(result, "running_pct", float("nan"))),
         "cpu_instructions_per_request": _to_float_or_nan(
             result.instructions_per_request
         ),

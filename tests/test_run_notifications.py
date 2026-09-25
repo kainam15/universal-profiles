@@ -18,6 +18,14 @@ from acprof.notifications import NotificationConfigError, NotificationEvent
 
 
 class RunNotificationLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        selection = patch('acprof.host.gpu_device.resolve_gpu_device', return_value={
+            'uuid': 'GPU-fixture', 'index': 1, 'name': 'Fixture', 'memory_total_bytes': 8 * 1024 ** 3,
+            'pci_bus_id': '00000000:02:00.0',
+        })
+        selection.start()
+        self.addCleanup(selection.stop)
+
     def tearDown(self) -> None:
         run._ACTIVE_RUN_NOTIFICATION = None
         run._ACTIVE_TMUX_TERMINAL_LOG = None

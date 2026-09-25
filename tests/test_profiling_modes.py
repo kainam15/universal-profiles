@@ -76,6 +76,7 @@ class ProfilingModeTests(unittest.TestCase):
                 "OUT_CSV": str(path), "PROFILING_MODE": "basic", "WARMUP": 0,
                 "REPEAT": 1, "REPEAT_IN_WINDOW": 1, "USE_ENERGY": True,
                 "GPU_MODE": "on", "USE_MIPS": False, "BATCH_SIZE": 1,
+                "GPU_DEVICE_UUID": "GPU-fixture",
                 "resource_usage_mod": SimpleNamespace(ResourceUsageMonitor=ResourceMonitor),
                 "energy_mod": SimpleNamespace(GPUEnergyMonitor=Mock(side_effect=AssertionError("basic must not start NVML energy"))),
                 "cpu_energy_mod": SimpleNamespace(CPUEnergyMonitor=Mock(side_effect=AssertionError("basic must not start RAPL"))),

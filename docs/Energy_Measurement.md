@@ -6,7 +6,10 @@
 
 ## 采样与归因边界
 
-GPU 功率来自 NVML device 0，能量对带时间戳的功率样本积分；它不是逐容器独立能量计。
+GPU 来自容器实际绑定的物理 UUID，能量优先使用 NVML 累计计数器的窗口首尾差值；
+累计计数不可用、读取失败或发生倒退时，回退到带时间戳的功率样本梯形积分并记录原因。
+功率采样继续提供 peak 和可选 trace。两种来源均为 device-level，包含同卡其他进程；
+绑定 UUID 不会让它成为逐容器独立能量计。
 CPU package 能量来自 RAPL 根域计数器差值，避免重复累加 core 子域。估算 vCPU 使用同一 RAPL 轨迹，
 按每个有效采样区间的容器/主机 CPU 时间比例归因。实现见
 [`energy_nvml.py`](../acprof/monitors/energy_nvml.py)和 [`energy_cpu.py`](../acprof/monitors/energy_cpu.py) 的 `_result_from_samples()`。
@@ -29,16 +32,30 @@ CPU quota 节流、计数更新粒度与采样起点可能影响估算重复性�
 
 | 字段 | 含义 |
 | --- | --- |
-| `gpu_idle_power_w` | GPU matched-control baseline power，单位 W。仅 `gpu_mode=on` 且 NVML 可用时有值；使用与 workload 相同的 NVML monitor 生命周期，由 control samples 梯形积分后的能量 / 实际 duration 得到。 |
+| `gpu_idle_power_w` | GPU matched-control baseline power，单位 W。使用与 workload 相同的 NVML monitor 生命周期，由 control 能量 / 实际 duration 得到；control 同样优先累计能耗差值。 |
+| `gpu_energy_source` / `gpu_idle_energy_source` | workload / control 实际来源：`nvml_total_energy`、`power_integration`、`unavailable` 或 `not_requested`。历史缺字段表示来源未知。 |
+| `gpu_energy_fallback_reason` | 累计能耗不可用或倒退的原因；正常使用累计计数时为空。不能假设计数器回绕范围并拼接负差值。 |
 | `gpu_idle_measured_at` | `--idle-debug` 开启且 `gpu_mode=on` 时，matched control window 测量完成时的本地 ISO-8601 时间戳；未开启或 GPU 不可用时为 `nan`。CPU/GPU control 同时采集，因此两者共用同一时间戳。 |
 | `gpu_idle_rel_range_so_far` | `--idle-debug` 开启时，截至本行为止当前 case 内有效 `gpu_idle_power_w` 的相对极差，公式为 `(max - min) / mean`；`0.05` 表示 5%。未开启时为 `nan`。 |
-| `gpu_energy_iters` | GPU energy measurement 内部采样窗口中的 iteration 数。 |
+| `gpu_energy_iters` | GPU 测量窗口保留的 power sample 数，不是累计能耗计数器更新次数。 |
 | `gpu_avg_power_total_w` | 测量窗口内 GPU total average power，单位 W。 |
 | `gpu_peak_power_total_w` | 测量窗口内 GPU total peak power，单位 W。 |
 | `gpu_energy_total_j` | 本行平均到单 request 的 total GPU energy，单位 J。 |
 | `gpu_avg_power_eff_w` | 扣除 idle baseline 后的 effective average power，单位 W。 |
 | `gpu_peak_power_eff_w` | 扣除 idle baseline 后的 effective peak power，单位 W。 |
 | `gpu_energy_eff_j` | 本行平均到单 request 的 effective GPU energy，单位 J。 |
+
+累计计数器返回 mJ：`E_window = (E_end_mJ - E_start_mJ) / 1000`，
+`P_avg = E_window / duration_s`，`E_eff_window = E_window - P_idle × duration_s`。
+CSV 中两种能量最后再除以成功请求数；有效的零差值保留为零，不能把计数器更新粒度当成缺失。
+累计计数可用而功率查询失败时仍可有能量，peak 为 `nan`。`--idle-debug` 的诊断文件另外保留
+`gpu_power_samples`（相对窗口起点秒数、W）、累计计数器首尾 mJ、窗口时长及实际来源，
+写入发生在全部 monitor 停止之后。累计 API 可调用不等于已验证硬件精度；排查两种读数不一致时
+对照这些原始记录，不用固定倍数自动修正累计能耗。
+
+实现参考 [CodeCarbon 的 NVML 接口](https://github.com/mlco2/codecarbon/blob/master/codecarbon/core/gpu_nvidia.py)
+及其[硬件不支持累计能耗的案例](https://github.com/mlco2/codecarbon/issues/838)。仅借鉴来源选择与回退方式，
+沿用现有 `nvidia-ml-py` 和窗口归因，不引入 CodeCarbon 或整机碳排放估算依赖。
 
 ## CPU package 功率与能耗
 

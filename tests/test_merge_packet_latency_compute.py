@@ -40,6 +40,9 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
                 )
             with open(lat_json, "w", encoding="utf-8") as f:
                 json.dump({'schema_version': 2, 'requests': {'case_seq1_r0:0': {'latency_s': 0.25}}}, f)
+            with open(f"{in_csv}.requests.jsonl", "w", encoding="utf-8") as f:
+                f.write(json.dumps({"schema_version": 1, "sniff_group_id": "case_seq1_r0",
+                                    "latency_app_s": [0.3, 0.4], "status": "ok"}) + "\n")
 
             subprocess.run(
                 [
@@ -55,7 +58,11 @@ class MergePacketLatencyComputeTests(unittest.TestCase):
             )
             with open(out_csv, "r", encoding="utf-8", newline="") as f:
                 row = next(csv.DictReader(f))
+            with open(f"{in_csv}.requests.jsonl", encoding="utf-8") as f:
+                request_window = json.loads(f.readline())
 
+        self.assertEqual(request_window.get("latency_packet_s"), [0.25, None])
+        self.assertEqual(request_window["latency_app_s"], [0.3, 0.4])
         self.assertEqual(
             row["model_logical_mflops_packet_torch_profiler_eager"],
             "800.000000",

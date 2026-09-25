@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Sequence
 
 from acprof.host.detect import TaskInfo
 from acprof.host.env_utils import hf_offline_docker_env_args
+from acprof.host.gpu_device import gpu_docker_args
 from acprof.runtime_settings import runtime_docker_env_args
 
 
@@ -141,7 +142,7 @@ def _base_docker_cmd(
         cmd.extend(["-v", f"{abs_root}:{abs_root}:ro"])
     if use_gpu:
         cmd.extend([
-            "--gpus", "all",
+            *gpu_docker_args(),
             "--cap-add=SYS_ADMIN",
             "--cap-add=SYS_PTRACE",
             "--security-opt=seccomp=unconfined",

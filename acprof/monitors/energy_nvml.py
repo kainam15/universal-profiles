@@ -1,3 +1,4 @@
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -18,6 +19,11 @@ class EnergyResult:
     avg_power_eff_w: float
     peak_power_eff_w: float
     energy_eff_j: float
+    energy_source: str = "unavailable"
+    energy_fallback_reason: str = ""
+    counter_start_mj: Optional[int] = None
+    counter_end_mj: Optional[int] = None
+    measurement_duration_s: float = float("nan")
 
 
 def _get_total_power_w(handle):
@@ -102,6 +108,7 @@ def _result_from_samples(
         avg_power_eff,
         peak_power_eff,
         energy_eff,
+        "power_integration",
     )
 
 
@@ -111,10 +118,12 @@ class GPUEnergyMonitor:
         sample_hz: float = 20.0,
         idle_seconds: float = DEFAULT_IDLE_SECONDS,
         device_index: int = 0,
+        device_uuid: str = "",
     ) -> None:
         self.sample_hz = float(sample_hz)
         self.idle_seconds = float(idle_seconds)
         self.device_index = int(device_index)
+        self.device_uuid = device_uuid
         self.dt = 1.0 / self.sample_hz
 
         self.handle = None
@@ -130,10 +139,17 @@ class GPUEnergyMonitor:
         self._init_error = ""
         self._runtime_error = ""
         self._closed = False
+        self._energy_start_mj: Optional[int] = None
+        self._energy_error = ""
+        self.idle_energy_source = "unavailable"
 
         try:
             pynvml.nvmlInit()
-            self.handle = pynvml.nvmlDeviceGetHandleByIndex(self.device_index)
+            self.handle = (
+                pynvml.nvmlDeviceGetHandleByUUID(self.device_uuid)
+                if self.device_uuid
+                else pynvml.nvmlDeviceGetHandleByIndex(self.device_index)
+            )
             gpu_name = pynvml.nvmlDeviceGetName(self.handle)
             if isinstance(gpu_name, bytes):
                 gpu_name = gpu_name.decode("utf-8", errors="ignore")
@@ -196,6 +212,7 @@ class GPUEnergyMonitor:
     ) -> float:
         """Use a monitor-matched blank window as the workload baseline."""
         self.idle_power_w = float(result.avg_power_total_w)
+        self.idle_energy_source = result.energy_source
         self.idle_trace = {}
         if trace and samples:
             self.idle_trace = self._build_idle_trace(
@@ -205,7 +222,14 @@ class GPUEnergyMonitor:
             )
             self.idle_trace.update({
                 "gpu_idle_trace_schema": "nvml_gpu_control_v1",
-                "gpu_idle_baseline_method": "matched_control_time_weighted_mean",
+                "gpu_idle_baseline_method": (
+                    "matched_control_cumulative_energy" if result.energy_source == "nvml_total_energy"
+                    else "matched_control_time_weighted_mean"
+                ),
+                "gpu_idle_energy_source": result.energy_source,
+                "gpu_idle_energy_counter_start_mj": result.counter_start_mj,
+                "gpu_idle_energy_counter_end_mj": result.counter_end_mj,
+                "gpu_idle_energy_duration_s": result.measurement_duration_s,
             })
         return self.idle_power_w
 
@@ -220,6 +244,8 @@ class GPUEnergyMonitor:
         self._stop_event = threading.Event()
         self._t_start = time.perf_counter()
         self._t_end = None
+        self._energy_error = ""
+        self._energy_start_mj = self._read_energy_mj()
 
         self._append_sample(self._t_start)
         self._thread = threading.Thread(target=self._sample_loop, daemon=True)
@@ -233,11 +259,11 @@ class GPUEnergyMonitor:
             return _nan_result(0, self.idle_power_w), self.gpu_name, self._runtime_error, []
 
         self._t_end = time.perf_counter()
+        energy_end_mj = self._read_energy_mj() if self._energy_start_mj is not None else None
         self._stop_event.set()
+        self._append_sample(self._t_end)
         if self._thread is not None:
             self._thread.join(timeout=1.0)
-
-        self._append_sample(self._t_end)
 
         samples = [
             (t, p)
@@ -247,8 +273,25 @@ class GPUEnergyMonitor:
         samples.sort(key=lambda item: item[0])
         self.samples = samples
 
+        result = _result_from_samples(samples, self.idle_power_w)
+        duration_s = self._t_end - self._t_start
+        result.counter_start_mj = self._energy_start_mj
+        result.counter_end_mj = energy_end_mj
+        result.measurement_duration_s = duration_s
+        if self._energy_start_mj is not None and energy_end_mj is not None:
+            delta_mj = energy_end_mj - self._energy_start_mj
+            if delta_mj >= 0 and duration_s > 0:
+                result.energy_total_j = delta_mj / 1000.0
+                result.avg_power_total_w = result.energy_total_j / duration_s
+                result.energy_eff_j = result.energy_total_j - self.idle_power_w * duration_s
+                result.avg_power_eff_w = result.avg_power_total_w - self.idle_power_w
+                result.energy_source = "nvml_total_energy"
+            else:
+                self._energy_error = "cumulative energy counter decreased or window duration is invalid"
+        result.energy_fallback_reason = self._energy_error
+
         return (
-            _result_from_samples(samples, self.idle_power_w),
+            result,
             self.gpu_name,
             self._runtime_error,
             samples,
@@ -274,7 +317,17 @@ class GPUEnergyMonitor:
             next_t += self.dt
             sleep_s = next_t - time.perf_counter()
             if sleep_s > 0:
-                time.sleep(sleep_s)
+                self._stop_event.wait(sleep_s)
+
+    def _read_energy_mj(self) -> Optional[int]:
+        try:
+            value = pynvml.nvmlDeviceGetTotalEnergyConsumption(self.handle)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError("invalid cumulative energy counter")
+            return int(value)
+        except Exception as exc:
+            self._energy_error = f"{type(exc).__name__}: {exc}"
+            return None
 
     def _append_sample(self, timestamp: float) -> None:
         if self.handle is None:

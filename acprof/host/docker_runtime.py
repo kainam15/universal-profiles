@@ -23,6 +23,7 @@ from acprof.config import (
 )
 from acprof.host.detect import TaskInfo
 from acprof.host.env_utils import hf_offline_docker_env_args
+from acprof.host.gpu_device import gpu_docker_args, resolve_gpu_device
 from acprof.runtime_settings import runtime_docker_env_args
 
 
@@ -46,6 +47,7 @@ class RunningContainer:
     cold_start_cuda_init_s: float = float("nan")
     cold_start_model_load_s: float = float("nan")
     cold_start_ready_wait_s: float = float("nan")
+    gpu_device: Dict[str, Any] = field(default_factory=dict)
 
 
 DEFAULT_NLP_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu128"
@@ -373,9 +375,11 @@ def _start_container_session(
     _run(["docker", "rm", "-f", container_name], check=False)
 
     gpu_flag = []
+    gpu_device = {}
     use_gpu = 0
     if gpu == "on":
-        gpu_flag = ["--gpus", "all"]
+        gpu_device = resolve_gpu_device()
+        gpu_flag = gpu_docker_args(gpu_device)
         use_gpu = 1
 
     docker_cmd = [
@@ -445,6 +449,7 @@ def _start_container_session(
                         base_url=base_url,
                         host_port=host_port,
                         cold_start_s=cold_start_s,
+                        gpu_device=gpu_device,
                         **breakdown,
                     )
 
@@ -461,6 +466,7 @@ def _start_container_session(
                         base_url=base_url,
                         host_port=host_port,
                         cold_start_s=cold_start_s,
+                        gpu_device=gpu_device,
                         **breakdown,
                     )
         except Exception:

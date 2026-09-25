@@ -92,6 +92,7 @@ ONNX 独立验证记录实际 Provider、线程数及制品 SHA256；制品校�
 | 文件 | 说明 |
 | --- | --- |
 | `result_case_*.csv` | 采集期间逐资源配置写入的可恢复中间结果；成功合并后清理。 |
+| `result_case_*.csv.requests.jsonl` | 长期保留的紧凑 request-level latency，每窗口一行；含 application 原始样本和按请求 ID 对齐的 packet 样本。详见下方约定，不参与默认统计聚合。 |
 | `result_all.csv` | 动态测量结果。每一行对应一个 resource config、一个 input scale、一次 warmup/repeat iteration，并记录归一化指标、PCAP 网络字节、cold-start phases，以及该窗口的 cgroup memory/stat/PID、swap、块 I/O 与压力/事件。 |
 | `run_state.json` | 主实验状态 schema v1，记录实验 ID、参数、主机与源码/依赖指纹、绑定的镜像和输入计划、case 完成状态与 CSV SHA256、启动/恢复记录、最终完成状态。 |
 | `interrupted_cases/` | 恢复时保存中断 case 的原始 CSV、PCAP 与关联 sidecar；备份完成后才开始该 case 的新测量。 |
@@ -118,6 +119,19 @@ ONNX 独立验证记录实际 Provider、线程数及制品 SHA256；制品校�
 | `gpu+cpu/*.png` | `plot.py` 生成的 GPU/CPU 对比图表。 |
 
 中间文件 `result_case_*.csv`、`result_case_*.csv.sniff_groups.jsonl`、`lat_case_*.json`、`sniff_case_*.pcap` 会在 `result_all.csv` 成功 merge 后自动清理。若运行被中断，这些中间文件可能保留。
+
+`*.requests.jsonl` 保留 schema v1、`sniff_group_id`、`input_scale`、`warmup`、`repeat_idx`、
+`source=client_http`、`latency_app_s` 数组及请求阶段 `status`。数组下标 `i` 对应请求 ID
+`<sniff_group_id>:<i>`，数值单位为秒，保留原始浮点精度；只包含成功返回的请求，失败尝试另记
+`failed_request_id` 和 `error`。超时中止时仍写出此前成功的请求，自动预热不进入该文件。
+packet merge 在清理 PCAP 前追加同长度的 `latency_packet_s`，未匹配位置为 `null`；
+basic 模式不生成该数组。恢复未完成 case 时，旧请求文件随 CSV 一起备份后重采。
+
+序列化和 `fsync` 在全部监测停止后执行，窗口内复用已有 latency 数组；不记录输入或输出 payload。
+该设计参考 [MLPerf LoadGen 的延后日志处理](https://github.com/mlcommons/inference/blob/master/loadgen/logging.h)，
+沿用本项目窗口结束后的写盘方式，无新增日志线程或依赖。正式分析仍按 CSV 的
+`status=ok AND warmup=0` 筛选，以独立窗口为统计单位；请求数组不能替代窗口均值或置信区间。
+历史目录缺少请求文件时视为未保存原始样本，不从均值或分位数重建。
 
 ### 结果完整性与断点续跑
 
@@ -190,8 +204,9 @@ OOM pruning 继续按原有参考 CPU/内存顺序重建证据，复用与推断
 | `input_scale_plan_sha256` | 本次实际执行的 `input_scale_plan.json` SHA256。 |
 | `run_command` | 启动本次 profiling 的 `python run.py ...` 命令，便于复现实验参数。 |
 | `model_download_url` | Hugging Face model page URL。 |
-| `gpu` | host device 0 的 GPU 名称；没有可见 NVIDIA GPU 时为 `unknown`。 |
-| `gpu_mem_total_bytes` | host device 0 的 total VRAM，单位 bytes；无法读取时为 `null`。 |
+| `gpu` | 存在 GPU case 时为选定物理 GPU 的名称；仅 CPU 实验保留主机设备信息，没有可见 NVIDIA GPU 时为 `unknown`。 |
+| `gpu_mem_total_bytes` | 对应上述设备的 total VRAM，单位 bytes；无法读取时为 `null`。 |
+| `gpu_device` | schema v7 的新增可选 object：`uuid`、主机 `index`、`pci_bus_id`、`name`、`memory_total_bytes`。GPU case 运行前解析并固定 UUID，Docker、NVML 和独立 profiler 共用；容器内单卡编号为 `0`。CPU 实验为空对象；历史缺字段表示身份未知，重新执行 GPU post-hoc 采集时拒绝猜测设备。 |
 | `host_mem_total_bytes` | Host 物理 RAM 总量，单位 bytes；无法读取时为 `null`。 |
 | `host_swap_total_bytes` | 实验启动时 host 已启用 swap 的总容量，单位 bytes；无法读取时为 `null`，未启用时为 `0`。 |
 | `host_swap_used_bytes_at_start` | 静态元数据采集时 host 已使用的 swap 快照，单位 bytes；无法读取时为 `null`。 |

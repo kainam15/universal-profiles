@@ -168,11 +168,15 @@ Stable Diffusion 建议先做单 GPU、单分辨率 smoke test（同样使用 `f
 
 ```bash
 python run.py --model stable-diffusion-v1-5/stable-diffusion-v1-5 \
-  --cpus 4 --mems 16 --gpus on --input-scales 256 \
+  --cpus 4 --mems 16 --gpus on --gpu-device 0 --input-scales 256 \
   --warmup 0 --repeat 1 --repeat-in-window 1 \
   --compute-profile-tool none --execution-profile-tool none \
   --output-dir results/sd-smoke
 ```
+
+`--gpu-device` 也可填写 `nvidia-smi -L` 显示的完整 GPU UUID。主容器、主机 NVML 监测和
+独立 profiler 固定到同一物理设备；选择方式遵循
+[NVIDIA Container Toolkit 的 UUID 参数](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/docker-specialized.html)。
 
 首次运行仍需下载模型并构建镜像。成功后，主要结果位于：
 

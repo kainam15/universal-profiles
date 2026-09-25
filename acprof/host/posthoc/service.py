@@ -45,8 +45,10 @@ from acprof.host.posthoc.storage import (
     create_backup,
     find_active_processes,
 )
+from acprof.host.gpu_device import gpu_device_scope, pin_gpu_device
 
 
+@gpu_device_scope()
 def run_posthoc(
     result_dir: str | os.PathLike[str],
     *,
@@ -174,6 +176,11 @@ def run_posthoc(
                 continue
 
             if not runtime_validated:
+                if context.cases_for_mode("on") and any("on" in TOOL_GPU_MODES[item] for item in needed):
+                    device_uuid = (context.static_meta.get("gpu_device") or {}).get("uuid")
+                    if not device_uuid:
+                        raise PosthocError("GPU profiling requires recorded gpu_device.uuid; regenerate the main experiment")
+                    pin_gpu_device(device_uuid)
                 _validate_profiler_runtime(
                     context,
                     gpu_modes=[

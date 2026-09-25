@@ -146,6 +146,7 @@ _FIRST_PREDICT_APP_S = float("nan")
 SAMPLE_HZ = float(os.getenv("SAMPLE_HZ", "20"))
 IDLE_SECONDS = float(os.getenv("IDLE_SECONDS", str(DEFAULT_IDLE_SECONDS)))
 DEVICE_INDEX = int(os.getenv("DEVICE_INDEX", "0"))
+GPU_DEVICE_UUID = os.getenv("GPU_DEVICE_UUID", "")
 IDLE_COOLDOWN_SECONDS = float(
     os.getenv("IDLE_COOLDOWN_SECONDS", str(DEFAULT_IDLE_COOLDOWN_SECONDS))
 )
@@ -910,6 +911,28 @@ def _append_idle_diag(diag_f, record: Dict[str, Any]) -> None:
     os.fsync(diag_f.fileno())
 
 
+def _append_request_window(stream, *, sniff_group_id, input_scale, warmup, repeat_idx,
+                           latencies, error="", failed_request_id="") -> None:
+    """Persist buffered successful requests after every monitor has stopped.
+
+    Array position is the request index in ``<sniff_group_id>:<index>``.
+    Failed attempts are identified separately and never enter latency statistics.
+    """
+    record = {
+        "schema_version": 1, "sniff_group_id": sniff_group_id,
+        "input_scale": input_scale, "warmup": warmup, "repeat_idx": repeat_idx,
+        "source": "client_http", "latency_app_s": latencies,
+        "status": "error" if error else "ok",
+    }
+    if error:
+        record["error"] = error
+    if failed_request_id:
+        record["failed_request_id"] = failed_request_id
+    stream.write(json.dumps(_json_safe(record), separators=(",", ":"), allow_nan=False) + "\n")
+    stream.flush()
+    os.fsync(stream.fileno())
+
+
 def _append_row(
     writer: csv.DictWriter,
     row: Dict[str, Any],
@@ -941,6 +964,8 @@ def main() -> None:
 
     if PROFILING_MODE == "basic" and resource_usage_mod is None:
         raise RuntimeError("basic profiling requires the container CPU and memory collector")
+    if GPU_MODE == "on" and not GPU_DEVICE_UUID:
+        raise RuntimeError("GPU_DEVICE_UUID is required: launch the client through the AC-Prof orchestrator")
 
     if measurement_requested(PROFILING_MODE, "gpu_power", gpu=USE_ENERGY) and energy_mod is None:
         raise EnergyAbort(
@@ -968,7 +993,9 @@ def main() -> None:
         _sniff_groups_path(OUT_CSV),
         sidecar_mode,
         encoding="utf-8",
-    ) as sidecar_f, diag_context as diag_f:
+    ) as sidecar_f, open(
+        f"{OUT_CSV}.requests.jsonl", sidecar_mode, encoding="utf-8"
+    ) as requests_f, diag_context as diag_f:
         writer = csv.DictWriter(
             f,
             fieldnames=CSV_FIELDS,
@@ -1057,6 +1084,7 @@ def main() -> None:
                     resource_usage_monitor = None
                     mips_monitor = None
                     gpu_result = None
+                    _gpu_samples = []
                     cpu_result = None
                     resource_usage_result = None
                     mips_result = None
@@ -1071,12 +1099,15 @@ def main() -> None:
                     cpu_monitor_started = False
                     resource_usage_monitor_started = False
                     mips_monitor_started = False
+                    window_error = ""
+                    pending_request_id = ""
                     try:
                         if measurement_requested(PROFILING_MODE, "gpu_power", gpu=USE_ENERGY) and energy_mod is not None:
                             gpu_monitor = energy_mod.GPUEnergyMonitor(
                                 sample_hz=SAMPLE_HZ,
                                 idle_seconds=IDLE_SECONDS,
                                 device_index=DEVICE_INDEX,
+                                device_uuid=GPU_DEVICE_UUID,
                             )
 
                         if measurement_requested(PROFILING_MODE, "cpu_energy") and cpu_energy_mod is not None:
@@ -1094,6 +1125,7 @@ def main() -> None:
                                 mem_cap_gb=_to_float_or_nan(MEM_CAP_GB),
                                 use_gpu=USE_ENERGY,
                                 device_index=DEVICE_INDEX,
+                                device_uuid=GPU_DEVICE_UUID,
                             )
 
                         if measurement_requested(PROFILING_MODE, "cpu_instructions") and USE_MIPS:
@@ -1144,7 +1176,9 @@ def main() -> None:
                             repeat_request_limit,
                         ):
                             req_id = f"{sniff_group_id}:{actual_repeat_in_window}"
+                            pending_request_id = req_id
                             out = _one_request(scale_val, req_id=req_id, payload_override=payload_override)
+                            pending_request_id = ""
                             request_latency_app_s = float(out["latency_app_s"])
                             lat_sum += request_latency_app_s
                             latency_app_values.append(request_latency_app_s)
@@ -1170,6 +1204,9 @@ def main() -> None:
                                 out.get("effective_input_scale"),
                                 scale_val,
                             )
+                    except BaseException as exc:
+                        window_error = f"{type(exc).__name__}: {exc}"
+                        raise
                     finally:
                         mips_stop_error = None
                         if mips_monitor is not None and mips_monitor_started:
@@ -1207,6 +1244,14 @@ def main() -> None:
                             resource_usage_monitor.close()
                         if mips_monitor is not None:
                             mips_monitor.close()
+                        _append_request_window(
+                            requests_f, sniff_group_id=sniff_group_id,
+                            input_scale=effective_input_scale if effective_input_scale is not None else scale_val,
+                            warmup=warmup_flag, repeat_idx=repeat_idx,
+                            latencies=latency_app_values,
+                            error=window_error or (str(mips_stop_error) if mips_stop_error else ""),
+                            failed_request_id=pending_request_id,
+                        )
                         if mips_stop_error is not None:
                             raise mips_stop_error
 
@@ -1336,6 +1381,10 @@ def main() -> None:
                     "cpu_cores": CPU_CORES,
                     "mem_cap_gb": MEM_CAP_GB,
                     "gpu_mode": GPU_MODE,
+                    "gpu_device_uuid": GPU_DEVICE_UUID if USE_ENERGY else "nan",
+                    "gpu_energy_source": getattr(gpu_result, "energy_source", "unavailable") if measurement_requested(PROFILING_MODE, "gpu_power", gpu=USE_ENERGY) else "not_requested",
+                    "gpu_energy_fallback_reason": getattr(gpu_result, "energy_fallback_reason", ""),
+                    "gpu_idle_energy_source": getattr(gpu_monitor, "idle_energy_source", "unavailable") if measurement_requested(PROFILING_MODE, "gpu_power", gpu=USE_ENERGY) else "not_requested",
                     "input_scale": str(resolved_input_scale),
                     "input_units_per_request": _fmt_float(
                         input_units_per_request
@@ -1453,6 +1502,12 @@ def main() -> None:
                         "repeat_in_window": row["repeat_in_window"],
                         "sniff_group_id": sniff_group_id,
                         "gpu_idle_measured_at": row["gpu_idle_measured_at"],
+                        "gpu_device_uuid": row["gpu_device_uuid"],
+                        "gpu_energy_source": row["gpu_energy_source"],
+                        "gpu_energy_counter_start_mj": getattr(gpu_result, "counter_start_mj", None),
+                        "gpu_energy_counter_end_mj": getattr(gpu_result, "counter_end_mj", None),
+                        "gpu_energy_duration_s": getattr(gpu_result, "measurement_duration_s", None),
+                        "gpu_power_samples": [[t - _gpu_samples[0][0], p] for t, p in _gpu_samples],
                         "gpu_idle_power_w": _to_float_or_nan(row["gpu_idle_power_w"]),
                         **gpu_idle_stats,
                         **gpu_idle_trace,

@@ -144,6 +144,7 @@ STATIC_META_FIELDS = [
     "run_command",
     "model_download_url",
     "gpu",
+    "gpu_device",
     "gpu_mem_total_bytes",
     "host_mem_total_bytes",
     "host_swap_total_bytes",

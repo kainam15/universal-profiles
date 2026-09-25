@@ -56,8 +56,14 @@ def host_identity(project_dir: str | Path) -> dict:
 
 
 def run_options(args) -> dict:
+    from acprof.host.gpu_device import selected_gpu_device
     ignored = {"resume", "skip_build", "output_dir", "notify"}
     options = {name: value for name, value in vars(args).items() if name not in ignored}
+    device = selected_gpu_device()
+    if device:
+        options["gpu_device"] = device["uuid"]
+    elif options.get("gpu_device") is None:
+        options.pop("gpu_device", None)
     for name in ("cpus", "mems", "gpus"):
         options[name] = ",".join(part.strip().lower() for part in options[name].split(",") if part.strip())
     inherited = ("AUTO_WARMUP_REQUESTS", "SLOW_LATENCY_THRESHOLD_S", "IDLE_DEBUG_TRACE_INTERVAL_S",
@@ -243,6 +249,7 @@ class RunState:
             return str(path)
         case_name = filename.removeprefix("result_").removesuffix(".csv")
         candidates = [path, Path(str(path) + ".sniff_groups.jsonl"), Path(str(path) + ".client_error.json"),
+                      Path(str(path) + ".requests.jsonl"),
                       self.directory / f"sniff_{case_name}.pcap", self.directory / f"lat_{case_name}.json",
                       self.directory / "debug_idle_diag" / f"{filename}.idle_diag.jsonl"]
         existing = [candidate for candidate in candidates if candidate.exists()]

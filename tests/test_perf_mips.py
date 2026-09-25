@@ -9,6 +9,41 @@ from acprof.monitors import perf_mips
 
 
 class PerfMIPSTests(unittest.TestCase):
+    def test_real_cycles_and_ipc_use_scaled_pmu_counts(self):
+        parsed = perf_mips.parse_perf_stat_output(
+            "1200,,instructions,100000,50.00,,\n"
+            "600,,cycles,100000,50.00,,\n"
+            "400,,ref-cycles,200000,100.00,,\n",
+            fallback_elapsed_s=0.2,
+        )
+        self.assertEqual(getattr(parsed, "cycles_total", None), 600)
+        self.assertEqual(parsed.ref_cycles_total, 400)
+        self.assertEqual(parsed.ipc, 2.0)
+        self.assertEqual(parsed.running_pct, 50.0)
+
+    def test_partial_hybrid_cycles_must_not_produce_ipc(self):
+        parsed = perf_mips.parse_perf_stat_output(
+            "1200,,cpu_core/instructions/,100000,100.00,,\n"
+            "600,,cpu_atom/instructions/,100000,100.00,,\n"
+            "600,,cpu_core/cycles/,100000,100.00,,\n"
+            "<not counted>,,cpu_atom/cycles/,0,0.00,,\n"
+            "<not supported>,,ref-cycles/,0,0.00,,\n",
+            fallback_elapsed_s=0.2,
+        )
+        self.assertTrue(math.isnan(getattr(parsed, "ipc", 0.0)))
+        self.assertTrue(math.isnan(parsed.cycles_total))
+        self.assertTrue(math.isnan(parsed.ref_cycles_total))
+
+    def test_missing_pmu_row_is_not_a_complete_cycle_total(self):
+        parsed = perf_mips.parse_perf_stat_output(
+            "100,,cpu_core/instructions/,100,100.00,,\n"
+            "50,,cpu_atom/instructions/,100,100.00,,\n"
+            "40,,cpu_core/cycles/,100,100.00,,\n",
+            fallback_elapsed_s=0.2,
+        )
+        self.assertTrue(math.isnan(parsed.cycles_total))
+        self.assertTrue(math.isnan(parsed.ipc))
+
     def test_parses_perf_stat_csv_output(self) -> None:
         parsed = perf_mips.parse_perf_stat_output(
             """

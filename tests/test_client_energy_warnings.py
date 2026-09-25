@@ -30,6 +30,9 @@ REMOVED_LEGACY_COMPUTE_FIELDS = (
 
 class EffectiveEnergyWarningTests(unittest.TestCase):
     def setUp(self):
+        gpu_uuid = patch.object(client, "GPU_DEVICE_UUID", "GPU-fixture")
+        gpu_uuid.start()
+        self.addCleanup(gpu_uuid.stop)
         for name in ("IDLE_SECONDS", "IDLE_COOLDOWN_SECONDS"):
             mocked = patch.object(client, name, 0.0)
             mocked.start()
@@ -706,6 +709,13 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                 with open(out_csv, "r", encoding="utf-8", newline="") as f:
                     rows = list(csv.DictReader(f))
 
+            self.assertTrue(os.path.isfile(f"{out_csv}.requests.jsonl"))
+            with open(f"{out_csv}.requests.jsonl", encoding="utf-8") as requests_file:
+                request_windows = [json.loads(line) for line in requests_file]
+
+        self.assertEqual(request_windows[0]["latency_app_s"], [0.01, 0.02, 0.10, 0.20, 0.30])
+        self.assertEqual(request_windows[0]["sniff_group_id"], "case_seq1_r0")
+        self.assertEqual(request_windows[0]["status"], "ok")
         self.assertEqual(rows[0]["latency_app_s"], "0.126000")
         self.assertEqual(rows[0]["latency_app_request_count"], "5.000000")
         self.assertEqual(rows[0]["latency_app_p50_s"], "0.100000")
@@ -1125,7 +1135,7 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         ), patch.object(
             client,
             "REPEAT_IN_WINDOW",
-            1,
+            2,
         ), patch.object(
             client,
             "USE_ENERGY",
@@ -1157,9 +1167,15 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         ), patch.object(
             client,
             "_one_request",
-            side_effect=client.RequestTimeoutAbort("slow inference"),
-        ), self.assertRaises(client.RequestTimeoutAbort):
-            client.main()
+            side_effect=[{"latency_app_s": 0.25, "effective_input_scale": 10.0}, client.RequestTimeoutAbort("slow inference")],
+        ):
+            with self.assertRaises(client.RequestTimeoutAbort):
+                client.main()
+            with open(f"{tmp_dir}/result.csv.requests.jsonl", encoding="utf-8") as f:
+                window = json.loads(f.readline())
+            self.assertEqual(window["status"], "error")
+            self.assertEqual(window["latency_app_s"], [0.25])
+            self.assertEqual(window["failed_request_id"], "case_dur10_r0:1")
 
     def test_client_entrypoint_uses_dedicated_timeout_exit_code(self) -> None:
         stderr = io.StringIO()
@@ -1843,6 +1859,10 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
                     instructions_per_request=500_000.0,
                     perf_elapsed_s=0.25,
                     cpu_mips_app=1.0,
+                    cycles_per_request=250_000.0,
+                    ref_cycles_per_request=200_000.0,
+                    ipc=2.0,
+                    running_pct=80.0,
                     cache_references_per_request=10_000.0,
                     cache_misses_per_request=500.0,
                     cache_miss_rate_pct=5.0,
@@ -1904,6 +1924,10 @@ class EffectiveEnergyWarningTests(unittest.TestCase):
         self.assertEqual(rows[0]["cpu_instructions_per_request"], "500000.000000")
         self.assertEqual(rows[0]["cpu_mips_app"], "1.000000")
         self.assertEqual(rows[0]["cpu_mips_packet"], "nan")
+        self.assertEqual(rows[0]["cpu_cycles_per_request"], "250000.000000")
+        self.assertEqual(rows[0]["cpu_ref_cycles_per_request"], "200000.000000")
+        self.assertEqual(rows[0]["cpu_ipc"], "2.000000")
+        self.assertEqual(rows[0]["cpu_perf_running_pct"], "80.000000")
         self.assertEqual(rows[0]["cpu_perf_elapsed_s"], "0.250000")
         self.assertEqual(
             rows[0]["cpu_cache_references_per_request"],

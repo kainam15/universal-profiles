@@ -184,7 +184,8 @@ Probe 未指定输出目录时使用独立的 `results/inspection/` 子目录；
 | `--profiling-mode` | `full` | `full` 保留 RAPL、perf 和 packet latency 必需条件；`basic` 仅要求 application latency、吞吐、容器 CPU/内存，跳过能耗、PMU、抓包。两者均要求原生 Linux、本机 Docker 和 cgroup v2。 |
 | `--cpus` | `1,2,4,8` | CPU core 限制列表。 |
 | `--mems` | `2,4,8,16` | Memory cap GB 列表。 |
-| `--gpus` | `off,on` | GPU mode 列表。`on` 会用 Docker `--gpus all`。 |
+| `--gpus` | `off,on` | GPU mode 列表。`on` 只向容器暴露选定的物理 GPU。 |
+| `--gpu-device` | 环境变量或 `0` | 单个主机 GPU index 或完整 UUID，优先级为此参数、`ACPROF_GPU_DEVICE`、`DEVICE_INDEX`、`0`。运行前解析并固定 UUID；不接受 `all`、设备列表或 MIG。`probe.py` 使用同样的环境变量，post-hoc GPU 补采使用原实验记录的 UUID。 |
 | `--prune-startup-oom` / `--no-prune-startup-oom` | enabled | 默认以最低选中 CPU 为参考，按内存升序完整采集；仅把 Docker 明确 `OOMKilled` 的连续低内存启动失败前缀推断到后续更高 CPU。跳过 case 保留占位行和独立 provenance。运行期/CUDA OOM、timeout 与普通启动失败不触发剪枝。使用 `--no-prune-startup-oom` 可恢复逐格独立尝试。 |
 
 #### 请求窗口与采样

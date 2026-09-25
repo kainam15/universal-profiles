@@ -19,6 +19,11 @@ from acprof.host.compute_profile_plan import TORCH_LOGICAL_MFLOP_FIELD
 
 
 class PosthocProfileTests(unittest.TestCase):
+    def setUp(self):
+        selection = patch('acprof.host.posthoc.service.pin_gpu_device')
+        self.pin_gpu = selection.start()
+        self.addCleanup(selection.stop)
+
     def test_posthoc_validates_workload_in_separate_container_before_profiler(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -128,6 +133,7 @@ class PosthocProfileTests(unittest.TestCase):
         plan_hash = hashlib.sha256(plan_path.read_bytes()).hexdigest()
         static_meta = {
             "schema_version": 7,
+            "gpu_device": {"uuid": "GPU-fixture"},
             "model_name": "example/model",
             "model_revision": "revision-1",
             "task_family": "nlp",
@@ -674,6 +680,7 @@ class PosthocProfileTests(unittest.TestCase):
                 summary = posthoc.run_posthoc(root)
 
             self.assertEqual(set(summary.collected_tools), {"ncu", "nsys"})
+            self.pin_gpu.assert_called_once_with("GPU-fixture")
             self.assertIn("massif", summary.skipped_tools)
             validate_runtime.assert_called_once()
             self.assertEqual(validate_runtime.call_args.kwargs['gpu_modes'], ['on'])
@@ -681,6 +688,23 @@ class PosthocProfileTests(unittest.TestCase):
             self.assertEqual(collect_compute.call_args.kwargs["tool"], "ncu")
             collect_execution.assert_called_once()
             self.assertEqual(collect_execution.call_args.kwargs["tool"], "nsys")
+
+    def test_gpu_recollection_rejects_unknown_historical_device(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_fixture(root, include_cpu=False)
+            path = root / "static_meta.json"
+            metadata = json.loads(path.read_text())
+            metadata.pop("gpu_device")
+            path.write_text(json.dumps(metadata))
+            original_csv = (root / "result_all.csv").read_bytes()
+            with patch("acprof.host.posthoc.service.find_active_processes", return_value=[]), patch(
+                "acprof.host.posthoc.service._validate_profiler_runtime"
+            ) as validate, self.assertRaisesRegex(host_posthoc_context.PosthocError, "gpu_device.uuid"):
+                posthoc.run_posthoc(root, tools="ncu", force_reprofile=True)
+            validate.assert_not_called()
+            self.pin_gpu.assert_not_called()
+            self.assertEqual((root / "result_all.csv").read_bytes(), original_csv)
 
     def test_dry_run_does_not_create_backup_or_change_files(self):
         with tempfile.TemporaryDirectory() as tmp:

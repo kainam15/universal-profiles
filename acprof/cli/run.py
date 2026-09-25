@@ -28,6 +28,7 @@ from acprof.capabilities import (
 )
 from acprof.host.env_utils import bootstrap_project_env
 from acprof.host.run_state import RunState, RunStateError, load_run_state, run_options
+from acprof.host.gpu_device import gpu_device_scope, pin_gpu_device, selected_gpu_device
 from acprof.host.preflight import (
     require_native_linux_host,
     require_cgroup_prerequisites,
@@ -539,6 +540,7 @@ def _cleanup_intermediate_results(csv_paths: list[str], output_dir: str, final_c
     print(f"[cleanup] Done. removed={removed}, missing={missing}, failed={failed}")
 
 
+@gpu_device_scope()
 def _run_main():
     global _ACTIVE_TMUX_TERMINAL_LOG, _ACTIVE_RUN_STATE
 
@@ -650,6 +652,8 @@ def _run_main():
         output_dir,
         cgroup_version=cgroup_version,
     )
+    if "on" in [part.strip().lower() for part in args.gpus.split(",")]:
+        pin_gpu_device(args.gpu_device)
     _ACTIVE_RUN_STATE = RunState(output_dir, run_options(args), resume=args.resume, project_dir=PROJECT_DIR)
     run_state = _ACTIVE_RUN_STATE
     if run_state.complete:
@@ -769,6 +773,7 @@ def _run_main():
             compute_profile_enabled=not compute_profile_disabled,
             execution_profile_enabled=args.execution_profile_tool != "none",
             profiling_mode=args.profiling_mode,
+            gpu_device=selected_gpu_device(),
         )
         capability_report = measurement_report(
             args.profiling_mode, gpu_modes=gpu_list, compute_tool=args.compute_profile_tool,

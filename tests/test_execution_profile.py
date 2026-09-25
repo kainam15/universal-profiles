@@ -69,6 +69,11 @@ heap_tree=peak
 
 
 class ExecutionProfileTests(unittest.TestCase):
+    def setUp(self):
+        selection = patch('acprof.host.gpu_device.resolve_gpu_device', return_value={'uuid': 'GPU-fixture'})
+        selection.start()
+        self.addCleanup(selection.stop)
+
     def test_current_input_plan_reuses_the_exact_payload(self) -> None:
         payload = {
             "audio_base64": "UklGRg==",

@@ -130,6 +130,7 @@ class RunRecoveryTests(unittest.TestCase):
         def interrupted(**kwargs):
             path = self.write_case(**kwargs)
             if kwargs["cpu"] == 2:
+                Path(str(path) + ".requests.jsonl").write_text('{"partial":true}\n')
                 raise KeyboardInterrupt()
             return path
         with self.assertRaises(KeyboardInterrupt):
@@ -142,6 +143,9 @@ class RunRecoveryTests(unittest.TestCase):
         with (self.directory / "result_all.csv").open() as stream:
             self.assertEqual([row["cpu_cores"] for row in csv.DictReader(stream)], ["1", "2"])
         self.assertTrue(list((self.directory / "interrupted_cases").rglob("*.csv")))
+        archived_samples = list((self.directory / "interrupted_cases").rglob("*.requests.jsonl"))
+        self.assertEqual(len(archived_samples), 1)
+        self.assertEqual(archived_samples[0].read_text(), '{"partial":true}\n')
 
     def interrupt_after_first(self):
         def interrupted(**kwargs):

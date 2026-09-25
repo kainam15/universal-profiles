@@ -52,6 +52,7 @@ class StaticMeta:
     image_name: str = ""
     runtime_environment: Dict[str, Any] = field(default_factory=dict)
     runtime_validation: Dict[str, Any] = field(default_factory=dict)
+    gpu_device: Dict[str, Any] = field(default_factory=dict)
     profiling_mode: str = "full"
     capability_report: Dict[str, Any] = field(default_factory=dict)
     cgroup_version: str = "unknown"
@@ -688,6 +689,7 @@ def collect_static_meta(
     compute_profile_enabled: bool = True,
     execution_profile_enabled: bool = False,
     profiling_mode: str = "full",
+    gpu_device: Optional[Dict[str, Any]] = None,
 ) -> StaticMeta:
     """Collect static metadata for the current model/image pair."""
     from acprof.capabilities import measurement_requested
@@ -727,8 +729,10 @@ def collect_static_meta(
         input_scale_type=input_scale_type,
         run_command=run_command,
         model_download_url=_build_model_download_url(task_info.model_id),
-        gpu=_get_gpu_name(device_index=device_index),
-        gpu_mem_total_bytes=_get_gpu_mem_total_bytes(device_index=device_index),
+        gpu_device=dict(gpu_device or {}),
+        gpu=(gpu_device["name"] if gpu_device else _get_gpu_name(device_index=device_index)),
+        gpu_mem_total_bytes=(gpu_device["memory_total_bytes"] if gpu_device
+                             else _get_gpu_mem_total_bytes(device_index=device_index)),
         host_mem_total_bytes=_host_mem_total_bytes(),
         host_swap_total_bytes=host_swap["host_swap_total_bytes"],
         host_swap_used_bytes_at_start=host_swap[

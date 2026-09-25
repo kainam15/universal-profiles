@@ -16,6 +16,8 @@ from typing import List, Mapping, Optional
 MIPS_EXIT_CODE = 8
 PERF_EVENT = "instructions"
 PERF_OPTIONAL_EVENTS = (
+    "cycles",
+    "ref-cycles",
     "cache-references",
     "cache-misses",
     "dTLB-loads",
@@ -36,6 +38,10 @@ class MIPSProfilingError(RuntimeError):
 class PerfStatParsed:
     instructions_total: int
     perf_elapsed_s: float
+    cycles_total: float = float("nan")
+    ref_cycles_total: float = float("nan")
+    ipc: float = float("nan")
+    running_pct: float = float("nan")
     cache_references_total: float = float("nan")
     cache_misses_total: float = float("nan")
     dtlb_loads_total: float = float("nan")
@@ -48,6 +54,10 @@ class MIPSResult:
     instructions_per_request: float
     perf_elapsed_s: float
     cpu_mips_app: float
+    cycles_per_request: float = float("nan")
+    ref_cycles_per_request: float = float("nan")
+    ipc: float = float("nan")
+    running_pct: float = float("nan")
     cache_references_per_request: float = float("nan")
     cache_misses_per_request: float = float("nan")
     cache_miss_rate_pct: float = float("nan")
@@ -105,6 +115,9 @@ def parse_perf_stat_output(
     require_elapsed: bool = True,
 ) -> PerfStatParsed:
     event_values = {event_name: float("nan") for event_name in PERF_EVENTS}
+    event_scopes: dict[str, set[str]] = {name: set() for name in PERF_EVENTS}
+    invalid_events: set[str] = set()
+    running_percentages = []
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
@@ -116,6 +129,13 @@ def parse_perf_stat_output(
         for event_name in PERF_EVENTS:
             if _event_label_matches(event_label, event_name):
                 value = _to_float(parts[0])
+                event_scopes[event_name].add(event_label.replace(event_name, "EVENT", 1))
+                if event_name in ("instructions", "cycles", "ref-cycles"):
+                    running_pct = _to_float(parts[4]) if len(parts) > 4 else float("nan")
+                    if math.isfinite(running_pct) and 0 < running_pct <= 100:
+                        running_percentages.append(running_pct)
+                    if running_pct == 0:
+                        value = float("nan")
                 if math.isfinite(value) and value >= 0.0:
                     previous = event_values[event_name]
                     event_values[event_name] = (
@@ -123,7 +143,14 @@ def parse_perf_stat_output(
                         if math.isfinite(previous)
                         else value
                     )
+                else:
+                    invalid_events.add(event_name)
                 break
+
+    # A partial hybrid-PMU total must not be used as the denominator of IPC.
+    for name in ("cycles", "ref-cycles"):
+        if name in invalid_events or event_scopes[name] != event_scopes["instructions"]:
+            event_values[name] = float("nan")
 
     elapsed_s = _parse_elapsed_s(text)
     if not math.isfinite(elapsed_s) or elapsed_s <= 0:
@@ -148,6 +175,16 @@ def parse_perf_stat_output(
     return PerfStatParsed(
         instructions_total=int(instructions),
         perf_elapsed_s=elapsed_s,
+        cycles_total=event_values["cycles"],
+        ref_cycles_total=event_values["ref-cycles"],
+        ipc=(
+            instructions / event_values["cycles"]
+            if event_values["cycles"] > 0
+            and "instructions" not in invalid_events
+            and event_scopes["instructions"] == event_scopes["cycles"]
+            else float("nan")
+        ),
+        running_pct=min(running_percentages) if running_percentages else float("nan"),
         cache_references_total=event_values["cache-references"],
         cache_misses_total=event_values["cache-misses"],
         dtlb_loads_total=event_values["dTLB-loads"],
@@ -466,6 +503,10 @@ class PerfMIPSMonitor:
             instructions_per_request=instructions_per_request,
             perf_elapsed_s=parsed.perf_elapsed_s,
             cpu_mips_app=cpu_mips_app,
+            cycles_per_request=_per_request(parsed.cycles_total, repeat),
+            ref_cycles_per_request=_per_request(parsed.ref_cycles_total, repeat),
+            ipc=parsed.ipc,
+            running_pct=parsed.running_pct,
             cache_references_per_request=cache_references_per_request,
             cache_misses_per_request=cache_misses_per_request,
             cache_miss_rate_pct=_miss_rate_pct(

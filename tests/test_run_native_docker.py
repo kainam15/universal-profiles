@@ -101,6 +101,12 @@ class TmuxTerminalLogTests(unittest.TestCase):
 
 class NativeDockerGuardTests(unittest.TestCase):
     def setUp(self) -> None:
+        selection = patch('acprof.host.gpu_device.resolve_gpu_device', return_value={
+            'uuid': 'GPU-fixture', 'index': 1, 'name': 'Fixture', 'memory_total_bytes': 8 * 1024 ** 3,
+            'pci_bus_id': '00000000:02:00.0',
+        })
+        selection.start()
+        self.addCleanup(selection.stop)
         # Local developer credentials must never make CLI tests send messages.
         notification_env = patch.dict(
             "acprof.cli.run.os.environ",

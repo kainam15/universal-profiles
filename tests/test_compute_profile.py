@@ -53,6 +53,11 @@ def _ncu_resume_csv_text() -> str:
 
 
 class ComputeProfileTests(unittest.TestCase):
+    def setUp(self):
+        selection = patch('acprof.host.gpu_device.resolve_gpu_device', return_value={'uuid': 'GPU-fixture'})
+        selection.start()
+        self.addCleanup(selection.stop)
+
     def test_transformers_handler_forces_eager_only_when_requested(self) -> None:
         self.assertEqual(transformers_pipeline_load_kwargs(None), {})
         self.assertEqual(

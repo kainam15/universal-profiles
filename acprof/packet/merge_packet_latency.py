@@ -211,6 +211,31 @@ def _read_sidecar_groups(csv_path: str) -> list[str]:
     return groups
 
 
+def _merge_request_samples(csv_path: str, request_records: dict) -> None:
+    """Retain packet samples alongside app samples before PCAP cleanup."""
+    from acprof.artifacts import atomic_write
+
+    path = f"{csv_path}.requests.jsonl"
+    if not os.path.exists(path):
+        return  # Historical CSVs have no raw application samples.
+
+    def write(stream):
+        with open(path, encoding="utf-8") as source:
+            for line in source:
+                window = json.loads(line)
+                if window.get("schema_version") != 1:
+                    raise ValueError("unsupported request latency schema")
+                gid = window["sniff_group_id"]
+                latencies = []
+                for index in range(len(window["latency_app_s"])):
+                    value = _to_float(request_records.get(f"{gid}:{index}", {}).get("latency_s"))
+                    latencies.append(value if math.isfinite(value) and value >= 0 else None)
+                window["latency_packet_s"] = latencies
+                stream.write(json.dumps(window, separators=(",", ":"), allow_nan=False) + "\n")
+
+    atomic_write(path, write)
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
     if len(args) != 3:
@@ -313,6 +338,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         )
         w.writeheader()
         w.writerows(rows)
+    _merge_request_samples(in_csv, request_records)
 
 
 if __name__ == "__main__":

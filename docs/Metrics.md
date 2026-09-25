@@ -12,7 +12,7 @@
 - 能耗：CPU package、估算 vCPU 和 GPU 的 idle、平均/峰值功率与能量，以及不增加采集轮次的 container-attributed 能效派生值（包括 J/input unit，以及图像任务的 J/Mpixel）。
 - 资源：容器 CPU / 内存、cgroup CPU throttling、memory events、CPU/内存/I/O PSI、`memory.peak`、anon/file/slab、page fault/refault、块 I/O 字节与操作数、PID 当前值/峰值/上限事件、CPU 频率与估算 cycles，以及 GPU utilization、VRAM、SM/显存时钟、P-state 和温度。
 - 网络：从同一份 PCAP 派生每请求的请求/响应 frame bytes、TCP payload 和 L2–L4 协议开销，不增加抓包轮次。
-- PMU：retired-instruction MIPS、cache miss 和 dTLB miss。
+- PMU：retired-instruction MIPS、cycles / ref-cycles、IPC、计数运行比例、cache miss 和 dTLB miss。
 - 计算：PyTorch eager 逻辑 FLOP，以及 NVIDIA Nsight Compute 实际 GPU FLOP。
 - 可选 execution profile：Valgrind Massif 内存峰值、Nsight Systems CUDA timeline。
 
@@ -69,7 +69,8 @@
 | --- | --- |
 | `cpu_cores` | 当前 Docker container 的 CPU core 限制，来自 `--cpus`。 |
 | `mem_cap_gb` | 当前 Docker container 的 memory cap，单位 GB，来自 `--mems`。 |
-| `gpu_mode` | `on` 或 `off`。`on` 表示容器使用 Docker `--gpus all`。 |
+| `gpu_mode` | `on` 或 `off`。`on` 表示容器仅暴露 `--gpu-device` 选定的物理 GPU。 |
+| `gpu_device_uuid` | 主容器和主机 NVML 采集器共用的物理 UUID；CPU 行为 `nan`。设备名称、PCI bus ID 与主机 index 见 `static_meta.json/gpu_device`。 |
 | `input_scale` | 本行实际执行的主输入尺度。语义见 `static_meta.json/input_scale_type`。 |
 | `input_units_per_request` | `effective input_scale × batch_size`。保留历史尺度语义：NLP/时序通常是 token/context step，Audio 是秒，CV 是缩放倍率，分辨率型 Diffusion/多模态是边长。这些图像尺度都不是像素总数。 |
 | `input_num_samples` | 音频 payload 的实际采样点数；其他任务或旧计划无法推导时为 `nan`。它是诊断字段，音频主尺度仍为 `duration_s`。 |
@@ -157,6 +158,9 @@ mean/median 聚合，默认仅纳入 `status=ok` 且 `warmup=0` 的行。
 | `cpu_cycles_est_app` | 基于 application latency 的 estimated CPU cycles，公式为 `latency_app_s * cpu_freq_avg_hz * cpu_cores * container_cpu_util_avg_pct / 100`。这是利用率与频率推导值，不是硬件 PMU retired instructions / cycles 计数。 |
 | `cpu_cycles_est_packet` | 基于 packet-level `latency_s` 的 estimated CPU cycles，公式同 `cpu_cycles_est_app`，但在 `acprof.packet.merge_packet_latency` 成功回填 `latency_s` 后才会更新；merge 前或 packet latency 缺失时为 `nan`。 |
 | `cpu_instructions_per_request` | Linux `perf stat -e instructions` 采集到的 retired instructions，按本行 `repeat_in_window` 平均到单 request。MIPS 采集失败会中止实验而不是写入静默 `nan`。 |
+| `cpu_cycles_per_request` / `cpu_ref_cycles_per_request` | 同一 perf PID 窗口的 `cycles` / `ref-cycles` 硬件事件计数除以成功请求数。ref-cycles 是参考频率周期，不作为 IPC 分母。不支持、未计数或混合 PMU 的部分计数缺失时为 `nan`。 |
+| `cpu_ipc` | 同一窗口 `instructions / cycles`，只使用相同 PMU/事件修饰范围的完整计数。cycles 非正、计数缺失或范围不一致时为 `nan`，不会用 estimated cycles 补分母。 |
+| `cpu_perf_running_pct` | instructions、cycles、ref-cycles 有效读数中最小的 counter running percentage，用于识别 multiplexing；没有有效运行比例时为 `nan`。perf 默认已缩放计数，不再次乘除该比例。 |
 | `cpu_cache_references_per_request` | Linux `perf` generic event `cache-references` 的窗口计数，按本行 `repeat_in_window` 平均到单 request。其对应的 cache level 由 CPU 架构和 kernel PMU 映射决定。 |
 | `cpu_cache_misses_per_request` | Linux `perf` generic event `cache-misses` 的窗口计数，按本行 `repeat_in_window` 平均到单 request；不能跨架构固定解释为某一级 cache miss。 |
 | `cpu_cache_miss_rate_pct` | `cache-misses / cache-references * 100`。用于观察 cache access locality，不表示实际内存带宽；分母无效或为 0 时为 `nan`。 |
@@ -166,6 +170,13 @@ mean/median 聚合，默认仅纳入 `status=ok` 且 `warmup=0` 的行。
 | `cpu_mips_app` | 基于 `latency_app_s` 的真实 retired-instruction MIPS，公式为 `cpu_instructions_per_request / latency_app_s / 1e6`。 |
 | `cpu_mips_packet` | 基于 packet-level `latency_s` 的真实 retired-instruction MIPS，在 `acprof.packet.merge_packet_latency` 成功回填 `latency_s` 后更新；merge 前或 packet latency 缺失时为 `nan`。 |
 | `cpu_perf_elapsed_s` | perf 统计窗口报告的 elapsed time，单位秒，用于诊断 perf 窗口是否覆盖本行 workload。 |
+
+cycles / ref-cycles 为可选 PMU 事件，不改变 instructions 的必需性。IPC 基于硬件计数，
+仍受 perf attach 边界、进程线程范围及 multiplexing 的影响；窗口不等于模型单一算子。
+分析 CPU 执行效率优先使用 `cpu_cycles_per_request` 与 `cpu_ipc`；`cpu_cycles_est_*`
+继续保留其估算含义，供旧文件读取和诊断。解析格式参考
+[Linux perf stat 源码文档](https://github.com/torvalds/linux/blob/master/tools/perf/Documentation/perf-stat.txt)，
+使用现有 perf 进程，不增加独立采样轮次。
 
 ### 容器内存、swap、I/O 与 PID
 
@@ -197,16 +208,16 @@ mean/median 聚合，默认仅纳入 `status=ok` 且 `warmup=0` 的行。
 
 | 字段 | 含义 |
 | --- | --- |
-| `gpu_sm_clock_mhz` | NVML device 0 在 workload 测量窗口内的 SM clock 成功采样值算术平均，单位 MHz。仅 `gpu_mode=on` 且 NVML 支持该查询时有值；不采集 graphics clock。 |
-| `gpu_memory_clock_mhz` | NVML device 0 在 workload 测量窗口内的 memory clock 成功采样值算术平均，单位 MHz。 |
-| `gpu_pstate` | NVML device 0 在 workload 测量窗口内出现次数最多的 performance state（`P0`–`P15`）；次数并列时取性能等级更高的较小编号。它是运行状态解释变量，不代表锁频。 |
-| `gpu_temp_c` | NVML device 0 在 workload 测量窗口内的 GPU temperature 成功采样值算术平均，单位 °C。 |
-| `gpu_util_avg_pct` | NVML device 0 在测量窗口内的平均 GPU utilization，单位 `%`。这是 device-level 口径，不做 container process attribution。 |
-| `gpu_util_peak_pct` | NVML device 0 在测量窗口内的峰值 GPU utilization，单位 `%`。 |
-| `gpu_mem_used_avg_bytes` | NVML device 0 在测量窗口内的平均 used VRAM，单位 bytes。 |
-| `gpu_mem_used_peak_bytes` | NVML device 0 在测量窗口内的峰值 used VRAM，单位 bytes。 |
-| `gpu_mem_util_avg_pct` | NVML device 0 平均 used VRAM / total VRAM 的百分比。 |
-| `gpu_mem_util_peak_pct` | NVML device 0 峰值 used VRAM / total VRAM 的百分比。 |
+| `gpu_sm_clock_mhz` | NVML 选定物理 GPU 在 workload 测量窗口内的 SM clock 成功采样值算术平均，单位 MHz。仅 `gpu_mode=on` 且 NVML 支持该查询时有值；不采集 graphics clock。 |
+| `gpu_memory_clock_mhz` | NVML 选定物理 GPU 在 workload 测量窗口内的 memory clock 成功采样值算术平均，单位 MHz。 |
+| `gpu_pstate` | NVML 选定物理 GPU 在 workload 测量窗口内出现次数最多的 performance state（`P0`–`P15`）；次数并列时取性能等级更高的较小编号。它是运行状态解释变量，不代表锁频。 |
+| `gpu_temp_c` | NVML 选定物理 GPU 在 workload 测量窗口内的 GPU temperature 成功采样值算术平均，单位 °C。 |
+| `gpu_util_avg_pct` | NVML 选定物理 GPU 在测量窗口内的平均 GPU utilization，单位 `%`。这是 device-level 口径，不做 container process attribution。 |
+| `gpu_util_peak_pct` | NVML 选定物理 GPU 在测量窗口内的峰值 GPU utilization，单位 `%`。 |
+| `gpu_mem_used_avg_bytes` | NVML 选定物理 GPU 在测量窗口内的平均 used VRAM，单位 bytes。 |
+| `gpu_mem_used_peak_bytes` | NVML 选定物理 GPU 在测量窗口内的峰值 used VRAM，单位 bytes。 |
+| `gpu_mem_util_avg_pct` | NVML 选定物理 GPU 平均 used VRAM / total VRAM 的百分比。 |
+| `gpu_mem_util_peak_pct` | NVML 选定物理 GPU 峰值 used VRAM / total VRAM 的百分比。 |
 
 ### 运行状态与错误
 

@@ -8,7 +8,10 @@ from acprof.config import CSV_FIELDS
 
 class MetricRegistryTests(unittest.TestCase):
     def test_historical_field_order_is_unchanged(self):
-        historical_fields = [name for name in CSV_FIELDS if name != 'workload_contract']
+        additions = {'workload_contract', 'gpu_device_uuid', 'gpu_energy_source',
+                     'gpu_energy_fallback_reason', 'gpu_idle_energy_source',
+                     'cpu_cycles_per_request', 'cpu_ref_cycles_per_request', 'cpu_ipc', 'cpu_perf_running_pct'}
+        historical_fields = [name for name in CSV_FIELDS if name not in additions]
         self.assertEqual(hashlib.sha256(json.dumps(historical_fields).encode()).hexdigest(),
                          "1422b14ebaa48586573923cea2d33f615e6dc180d099cdf773678f453e3268f3")
 

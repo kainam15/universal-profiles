@@ -936,6 +936,7 @@ class ResourceUsageMonitor:
         proc_root: str = "/proc",
         cpu_sysfs_root: str = "/sys/devices/system/cpu",
         proc_cpuinfo_path: str = "/proc/cpuinfo",
+        device_uuid: str = "",
     ) -> None:
         self.sample_hz = float(sample_hz)
         self.container_name = container_name
@@ -943,6 +944,7 @@ class ResourceUsageMonitor:
         self.mem_limit_bytes = float(mem_cap_gb) * float(BYTES_PER_GIB)
         self.use_gpu = bool(use_gpu)
         self.device_index = int(device_index)
+        self.device_uuid = device_uuid
         self.dt = 1.0 / self.sample_hz
         self.cpu_sysfs_root = cpu_sysfs_root
         self.proc_cpuinfo_path = proc_cpuinfo_path
@@ -1024,7 +1026,11 @@ class ResourceUsageMonitor:
                 try:
                     pynvml.nvmlInit()
                     self._gpu_initialized = True
-                    self._gpu_handle = pynvml.nvmlDeviceGetHandleByIndex(self.device_index)
+                    self._gpu_handle = (
+                        pynvml.nvmlDeviceGetHandleByUUID(self.device_uuid)
+                        if self.device_uuid
+                        else pynvml.nvmlDeviceGetHandleByIndex(self.device_index)
+                    )
                 except Exception as exc:
                     self._runtime_error = str(exc)
                     self._gpu_handle = None

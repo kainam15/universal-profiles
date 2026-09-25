@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from acprof.container.runtime_validate import RESULT_PREFIX
+from acprof.host.gpu_device import gpu_docker_args
 from acprof.runtime_settings import runtime_docker_env_args
 
 
@@ -78,7 +79,7 @@ def validate_runtime(
                 "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", f"ACPROF_CONTRACT_PROBE_MODE={mode}",
             ]
             if device_mode == "on":
-                command += ["--gpus", "all"]
+                command += gpu_docker_args()
             command += ["--entrypoint", "python", image_info.tag, "-m", "acprof.container.runtime_validate", "/validation-input.json"]
             print(f"[runtime-check] {device_mode}: {mode} 契约验证（独立容器）", flush=True)
             log = ""
