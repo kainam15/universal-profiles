@@ -34,6 +34,13 @@
 mock 测试不证明物理服务器的 DRAM 域可读或实际 Docker OOM 行为；真实验收须另查
 拓扑、启动失败的 Docker State，以及可读 RAPL/DRAM 设备上的 full 测量产物。
 
+RAPL 的模拟 sysfs 必须包含用于识别域类型的 `name`（如 `package-0`、`core`、`dram`），
+不能只创建 `energy_uj`。`tests/test_tui.py` 的循环链接用例也调用生产拓扑读取器，
+修改发现逻辑时应一并验证该用例。
+
+指标登记表新增字段时，在 `test_metric_registry.py` 中显式列出新增字段，保留历史字段
+顺序的基准哈希；运行 `scripts/render_metric_reference.py` 更新速查文档后再执行 `--check`。
+
 Ruff、pre-commit 和锁生成工具 uv 由 [`requirements-dev.in`](../requirements-dev.in) 声明，
 完整版本与制品哈希保存在 [`requirements-dev.lock`](../requirements-dev.lock)。开发锁以主机锁
 为约束，避免在同一个 `.venv` 安装时引入冲突；不加入主机运行依赖或容器环境身份。

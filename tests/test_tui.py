@@ -364,10 +364,12 @@ class TuiCoreTests(unittest.TestCase):
             root = Path(temporary_dir)
             package = root / "intel-rapl:0"
             package.mkdir()
+            (package / "name").write_text("package-0\n", encoding="utf-8")
             (package / "energy_uj").write_text("123\n", encoding="utf-8")
             (package / "device").symlink_to(package, target_is_directory=True)
             subdomain = root / "intel-rapl:0:0"
             subdomain.mkdir()
+            (subdomain / "name").write_text("core\n", encoding="utf-8")
             (subdomain / "energy_uj").write_text("456\n", encoding="utf-8")
 
             paths = _readable_rapl_paths(root)

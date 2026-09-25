@@ -39,6 +39,7 @@
 | `latency_p50_s` | `s` | `pcap` | `request_window` | `all` | `number` |
 | `latency_p90_s` | `s` | `pcap` | `request_window` | `all` | `number` |
 | `latency_p95_s` | `s` | `pcap` | `request_window` | `all` | `number` |
+| `latency_tail_ratio` | `ratio` | `pcap` | `request_window` | `all` | `number` |
 | `latency_std_s` | `s` | `pcap` | `request_window` | `all` | `number` |
 | `latency_cv` | `ratio` | `pcap` | `request_window` | `all` | `number` |
 | `latency_iqr_s` | `s` | `pcap` | `request_window` | `all` | `number` |
@@ -52,6 +53,7 @@
 | `latency_app_p50_s` | `s` | `client_http` | `request_window` | `all` | `number` |
 | `latency_app_p90_s` | `s` | `client_http` | `request_window` | `all` | `number` |
 | `latency_app_p95_s` | `s` | `client_http` | `request_window` | `all` | `number` |
+| `latency_app_tail_ratio` | `ratio` | `client_http` | `request_window` | `all` | `number` |
 | `latency_app_std_s` | `s` | `client_http` | `request_window` | `all` | `number` |
 | `latency_app_cv` | `ratio` | `client_http` | `request_window` | `all` | `number` |
 | `latency_app_iqr_s` | `s` | `client_http` | `request_window` | `all` | `number` |
