@@ -147,6 +147,86 @@ git diff --check
 `scripts/compile_locks.py --check` 仍只验证既有容器锁与 profile 映射，不代替开发锁的重新解析。
 这些开发工具只在编辑、提交和 CI 验证时运行，不进入正式测量窗口。
 
+### 辅助开发工具
+
+下列工具用于按需调试和补充验证；使用前检查实际环境，已有可用入口时直接复用。
+它们目前未列入 `requirements-dev.in` / `requirements-dev.lock`，安装开发锁或新建 clone
+不保证具备这些工具；本机安装状态也不代表 CI 已提供对应依赖。
+
+| 工具 | 适用场景 | 运行入口 |
+| --- | --- | --- |
+| `textual-dev` | 查看 Textual 开发日志、事件和调试界面 | 项目 `.venv/bin/textual` |
+| Hypothesis | 为输入解析、边界值和状态转换生成样例，检查应始终成立的性质 | 项目 `.venv/bin/python`；测试中使用 `@given` 与 `strategies` |
+| `pytest-textual-snapshot` | 比较固定场景下的 SVG 快照，发现视觉回归 | `acprof-snapshot-test`，使用独立的 pytest 环境 |
+
+从仓库根目录检查主环境的导入、版本与命令入口：
+
+```bash
+.venv/bin/python - <<'PY'
+import textual_dev
+import hypothesis
+from importlib.metadata import version
+for name in ("textual", "textual-dev", "hypothesis"):
+    print(f"{name}: {version(name)}")
+PY
+.venv/bin/textual --help
+command -v acprof-snapshot-test
+acprof-snapshot-test --version
+acprof-snapshot-test --help
+```
+
+`acprof-snapshot-test` 是本机包装命令，当前约定位于 `$HOME/.local/bin`，
+转发到 `$HOME/.local/share/acprof/tui-tools/bin/python -m pytest`，透传 pytest 参数。
+它不是 AC-Prof 的发行命令；更换机器时检查实际包装脚本与解释器路径。
+下面按该本机约定检查插件和 Textual 版本；若包装脚本指向其他位置，使用实际解释器：
+
+```bash
+"$HOME/.local/share/acprof/tui-tools/bin/python" - <<'PY'
+import pytest_textual_snapshot
+from importlib.metadata import version
+for name in ("textual", "pytest", "pytest-textual-snapshot"):
+    print(f"{name}: {version(name)}")
+PY
+```
+
+快照环境的 Textual 版本应与项目 `.venv` 一致。插件及其 `syrupy` 依赖对 pytest 有版本
+约束，保持独立环境，避免为截图改动主环境的 pytest。若入口缺失、导入失败或版本不符，
+记录缺口并继续可运行的现有验证；只有任务确需该工具时才补齐兼容环境。
+
+交互调试时，在两个终端中分别从仓库根目录运行：
+
+```bash
+# 终端 A：开发控制台
+.venv/bin/textual console
+# 终端 B：连接控制台运行 TUI
+.venv/bin/textual run --dev tui.py
+```
+
+Hypothesis 可用于同步的 `unittest.TestCase` 方法，并沿用 `scripts/run_tests.py --pattern`
+执行选定用例。每个生成样例应隔离可变状态；发现失败后保留最小输入，加入稳定回归。
+不要直接用 `@given` 包装异步 `Pilot` 交互；优先生成同步输入处理或状态转换的样例。
+新增依赖这些工具的常规测试时，先补齐相应开发依赖与 CI 环境，不能仅依赖本机安装。
+
+快照用例使用 `snap_compare` fixture，显式指定 `terminal_size`，固定语言、主题和输入，
+隔离真实设置与 Docker/采集边界。将下例路径替换为本次选定的快照用例后执行：
+
+```bash
+acprof-snapshot-test /path/to/test_snapshot.py -q \
+  --snapshot-report internal-testing/tui-snapshot-report.html
+```
+
+先查看失败报告的 HTML / SVG 差异，再在预期变更或首次建立基线时对选定用例追加
+`--snapshot-update`；普通验证不更新基线。快照补充现有 unittest / evidence runner，
+不能代替行为断言、evidence JSON 或[真实终端证据](#tui-与终端证据)。
+上述调试、样例生成和截图均在正式测量窗口之外运行；按任务选择流程见
+[TUI 回归 Skill](../.agents/skills/acprof-textual-regression/SKILL.md#按需选择辅助工具)。
+
+用法参考上游维护的 [textual-dev](https://github.com/Textualize/textual-dev)
+与 [pytest-textual-snapshot](https://github.com/Textualize/pytest-textual-snapshot)（MIT），
+以及 [Hypothesis](https://github.com/HypothesisWorks/hypothesis)（MPL-2.0）。
+复用现有 CLI、性质测试和快照机制；通过按需运行及独立快照环境控制依赖与维护成本，
+不向推理环境或正式采集进程加入开发工具。
+
 ### PyCharm MCP 的验证边界
 
 使用项目的 `.venv` 解释器；符号搜索按需限定 `paths=["acprof/**", "tests/**"]`，

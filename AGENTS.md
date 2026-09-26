@@ -84,6 +84,7 @@ git diff --check
 ```
 
 开发工具安装、hook 与版本维护见[开发质量检查](docs/Testing.md#开发质量检查)。
+TUI 调试、性质测试或视觉回归可按需使用 `textual-dev`、Hypothesis 和 `acprof-snapshot-test`；先按[辅助开发工具](docs/Testing.md#辅助开发工具)检查并复用已有环境，避免重复安装。
 
 ## 完成标准
 
