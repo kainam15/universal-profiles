@@ -875,9 +875,9 @@ class DetectEnvironmentTests(unittest.TestCase):
             ):
                 task_info = TaskInfo(
                     model_id=f"test/{task_family}",
-                    pipeline_tag="test-task",
+                    pipeline_tag="image-classification" if task_family == "cv" else "time-series-forecasting",
                     task_family=task_family,
-                    runtime_backend="transformers_pipeline",
+                    runtime_backend="transformers_pipeline" if task_family == "cv" else "chronos",
                     library_name="transformers",
                     model_revision="main",
                     detection_method="unit",
@@ -1035,7 +1035,7 @@ class DetectEnvironmentTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp, self.assertRaisesRegex(
             ValueError,
-            "implemented for nlp, cv, audio, multimodal, diffusion and structured",
+            "workload-spec is not declared for time-series-forecasting",
         ):
             input_plan.plan_input_scales(
                 task_info=task_info,

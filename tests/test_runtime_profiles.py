@@ -10,7 +10,6 @@ from acprof.host import docker_runtime
 from acprof.container.handlers import HandlerRegistry
 from acprof.workloads import get_generator
 from acprof.runtime_profiles import (
-    ARCHITECTURE_PROFILES,
     PROFILES,
     RuntimeProfile,
     select_runtime_profile,
@@ -76,7 +75,7 @@ class RuntimeProfileRegressionTests(unittest.TestCase):
         profiles = {}
         for backend in ("first", "second"):
             declaration = dataclasses.replace(CATALOG.get_extension("nlp", "transformers_model"),
-                extension_id=backend, backends=(backend,), adapter=backend, model_types=("shared_arch",),
+                extension_id=backend, backends=(backend,), backend_tasks={}, adapter=backend, model_types=("shared_arch",),
                 profile=backend + "-runtime")
             catalog.add(declaration)
             profiles[declaration.profile] = RuntimeProfile(declaration.profile, "nlp",
@@ -84,7 +83,7 @@ class RuntimeProfileRegressionTests(unittest.TestCase):
                 model_types=("shared_arch",), backends=(backend,))
         task = TaskInfo("owner/checkpoint", "text-generation", "nlp", "first", "custom", "fixed", "manual",
                         model_config={"model_type": "shared_arch"})
-        with patch.dict(PROFILES, profiles), patch.dict(ARCHITECTURE_PROFILES, {"shared_arch": "second-runtime"}), patch(
+        with patch.dict(PROFILES, profiles), patch(
             "acprof.runtime_profiles.select_extension", catalog.select_extension,
         ):
             self.assertIs(select_runtime_profile(task), profiles["first-runtime"])

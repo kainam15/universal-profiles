@@ -22,7 +22,10 @@ from acprof.tui.i18n import message
 from acprof.installation import cli_command
 
 
-TASK_FAMILIES = ("nlp", "cv", "audio", "timeseries", "diffusion", "multimodal", "structured")
+from acprof.extensions import CATALOG
+
+
+TASK_FAMILIES = tuple(sorted(set(CATALOG.task_families.values())))
 GPU_MODES = ("off", "on")
 COMPUTE_PROFILE_TOOLS = ("none", "both", "torch", "ncu")
 EXECUTION_PROFILE_TOOLS = ("none", "both", "massif", "nsys")

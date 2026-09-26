@@ -6,8 +6,7 @@ This check uses local metadata only and does not load models or runtime librarie
 
 from __future__ import annotations
 
-from acprof.config import PIPELINE_TAG_TO_FAMILY
-from acprof.extensions import select_extension
+from acprof.extensions import CATALOG, select_extension
 from acprof.host.detect import TaskInfo
 
 
@@ -33,7 +32,7 @@ def require_task_support(task_info: TaskInfo, *, batch_size: int = 1) -> None:
     except ValueError as exc:
         raise TaskSupportError(f"[model-resolution][ERROR] {exc}\n  未进入镜像准备或正式测量。") from exc
     task = task_info.pipeline_tag
-    expected_family = PIPELINE_TAG_TO_FAMILY.get(task)
+    expected_family = CATALOG.task_families.get(task)
     reason = None
     if expected_family is None:
         reason = "当前项目尚未登记该任务类型的采集适配。"

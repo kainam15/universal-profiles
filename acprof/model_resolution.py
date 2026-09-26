@@ -126,12 +126,13 @@ def discover_model_candidates(task_info: Any, *, override_tag: str | None = None
         except (ValueError, TypeError) as exc:
             errors.append(str(exc))
             spec = {}
-    hub_task = (task_info.pipeline_tag if task_info.pipeline_tag != "unknown"
-                and task_info.detection_method != "config_infer" else None)
+    hub_metadata = getattr(task_info, "hub_metadata", {}) or {}
+    hub_task = hub_metadata.get("pipeline_tag", task_info.pipeline_tag)
+    if hub_task == "unknown" or task_info.detection_method == "config_infer":
+        hub_task = None
     if spec.get("pipeline_task") and hub_task == spec["pipeline_task"]:
         hub_task = spec["task"]
     declared_task = spec.get("task")
-    hub_metadata = getattr(task_info, "hub_metadata", {}) or {}
     transformers_info = hub_metadata.get("transformers_info", {})
     transformers_task = transformers_info.get("pipeline_tag")
     if spec.get("pipeline_task") and transformers_task == spec["pipeline_task"]:
@@ -149,17 +150,21 @@ def discover_model_candidates(task_info: Any, *, override_tag: str | None = None
     if override_backend and declared_backend and override_backend != declared_backend:
         conflicts.append("--backend conflicts with model spec format; update --model-spec")
 
-    def backend_for(task: str) -> str:
-        if override_backend or declared_backend:
-            return override_backend or declared_backend
-        family = CATALOG.task_families.get(task, "unknown")
-        # An export-only repository cannot be loaded by a native weight loader.
-        has_native_weights = any(name.endswith((".safetensors", ".bin")) for name in files)
-        if any(name.lower().endswith(".onnx") for name in files) and not has_native_weights:
-            return "onnxruntime"
-        if task in {"feature-extraction", "sentence-similarity"} and "modules.json" in metadata:
-            return "sentence_transformers"
-        return CATALOG.default_backend(task, family, task_info.library_name, task_info.runtime_backend)
+    route_errors: dict[str, str] = {}
+
+    def backend_for(task: str, *, required: bool = False) -> str:
+        from acprof.extensions import UnsupportedExtensionError
+        try:
+            return CATALOG.resolve(
+                task=task, library=task_info.library_name, config=config,
+                backend=override_backend or declared_backend or "", model_id=task_info.model_id,
+                files=files, metadata=metadata,
+            ).backend
+        except UnsupportedExtensionError as exc:
+            route_errors[task] = str(exc)
+            if required and str(exc) not in errors:
+                errors.append(str(exc))
+            return "unknown"
 
     def add(task: str | None, source: str) -> None:
         if not task:
@@ -171,13 +176,17 @@ def discover_model_candidates(task_info: Any, *, override_tag: str | None = None
                 previous["evidence"].append(source)
             return
         family = CATALOG.task_families.get(task, "unknown")
-        candidates.append({"task": task, "family": family, "backend": backend, "evidence": [source]})
+        candidate = {"task": task, "family": family, "backend": backend, "evidence": [source]}
+        if task in route_errors:
+            candidate["unsupported_reason"] = route_errors[task]
+        candidates.append(candidate)
 
     add(override_tag, "explicit_task")
     spec_source = ("local_model_spec" if getattr(task_info, "model_spec", {}) else
                    "repository_model_spec" if metadata.get("acprof_model.json") else "generated_contract")
     add(declared_task, spec_source)
     add(hub_task, "hub_metadata" if task_info.detection_method == "hub_api" else task_info.detection_method)
+    add(hub_metadata.get("task_hint"), hub_metadata.get("task_hint_source", "extension_catalog"))
     add(transformers_task, "hub.transformers_info.pipeline_tag")
     if not transformers_task:
         add(_AUTO_TASKS.get(transformers_info.get("auto_model")), "hub.transformers_info.auto_model")
@@ -228,14 +237,14 @@ def discover_model_candidates(task_info: Any, *, override_tag: str | None = None
                         for candidate_task in extension.tasks:
                             add(candidate_task, "artifact.onnx; task semantics required")
             errors.append("task semantics are unknown; provide --task or --model-spec")
+    if selected:
+        task_info.pipeline_tag = selected
+        task_info.task_family = CATALOG.task_families.get(selected, "unknown")
+        task_info.runtime_backend = backend_for(selected, required=True)
     if errors:
         status = "needs_configuration"
     if conflicts:
         status = "ambiguous"
-    if selected:
-        task_info.pipeline_tag = selected
-        task_info.task_family = CATALOG.task_families.get(selected, "unknown")
-        task_info.runtime_backend = backend_for(selected)
     from acprof.model_evidence import resolution_provenance
     provenance = resolution_provenance(task_info, candidates, hub_task=hub_task, selected=selected,
                                         status=status, explicit_task=override_tag, explicit_backend=override_backend,

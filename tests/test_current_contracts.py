@@ -41,6 +41,20 @@ class CurrentContractTests(unittest.TestCase):
         with self.assertRaisesRegex(FileNotFoundError, "snapshot"):
             resolve_model_source("example/model", "/missing/acprof/model-snapshot")
 
+    def test_retired_extension_routing_exports_fail_explicitly(self):
+        import importlib
+        retired = {
+            "acprof.config": ("DEFAULT_BACKEND", "LIBRARY_TO_BACKEND", "PIPELINE_TAG_TO_FAMILY", "ARCHITECTURE_TO_TASK"),
+            "acprof.runtime_profiles": ("MOSS_MODEL_ID", "MOSS_ADAPTER", "MOSS_PROMPT", "ARCHITECTURE_PROFILES", "MODEL_PROFILES"),
+        }
+        for module, names in retired.items():
+            for name in names:
+                with self.subTest(module=module, name=name), self.assertRaises(AttributeError):
+                    getattr(importlib.import_module(module), name)
+        from acprof.extensions import CATALOG
+        with self.assertRaises(AttributeError):
+            getattr(CATALOG, "default_backend")
+
     def test_unknown_backend_does_not_choose_another_family_handler(self):
         with patch.dict(HandlerRegistry._handlers, {"test:current": object()}, clear=True):
             with self.assertRaisesRegex(ValueError, "backend"):

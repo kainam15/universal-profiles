@@ -13,13 +13,9 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from acprof.extensions import CATALOG
+from acprof.extensions import CATALOG, UnsupportedExtensionError
 
-from acprof.config import (
-    DEFAULT_BACKEND,
-    LIBRARY_TO_BACKEND,
-    PIPELINE_TAG_TO_FAMILY,
-)
+
 
 
 @dataclass
@@ -413,6 +409,8 @@ def _detect_from_hub(
         return None
 
     pipeline_tag = getattr(info, "pipeline_tag", None)
+    hub_pipeline_tag = pipeline_tag
+    task_hint_source = "extension_catalog"
     library_name = getattr(info, "library_name", None) or ""
     sha = getattr(info, "sha", None) or "main"
     from acprof.model_evidence import pinned_revision
@@ -428,20 +426,16 @@ def _detect_from_hub(
     model_config.update(_architecture_metadata(repository["repository_metadata"].get("config.json")))
     if not pipeline_tag and library_name == "diffusers" and not repository["metadata_errors"]:
         pipeline_tag = _diffusers_task_from_index(model_id, sha, diagnostics)
+        task_hint_source = "model_index"
 
-    # Determine task_family from pipeline_tag
-    task_family = None
-    if pipeline_tag:
-        task_family = PIPELINE_TAG_TO_FAMILY.get(pipeline_tag)
-
-    # Determine runtime_backend from library_name
-    runtime_backend = LIBRARY_TO_BACKEND.get(library_name, DEFAULT_BACKEND)
-
-    # Special handling: chronos models
-    if library_name in {"chronos", "chronos-forecasting"} or model_config.get("chronos_pipeline_class"):
-        pipeline_tag = pipeline_tag or "time-series-forecasting"
-        task_family = "timeseries"
-        runtime_backend = "chronos"
+    # Keep raw metadata when unresolved so explicit CLI declarations can repair it.
+    task_family = CATALOG.task_families.get(pipeline_tag)
+    runtime_backend = "unknown"
+    try:
+        resolved = CATALOG.resolve(task=pipeline_tag, library=library_name, config=model_config, model_id=model_id)
+        pipeline_tag, task_family, runtime_backend = resolved.task, resolved.family, resolved.backend
+    except UnsupportedExtensionError as exc:
+        _record_failure(diagnostics, "extension_resolution", str(exc))
 
     if not pipeline_tag:
         _record_failure(
@@ -462,7 +456,9 @@ def _detect_from_hub(
         model_revision=sha,
         detection_method="hub_api",
         model_config=model_config,
-        hub_metadata={"pipeline_tag": pipeline_tag, "transformers_info": transformers_info},
+        hub_metadata={"pipeline_tag": hub_pipeline_tag, "transformers_info": transformers_info,
+                      "task_hint": pipeline_tag if not hub_pipeline_tag else None,
+                      "task_hint_source": task_hint_source},
         **repository,
         **_hub_model_metadata(info),
     )
@@ -494,33 +490,18 @@ def _detect_from_config(
     except Exception as exc:
         _record_failure(diagnostics, "config_json", _format_failure(exc))
 
-    if not architectures:
+    try:
+        resolved = CATALOG.resolve(library="transformers", config=config_data, model_id=model_id)
+    except UnsupportedExtensionError as exc:
+        _record_failure(diagnostics, "architecture_infer", str(exc))
         return None
-
-    pipeline_tag = CATALOG.infer_task(architectures, str(config_data.get("model_type") or ""))
-
-    if not pipeline_tag:
-        _record_failure(
-            diagnostics,
-            "architecture_infer",
-            f"unsupported architectures: {', '.join(str(arch) for arch in architectures)}",
-        )
-        return None
-
-    task_family = PIPELINE_TAG_TO_FAMILY.get(pipeline_tag)
-    if not task_family:
-        _record_failure(
-            diagnostics,
-            "architecture_infer",
-            f"inferred unsupported pipeline_tag '{pipeline_tag}'",
-        )
-        return None
+    pipeline_tag, task_family = resolved.task, resolved.family
 
     return TaskInfo(
         model_id=model_id,
         pipeline_tag=pipeline_tag,
         task_family=task_family,
-        runtime_backend=DEFAULT_BACKEND,
+        runtime_backend=resolved.backend,
         library_name="transformers",
         model_revision=revision,
         detection_method="config_infer",
@@ -562,8 +543,8 @@ def detect_task(
         info = TaskInfo(
             model_id=model_id,
             pipeline_tag=override_tag or "unknown",
-            task_family=override_family or "nlp",
-            runtime_backend=override_backend or DEFAULT_BACKEND,
+            task_family=override_family or "unknown",
+            runtime_backend=override_backend or "unknown",
             library_name="unknown",
             model_revision=revision or "main",
             detection_method="manual",
@@ -584,8 +565,8 @@ def detect_task(
     # Apply CLI overrides (highest priority, still checked against declarations).
     if override_tag:
         info.pipeline_tag = override_tag
-        if override_tag in PIPELINE_TAG_TO_FAMILY:
-            info.task_family = PIPELINE_TAG_TO_FAMILY[override_tag]
+        if override_tag in CATALOG.task_families:
+            info.task_family = CATALOG.task_families[override_tag]
         info.detection_method = "manual"
     if override_family:
         info.task_family = override_family

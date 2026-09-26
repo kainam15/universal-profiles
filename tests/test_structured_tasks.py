@@ -78,7 +78,7 @@ class StructuredHandlerTests(unittest.TestCase):
         )
 
     def context(self, task="tabular-classification", backend="torchscript", feature_dim=2):
-        return {"task_type": task, "backend": backend, "feature_dim": feature_dim,
+        return {"task_type": task, "backend": backend, "tensor_inputs": backend == "torchscript", "feature_dim": feature_dim,
                 "device": "cpu", "model": Mock(return_value=np.ones((2, 1), np.float32))}
 
     def test_preprocess_validates_actual_scale_and_dimension(self):

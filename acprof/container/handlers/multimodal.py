@@ -23,6 +23,7 @@ import numpy as np
 
 from acprof.container.handlers import (
     BaseHandler,
+    handler_declaration,
     model_revision_kwargs,
     transformers_pipeline_load_kwargs,
 )
@@ -76,8 +77,7 @@ class MultimodalHandler(BaseHandler):
 
         if task_type not in _TASKS:
             raise ValueError(f"unsupported multimodal task: {task_type}")
-        if backend not in {"transformers_model", "transformers_pipeline"}:
-            raise ValueError(f"unsupported multimodal backend: {backend}")
+        declaration = handler_declaration(task_type, backend)
         attention_options = transformers_pipeline_load_kwargs(load_options)
         if task_type == "any-to-any" and attention_options:
             raise RuntimeError(
@@ -95,9 +95,10 @@ class MultimodalHandler(BaseHandler):
             "model_revision": model_revision or "main",
             "load_options": dict(load_options or {}),
         }
-        if backend == "transformers_pipeline":
+        model_spec_format = declaration.handler_options.get("model_spec_format")
+        if model_spec_format:
             from acprof.model_spec import load_model_spec
-            spec = load_model_spec(model_source, task_type, expected_format="transformers-pipeline")
+            spec = load_model_spec(model_source, task_type, expected_format=model_spec_format)
             if "multimodal" in spec:
                 from acprof.container.handlers.custom_pipeline import load_custom_pipeline
                 return {**ctx, **load_custom_pipeline(model_source, task_type, device, dtype, spec, attention_options)}

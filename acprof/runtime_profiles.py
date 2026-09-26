@@ -13,20 +13,10 @@ from acprof.dependency_locks import (
 from acprof.extensions import CATALOG, select_extension
 
 
-MOSS_MODEL_ID = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
-MOSS_ADAPTER = "moss-transcribe-diarize"
 PYTHON_BASE_IMAGE = (
     "docker.m.daocloud.io/library/python:3.10-slim@sha256:"
     "fd76ade0c607f27677bc04be3c60749f400eedc941d9e72967e19a4cedff80c2"
 )
-# OpenMOSS official inference_utils.DEFAULT_PROMPT (Apache-2.0).
-MOSS_PROMPT = (
-    "请将音频转写为文本，每一段需以起始时间戳和说话人编号"
-    "（[S01]、[S02]、[S03]…）开头，正文为对应的语音内容，"
-    "并在段末标注结束时间戳，以清晰标明该段语音范围。"
-)
-
-
 @dataclass(frozen=True)
 class PlatformSpec:
     platform_id: str
@@ -92,96 +82,51 @@ class RuntimeProfile:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
-PLATFORMS = {
-    key: PlatformSpec(key, version, f"https://download.pytorch.org/whl/{key}",
-                      f"dockerfiles/locks/platform-{key}.txt")
-    for key, version in (("cpu", "2.11.0+cpu"), ("cu124", "2.6.0+cu124"), ("cu128", "2.11.0+cu128"))
-}
-PLATFORMS["python-cpu"] = PlatformSpec(
-    "python-cpu", requirements_lock="dockerfiles/locks/platform-python-cpu.txt",
-)
-
-# 名称只是环境声明的引用键；缓存身份取决于完整锁内容。
-ENVIRONMENTS = {}
-for _name, _platform, _inputs in (
-    ("nlp-cpu", "cpu", ("nlp",)),
-    ("nlp-cu124", "cu124", ("nlp",)),
-    ("nlp-cu128", "cu128", ("nlp",)),
-    ("cv-cpu", "cpu", ("cv", "timm")),
-    ("cv-cu124", "cu124", ("cv", "timm")),
-    ("cv-cu128", "cu128", ("cv", "timm")),
-    ("audio-cpu", "cpu", ("audio", "multimodal-transformers4576")),
-    ("audio-cu124", "cu124", ("audio", "multimodal-transformers4576")),
-    ("audio-cu128", "cu128", ("audio",)),
-    ("diffusion-cpu", "cpu", ("diffusion",)),
-    ("diffusion-cu124", "cu124", ("diffusion",)),
-    ("diffusion-cu128", "cu128", ("diffusion",)),
-    ("structured-cpu", "cpu", ("structured",)),
-    ("structured-cu124", "cu124", ("structured",)),
-    ("structured-cu128", "cu128", ("structured",)),
-    ("timeseries-cpu", "cpu", ("timeseries",)),
-    ("timeseries-cu124", "cu124", ("timeseries",)),
-    ("timeseries-cu128", "cu128", ("timeseries",)),
-    ("multimodal-transformers4576", "cu128", ("multimodal-transformers4576",)),
-    ("moss-transformers560", "cu128", ("moss-transformers560",)),
-    ("transformers560-cpu", "cpu", ("transformers560",)),
-    ("transformers560-cu124", "cu124", ("transformers560",)),
-    ("transformers560-cu128", "cu128", ("transformers560",)),
-    ("custom-multimodal-cpu", "cpu", ("custom-multimodal",)),
-    ("custom-multimodal-cu124", "cu124", ("custom-multimodal",)),
-    ("custom-multimodal-cu128", "cu128", ("custom-multimodal",)),
-):
-    ENVIRONMENTS[_name] = DependencyEnvironment(
-        _name, PLATFORMS[_platform], f"dockerfiles/locks/{_name}.txt",
-        tuple(f"dockerfiles/requirements/{item}.in" for item in _inputs),
-    )
-ENVIRONMENTS["onnxruntime-cpu"] = DependencyEnvironment(
-    "onnxruntime-cpu", PLATFORMS["python-cpu"], "dockerfiles/locks/onnxruntime-cpu.txt",
-    ("dockerfiles/requirements/onnxruntime.in",), RuntimeSpec("onnxruntime", "1.23.2"),
-)
-
-PROFILES = {}
-for _name, _family, _environment in (
-    ("nlp-cpu", "nlp", "nlp-cpu"), ("nlp-cu124", "nlp", "nlp-cu124"), ("nlp-cu128", "nlp", "nlp-cu128"),
-    ("cv-cpu", "cv", "cv-cpu"), ("cv-cu124", "cv", "cv-cu124"), ("cv-cu128", "cv", "cv-cu128"),
-    ("audio-cpu", "audio", "audio-cpu"), ("audio-cu124", "audio", "audio-cu124"), ("audio-cu128", "audio", "audio-cu128"),
-    ("diffusion-cpu", "diffusion", "diffusion-cpu"), ("diffusion-cu124", "diffusion", "diffusion-cu124"), ("diffusion-cu128", "diffusion", "diffusion-cu128"),
-    ("structured-cpu", "structured", "structured-cpu"), ("structured-cu124", "structured", "structured-cu124"), ("structured-cu128", "structured", "structured-cu128"),
-    ("timeseries-cpu", "timeseries", "timeseries-cpu"), ("timeseries-cu124", "timeseries", "timeseries-cu124"), ("timeseries-cu128", "timeseries", "timeseries-cu128"),
-    ("multimodal-transformers4576-cpu", "multimodal", "audio-cpu"),
-    ("multimodal-transformers4576-cu124", "multimodal", "audio-cu124"),
-    ("multimodal-transformers4576", "multimodal", "multimodal-transformers4576"),
-):
-    PROFILES[_name] = RuntimeProfile(_name, _family, ENVIRONMENTS[_environment])
-_moss_extension = CATALOG.get_extension("multimodal", "transformers_model", MOSS_ADAPTER)
-PROFILES["moss-transformers560"] = RuntimeProfile(
-    "moss-transformers560", "multimodal", ENVIRONMENTS["moss-transformers560"], MOSS_ADAPTER,
-    gpu_dtype="BF16", trust_remote_code=True,
-    task_types=_moss_extension.tasks, model_types=_moss_extension.model_types, backends=_moss_extension.backends,
-)
-for _extension in CATALOG.extensions.values():
-    if _extension.profile and _extension.profile not in PROFILES:
-        PROFILES[_extension.profile] = RuntimeProfile(
-            _extension.profile, _extension.family, ENVIRONMENTS[_extension.environment],
-            _extension.adapter, gpu_dtype=_extension.dtypes[0],
-            task_types=_extension.tasks, model_types=_extension.model_types, backends=_extension.backends,
+def runtime_declarations(catalog) -> tuple[dict, dict, dict]:
+    """Materialize declared references through the existing locked runtime types."""
+    platforms = {key: PlatformSpec(**values) for key, values in catalog.platforms.items()}
+    raw_environments = dict(catalog.dependency_environments)
+    for extension in catalog.extensions.values():
+        if extension.dependency_environment:
+            previous = raw_environments.get(extension.environment)
+            if previous is not None and previous != extension.dependency_environment:
+                raise ValueError(f"conflicting dependency environment: {extension.environment}")
+            raw_environments[extension.environment] = extension.dependency_environment
+    environments = {}
+    for key, raw in raw_environments.items():
+        values = dict(raw)
+        values["platform"] = platforms[values["platform"]]
+        values["requirements_inputs"] = tuple(values.get("requirements_inputs", ()))
+        if values.get("runtime"):
+            values["runtime"] = RuntimeSpec(**values["runtime"])
+        environments[key] = DependencyEnvironment(environment_key=key, **values)
+    profiles = {}
+    for key, raw in catalog.runtime_profiles.items():
+        values = dict(raw)
+        values["environment"] = environments[values["environment"]]
+        for field_name in ("task_types", "model_types", "backends"):
+            if field_name in values:
+                values[field_name] = tuple(values[field_name])
+        profiles[key] = RuntimeProfile(**values)
+    for extension in catalog.extensions.values():
+        if not extension.profile:
+            continue
+        profile = RuntimeProfile(
+            extension.profile, extension.family, environments[extension.environment], extension.adapter,
+            task_types=extension.tasks, model_types=extension.model_types, backends=extension.backends,
+            **{"gpu_dtype": extension.dtypes[0], **extension.profile_options},
         )
+        if extension.profile in profiles and profiles[extension.profile] != profile:
+            raise ValueError(f"conflicting runtime profile: {extension.profile}")
+        profiles[extension.profile] = profile
+    return platforms, environments, profiles
+
+
+PLATFORMS, ENVIRONMENTS, PROFILES = runtime_declarations(CATALOG)
 DEFAULT_PROFILES = {
     (profile.family, profile.environment.platform.platform_id): profile.profile_id
-    for profile in PROFILES.values() if profile.adapter == "family-default"
+    for profile in PROFILES.values() if profile.adapter == "family-default" and profile.runtime_line == "default"
 }
-for _family in ("nlp", "cv", "audio", "multimodal"):
-    for _variant in ("cpu", "cu124", "cu128"):
-        _name = f"{_family}-transformers560-{_variant}"
-        PROFILES[_name] = RuntimeProfile(
-            _name, _family, ENVIRONMENTS[f"transformers560-{_variant}"], runtime_line="transformers560",
-        )
-for _variant in ("cpu", "cu124", "cu128"):
-    _name = f"custom-multimodal-{_variant}"
-    PROFILES[_name] = RuntimeProfile(
-        _name, "multimodal", ENVIRONMENTS[_name], trust_remote_code=True,
-        backends=("transformers_pipeline",), runtime_line="custom-multimodal",
-    )
 
 
 @lru_cache(maxsize=None)
@@ -250,11 +195,6 @@ def environment_identity(environment: DependencyEnvironment, project_dir) -> dic
 
 def environment_id(environment: DependencyEnvironment, project_dir) -> str:
     return content_digest(environment_identity(environment, project_dir))
-# 旧名称仅供读取兼容；实际路由使用包含 backend/task 的 extension 声明。
-ARCHITECTURE_PROFILES = {model_type: extension.profile for extension in CATALOG.extensions.values()
-                         if extension.profile for model_type in extension.model_types}
-MODEL_PROFILES = {model_id.lower(): extension.profile for extension in CATALOG.extensions.values()
-                  if extension.profile for model_id in extension.model_ids}
 
 
 def select_runtime_profile(task_info: Any) -> RuntimeProfile:

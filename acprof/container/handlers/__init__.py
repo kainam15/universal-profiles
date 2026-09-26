@@ -133,6 +133,14 @@ class HandlerInitializationError(HandlerRegistrationError):
     pass
 
 
+def handler_declaration(task_type: str, backend: str):
+    from acprof.extensions import CATALOG
+    return CATALOG.get_extension(
+        CATALOG.task_families.get(task_type, ""), backend,
+        os.getenv("ACPROF_MODEL_ADAPTER", "family-default"), task_type,
+    )
+
+
 def load_handler(handler: BaseHandler, model_source: str, task_type: str, backend: str,
                  device: str, model_revision: str = "main", **load_kwargs: Any) -> Dict[str, Any]:
     """Keep dependency failures during model loading as explicit as lazy import failures."""
@@ -162,9 +170,11 @@ def load_handler(handler: BaseHandler, model_source: str, task_type: str, backen
         ) from exc
     if not isinstance(context, dict):
         raise HandlerInitializationError(f"backend: {backend}; module: {module_name}; handler.load must return a dict")
-    if backend == "transformers_pipeline":
+    declaration = handler_declaration(task_type, backend)
+    model_spec_format = declaration.handler_options.get("model_spec_format")
+    if model_spec_format:
         from acprof.model_spec import load_model_spec
-        spec = load_model_spec(model_source, task_type, expected_format="transformers-pipeline")
+        spec = load_model_spec(model_source, task_type, expected_format=model_spec_format)
         if spec:
             context["model_spec"] = spec
     return context

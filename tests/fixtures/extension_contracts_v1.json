@@ -1,0 +1,1220 @@
+{
+  "provenance": "Pre-refactor model_schema snapshot; captured before schema v2 implementation. Legacy timeseries is a rejected route.",
+  "cases": [
+    {
+      "extension": "torch-nlp",
+      "task": "text-generation",
+      "family": "nlp",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "a401a8e93c51ca272811547941d0bcc086e3a25f9575a5194102d8144c773b54"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "text2text-generation",
+      "family": "nlp",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "a401a8e93c51ca272811547941d0bcc086e3a25f9575a5194102d8144c773b54"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "text-classification",
+      "family": "nlp",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "a401a8e93c51ca272811547941d0bcc086e3a25f9575a5194102d8144c773b54"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "token-classification",
+      "family": "nlp",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "a401a8e93c51ca272811547941d0bcc086e3a25f9575a5194102d8144c773b54"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "question-answering",
+      "family": "nlp",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "8f2725b43ad9bed2d7bd7f40536314fcdab015ec4130da496bf1ae57dd934aeb"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "summarization",
+      "family": "nlp",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "a401a8e93c51ca272811547941d0bcc086e3a25f9575a5194102d8144c773b54"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "translation",
+      "family": "nlp",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "a401a8e93c51ca272811547941d0bcc086e3a25f9575a5194102d8144c773b54"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "fill-mask",
+      "family": "nlp",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "a401a8e93c51ca272811547941d0bcc086e3a25f9575a5194102d8144c773b54"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "feature-extraction",
+      "family": "nlp",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "6615dffc427033aa9e2600f9aa1a4ea22e227741c46867bb56bc498cf222ec5b"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "zero-shot-classification",
+      "family": "nlp",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "f2c435e2800ca6b83f9345982d9c64b218ce820f4bf44e132ac7d2004437aeb8"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "sentence-similarity",
+      "family": "nlp",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "7fcc672cd1f392d4ab5eed008a56f1ee346c6a8b25c82e26e31d60ab826cb375"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "table-question-answering",
+      "family": "nlp",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "d26f297231637867649ba1c6778824f15e9f04de80a558080a044ad652c3b98a"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "text-ranking",
+      "family": "nlp",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "33561c86d4d8089ad682f375458370319b98b19a17a90d4259cfaed96b9b1bb8"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "conversational",
+      "family": "nlp",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "a401a8e93c51ca272811547941d0bcc086e3a25f9575a5194102d8144c773b54"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "text-generation",
+      "family": "nlp",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "a401a8e93c51ca272811547941d0bcc086e3a25f9575a5194102d8144c773b54"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "text2text-generation",
+      "family": "nlp",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "a401a8e93c51ca272811547941d0bcc086e3a25f9575a5194102d8144c773b54"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "text-classification",
+      "family": "nlp",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "a401a8e93c51ca272811547941d0bcc086e3a25f9575a5194102d8144c773b54"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "token-classification",
+      "family": "nlp",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "a401a8e93c51ca272811547941d0bcc086e3a25f9575a5194102d8144c773b54"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "question-answering",
+      "family": "nlp",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "8f2725b43ad9bed2d7bd7f40536314fcdab015ec4130da496bf1ae57dd934aeb"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "summarization",
+      "family": "nlp",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "a401a8e93c51ca272811547941d0bcc086e3a25f9575a5194102d8144c773b54"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "translation",
+      "family": "nlp",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "a401a8e93c51ca272811547941d0bcc086e3a25f9575a5194102d8144c773b54"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "fill-mask",
+      "family": "nlp",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "a401a8e93c51ca272811547941d0bcc086e3a25f9575a5194102d8144c773b54"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "feature-extraction",
+      "family": "nlp",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "6615dffc427033aa9e2600f9aa1a4ea22e227741c46867bb56bc498cf222ec5b"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "zero-shot-classification",
+      "family": "nlp",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "f2c435e2800ca6b83f9345982d9c64b218ce820f4bf44e132ac7d2004437aeb8"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "sentence-similarity",
+      "family": "nlp",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "7fcc672cd1f392d4ab5eed008a56f1ee346c6a8b25c82e26e31d60ab826cb375"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "table-question-answering",
+      "family": "nlp",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "d26f297231637867649ba1c6778824f15e9f04de80a558080a044ad652c3b98a"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "text-ranking",
+      "family": "nlp",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "33561c86d4d8089ad682f375458370319b98b19a17a90d4259cfaed96b9b1bb8"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "conversational",
+      "family": "nlp",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "a401a8e93c51ca272811547941d0bcc086e3a25f9575a5194102d8144c773b54"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "sentence-similarity",
+      "family": "nlp",
+      "backend": "sentence_transformers",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "7fcc672cd1f392d4ab5eed008a56f1ee346c6a8b25c82e26e31d60ab826cb375"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "feature-extraction",
+      "family": "nlp",
+      "backend": "sentence_transformers",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "6615dffc427033aa9e2600f9aa1a4ea22e227741c46867bb56bc498cf222ec5b"
+    },
+    {
+      "extension": "torch-nlp",
+      "task": "text-ranking",
+      "family": "nlp",
+      "backend": "cross_encoder",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "33561c86d4d8089ad682f375458370319b98b19a17a90d4259cfaed96b9b1bb8"
+    },
+    {
+      "extension": "torch-cv",
+      "task": "image-classification",
+      "family": "cv",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "b6deca41bdb136af1886b67ee85d050a317d5596acacc75dbe723dafe8164b97"
+    },
+    {
+      "extension": "torch-cv",
+      "task": "object-detection",
+      "family": "cv",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "79cd7ffb62980eb202a2f15ca1ccf73c078350b491ea57dcc0c701fcce3b5fff"
+    },
+    {
+      "extension": "torch-cv",
+      "task": "image-segmentation",
+      "family": "cv",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "7770a117cd5885a50a8c44d21ce76552ffeb6606a07cfd9a73a829556ec8a87b"
+    },
+    {
+      "extension": "torch-cv",
+      "task": "depth-estimation",
+      "family": "cv",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "8f1a5b8bc5dd9dfe03a77fc112ad9a18b625e53173892b30a6658305bd917bbf"
+    },
+    {
+      "extension": "torch-cv",
+      "task": "image-to-text",
+      "family": "cv",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "ace0c4c4956538ff8ce8b1ed933f93b4875f37c9590b09a62bcc128ca01a3b5c"
+    },
+    {
+      "extension": "torch-cv",
+      "task": "zero-shot-image-classification",
+      "family": "cv",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "67628f9abd64eb396fb0a0b56336d9e1f7a7439aea5d58506fa3ccdaa7ab568e"
+    },
+    {
+      "extension": "torch-cv",
+      "task": "image-feature-extraction",
+      "family": "cv",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "6d72c3e889f90488f577f3f42cfbf0af140f93137cce157db5c713fa9511e194"
+    },
+    {
+      "extension": "torch-cv",
+      "task": "zero-shot-object-detection",
+      "family": "cv",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "47ea3eebf794ae1884d1d2857ad5a289c429e2b658df64af883696b6b3d1b0d3"
+    },
+    {
+      "extension": "torch-cv",
+      "task": "mask-generation",
+      "family": "cv",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "e966d268ef33602c5a57bbe8f292a6a8f5521c641c144ddef8735692de8a3632"
+    },
+    {
+      "extension": "torch-cv",
+      "task": "keypoint-detection",
+      "family": "cv",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "06d22cef3dfc72cc24d3aadb74a10b52da06549f8a547e9bc12596e5ceec65cc"
+    },
+    {
+      "extension": "torch-cv",
+      "task": "video-classification",
+      "family": "cv",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "3d40fcd4c041207f8e6fd02a8c8938e16fd6854c1293c70601adbd9014521a94"
+    },
+    {
+      "extension": "torch-cv",
+      "task": "image-classification",
+      "family": "cv",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "b6deca41bdb136af1886b67ee85d050a317d5596acacc75dbe723dafe8164b97"
+    },
+    {
+      "extension": "torch-cv",
+      "task": "object-detection",
+      "family": "cv",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "79cd7ffb62980eb202a2f15ca1ccf73c078350b491ea57dcc0c701fcce3b5fff"
+    },
+    {
+      "extension": "torch-cv",
+      "task": "image-segmentation",
+      "family": "cv",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "7770a117cd5885a50a8c44d21ce76552ffeb6606a07cfd9a73a829556ec8a87b"
+    },
+    {
+      "extension": "torch-cv",
+      "task": "depth-estimation",
+      "family": "cv",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "8f1a5b8bc5dd9dfe03a77fc112ad9a18b625e53173892b30a6658305bd917bbf"
+    },
+    {
+      "extension": "torch-cv",
+      "task": "image-to-text",
+      "family": "cv",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "ace0c4c4956538ff8ce8b1ed933f93b4875f37c9590b09a62bcc128ca01a3b5c"
+    },
+    {
+      "extension": "torch-cv",
+      "task": "zero-shot-image-classification",
+      "family": "cv",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "67628f9abd64eb396fb0a0b56336d9e1f7a7439aea5d58506fa3ccdaa7ab568e"
+    },
+    {
+      "extension": "torch-cv",
+      "task": "image-feature-extraction",
+      "family": "cv",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "6d72c3e889f90488f577f3f42cfbf0af140f93137cce157db5c713fa9511e194"
+    },
+    {
+      "extension": "torch-cv",
+      "task": "zero-shot-object-detection",
+      "family": "cv",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "47ea3eebf794ae1884d1d2857ad5a289c429e2b658df64af883696b6b3d1b0d3"
+    },
+    {
+      "extension": "torch-cv",
+      "task": "mask-generation",
+      "family": "cv",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "e966d268ef33602c5a57bbe8f292a6a8f5521c641c144ddef8735692de8a3632"
+    },
+    {
+      "extension": "torch-cv",
+      "task": "keypoint-detection",
+      "family": "cv",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "06d22cef3dfc72cc24d3aadb74a10b52da06549f8a547e9bc12596e5ceec65cc"
+    },
+    {
+      "extension": "torch-cv",
+      "task": "video-classification",
+      "family": "cv",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "3d40fcd4c041207f8e6fd02a8c8938e16fd6854c1293c70601adbd9014521a94"
+    },
+    {
+      "extension": "torch-audio",
+      "task": "automatic-speech-recognition",
+      "family": "audio",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "a77a13626d5255c3441d5b6ebe74880a2e01a9c34abaacbcaae5249b3941614e"
+    },
+    {
+      "extension": "torch-audio",
+      "task": "audio-classification",
+      "family": "audio",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "a77a13626d5255c3441d5b6ebe74880a2e01a9c34abaacbcaae5249b3941614e"
+    },
+    {
+      "extension": "torch-audio",
+      "task": "text-to-speech",
+      "family": "audio",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "ea3d7a42d87e9447244cd85b5fa79258155572caaa458b5003234e94a42c337a"
+    },
+    {
+      "extension": "torch-audio",
+      "task": "text-to-audio",
+      "family": "audio",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "ea3d7a42d87e9447244cd85b5fa79258155572caaa458b5003234e94a42c337a"
+    },
+    {
+      "extension": "torch-audio",
+      "task": "audio-to-audio",
+      "family": "audio",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP32"
+      },
+      "io_sha256": "d12b4831c6d9bafe9c00fc8c2971b5fc8de17c4f98c02240726df69dffe26ea0"
+    },
+    {
+      "extension": "torch-audio",
+      "task": "automatic-speech-recognition",
+      "family": "audio",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "a77a13626d5255c3441d5b6ebe74880a2e01a9c34abaacbcaae5249b3941614e"
+    },
+    {
+      "extension": "torch-audio",
+      "task": "audio-classification",
+      "family": "audio",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "a77a13626d5255c3441d5b6ebe74880a2e01a9c34abaacbcaae5249b3941614e"
+    },
+    {
+      "extension": "torch-audio",
+      "task": "text-to-speech",
+      "family": "audio",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "ea3d7a42d87e9447244cd85b5fa79258155572caaa458b5003234e94a42c337a"
+    },
+    {
+      "extension": "torch-audio",
+      "task": "text-to-audio",
+      "family": "audio",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "ea3d7a42d87e9447244cd85b5fa79258155572caaa458b5003234e94a42c337a"
+    },
+    {
+      "extension": "torch-audio",
+      "task": "audio-to-audio",
+      "family": "audio",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP32"
+      },
+      "io_sha256": "d12b4831c6d9bafe9c00fc8c2971b5fc8de17c4f98c02240726df69dffe26ea0"
+    },
+    {
+      "extension": "torch-audio",
+      "task": "voice-activity-detection",
+      "family": "audio",
+      "backend": "torchscript",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "artifact-defined; FP32 inputs"
+      },
+      "io_sha256": "f06348a4a0707bb83313a81def5ee8c26873fce462178ad6f60f66bc0eb80c7d"
+    },
+    {
+      "extension": "torch-timeseries",
+      "task": "time-series-forecasting",
+      "family": "timeseries",
+      "backend": "chronos",
+      "adapter": "family-default",
+      "precision": {},
+      "io_sha256": "c9dbbff3618b279fe5307104d48b5bfe2f9fe215e55b83befa5ce54f1644e2ec"
+    },
+    {
+      "extension": "torch-timeseries-legacy",
+      "task": "time-series-forecasting",
+      "family": "timeseries",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {},
+      "io_sha256": "c9dbbff3618b279fe5307104d48b5bfe2f9fe215e55b83befa5ce54f1644e2ec"
+    },
+    {
+      "extension": "torch-diffusion",
+      "task": "text-to-image",
+      "family": "diffusion",
+      "backend": "diffusers",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "4ecbc6981f709debb0b6a9bef69e817abd864737e3337185742232950625dd46"
+    },
+    {
+      "extension": "torch-diffusion",
+      "task": "image-text-to-image",
+      "family": "diffusion",
+      "backend": "diffusers",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "ae0adc6ca1cf78099517457cbafe33f1bfb65a0e21ea7ab36d068b030def2e18"
+    },
+    {
+      "extension": "torch-diffusion",
+      "task": "image-text-to-video",
+      "family": "diffusion",
+      "backend": "diffusers",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "d0d07521f2eb42eab9ae827ac92bf18dffa2e0a826dcd022400b05a80b032952"
+    },
+    {
+      "extension": "torch-diffusion",
+      "task": "image-to-image",
+      "family": "diffusion",
+      "backend": "diffusers",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "9102209479489c8a6e4f9ce2a09e944346e1d22caa5c8f1b9600728e2f4cbf17"
+    },
+    {
+      "extension": "torch-diffusion",
+      "task": "image-to-video",
+      "family": "diffusion",
+      "backend": "diffusers",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "aa62587a68f09e2d908fb1964590d32cb8e405931ac79a44086d36b0be505743"
+    },
+    {
+      "extension": "torch-diffusion",
+      "task": "text-to-video",
+      "family": "diffusion",
+      "backend": "diffusers",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "b3fae0af2bc93c5227d76890986b7ef8e87d445e7797ab823baeaed23bc99eb2"
+    },
+    {
+      "extension": "torch-diffusion",
+      "task": "video-to-video",
+      "family": "diffusion",
+      "backend": "diffusers",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "e8188763c8d86edf5c772ed9abd2dff03a284b966a708ba52cb9d96a4fc5533a"
+    },
+    {
+      "extension": "torch-diffusion",
+      "task": "unconditional-image-generation",
+      "family": "diffusion",
+      "backend": "diffusers",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "fa803c50151c64becc91de64d3d81f5ec11cd4464d115943d26a39149b943838"
+    },
+    {
+      "extension": "torch-diffusion",
+      "task": "text-to-3d",
+      "family": "diffusion",
+      "backend": "diffusers",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "f964f41ac5388a54fb77868d2736df02ede516279ca7ceae79ae9be1223cbe55"
+    },
+    {
+      "extension": "torch-diffusion",
+      "task": "image-to-3d",
+      "family": "diffusion",
+      "backend": "diffusers",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "4157ce34fae7afa0da4efd28224dc14e8b41f111166be330ca2e57128f753927"
+    },
+    {
+      "extension": "torch-multimodal",
+      "task": "audio-text-to-text",
+      "family": "multimodal",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "4a4a1153525dc571216fa91ecb36fc48633fe03b4e83758d83bc66b118703213"
+    },
+    {
+      "extension": "torch-multimodal",
+      "task": "image-text-to-text",
+      "family": "multimodal",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "4a4a1153525dc571216fa91ecb36fc48633fe03b4e83758d83bc66b118703213"
+    },
+    {
+      "extension": "torch-multimodal",
+      "task": "visual-question-answering",
+      "family": "multimodal",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "5f5302cbc0f99fa514086036d8b975aff5142807f606c6178b170d48c39a2a34"
+    },
+    {
+      "extension": "torch-multimodal",
+      "task": "document-question-answering",
+      "family": "multimodal",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "5f5302cbc0f99fa514086036d8b975aff5142807f606c6178b170d48c39a2a34"
+    },
+    {
+      "extension": "torch-multimodal",
+      "task": "video-text-to-text",
+      "family": "multimodal",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "4a4a1153525dc571216fa91ecb36fc48633fe03b4e83758d83bc66b118703213"
+    },
+    {
+      "extension": "torch-multimodal",
+      "task": "visual-document-retrieval",
+      "family": "multimodal",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "be28d4f237798693f834f50b39b608b4a3b96aec2a505b5fb4d714ad4fc71e0d"
+    },
+    {
+      "extension": "torch-multimodal",
+      "task": "any-to-any",
+      "family": "multimodal",
+      "backend": "transformers_pipeline",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "mixed FP16 (thinker/talker), FP32 (token2wav)"
+      },
+      "io_sha256": "a6c719924db4f1c37c593a7c259922f8b6b711a10aa4f94e6b77e5b58aec9281"
+    },
+    {
+      "extension": "torch-multimodal",
+      "task": "audio-text-to-text",
+      "family": "multimodal",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "4a4a1153525dc571216fa91ecb36fc48633fe03b4e83758d83bc66b118703213"
+    },
+    {
+      "extension": "torch-multimodal",
+      "task": "image-text-to-text",
+      "family": "multimodal",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "4a4a1153525dc571216fa91ecb36fc48633fe03b4e83758d83bc66b118703213"
+    },
+    {
+      "extension": "torch-multimodal",
+      "task": "visual-question-answering",
+      "family": "multimodal",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "5f5302cbc0f99fa514086036d8b975aff5142807f606c6178b170d48c39a2a34"
+    },
+    {
+      "extension": "torch-multimodal",
+      "task": "document-question-answering",
+      "family": "multimodal",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "5f5302cbc0f99fa514086036d8b975aff5142807f606c6178b170d48c39a2a34"
+    },
+    {
+      "extension": "torch-multimodal",
+      "task": "video-text-to-text",
+      "family": "multimodal",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "4a4a1153525dc571216fa91ecb36fc48633fe03b4e83758d83bc66b118703213"
+    },
+    {
+      "extension": "torch-multimodal",
+      "task": "visual-document-retrieval",
+      "family": "multimodal",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "be28d4f237798693f834f50b39b608b4a3b96aec2a505b5fb4d714ad4fc71e0d"
+    },
+    {
+      "extension": "torch-multimodal",
+      "task": "any-to-any",
+      "family": "multimodal",
+      "backend": "transformers_model",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "mixed FP16 (thinker/talker), FP32 (token2wav)"
+      },
+      "io_sha256": "a6c719924db4f1c37c593a7c259922f8b6b711a10aa4f94e6b77e5b58aec9281"
+    },
+    {
+      "extension": "torch-moss",
+      "task": "audio-text-to-text",
+      "family": "multimodal",
+      "backend": "transformers_pipeline",
+      "adapter": "moss-transcribe-diarize",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "4a4a1153525dc571216fa91ecb36fc48633fe03b4e83758d83bc66b118703213"
+    },
+    {
+      "extension": "torch-moss",
+      "task": "audio-text-to-text",
+      "family": "multimodal",
+      "backend": "transformers_model",
+      "adapter": "moss-transcribe-diarize",
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "io_sha256": "4a4a1153525dc571216fa91ecb36fc48633fe03b4e83758d83bc66b118703213"
+    },
+    {
+      "extension": "torch-structured",
+      "task": "tabular-classification",
+      "family": "structured",
+      "backend": "torchscript",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "artifact-defined; FP32 inputs",
+        "gpu": "artifact-defined; FP32 inputs"
+      },
+      "io_sha256": "34de22ddc84c5d08b2fc7d19f0e593f166a15abcda00eb512910ab540fd5831e"
+    },
+    {
+      "extension": "torch-structured",
+      "task": "tabular-regression",
+      "family": "structured",
+      "backend": "torchscript",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "artifact-defined; FP32 inputs",
+        "gpu": "artifact-defined; FP32 inputs"
+      },
+      "io_sha256": "5549c5843904137dbc882b8dcf6ac9ffa6b2b29e2c20fffcbc33411a6bb832f4"
+    },
+    {
+      "extension": "torch-structured",
+      "task": "reinforcement-learning",
+      "family": "structured",
+      "backend": "torchscript",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "artifact-defined; FP32 inputs",
+        "gpu": "artifact-defined; FP32 inputs"
+      },
+      "io_sha256": "fdbbf71a30aff79ec7f36859870aabedf0f6242362b6640e5dfd7f618b99d79a"
+    },
+    {
+      "extension": "torch-structured",
+      "task": "robotics",
+      "family": "structured",
+      "backend": "torchscript",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "artifact-defined; FP32 inputs",
+        "gpu": "artifact-defined; FP32 inputs"
+      },
+      "io_sha256": "fdbbf71a30aff79ec7f36859870aabedf0f6242362b6640e5dfd7f618b99d79a"
+    },
+    {
+      "extension": "torch-structured",
+      "task": "graph-ml",
+      "family": "structured",
+      "backend": "torchscript",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "artifact-defined; FP32 inputs",
+        "gpu": "artifact-defined; FP32 inputs"
+      },
+      "io_sha256": "3a6adf20aab2f2e842c66f58df945d18b058510f76aeca16e39699944610a343"
+    },
+    {
+      "extension": "skops-structured",
+      "task": "tabular-classification",
+      "family": "structured",
+      "backend": "skops",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "estimator-defined; FP32 inputs"
+      },
+      "io_sha256": "34de22ddc84c5d08b2fc7d19f0e593f166a15abcda00eb512910ab540fd5831e"
+    },
+    {
+      "extension": "skops-structured",
+      "task": "tabular-regression",
+      "family": "structured",
+      "backend": "skops",
+      "adapter": "family-default",
+      "precision": {
+        "cpu": "estimator-defined; FP32 inputs"
+      },
+      "io_sha256": "5549c5843904137dbc882b8dcf6ac9ffa6b2b29e2c20fffcbc33411a6bb832f4"
+    },
+    {
+      "extension": "onnxruntime-cpu",
+      "task": "tabular-classification",
+      "family": "structured",
+      "backend": "onnxruntime",
+      "adapter": "family-default",
+      "precision": {},
+      "io_sha256": "34de22ddc84c5d08b2fc7d19f0e593f166a15abcda00eb512910ab540fd5831e"
+    },
+    {
+      "extension": "onnxruntime-cpu",
+      "task": "tabular-regression",
+      "family": "structured",
+      "backend": "onnxruntime",
+      "adapter": "family-default",
+      "precision": {},
+      "io_sha256": "5549c5843904137dbc882b8dcf6ac9ffa6b2b29e2c20fffcbc33411a6bb832f4"
+    },
+    {
+      "extension": "onnxruntime-cv-cpu",
+      "task": "image-classification",
+      "family": "cv",
+      "backend": "onnxruntime",
+      "adapter": "family-default",
+      "precision": {},
+      "io_sha256": "b6deca41bdb136af1886b67ee85d050a317d5596acacc75dbe723dafe8164b97"
+    },
+    {
+      "extension": "onnxruntime-nlp-cpu",
+      "task": "text-classification",
+      "family": "nlp",
+      "backend": "onnxruntime",
+      "adapter": "family-default",
+      "precision": {},
+      "io_sha256": "a401a8e93c51ca272811547941d0bcc086e3a25f9575a5194102d8144c773b54"
+    }
+  ]
+}

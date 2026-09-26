@@ -182,7 +182,7 @@ class WorkloadRegistryTests(unittest.TestCase):
                 "dtypes": ["FP32"], "input_modalities": ["custom"],
             }
             manifest = Path(tmp, "manifest.json")
-            manifest.write_text(json.dumps({"schema_version": 1, "extensions": [entry]}))
+            manifest.write_text(json.dumps({"schema_version": 2, "extensions": [entry]}))
             catalog = load_catalog([manifest])
             self.assertNotIn(name, sys.modules)
             workloads.register_catalog(catalog)

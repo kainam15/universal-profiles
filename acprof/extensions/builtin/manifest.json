@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "extensions": [
     {
       "extension_id": "torch-nlp",
@@ -61,6 +61,25 @@
         "cross_encoder": [
           "text-ranking"
         ]
+      },
+      "backend_handler_options": {
+        "sentence_transformers": {
+          "encoder": "sentence"
+        },
+        "cross_encoder": {
+          "encoder": "cross"
+        },
+        "transformers_pipeline": {
+          "model_spec_format": "transformers-pipeline"
+        }
+      },
+      "task_handler_options": {
+        "sentence-similarity": {
+          "encoder": "sentence"
+        },
+        "text-ranking": {
+          "encoder": "cross"
+        }
       }
     },
     {
@@ -111,7 +130,12 @@
         "image",
         "video",
         "text"
-      ]
+      ],
+      "backend_handler_options": {
+        "transformers_pipeline": {
+          "model_spec_format": "transformers-pipeline"
+        }
+      }
     },
     {
       "extension_id": "torch-audio",
@@ -175,6 +199,17 @@
           "text-to-audio",
           "audio-to-audio"
         ]
+      },
+      "backend_precision": {
+        "torchscript": {
+          "cpu": "artifact-defined; FP32 inputs",
+          "gpu": "artifact-defined; FP32 inputs"
+        }
+      },
+      "backend_handler_options": {
+        "transformers_pipeline": {
+          "model_spec_format": "transformers-pipeline"
+        }
       }
     },
     {
@@ -248,7 +283,12 @@
       "input_modalities": [
         "timeseries"
       ],
-      "unsupported_reason": "时间序列预测适配 Chronos／Chronos-Bolt；模型须兼容 --backend chronos。Transformers 没有通用预测 pipeline。"
+      "unsupported_reason": "时间序列预测适配 Chronos／Chronos-Bolt；模型须兼容 --backend chronos。Transformers 没有通用预测 pipeline。",
+      "backend_handler_options": {
+        "transformers_pipeline": {
+          "model_spec_format": "transformers-pipeline"
+        }
+      }
     },
     {
       "extension_id": "torch-diffusion",
@@ -382,7 +422,12 @@
           "colqwen2"
         ]
       },
-      "require_registered_custom_architecture": true
+      "require_registered_custom_architecture": true,
+      "backend_handler_options": {
+        "transformers_pipeline": {
+          "model_spec_format": "transformers-pipeline"
+        }
+      }
     },
     {
       "extension_id": "torch-moss",
@@ -426,7 +471,29 @@
         "OpenMOSS-Team/MOSS-Transcribe-Diarize"
       ],
       "profile": "moss-transformers560",
-      "environment": "moss-transformers560"
+      "environment": "moss-transformers560",
+      "backend_handler_options": {
+        "transformers_pipeline": {
+          "model_spec_format": "transformers-pipeline"
+        }
+      },
+      "workload_defaults": {
+        "text": "请将音频转写为文本，每一段需以起始时间戳和说话人编号（[S01]、[S02]、[S03]…）开头，正文为对应的语音内容，并在段末标注结束时间戳，以清晰标明该段语音范围。",
+        "params": {
+          "max_new_tokens": 512
+        }
+      },
+      "profile_options": {
+        "gpu_dtype": "BF16",
+        "trust_remote_code": true
+      },
+      "dependency_environment": {
+        "platform": "cu128",
+        "requirements_lock": "dockerfiles/locks/moss-transformers560.txt",
+        "requirements_inputs": [
+          "dockerfiles/requirements/moss-transformers560.in"
+        ]
+      }
     },
     {
       "extension_id": "torch-structured",
@@ -467,7 +534,16 @@
       ],
       "input_modalities": [
         "tabular"
-      ]
+      ],
+      "precision": {
+        "cpu": "artifact-defined; FP32 inputs",
+        "gpu": "artifact-defined; FP32 inputs"
+      },
+      "handler_options": {
+        "tensor_inputs": true,
+        "requires_model_spec": true,
+        "loader": "torchscript"
+      }
     },
     {
       "extension_id": "skops-structured",
@@ -504,7 +580,15 @@
       ],
       "input_modalities": [
         "tabular"
-      ]
+      ],
+      "precision": {
+        "cpu": "estimator-defined; FP32 inputs"
+      },
+      "handler_options": {
+        "tensor_inputs": false,
+        "requires_model_spec": false,
+        "loader": "skops"
+      }
     }
   ],
   "architecture_tasks": {
@@ -570,7 +654,37 @@
     "ForSpeechSeq2Seq": "automatic-speech-recognition"
   },
   "model_type_tasks": {
-    "moss_transcribe_diarize": "audio-text-to-text"
+    "moss_transcribe_diarize": "audio-text-to-text",
+    "qwen2_audio": "audio-text-to-text",
+    "qwen2_5_omni": "any-to-any",
+    "qwen2_vl": "image-text-to-text",
+    "qwen2_5_vl": "image-text-to-text",
+    "qwen3_vl": "image-text-to-text",
+    "qwen3_vl_moe": "image-text-to-text",
+    "qwen3_omni_moe": "any-to-any",
+    "llava": "image-text-to-text",
+    "llava_next": "image-text-to-text",
+    "llava_onevision": "image-text-to-text",
+    "llava_next_video": "video-text-to-text",
+    "idefics2": "image-text-to-text",
+    "idefics3": "image-text-to-text",
+    "smolvlm": "image-text-to-text",
+    "mllama": "image-text-to-text",
+    "paligemma": "image-text-to-text",
+    "gemma3": "image-text-to-text",
+    "gemma3n": "image-text-to-text",
+    "colpali": "visual-document-retrieval",
+    "colqwen2": "visual-document-retrieval",
+    "owlvit": "zero-shot-object-detection",
+    "owlv2": "zero-shot-object-detection",
+    "grounding-dino": "zero-shot-object-detection",
+    "sam": "mask-generation",
+    "sam2": "mask-generation",
+    "vits": "text-to-speech",
+    "bark": "text-to-audio",
+    "musicgen": "text-to-audio",
+    "encodec": "audio-to-audio",
+    "dac": "audio-to-audio"
   },
   "library_backends": {
     "transformers": "transformers_pipeline",
@@ -588,7 +702,8 @@
       "libraries": [
         "sentence-transformers"
       ],
-      "backend": "sentence_transformers"
+      "backend": "sentence_transformers",
+      "priority": 100
     },
     {
       "family": "structured",
@@ -596,27 +711,33 @@
         "sklearn",
         "skops"
       ],
-      "backend": "skops"
+      "backend": "skops",
+      "priority": 100
     },
     {
       "family": "structured",
-      "backend": "torchscript"
+      "backend": "torchscript",
+      "priority": 0
     },
     {
       "task": "sentence-similarity",
-      "backend": "sentence_transformers"
+      "backend": "sentence_transformers",
+      "priority": 0
     },
     {
       "task": "text-ranking",
-      "backend": "cross_encoder"
+      "backend": "cross_encoder",
+      "priority": 0
     },
     {
       "task": "voice-activity-detection",
-      "backend": "torchscript"
+      "backend": "torchscript",
+      "priority": 0
     },
     {
       "task": "audio-to-audio",
-      "backend": "transformers_model"
+      "backend": "transformers_model",
+      "priority": 0
     },
     {
       "family": "diffusion",
@@ -625,12 +746,2740 @@
         "unknown",
         "diffusers"
       ],
-      "backend": "diffusers"
+      "backend": "diffusers",
+      "priority": 100
     },
     {
       "family": "multimodal",
-      "current": "transformers_pipeline",
-      "backend": "transformers_model"
+      "backend": "transformers_model",
+      "priority": 0,
+      "libraries": [
+        "",
+        "unknown",
+        "transformers",
+        "sentence-transformers"
+      ]
+    },
+    {
+      "family": "nlp",
+      "libraries": [
+        "",
+        "unknown"
+      ],
+      "backend": "transformers_pipeline",
+      "priority": -100
+    },
+    {
+      "family": "cv",
+      "libraries": [
+        "",
+        "unknown"
+      ],
+      "backend": "transformers_pipeline",
+      "priority": -100
+    },
+    {
+      "family": "audio",
+      "libraries": [
+        "",
+        "unknown"
+      ],
+      "backend": "transformers_pipeline",
+      "priority": -100
+    },
+    {
+      "family": "timeseries",
+      "libraries": [
+        "chronos",
+        "chronos-forecasting"
+      ],
+      "backend": "chronos",
+      "priority": 100,
+      "inferred_task": "time-series-forecasting"
+    },
+    {
+      "family": "timeseries",
+      "when_config": {
+        "chronos_pipeline_class": true
+      },
+      "backend": "chronos",
+      "priority": 200,
+      "inferred_task": "time-series-forecasting"
+    },
+    {
+      "task": "feature-extraction",
+      "backend": "sentence_transformers",
+      "priority": 200,
+      "when_config": {
+        "sentence_embedding_artifact": true
+      }
+    },
+    {
+      "task": "sentence-similarity",
+      "backend": "sentence_transformers",
+      "priority": 200,
+      "when_config": {
+        "sentence_embedding_artifact": true
+      }
     }
-  ]
+  ],
+  "families": {
+    "nlp": {
+      "scaling": {
+        "param_name": "seq_length",
+        "values": [
+          64,
+          128,
+          256,
+          512,
+          1024,
+          2048
+        ],
+        "csv_field": "input_scale",
+        "description": "sequence length (tokens)"
+      },
+      "task_params": {
+        "max_new_tokens": 64
+      },
+      "io_format": {
+        "input": {
+          "transport": "HTTP",
+          "media_type": "application/json",
+          "method": "POST",
+          "endpoint": "/predict",
+          "json_schema": {
+            "type": "object",
+            "required": [
+              "text"
+            ],
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "params": {
+                "type": "object"
+              },
+              "batch_size": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        },
+        "output": {
+          "transport": "HTTP",
+          "media_type": "application/json",
+          "status": 200,
+          "json_schema": {
+            "type": "object",
+            "required": [
+              "task",
+              "output_type",
+              "n_results"
+            ],
+            "properties": {
+              "task": {
+                "type": "string"
+              },
+              "output_type": {
+                "type": "string",
+                "enum": [
+                  "text",
+                  "label"
+                ]
+              },
+              "n_results": {
+                "type": "integer"
+              },
+              "effective_input_scale": {
+                "type": "number"
+              },
+              "workload_contract": {
+                "type": "object",
+                "description": "Actual request workload, separate from resource limits; schema_version=1, serial scenario."
+              }
+            }
+          }
+        }
+      },
+      "task_io_format": {
+        "question-answering": {
+          "input": {
+            "json_schema": {
+              "required": [
+                "question",
+                "context"
+              ],
+              "properties": {
+                "text": null,
+                "question": {
+                  "type": "string"
+                },
+                "context": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "feature-extraction": {
+          "output": {
+            "json_schema": {
+              "properties": {
+                "output_type": {
+                  "enum": [
+                    "embedding"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "zero-shot-classification": {
+          "input": {
+            "json_schema": {
+              "required": [
+                "text",
+                "candidate_labels"
+              ],
+              "properties": {
+                "candidate_labels": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 1
+                },
+                "hypothesis_template": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "sentence-similarity": {
+          "input": {
+            "json_schema": {
+              "required": [
+                "query",
+                "documents"
+              ],
+              "properties": {
+                "text": null,
+                "query": {
+                  "type": "string"
+                },
+                "documents": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 1
+                }
+              }
+            }
+          },
+          "output": {
+            "json_schema": {
+              "properties": {
+                "output_type": {
+                  "enum": [
+                    "similarity"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "table-question-answering": {
+          "input": {
+            "json_schema": {
+              "required": [
+                "table",
+                "query"
+              ],
+              "properties": {
+                "text": null,
+                "table": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "query": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "output": {
+            "json_schema": {
+              "properties": {
+                "output_type": {
+                  "enum": [
+                    "table_answer"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "text-ranking": {
+          "input": {
+            "json_schema": {
+              "required": [
+                "query",
+                "documents"
+              ],
+              "properties": {
+                "text": null,
+                "query": {
+                  "type": "string"
+                },
+                "documents": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 1
+                }
+              }
+            }
+          },
+          "output": {
+            "json_schema": {
+              "properties": {
+                "output_type": {
+                  "enum": [
+                    "ranking"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "input_plan": {
+        "accepts_workload_spec": true,
+        "text_payload": true
+      },
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "task_input_plan": {
+        "table-question-answering": {
+          "text_payload": false,
+          "workload_scales": true
+        }
+      }
+    },
+    "cv": {
+      "scaling": {
+        "param_name": "resolution_scale",
+        "values": [
+          0.1,
+          0.25,
+          0.5,
+          0.75,
+          1.0,
+          1.5,
+          2.0
+        ],
+        "csv_field": "input_scale",
+        "description": "resolution multiplier of base size"
+      },
+      "task_params": {},
+      "io_format": {
+        "input": {
+          "transport": "HTTP",
+          "media_type": "application/json",
+          "method": "POST",
+          "endpoint": "/predict",
+          "json_schema": {
+            "type": "object",
+            "required": [
+              "image_base64"
+            ],
+            "properties": {
+              "image_base64": {
+                "type": "string",
+                "contentEncoding": "base64",
+                "contentMediaType": "image/png"
+              },
+              "params": {
+                "type": "object"
+              },
+              "input_scale": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              }
+            }
+          }
+        },
+        "output": {
+          "transport": "HTTP",
+          "media_type": "application/json",
+          "status": 200,
+          "json_schema": {
+            "type": "object",
+            "required": [
+              "task",
+              "output_type",
+              "n_results"
+            ],
+            "properties": {
+              "task": {
+                "type": "string"
+              },
+              "output_type": {
+                "type": "string",
+                "enum": [
+                  "classification"
+                ]
+              },
+              "n_results": {
+                "type": "integer"
+              },
+              "effective_input_scale": {
+                "type": "number"
+              },
+              "workload_contract": {
+                "type": "object",
+                "description": "Actual request workload, separate from resource limits; schema_version=1, serial scenario."
+              }
+            }
+          }
+        }
+      },
+      "task_io_format": {
+        "object-detection": {
+          "output": {
+            "json_schema": {
+              "properties": {
+                "output_type": {
+                  "enum": [
+                    "detection"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "image-segmentation": {
+          "output": {
+            "json_schema": {
+              "properties": {
+                "output_type": {
+                  "enum": [
+                    "segmentation"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "depth-estimation": {
+          "output": {
+            "json_schema": {
+              "properties": {
+                "output_type": {
+                  "enum": [
+                    "depth"
+                  ]
+                },
+                "depth_shape": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "image-to-text": {
+          "output": {
+            "json_schema": {
+              "required": [
+                "task",
+                "output_type",
+                "n_results",
+                "captions",
+                "output_length",
+                "output_token_count"
+              ],
+              "properties": {
+                "output_type": {
+                  "enum": [
+                    "caption"
+                  ]
+                },
+                "captions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "output_length": {
+                  "type": "integer"
+                },
+                "output_token_count": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "zero-shot-image-classification": {
+          "input": {
+            "json_schema": {
+              "required": [
+                "image_base64",
+                "candidate_labels"
+              ],
+              "properties": {
+                "candidate_labels": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 1
+                }
+              }
+            }
+          }
+        },
+        "image-feature-extraction": {
+          "output": {
+            "json_schema": {
+              "properties": {
+                "output_type": {
+                  "enum": [
+                    "features"
+                  ]
+                },
+                "feature_shape": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "zero-shot-object-detection": {
+          "input": {
+            "json_schema": {
+              "required": [
+                "image_base64",
+                "candidate_labels"
+              ],
+              "properties": {
+                "candidate_labels": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 1
+                }
+              }
+            }
+          },
+          "output": {
+            "json_schema": {
+              "properties": {
+                "output_type": {
+                  "enum": [
+                    "detection"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "mask-generation": {
+          "output": {
+            "json_schema": {
+              "properties": {
+                "output_type": {
+                  "enum": [
+                    "masks"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "keypoint-detection": {
+          "input": {
+            "json_schema": {
+              "properties": {
+                "boxes": {
+                  "type": "array",
+                  "description": "COCO xywh boxes in input-image pixels for pose estimation"
+                }
+              }
+            }
+          },
+          "output": {
+            "json_schema": {
+              "properties": {
+                "output_type": {
+                  "enum": [
+                    "keypoints"
+                  ]
+                },
+                "keypoint_count": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "video-classification": {
+          "input": {
+            "json_schema": {
+              "required": [
+                "frames_base64"
+              ],
+              "properties": {
+                "image_base64": null,
+                "frames_base64": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "contentEncoding": "base64",
+                    "contentMediaType": "image/png"
+                  },
+                  "minItems": 1
+                }
+              }
+            }
+          },
+          "output": {
+            "json_schema": {
+              "properties": {
+                "classifications": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "input_plan": {
+        "accepts_workload_spec": true,
+        "fractional_scales": true
+      },
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      }
+    },
+    "audio": {
+      "scaling": {
+        "param_name": "duration_s",
+        "values": [
+          1,
+          2,
+          5,
+          10,
+          20,
+          30
+        ],
+        "csv_field": "input_scale",
+        "description": "audio duration (seconds)"
+      },
+      "task_params": {},
+      "io_format": {
+        "input": {
+          "transport": "HTTP",
+          "media_type": "application/json",
+          "method": "POST",
+          "endpoint": "/predict",
+          "json_schema": {
+            "type": "object",
+            "required": [
+              "audio_base64",
+              "audio_format",
+              "sample_rate"
+            ],
+            "properties": {
+              "audio_base64": {
+                "type": "string",
+                "contentEncoding": "base64",
+                "contentMediaType": "audio/wav"
+              },
+              "audio_format": {
+                "type": "string",
+                "enum": [
+                  "wav"
+                ]
+              },
+              "sample_rate": {
+                "type": "integer",
+                "unit": "Hz"
+              },
+              "params": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "output": {
+          "transport": "HTTP",
+          "media_type": "application/json",
+          "status": 200,
+          "json_schema": {
+            "type": "object",
+            "required": [
+              "task",
+              "output_type"
+            ],
+            "properties": {
+              "task": {
+                "type": "string"
+              },
+              "output_type": {
+                "type": "string",
+                "enum": [
+                  "transcription",
+                  "classification",
+                  "unknown"
+                ]
+              },
+              "text": {
+                "type": "string"
+              },
+              "output_length": {
+                "type": "integer"
+              },
+              "output_token_count": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "n_results": {
+                "type": "integer"
+              },
+              "effective_input_scale": {
+                "type": "number"
+              },
+              "workload_contract": {
+                "type": "object",
+                "description": "Actual request workload, separate from resource limits; schema_version=1, serial scenario."
+              }
+            }
+          }
+        }
+      },
+      "task_io_format": {
+        "text-to-speech": {
+          "input": {
+            "json_schema": {
+              "required": [
+                "text"
+              ],
+              "properties": {
+                "audio_base64": null,
+                "audio_format": null,
+                "sample_rate": null,
+                "text": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "output": {
+            "json_schema": {
+              "properties": {
+                "output_type": {
+                  "enum": [
+                    "audio"
+                  ]
+                },
+                "audio_shape": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                },
+                "audio_num_samples": {
+                  "type": "integer"
+                },
+                "audio_sample_rate": {
+                  "type": "integer",
+                  "unit": "Hz"
+                },
+                "audio_duration_s": {
+                  "type": "number",
+                  "unit": "s"
+                }
+              }
+            }
+          }
+        },
+        "text-to-audio": {
+          "input": {
+            "json_schema": {
+              "required": [
+                "text"
+              ],
+              "properties": {
+                "audio_base64": null,
+                "audio_format": null,
+                "sample_rate": null,
+                "text": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "output": {
+            "json_schema": {
+              "properties": {
+                "output_type": {
+                  "enum": [
+                    "audio"
+                  ]
+                },
+                "audio_shape": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                },
+                "audio_num_samples": {
+                  "type": "integer"
+                },
+                "audio_sample_rate": {
+                  "type": "integer",
+                  "unit": "Hz"
+                },
+                "audio_duration_s": {
+                  "type": "number",
+                  "unit": "s"
+                }
+              }
+            }
+          }
+        },
+        "audio-to-audio": {
+          "output": {
+            "json_schema": {
+              "properties": {
+                "output_type": {
+                  "enum": [
+                    "audio"
+                  ]
+                },
+                "audio_shape": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                },
+                "audio_num_samples": {
+                  "type": "integer"
+                },
+                "audio_sample_rate": {
+                  "type": "integer",
+                  "unit": "Hz"
+                },
+                "audio_duration_s": {
+                  "type": "number",
+                  "unit": "s"
+                }
+              }
+            }
+          }
+        },
+        "voice-activity-detection": {
+          "output": {
+            "json_schema": {
+              "properties": {
+                "output_type": {
+                  "enum": [
+                    "voice_activity"
+                  ]
+                },
+                "segments": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "start",
+                      "end"
+                    ],
+                    "properties": {
+                      "start": {
+                        "type": "number",
+                        "unit": "s"
+                      },
+                      "end": {
+                        "type": "number",
+                        "unit": "s"
+                      }
+                    }
+                  }
+                },
+                "timestamp_unit": {
+                  "type": "string",
+                  "enum": [
+                    "seconds"
+                  ]
+                },
+                "speech_duration_s": {
+                  "type": "number",
+                  "unit": "s"
+                },
+                "threshold": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "frame_duration_s": {
+                  "type": "number",
+                  "unit": "s"
+                },
+                "segmentation_policy": {
+                  "type": "string",
+                  "enum": [
+                    "adjacent_frames_above_threshold"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "input_plan": {
+        "accepts_workload_spec": true,
+        "audio_payload": true
+      },
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "task_input_plan": {
+        "text-to-speech": {
+          "text_payload": true,
+          "audio_payload": false,
+          "text_requires_workload_spec": true
+        },
+        "text-to-audio": {
+          "text_payload": true,
+          "audio_payload": false,
+          "text_requires_workload_spec": true
+        }
+      },
+      "task_precision": {
+        "voice-activity-detection": {
+          "cpu": "artifact-defined; FP32 inputs"
+        },
+        "audio-to-audio": {
+          "cpu": "FP32",
+          "gpu": "FP32"
+        }
+      }
+    },
+    "timeseries": {
+      "scaling": {
+        "param_name": "context_length",
+        "values": [
+          64,
+          128,
+          256,
+          512,
+          1024,
+          2048
+        ],
+        "csv_field": "input_scale",
+        "description": "context length (time steps)"
+      },
+      "task_params": {
+        "prediction_length": 64
+      },
+      "io_format": {
+        "input": {
+          "transport": "HTTP",
+          "media_type": "application/json",
+          "method": "POST",
+          "endpoint": "/predict",
+          "json_schema": {
+            "type": "object",
+            "required": [
+              "context",
+              "prediction_length"
+            ],
+            "properties": {
+              "context": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "format": "float32"
+                  }
+                }
+              },
+              "prediction_length": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        "output": {
+          "transport": "HTTP",
+          "media_type": "application/json",
+          "status": 200,
+          "json_schema": {
+            "type": "object",
+            "required": [
+              "task"
+            ],
+            "properties": {
+              "task": {
+                "type": "string"
+              },
+              "forecast_shape": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              },
+              "output_type": {
+                "type": "string",
+                "enum": [
+                  "forecast"
+                ]
+              },
+              "workload_contract": {
+                "type": "object",
+                "description": "Actual request workload, separate from resource limits; schema_version=1, serial scenario."
+              }
+            }
+          }
+        }
+      },
+      "task_io_format": {},
+      "input_plan": {
+        "accepts_workload_spec": false,
+        "requires_scale_meta": true,
+        "max_scale_probe": true
+      }
+    },
+    "diffusion": {
+      "scaling": {
+        "param_name": "resolution_px",
+        "values": [
+          128,
+          192,
+          256,
+          320,
+          384,
+          512
+        ],
+        "csv_field": "input_scale",
+        "description": "square output image side length (pixels)"
+      },
+      "task_params": {
+        "num_inference_steps": 20,
+        "guidance_scale": 7.5
+      },
+      "io_format": {
+        "input": {
+          "transport": "HTTP",
+          "media_type": "application/json",
+          "method": "POST",
+          "endpoint": "/predict",
+          "json_schema": {
+            "type": "object",
+            "required": [
+              "prompt",
+              "resolution"
+            ],
+            "properties": {
+              "prompt": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "minItems": 1
+                  }
+                ]
+              },
+              "resolution": {
+                "type": "integer",
+                "minimum": 64,
+                "multipleOf": 8,
+                "unit": "px"
+              },
+              "params": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "output": {
+          "transport": "HTTP",
+          "media_type": "application/json",
+          "status": 200,
+          "json_schema": {
+            "type": "object",
+            "required": [
+              "task",
+              "output_type",
+              "n_results"
+            ],
+            "properties": {
+              "task": {
+                "type": "string"
+              },
+              "output_type": {
+                "type": "string",
+                "enum": [
+                  "image"
+                ]
+              },
+              "n_results": {
+                "type": "integer"
+              },
+              "output_length": {
+                "type": "integer"
+              },
+              "image_width": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "unit": "px"
+              },
+              "image_height": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "unit": "px"
+              },
+              "effective_input_scale": {
+                "type": "number"
+              },
+              "workload_contract": {
+                "type": "object",
+                "description": "Actual request workload, separate from resource limits; schema_version=1, serial scenario."
+              }
+            }
+          }
+        }
+      },
+      "task_io_format": {
+        "image-text-to-image": {
+          "input": {
+            "json_schema": {
+              "required": [
+                "prompt",
+                "resolution",
+                "image_base64"
+              ],
+              "properties": {
+                "image_base64": {
+                  "type": "string",
+                  "contentEncoding": "base64",
+                  "contentMediaType": "image/png"
+                }
+              }
+            }
+          }
+        },
+        "image-text-to-video": {
+          "input": {
+            "json_schema": {
+              "required": [
+                "prompt",
+                "resolution",
+                "image_base64"
+              ],
+              "properties": {
+                "image_base64": {
+                  "type": "string",
+                  "contentEncoding": "base64",
+                  "contentMediaType": "image/png"
+                }
+              }
+            }
+          },
+          "output": {
+            "json_schema": {
+              "properties": {
+                "image_width": null,
+                "image_height": null,
+                "output_type": {
+                  "enum": [
+                    "video"
+                  ]
+                },
+                "video_frame_count": {
+                  "type": "integer"
+                },
+                "video_width": {
+                  "type": "integer",
+                  "unit": "px"
+                },
+                "video_height": {
+                  "type": "integer",
+                  "unit": "px"
+                },
+                "output_shape": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "image-to-image": {
+          "input": {
+            "json_schema": {
+              "required": [
+                "resolution",
+                "image_base64"
+              ],
+              "properties": {
+                "image_base64": {
+                  "type": "string",
+                  "contentEncoding": "base64",
+                  "contentMediaType": "image/png"
+                },
+                "prompt_optional": {
+                  "type": "boolean",
+                  "description": "Only synthetic default text may be omitted by an image-only native pipeline"
+                }
+              }
+            }
+          }
+        },
+        "image-to-video": {
+          "input": {
+            "json_schema": {
+              "required": [
+                "resolution",
+                "image_base64"
+              ],
+              "properties": {
+                "image_base64": {
+                  "type": "string",
+                  "contentEncoding": "base64",
+                  "contentMediaType": "image/png"
+                },
+                "prompt_optional": {
+                  "type": "boolean",
+                  "description": "Only synthetic default text may be omitted by an image-only native pipeline"
+                }
+              }
+            }
+          },
+          "output": {
+            "json_schema": {
+              "properties": {
+                "image_width": null,
+                "image_height": null,
+                "output_type": {
+                  "enum": [
+                    "video"
+                  ]
+                },
+                "video_frame_count": {
+                  "type": "integer"
+                },
+                "video_width": {
+                  "type": "integer",
+                  "unit": "px"
+                },
+                "video_height": {
+                  "type": "integer",
+                  "unit": "px"
+                },
+                "output_shape": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "text-to-video": {
+          "output": {
+            "json_schema": {
+              "properties": {
+                "image_width": null,
+                "image_height": null,
+                "output_type": {
+                  "enum": [
+                    "video"
+                  ]
+                },
+                "video_frame_count": {
+                  "type": "integer"
+                },
+                "video_width": {
+                  "type": "integer",
+                  "unit": "px"
+                },
+                "video_height": {
+                  "type": "integer",
+                  "unit": "px"
+                },
+                "output_shape": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "video-to-video": {
+          "input": {
+            "json_schema": {
+              "required": [
+                "prompt",
+                "resolution",
+                "frames_base64"
+              ],
+              "properties": {
+                "frames_base64": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "string",
+                    "contentEncoding": "base64",
+                    "contentMediaType": "image/png"
+                  }
+                }
+              }
+            }
+          },
+          "output": {
+            "json_schema": {
+              "properties": {
+                "image_width": null,
+                "image_height": null,
+                "output_type": {
+                  "enum": [
+                    "video"
+                  ]
+                },
+                "video_frame_count": {
+                  "type": "integer"
+                },
+                "video_width": {
+                  "type": "integer",
+                  "unit": "px"
+                },
+                "video_height": {
+                  "type": "integer",
+                  "unit": "px"
+                },
+                "output_shape": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "unconditional-image-generation": {
+          "input": {
+            "json_schema": {
+              "required": [
+                "input_scale"
+              ],
+              "properties": {
+                "resolution": null,
+                "input_scale": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "unit": "denoising steps"
+                }
+              }
+            }
+          }
+        },
+        "text-to-3d": {
+          "input": {
+            "json_schema": {
+              "required": [
+                "prompt",
+                "input_scale"
+              ],
+              "properties": {
+                "resolution": null,
+                "input_scale": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "unit": "denoising steps"
+                }
+              }
+            }
+          },
+          "output": {
+            "json_schema": {
+              "properties": {
+                "image_width": null,
+                "image_height": null,
+                "output_type": {
+                  "enum": [
+                    "mesh"
+                  ]
+                },
+                "mesh_vertex_counts": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                },
+                "mesh_face_counts": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "image-to-3d": {
+          "input": {
+            "json_schema": {
+              "required": [
+                "image_base64",
+                "input_scale"
+              ],
+              "properties": {
+                "resolution": null,
+                "image_base64": {
+                  "type": "string",
+                  "contentEncoding": "base64",
+                  "contentMediaType": "image/png"
+                },
+                "input_scale": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "unit": "denoising steps"
+                }
+              }
+            }
+          },
+          "output": {
+            "json_schema": {
+              "properties": {
+                "image_width": null,
+                "image_height": null,
+                "output_type": {
+                  "enum": [
+                    "mesh"
+                  ]
+                },
+                "mesh_vertex_counts": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                },
+                "mesh_face_counts": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "input_plan": {
+        "accepts_workload_spec": true,
+        "workload_scales": true
+      },
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      }
+    },
+    "multimodal": {
+      "scaling": {
+        "param_name": "media_scale",
+        "values": [
+          224,
+          336,
+          448
+        ],
+        "csv_field": "input_scale",
+        "description": "task-specific media scale; authoritative unit is in the workload plan"
+      },
+      "task_params": {
+        "max_new_tokens": 64
+      },
+      "io_format": {
+        "input": {
+          "transport": "HTTP",
+          "media_type": "application/json",
+          "method": "POST",
+          "endpoint": "/predict",
+          "json_schema": {
+            "type": "object",
+            "required": [
+              "samples",
+              "input_scale",
+              "input_scale_type"
+            ],
+            "properties": {
+              "samples": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 1,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "text"
+                  ],
+                  "properties": {
+                    "text": {
+                      "type": "string"
+                    },
+                    "image_base64": {
+                      "type": "string",
+                      "contentEncoding": "base64",
+                      "contentMediaType": "image/png"
+                    },
+                    "audio_base64": {
+                      "type": "string",
+                      "contentEncoding": "base64",
+                      "contentMediaType": "audio/wav"
+                    },
+                    "sampling_rate": {
+                      "type": "integer",
+                      "unit": "Hz"
+                    },
+                    "video_frames_base64": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "fps": {
+                      "type": "number",
+                      "unit": "frames/s"
+                    },
+                    "words": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "boxes": {
+                      "type": "array",
+                      "description": "OCR boxes normalized to 0..1000"
+                    }
+                  }
+                }
+              },
+              "params": {
+                "type": "object"
+              },
+              "input_scale": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "input_scale_type": {
+                "type": "string",
+                "enum": [
+                  "resolution_px",
+                  "duration_s",
+                  "frame_count"
+                ]
+              }
+            }
+          }
+        },
+        "output": {
+          "transport": "HTTP",
+          "media_type": "application/json",
+          "status": 200,
+          "json_schema": {
+            "type": "object",
+            "required": [
+              "task",
+              "output_type",
+              "n_results"
+            ],
+            "properties": {
+              "task": {
+                "type": "string"
+              },
+              "output_type": {
+                "type": "string"
+              },
+              "n_results": {
+                "type": "integer"
+              },
+              "output_length": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "output_token_count": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "effective_input_scale": {
+                "type": "number"
+              },
+              "texts": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "workload_contract": {
+                "type": "object",
+                "description": "Actual request workload, separate from resource limits; schema_version=1, serial scenario."
+              }
+            }
+          }
+        }
+      },
+      "task_io_format": {
+        "visual-question-answering": {
+          "output": {
+            "json_schema": {
+              "properties": {
+                "texts": null,
+                "answers": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "document-question-answering": {
+          "output": {
+            "json_schema": {
+              "properties": {
+                "texts": null,
+                "answers": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "visual-document-retrieval": {
+          "output": {
+            "json_schema": {
+              "properties": {
+                "texts": null,
+                "scores": {
+                  "type": "array",
+                  "description": "query-by-page MaxSim scores, including both encoders"
+                },
+                "n_queries": {
+                  "type": "integer"
+                },
+                "n_documents": {
+                  "type": "integer"
+                },
+                "retrieval_scope": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "any-to-any": {
+          "output": {
+            "json_schema": {
+              "properties": {
+                "audio_num_samples": {
+                  "type": "integer"
+                },
+                "audio_sample_rate": {
+                  "type": "integer",
+                  "unit": "Hz"
+                },
+                "audio_duration_s": {
+                  "type": "number",
+                  "unit": "s"
+                }
+              }
+            }
+          }
+        }
+      },
+      "input_plan": {
+        "accepts_workload_spec": true,
+        "workload_scales": true
+      },
+      "precision": {
+        "cpu": "FP32",
+        "gpu": "FP16"
+      },
+      "task_precision": {
+        "any-to-any": {
+          "cpu": "FP32",
+          "gpu": "mixed FP16 (thinker/talker), FP32 (token2wav)"
+        }
+      }
+    },
+    "structured": {
+      "scaling": {
+        "param_name": "structured_scale",
+        "values": [
+          1,
+          8,
+          32,
+          128
+        ],
+        "csv_field": "input_scale",
+        "description": "rows, observations or graph nodes; unit is recorded in the workload plan"
+      },
+      "task_params": {},
+      "io_format": {
+        "input": {
+          "transport": "HTTP",
+          "media_type": "application/json",
+          "method": "POST",
+          "endpoint": "/predict",
+          "json_schema": {
+            "type": "object",
+            "required": [
+              "features",
+              "batch_size",
+              "input_scale"
+            ],
+            "properties": {
+              "features": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "number",
+                    "format": "float32"
+                  }
+                }
+              },
+              "batch_size": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "input_scale": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        },
+        "output": {
+          "transport": "HTTP",
+          "media_type": "application/json",
+          "status": 200,
+          "json_schema": {
+            "type": "object",
+            "required": [
+              "task",
+              "output_type",
+              "output_shape",
+              "n_results"
+            ],
+            "properties": {
+              "task": {
+                "type": "string"
+              },
+              "output_type": {
+                "type": "string",
+                "enum": [
+                  "classification"
+                ]
+              },
+              "output_shape": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              },
+              "n_results": {
+                "type": "integer"
+              },
+              "effective_input_scale": {
+                "type": "number"
+              },
+              "workload_contract": {
+                "type": "object",
+                "description": "Actual request workload, separate from resource limits; schema_version=1, serial scenario."
+              }
+            }
+          }
+        }
+      },
+      "task_io_format": {
+        "tabular-regression": {
+          "output": {
+            "json_schema": {
+              "properties": {
+                "output_type": {
+                  "enum": [
+                    "regression"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "reinforcement-learning": {
+          "input": {
+            "json_schema": {
+              "required": [
+                "observations",
+                "batch_size",
+                "input_scale"
+              ],
+              "properties": {
+                "features": null,
+                "observations": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "number",
+                      "format": "float32"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "output": {
+            "json_schema": {
+              "properties": {
+                "output_type": {
+                  "enum": [
+                    "actions"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "robotics": {
+          "input": {
+            "json_schema": {
+              "required": [
+                "observations",
+                "batch_size",
+                "input_scale"
+              ],
+              "properties": {
+                "features": null,
+                "observations": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "number",
+                      "format": "float32"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "output": {
+            "json_schema": {
+              "properties": {
+                "output_type": {
+                  "enum": [
+                    "actions"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "graph-ml": {
+          "input": {
+            "json_schema": {
+              "required": [
+                "graphs",
+                "batch_size",
+                "input_scale"
+              ],
+              "properties": {
+                "features": null,
+                "graphs": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "node_features",
+                      "edge_index"
+                    ],
+                    "properties": {
+                      "node_features": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "array",
+                          "minItems": 1,
+                          "items": {
+                            "type": "number",
+                            "format": "float32"
+                          }
+                        }
+                      },
+                      "edge_index": {
+                        "type": "array",
+                        "minItems": 2,
+                        "maxItems": 2,
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "output": {
+            "json_schema": {
+              "properties": {
+                "output_type": {
+                  "enum": [
+                    "graph"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "input_plan": {
+        "accepts_workload_spec": true,
+        "workload_scales": true,
+        "model_feature_dim": true
+      }
+    }
+  },
+  "platforms": {
+    "cpu": {
+      "platform_id": "cpu",
+      "torch_version": "2.11.0+cpu",
+      "torch_index_url": "https://download.pytorch.org/whl/cpu",
+      "requirements_lock": "dockerfiles/locks/platform-cpu.txt",
+      "python_base_image": "docker.m.daocloud.io/library/python:3.10-slim@sha256:fd76ade0c607f27677bc04be3c60749f400eedc941d9e72967e19a4cedff80c2",
+      "python_version": "3.10.21",
+      "architecture": "linux/amd64",
+      "python_target": "x86_64-manylinux_2_28",
+      "system_lock": "dockerfiles/locks/system-trixie-amd64.json"
+    },
+    "cu124": {
+      "platform_id": "cu124",
+      "torch_version": "2.6.0+cu124",
+      "torch_index_url": "https://download.pytorch.org/whl/cu124",
+      "requirements_lock": "dockerfiles/locks/platform-cu124.txt",
+      "python_base_image": "docker.m.daocloud.io/library/python:3.10-slim@sha256:fd76ade0c607f27677bc04be3c60749f400eedc941d9e72967e19a4cedff80c2",
+      "python_version": "3.10.21",
+      "architecture": "linux/amd64",
+      "python_target": "x86_64-manylinux_2_28",
+      "system_lock": "dockerfiles/locks/system-trixie-amd64.json"
+    },
+    "cu128": {
+      "platform_id": "cu128",
+      "torch_version": "2.11.0+cu128",
+      "torch_index_url": "https://download.pytorch.org/whl/cu128",
+      "requirements_lock": "dockerfiles/locks/platform-cu128.txt",
+      "python_base_image": "docker.m.daocloud.io/library/python:3.10-slim@sha256:fd76ade0c607f27677bc04be3c60749f400eedc941d9e72967e19a4cedff80c2",
+      "python_version": "3.10.21",
+      "architecture": "linux/amd64",
+      "python_target": "x86_64-manylinux_2_28",
+      "system_lock": "dockerfiles/locks/system-trixie-amd64.json"
+    },
+    "python-cpu": {
+      "platform_id": "python-cpu",
+      "torch_version": null,
+      "torch_index_url": null,
+      "requirements_lock": "dockerfiles/locks/platform-python-cpu.txt",
+      "python_base_image": "docker.m.daocloud.io/library/python:3.10-slim@sha256:fd76ade0c607f27677bc04be3c60749f400eedc941d9e72967e19a4cedff80c2",
+      "python_version": "3.10.21",
+      "architecture": "linux/amd64",
+      "python_target": "x86_64-manylinux_2_28",
+      "system_lock": "dockerfiles/locks/system-trixie-amd64.json"
+    }
+  },
+  "dependency_environments": {
+    "nlp-cpu": {
+      "platform": "cpu",
+      "requirements_lock": "dockerfiles/locks/nlp-cpu.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/nlp.in"
+      ]
+    },
+    "nlp-cu124": {
+      "platform": "cu124",
+      "requirements_lock": "dockerfiles/locks/nlp-cu124.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/nlp.in"
+      ]
+    },
+    "nlp-cu128": {
+      "platform": "cu128",
+      "requirements_lock": "dockerfiles/locks/nlp-cu128.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/nlp.in"
+      ]
+    },
+    "cv-cpu": {
+      "platform": "cpu",
+      "requirements_lock": "dockerfiles/locks/cv-cpu.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/cv.in",
+        "dockerfiles/requirements/timm.in"
+      ]
+    },
+    "cv-cu124": {
+      "platform": "cu124",
+      "requirements_lock": "dockerfiles/locks/cv-cu124.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/cv.in",
+        "dockerfiles/requirements/timm.in"
+      ]
+    },
+    "cv-cu128": {
+      "platform": "cu128",
+      "requirements_lock": "dockerfiles/locks/cv-cu128.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/cv.in",
+        "dockerfiles/requirements/timm.in"
+      ]
+    },
+    "audio-cpu": {
+      "platform": "cpu",
+      "requirements_lock": "dockerfiles/locks/audio-cpu.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/audio.in",
+        "dockerfiles/requirements/multimodal-transformers4576.in"
+      ]
+    },
+    "audio-cu124": {
+      "platform": "cu124",
+      "requirements_lock": "dockerfiles/locks/audio-cu124.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/audio.in",
+        "dockerfiles/requirements/multimodal-transformers4576.in"
+      ]
+    },
+    "audio-cu128": {
+      "platform": "cu128",
+      "requirements_lock": "dockerfiles/locks/audio-cu128.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/audio.in"
+      ]
+    },
+    "diffusion-cpu": {
+      "platform": "cpu",
+      "requirements_lock": "dockerfiles/locks/diffusion-cpu.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/diffusion.in"
+      ]
+    },
+    "diffusion-cu124": {
+      "platform": "cu124",
+      "requirements_lock": "dockerfiles/locks/diffusion-cu124.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/diffusion.in"
+      ]
+    },
+    "diffusion-cu128": {
+      "platform": "cu128",
+      "requirements_lock": "dockerfiles/locks/diffusion-cu128.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/diffusion.in"
+      ]
+    },
+    "structured-cpu": {
+      "platform": "cpu",
+      "requirements_lock": "dockerfiles/locks/structured-cpu.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/structured.in"
+      ]
+    },
+    "structured-cu124": {
+      "platform": "cu124",
+      "requirements_lock": "dockerfiles/locks/structured-cu124.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/structured.in"
+      ]
+    },
+    "structured-cu128": {
+      "platform": "cu128",
+      "requirements_lock": "dockerfiles/locks/structured-cu128.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/structured.in"
+      ]
+    },
+    "timeseries-cpu": {
+      "platform": "cpu",
+      "requirements_lock": "dockerfiles/locks/timeseries-cpu.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/timeseries.in"
+      ]
+    },
+    "timeseries-cu124": {
+      "platform": "cu124",
+      "requirements_lock": "dockerfiles/locks/timeseries-cu124.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/timeseries.in"
+      ]
+    },
+    "timeseries-cu128": {
+      "platform": "cu128",
+      "requirements_lock": "dockerfiles/locks/timeseries-cu128.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/timeseries.in"
+      ]
+    },
+    "multimodal-transformers4576": {
+      "platform": "cu128",
+      "requirements_lock": "dockerfiles/locks/multimodal-transformers4576.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/multimodal-transformers4576.in"
+      ]
+    },
+    "transformers560-cpu": {
+      "platform": "cpu",
+      "requirements_lock": "dockerfiles/locks/transformers560-cpu.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/transformers560.in"
+      ]
+    },
+    "transformers560-cu124": {
+      "platform": "cu124",
+      "requirements_lock": "dockerfiles/locks/transformers560-cu124.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/transformers560.in"
+      ]
+    },
+    "transformers560-cu128": {
+      "platform": "cu128",
+      "requirements_lock": "dockerfiles/locks/transformers560-cu128.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/transformers560.in"
+      ]
+    },
+    "custom-multimodal-cpu": {
+      "platform": "cpu",
+      "requirements_lock": "dockerfiles/locks/custom-multimodal-cpu.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/custom-multimodal.in"
+      ]
+    },
+    "custom-multimodal-cu124": {
+      "platform": "cu124",
+      "requirements_lock": "dockerfiles/locks/custom-multimodal-cu124.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/custom-multimodal.in"
+      ]
+    },
+    "custom-multimodal-cu128": {
+      "platform": "cu128",
+      "requirements_lock": "dockerfiles/locks/custom-multimodal-cu128.txt",
+      "requirements_inputs": [
+        "dockerfiles/requirements/custom-multimodal.in"
+      ]
+    }
+  },
+  "runtime_profiles": {
+    "nlp-cpu": {
+      "profile_id": "nlp-cpu",
+      "family": "nlp",
+      "environment": "nlp-cpu",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "default"
+    },
+    "nlp-cu124": {
+      "profile_id": "nlp-cu124",
+      "family": "nlp",
+      "environment": "nlp-cu124",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "default"
+    },
+    "nlp-cu128": {
+      "profile_id": "nlp-cu128",
+      "family": "nlp",
+      "environment": "nlp-cu128",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "default"
+    },
+    "cv-cpu": {
+      "profile_id": "cv-cpu",
+      "family": "cv",
+      "environment": "cv-cpu",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "default"
+    },
+    "cv-cu124": {
+      "profile_id": "cv-cu124",
+      "family": "cv",
+      "environment": "cv-cu124",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "default"
+    },
+    "cv-cu128": {
+      "profile_id": "cv-cu128",
+      "family": "cv",
+      "environment": "cv-cu128",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "default"
+    },
+    "audio-cpu": {
+      "profile_id": "audio-cpu",
+      "family": "audio",
+      "environment": "audio-cpu",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "default"
+    },
+    "audio-cu124": {
+      "profile_id": "audio-cu124",
+      "family": "audio",
+      "environment": "audio-cu124",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "default"
+    },
+    "audio-cu128": {
+      "profile_id": "audio-cu128",
+      "family": "audio",
+      "environment": "audio-cu128",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "default"
+    },
+    "diffusion-cpu": {
+      "profile_id": "diffusion-cpu",
+      "family": "diffusion",
+      "environment": "diffusion-cpu",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "default"
+    },
+    "diffusion-cu124": {
+      "profile_id": "diffusion-cu124",
+      "family": "diffusion",
+      "environment": "diffusion-cu124",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "default"
+    },
+    "diffusion-cu128": {
+      "profile_id": "diffusion-cu128",
+      "family": "diffusion",
+      "environment": "diffusion-cu128",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "default"
+    },
+    "structured-cpu": {
+      "profile_id": "structured-cpu",
+      "family": "structured",
+      "environment": "structured-cpu",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "default"
+    },
+    "structured-cu124": {
+      "profile_id": "structured-cu124",
+      "family": "structured",
+      "environment": "structured-cu124",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "default"
+    },
+    "structured-cu128": {
+      "profile_id": "structured-cu128",
+      "family": "structured",
+      "environment": "structured-cu128",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "default"
+    },
+    "timeseries-cpu": {
+      "profile_id": "timeseries-cpu",
+      "family": "timeseries",
+      "environment": "timeseries-cpu",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "default"
+    },
+    "timeseries-cu124": {
+      "profile_id": "timeseries-cu124",
+      "family": "timeseries",
+      "environment": "timeseries-cu124",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "default"
+    },
+    "timeseries-cu128": {
+      "profile_id": "timeseries-cu128",
+      "family": "timeseries",
+      "environment": "timeseries-cu128",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "default"
+    },
+    "multimodal-transformers4576-cpu": {
+      "profile_id": "multimodal-transformers4576-cpu",
+      "family": "multimodal",
+      "environment": "audio-cpu",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "default"
+    },
+    "multimodal-transformers4576-cu124": {
+      "profile_id": "multimodal-transformers4576-cu124",
+      "family": "multimodal",
+      "environment": "audio-cu124",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "default"
+    },
+    "multimodal-transformers4576": {
+      "profile_id": "multimodal-transformers4576",
+      "family": "multimodal",
+      "environment": "multimodal-transformers4576",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "default"
+    },
+    "nlp-transformers560-cpu": {
+      "profile_id": "nlp-transformers560-cpu",
+      "family": "nlp",
+      "environment": "transformers560-cpu",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "transformers560"
+    },
+    "nlp-transformers560-cu124": {
+      "profile_id": "nlp-transformers560-cu124",
+      "family": "nlp",
+      "environment": "transformers560-cu124",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "transformers560"
+    },
+    "nlp-transformers560-cu128": {
+      "profile_id": "nlp-transformers560-cu128",
+      "family": "nlp",
+      "environment": "transformers560-cu128",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "transformers560"
+    },
+    "cv-transformers560-cpu": {
+      "profile_id": "cv-transformers560-cpu",
+      "family": "cv",
+      "environment": "transformers560-cpu",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "transformers560"
+    },
+    "cv-transformers560-cu124": {
+      "profile_id": "cv-transformers560-cu124",
+      "family": "cv",
+      "environment": "transformers560-cu124",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "transformers560"
+    },
+    "cv-transformers560-cu128": {
+      "profile_id": "cv-transformers560-cu128",
+      "family": "cv",
+      "environment": "transformers560-cu128",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "transformers560"
+    },
+    "audio-transformers560-cpu": {
+      "profile_id": "audio-transformers560-cpu",
+      "family": "audio",
+      "environment": "transformers560-cpu",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "transformers560"
+    },
+    "audio-transformers560-cu124": {
+      "profile_id": "audio-transformers560-cu124",
+      "family": "audio",
+      "environment": "transformers560-cu124",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "transformers560"
+    },
+    "audio-transformers560-cu128": {
+      "profile_id": "audio-transformers560-cu128",
+      "family": "audio",
+      "environment": "transformers560-cu128",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "transformers560"
+    },
+    "multimodal-transformers560-cpu": {
+      "profile_id": "multimodal-transformers560-cpu",
+      "family": "multimodal",
+      "environment": "transformers560-cpu",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "transformers560"
+    },
+    "multimodal-transformers560-cu124": {
+      "profile_id": "multimodal-transformers560-cu124",
+      "family": "multimodal",
+      "environment": "transformers560-cu124",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "transformers560"
+    },
+    "multimodal-transformers560-cu128": {
+      "profile_id": "multimodal-transformers560-cu128",
+      "family": "multimodal",
+      "environment": "transformers560-cu128",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": false,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_model",
+        "transformers_pipeline"
+      ],
+      "runtime_line": "transformers560"
+    },
+    "custom-multimodal-cpu": {
+      "profile_id": "custom-multimodal-cpu",
+      "family": "multimodal",
+      "environment": "custom-multimodal-cpu",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": true,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_pipeline"
+      ],
+      "runtime_line": "custom-multimodal"
+    },
+    "custom-multimodal-cu124": {
+      "profile_id": "custom-multimodal-cu124",
+      "family": "multimodal",
+      "environment": "custom-multimodal-cu124",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": true,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_pipeline"
+      ],
+      "runtime_line": "custom-multimodal"
+    },
+    "custom-multimodal-cu128": {
+      "profile_id": "custom-multimodal-cu128",
+      "family": "multimodal",
+      "environment": "custom-multimodal-cu128",
+      "adapter": "family-default",
+      "gpu_dtype": "FP16",
+      "trust_remote_code": true,
+      "task_types": [],
+      "model_types": [],
+      "backends": [
+        "transformers_pipeline"
+      ],
+      "runtime_line": "custom-multimodal"
+    }
+  }
 }

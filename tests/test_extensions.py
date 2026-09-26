@@ -93,7 +93,7 @@ class ExtensionDeclarationTests(unittest.TestCase):
         from acprof.extensions import load_catalog
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp, "manifest.json")
-            path.write_text(json.dumps({"schema_version": 1, "extensions": [{
+            path.write_text(json.dumps({"schema_version": 2, "extensions": [{
                 "extension_id": "new-runtime", "family": "structured", "runtime": "new-runtime",
                 "backends": ["new-runtime"], "tasks": ["tabular-regression"],
                 "handler_entrypoint": "not_installed_plugin:Handler", "validation_entrypoint": "not_installed_plugin:validate",
@@ -117,12 +117,12 @@ class ExtensionDeclarationTests(unittest.TestCase):
                 "execution": {"cpu": "available"}, "dtypes": ["FP32"], "input_modalities": ["tabular"],
             }
             duplicate = dict(entry, extension_id="second", handler_entrypoint="other:Handler")
-            path.write_text(json.dumps({"schema_version": 1, "extensions": [entry, duplicate]}))
+            path.write_text(json.dumps({"schema_version": 2, "extensions": [entry, duplicate]}))
             with self.assertRaisesRegex(ValueError, "duplicate"):
                 load_catalog([path])
             entry["execution"]["cpu"] = True
-            path.write_text(json.dumps({"schema_version": 1, "extensions": [entry]}))
-            with self.assertRaisesRegex(ValueError, "status"):
+            path.write_text(json.dumps({"schema_version": 2, "extensions": [entry]}))
+            with self.assertRaisesRegex(ValueError, "status|execution.cpu"):
                 load_catalog([path])
 
     def test_existing_architecture_checkpoint_changes_only_configuration(self):
@@ -139,7 +139,7 @@ class ExtensionDeclarationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp, "manifest.json")
-            path.write_text(json.dumps({"schema_version": 1, "architecture_tasks": {
+            path.write_text(json.dumps({"schema_version": 2, "architecture_tasks": {
                 "NewForCausalLM": "text-classification",
             }, "extensions": [{
                 "extension_id": "custom-architecture", "family": "nlp", "runtime": "torch",
@@ -161,7 +161,7 @@ class ExtensionDeclarationTests(unittest.TestCase):
         catalog = ExtensionCatalog()
         template = CATALOG.get_extension("nlp", "transformers_model")
         for backend in ("first", "second"):
-            catalog.add(replace(template, extension_id=backend, backends=(backend,),
+            catalog.add(replace(template, extension_id=backend, backends=(backend,), backend_tasks={},
                                 adapter=backend, model_types=("shared_architecture",),
                                 model_ids=("owner/shared",), profile=backend + "-profile"))
         task = TaskInfo("owner/shared", "text-generation", "nlp", "second", "custom", "fixed", "manual",

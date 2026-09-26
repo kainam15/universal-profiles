@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from acprof.config import SCALING_DIMENSIONS
+from acprof.extensions import CATALOG
 from acprof.host.detect import TaskInfo
 from acprof.host.docker_runtime import (
     ImageInfo,
@@ -441,35 +442,6 @@ def _request_audio_scale_meta(
     return result
 
 
-def _assert_manual_timeseries_scales_legal(
-    task_info: TaskInfo,
-    scales: List[float],
-    batch_size: int,
-) -> List[float]:
-
-    workload_gen = _get_task_generator(task_info, batch_size)
-    invalid: Dict[float, str] = {}
-
-    for scale in scales:
-        payload = workload_gen.generate(scale)
-        effective = workload_gen.effective_input_scale(scale, payload)
-        if effective is None:
-            raise RuntimeError(
-                f"cannot determine effective context length for requested scale {_format_scale_value(scale)}"
-            )
-        if float(effective) + 1e-9 < float(scale):
-            invalid[scale] = f"context_length_clamped_to_{_format_scale_value(float(effective))}"
-
-    if invalid:
-        details = ", ".join(
-            f"{_format_scale_value(scale)} ({reason})" for scale, reason in invalid.items()
-        )
-        raise RuntimeError(f"manual input scales exceed the usable timeseries context length: {details}")
-
-    print(f"[scale] Using manual input scales: {serialize_input_scales(scales)}")
-    return scales
-
-
 def _assert_manual_nlp_scales_legal(
     task_info: TaskInfo,
     image_info: ImageInfo,
@@ -721,7 +693,7 @@ def _plan_nlp_auto_scales(
 
 
 def _default_family_max_scale(task_info: TaskInfo, batch_size: int) -> float:
-    if task_info.task_family == "timeseries":
+    if CATALOG.describe(task_info).declaration.input_plan.max_scale_probe:
 
         workload_gen = _get_task_generator(task_info, batch_size)
         if hasattr(workload_gen, "max_input_scale"):
@@ -888,22 +860,19 @@ def plan_input_scales(
     input_scales: Optional[str] = None,
     workload_spec_path: Optional[str] = None,
 ) -> PlannedInputScales:
-    if workload_spec_path and task_info.task_family not in {"nlp", "cv", "audio", "multimodal", "diffusion", "structured"}:
-        raise ValueError(
-            "--workload-spec is implemented for nlp, cv, audio, multimodal, diffusion and structured tasks"
-        )
+    capabilities = CATALOG.describe(task_info).declaration.input_plan
+    if workload_spec_path and not capabilities.accepts_workload_spec:
+        raise ValueError(f"--workload-spec is not declared for {task_info.pipeline_tag}")
     plan_file = _scale_plan_file_path(output_dir)
     _clear_scale_plan_file(plan_file)
-    text_audio = task_info.pipeline_tag in {"text-to-speech", "text-to-audio"}
-    table_qa = task_info.pipeline_tag == "table-question-answering"
-    if task_info.task_family == "timeseries":
+    if capabilities.requires_scale_meta:
         return _plan_timeseries_scales(
             task_info, image_info, cpu_list, mem_list, gpu_list, batch_size, output_dir, input_scales,
         )
 
     if input_scales:
         manual_scales = resolve_input_scales(task_info.task_family, input_scales=input_scales)
-        if task_info.task_family == "audio" and not text_audio:
+        if capabilities.audio_payload:
             return _plan_audio_scales(
                 task_info=task_info,
                 image_info=image_info,
@@ -916,7 +885,7 @@ def plan_input_scales(
                 source="manual",
                 workload_spec_path=workload_spec_path,
             )
-        if (task_info.task_family == "nlp" and not table_qa) or text_audio:
+        if capabilities.text_payload:
             return _plan_manual_nlp_scales(
                 task_info=task_info,
                 image_info=image_info,
@@ -926,16 +895,9 @@ def plan_input_scales(
                 scales=manual_scales,
                 batch_size=batch_size,
                 output_dir=output_dir,
-                **({"workload_spec_path": workload_spec_path} if workload_spec_path or text_audio else {}),
+                **({"workload_spec_path": workload_spec_path} if workload_spec_path or capabilities.text_requires_workload_spec else {}),
             )
-        if task_info.task_family == "timeseries":
-            manual_scales = _assert_manual_timeseries_scales_legal(
-                task_info=task_info,
-                scales=manual_scales,
-                batch_size=batch_size,
-            )
-        else:
-            print(f"[scale] Using manual input scales: {serialize_input_scales(manual_scales)}")
+        print(f"[scale] Using manual input scales: {serialize_input_scales(manual_scales)}")
 
         return _materialize_scale_plan(
             task_info=task_info,
@@ -946,7 +908,7 @@ def plan_input_scales(
             workload_spec_path=workload_spec_path,
         )
 
-    if (task_info.task_family == "nlp" and not table_qa) or text_audio:
+    if capabilities.text_payload:
         return _plan_nlp_auto_scales(
             task_info=task_info,
             image_info=image_info,
@@ -955,10 +917,10 @@ def plan_input_scales(
             gpu_list=gpu_list,
             batch_size=batch_size,
             output_dir=output_dir,
-            **({"workload_spec_path": workload_spec_path} if workload_spec_path or text_audio else {}),
+            **({"workload_spec_path": workload_spec_path} if workload_spec_path or capabilities.text_requires_workload_spec else {}),
         )
 
-    if task_info.task_family == "audio":
+    if capabilities.audio_payload:
 
         workload_gen = _get_task_generator(task_info,
             batch_size,
@@ -982,16 +944,14 @@ def plan_input_scales(
             workload_spec_path=workload_spec_path,
         )
 
-    if table_qa or task_info.task_family in {"diffusion", "multimodal", "structured"} or (
-        task_info.task_family == "cv" and workload_spec_path
-    ):
+    if capabilities.workload_scales or (capabilities.fractional_scales and workload_spec_path):
 
         workload_gen = _get_task_generator(task_info,
             batch_size,
             workload_spec_path=workload_spec_path,
         )
         default_scales = workload_gen.default_input_scales()
-        if not default_scales and task_info.task_family == "cv":
+        if not default_scales and capabilities.fractional_scales:
             default_scales = _float_auto_scales(
                 _default_family_max_scale(task_info, batch_size), count=AUTO_INPUT_SCALE_COUNT,
             )
@@ -1014,7 +974,7 @@ def plan_input_scales(
         )
 
     max_scale = _default_family_max_scale(task_info, batch_size)
-    if task_info.task_family == "cv":
+    if capabilities.fractional_scales:
         scales = _float_auto_scales(max_scale, count=AUTO_INPUT_SCALE_COUNT)
     else:
         scales = _integer_auto_scales(int(max_scale), count=AUTO_INPUT_SCALE_COUNT)
@@ -1041,6 +1001,6 @@ def _get_task_generator(task_info: TaskInfo, batch_size: int, **kwargs: Any):
     if task_info.model_adapter != "family-default":
         kwargs["model_adapter"] = task_info.model_adapter
     spec = task_model_spec(task_info)
-    if task_info.task_family == "structured" and spec.get("feature_dim") is not None:
+    if CATALOG.describe(task_info).declaration.input_plan.model_feature_dim and spec.get("feature_dim") is not None:
         kwargs["model_feature_dim"] = spec["feature_dim"]
     return get_generator(task_info.task_family, task_info.model_id, task_info.pipeline_tag, batch_size, **kwargs)

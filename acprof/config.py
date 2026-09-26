@@ -3,13 +3,7 @@
 from dataclasses import dataclass
 from typing import Dict, Any
 
-# 保留公共常量名称；任务、后端与架构声明统一由 extension manifests 提供。
 from acprof.extensions import CATALOG
-
-PIPELINE_TAG_TO_FAMILY: Dict[str, str] = dict(CATALOG.task_families)
-LIBRARY_TO_BACKEND: Dict[str, str] = dict(CATALOG.library_backends)
-ARCHITECTURE_TO_TASK: Dict[str, str] = dict(CATALOG.architecture_tasks)
-DEFAULT_BACKEND = "transformers_pipeline"
 
 # ─────────────────────────────────────────────
 # 各任务族的输入缩放维度
@@ -22,55 +16,10 @@ class ScalingConfig:
     description: str = ""
 
 SCALING_DIMENSIONS: Dict[str, ScalingConfig] = {
-    "nlp": ScalingConfig(
-        param_name="seq_length",
-        values=[64, 128, 256, 512, 1024, 2048],
-        description="sequence length (tokens)",
-    ),
-    "cv": ScalingConfig(
-        param_name="resolution_scale",
-        values=[0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0],
-        description="resolution multiplier of base size",
-    ),
-    "audio": ScalingConfig(
-        param_name="duration_s",
-        values=[1, 2, 5, 10, 20, 30],
-        description="audio duration (seconds)",
-    ),
-    "timeseries": ScalingConfig(
-        param_name="context_length",
-        values=[64, 128, 256, 512, 1024, 2048],
-        description="context length (time steps)",
-    ),
-    "structured": ScalingConfig(
-        param_name="structured_scale",
-        values=[1, 8, 32, 128],
-        description="rows, observations or graph nodes; unit is recorded in the workload plan",
-    ),
-    "diffusion": ScalingConfig(
-        param_name="resolution_px",
-        values=[128, 192, 256, 320, 384, 512],
-        description="square output image side length (pixels)",
-    ),
-    "multimodal": ScalingConfig(
-        param_name="media_scale",
-        values=[224, 336, 448],
-        description="task-specific media scale; authoritative unit is in the workload plan",
-    ),
+    family: ScalingConfig(**{**values, "values": list(values["values"])})
+    for family, values in CATALOG.family_scaling().items()
 }
-
-# ─────────────────────────────────────────────
-# 各任务族的默认 task_param（二级参数）
-# ─────────────────────────────────────────────
-DEFAULT_TASK_PARAMS: Dict[str, Dict[str, Any]] = {
-    "nlp": {"max_new_tokens": 64},
-    "cv": {},
-    "audio": {},
-    "timeseries": {"prediction_length": 64},
-    "structured": {},
-    "diffusion": {"num_inference_steps": 20, "guidance_scale": 7.5},
-    "multimodal": {"max_new_tokens": 64},
-}
+DEFAULT_TASK_PARAMS: Dict[str, Dict[str, Any]] = CATALOG.family_task_params()
 
 # ─────────────────────────────────────────────
 # 默认资源矩阵

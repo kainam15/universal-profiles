@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "extensions": [
     {
       "extension_id": "onnxruntime-cpu",
@@ -40,7 +40,23 @@
       ],
       "environment": "onnxruntime-cpu",
       "profile": "onnxruntime-cpu",
-      "workload_entrypoint": "acprof.workloads.structured:StructuredWorkloadGenerator"
+      "workload_entrypoint": "acprof.workloads.structured:StructuredWorkloadGenerator",
+      "precision": {
+        "cpu": null,
+        "gpu": null
+      },
+      "dependency_environment": {
+        "platform": "python-cpu",
+        "requirements_lock": "dockerfiles/locks/onnxruntime-cpu.txt",
+        "requirements_inputs": [
+          "dockerfiles/requirements/onnxruntime.in"
+        ],
+        "runtime": {
+          "type": "onnxruntime",
+          "version": "1.23.2",
+          "package": ""
+        }
+      }
     },
     {
       "extension_id": "onnxruntime-cv-cpu",
@@ -80,7 +96,11 @@
       ],
       "environment": "onnxruntime-cpu",
       "profile": "onnxruntime-cv-cpu",
-      "workload_entrypoint": "acprof.workloads.cv:CVWorkloadGenerator"
+      "workload_entrypoint": "acprof.workloads.cv:CVWorkloadGenerator",
+      "precision": {
+        "cpu": null,
+        "gpu": null
+      }
     },
     {
       "extension_id": "onnxruntime-nlp-cpu",
@@ -120,7 +140,11 @@
       ],
       "environment": "onnxruntime-cpu",
       "profile": "onnxruntime-nlp-cpu",
-      "workload_entrypoint": "acprof.workloads.nlp:NLPWorkloadGenerator"
+      "workload_entrypoint": "acprof.workloads.nlp:NLPWorkloadGenerator",
+      "precision": {
+        "cpu": null,
+        "gpu": null
+      }
     }
   ],
   "library_backends": {
@@ -134,7 +158,8 @@
         "onnx",
         "onnxruntime"
       ],
-      "backend": "onnxruntime"
+      "backend": "onnxruntime",
+      "priority": 100
     },
     {
       "family": "cv",
@@ -142,7 +167,8 @@
         "onnx",
         "onnxruntime"
       ],
-      "backend": "onnxruntime"
+      "backend": "onnxruntime",
+      "priority": 100
     },
     {
       "family": "nlp",
@@ -150,7 +176,16 @@
         "onnx",
         "onnxruntime"
       ],
-      "backend": "onnxruntime"
+      "backend": "onnxruntime",
+      "priority": 100
+    },
+    {
+      "backend": "onnxruntime",
+      "priority": 1000,
+      "when_config": {
+        "export_only_onnx": true
+      },
+      "artifact": true
     }
   ]
 }

@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
-from acprof.container.handlers import BaseHandler
+from acprof.container.handlers import BaseHandler, handler_declaration
 from acprof.model_spec import load_model_spec
 
 
@@ -70,12 +70,13 @@ class StructuredHandler(BaseHandler):
              model_revision: str = "main", load_options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         if task_type not in TASK_OUTPUT_TYPES:
             raise ValueError(f"unsupported structured task: {task_type!r}")
-        if backend not in {"torchscript", "skops"}:
-            raise ValueError("structured backend must be torchscript or skops")
+        declaration = handler_declaration(task_type, backend)
+        options = declaration.handler_options
+        tensor_inputs = options.get("tensor_inputs", False)
         if load_options:
             raise ValueError("structured artifacts do not support attention/profiler load options; export the required model implementation")
-        if backend == "skops" and (device != "cpu" or not task_type.startswith("tabular-")):
-            raise ValueError("skops supports only tabular-classification/tabular-regression on CPU")
+        if device != "cpu" and declaration.execution.get("cuda") == "unsupported":
+            raise ValueError(f"{backend} supports this task only on CPU")
         root = _local_snapshot(model_source, model_revision)
         manifest = load_model_spec(str(root), task_type, expected_format=backend) or None
         if manifest:
@@ -87,7 +88,7 @@ class StructuredHandler(BaseHandler):
                 raise ValueError("acprof_model.json format must match runtime backend")
             feature_dim = _positive_integer(manifest.get("feature_dim"), "feature_dim")
             artifact = _artifact_path(root, manifest.get("model_file"))
-        elif backend == "torchscript":
+        elif options.get("requires_model_spec"):
             raise ValueError("TorchScript task support requires acprof_model.json with schema_version, task, format, model_file and feature_dim; arbitrary Hub models are not supported")
         else:
             files = sorted(root.glob("*.skops"))
@@ -95,7 +96,7 @@ class StructuredHandler(BaseHandler):
                 raise ValueError("skops requires one *.skops file or acprof_model.json selecting model_file")
             artifact = files[0]
             feature_dim = None
-        if backend == "torchscript":
+        if tensor_inputs:
             import torch
 
             model = torch.jit.load(str(artifact), map_location=device).eval()
@@ -114,7 +115,7 @@ class StructuredHandler(BaseHandler):
                 raise ValueError(f"loaded skops estimator does not support task {task_type!r}")
         return {"model": model, "backend": backend, "task_type": task_type, "device": device,
                 "feature_dim": feature_dim, "model_revision": model_revision or "main",
-                "model_format": backend, "load_options": {}}
+                "model_format": backend, "tensor_inputs": tensor_inputs, "load_options": {}}
 
     def preprocess(self, model_ctx: Dict[str, Any], raw_input: Dict[str, Any]) -> Dict[str, Any]:
         task = model_ctx["task_type"]
@@ -154,7 +155,7 @@ class StructuredHandler(BaseHandler):
             if len(values) != batch_size * scale:
                 raise ValueError(f"input_scale * batch_size must match actual {key} row count")
             arrays = (values,)
-        if model_ctx["backend"] == "torchscript":
+        if model_ctx["tensor_inputs"]:
             import torch
 
             args = tuple(torch.tensor(value, dtype=torch.float32 if index == 0 else torch.int64,
@@ -165,7 +166,7 @@ class StructuredHandler(BaseHandler):
                 "_probe_reason": "validated structured input shape; feature dimension fixed"}
 
     def predict(self, model_ctx: Dict[str, Any], processed_input: Any) -> Any:
-        if model_ctx["backend"] == "skops":
+        if not model_ctx["tensor_inputs"]:
             return model_ctx["model"].predict(processed_input["args"][0])
         import torch
 

@@ -407,7 +407,54 @@ Handler 和 validator 的 `module:callable` 入口。可选 `execution_entrypoin
 未选 backend 缺依赖不影响启动；选中的 backend 在导入或模型加载失败时保留原始 exception chain，
 分别报告未注册、依赖缺失、模块导入失败、Handler 初始化失败与不支持。
 
-Workload 也从同一 manifest 的可选 `workload_entrypoint: "module:Class"` 读取，schema 仍为 v1。
+内部 extension manifest 使用 `schema_version: 2`，v1 和未知字段直接报错；不加载外部插件目录。
+类型化字段与校验位于 [`extensions/schema.py`](../acprof/extensions/schema.py)。
+`acprof_model.json`、workload 清单和结果文件各自的 schema 版本保持独立。
+
+`ExtensionCatalog.resolve(task, family, library, config)` 是 backend/family 的共同解析入口，
+返回选中的声明、设备精度和 IO 格式；`describe(task_info)` 用于已经选定 backend 的消费端。
+显式 backend 优先，并校验 task/family/backend 路由；未知 library 不再默认进入 Transformers。
+检测阶段保留未决元数据供 CLI 覆盖或契约审阅，候选解析将错误记录为 `needs_configuration`，
+预检在构建或采集前拒绝未解决的组合。
+
+`backend_rules` 的选择顺序为：制品布局证据（`artifact: true`）→ task 规则 →
+library/config 规则 → family 规则，随后才可使用已声明的 `library_backends` 映射。
+每个层级内按整数 `priority` 从高到低选择；同优先级命中不同 backend 时报歧义，文件顺序不决定结果。
+`when_config` 的 `true` 表示字段存在且非空，其他值要求相等。Chronos 的配置标记及缺失 task
+的推断由 `inferred_task` 声明；没有 task 时才使用 model type 和 architecture 推断，
+不会用通用架构后缀覆盖显式任务。单用途 `model_type_tasks` 优先于后缀匹配，
+多任务模型保留具体 architecture 证据；缺少 model type 的快照仍可使用架构映射。
+
+重复的 family 行为集中在顶层 `families`，单条 extension 可覆盖；两遍加载使默认值不依赖文件顺序。
+
+| 声明字段 | 消费行为 |
+| --- | --- |
+| `scaling` / `task_params` | 生成 `SCALING_DIMENSIONS` / `DEFAULT_TASK_PARAMS`；同 family 的共享值必须一致 |
+| `io_format` / `task_io_format` | `/predict` 的输入输出模板及任务差异；对象递归合并，数组替换，`null` 删除键；返回副本 |
+| `precision` / `backend_precision` / `task_precision` | task 优先于 backend，再使用 extension/family 的设备精度；无声明时保留模型 dtype 元数据回退；静态元数据中的运行 profile BF16 覆盖不变 |
+| `input_plan` / `task_input_plan` | workload 清单、文本/音频探测、上下文上限、workload 默认尺度、连续尺度及 feature dimension 传递能力 |
+| `handler_options` / `backend_handler_options` / `task_handler_options` | 依次合并 handler 的 loader 选项、句向量模式、模型清单格式与张量输入方式；不改变四阶段执行协议 |
+| `workload_defaults` / `profile_options` | adapter 的提示词、生成参数和 profile dtype/remote-code 策略；MOSS 特有值只在其声明中维护 |
+
+`input_plan.requires_scale_meta` 使用模型返回的上下文长度上限；`max_scale_probe` 允许 generator
+提供最大尺度。`text_payload`、`audio_payload` 选择已有的输入合法性探测；`workload_scales`
+消费 generator 的默认尺度，`fractional_scales` 允许连续尺度。未声明的能力默认为关闭，
+不能通过字段缺省绕过必须的输入验证。
+
+平台与共享依赖分别在 `platforms`、`dependency_environments` 声明，逻辑配置在 `runtime_profiles`
+或 extension 的 `profile` / `environment` / `dependency_environment` 声明。
+[`runtime_profiles.py`](../acprof/runtime_profiles.py) 使用既有 `PlatformSpec`、`DependencyEnvironment`、
+`RuntimeSpec` 和 `RuntimeProfile` 实例化这些引用并继续检查完整锁。
+新 runtime 可引用 `torch_version: null` 的平台以及独立的精确 lock，无需增加 runtime 名称分支。
+这条声明路径的主机测试使用虚构 runtime；它不代表已实现或验证 OpenVINO 等额外推理后端。
+
+实现参考 [Transformers PipelineRegistry](https://github.com/huggingface/transformers/blob/main/src/transformers/pipelines/base.py)
+的集中任务注册、[任务别名去重讨论](https://github.com/huggingface/transformers/issues/7666)，以及
+[vLLM ModelRegistry](https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/models/registry.py)
+的延迟解析与显式失败边界。采用这些组织方式，继续复用本项目的标准库 catalog 和 `BaseHandler`，
+不复制上游执行框架，也不新增依赖或正式测量阶段的处理步骤。
+
+Workload 也从同一 manifest 的可选 `workload_entrypoint: "module:Class"` 读取。
 入口按 family 共享，同一任务换 backend 不复制样本生成器。声明发现和列表读取只使用标准库；
 选中 family 时才导入实现。重复发现相同入口及其旧式模块自注册是幂等操作，不同实现争用同一
 family 则报告双方来源；模块导入失败后不会留下可被误用的半注册结果。
@@ -752,14 +799,14 @@ Docker 查询只在上述空闲窗口执行，不增加正式测量窗口内的�
 
 | 边界 | 契约与实现入口 |
 | --- | --- |
-| 环境路由 | `acprof/extensions/*/manifest.json` 声明 adapter、环境/profile 引用、task、model_type 和 backend；[`runtime_profiles.py`](../acprof/runtime_profiles.py) 的 `ENVIRONMENTS` / `PLATFORMS` 与精确锁描述实际依赖。架构和模型映射由声明派生。 |
+| 环境路由 | `acprof/extensions/*/manifest.json` v2 声明 adapter、平台、依赖环境/profile、task、model_type 和 backend；[`runtime_profiles.py`](../acprof/runtime_profiles.py) 从声明生成 `ENVIRONMENTS` / `PLATFORMS`，精确锁描述实际依赖。 |
 | 任务支持 | `host/detect.py`、`host/task_support.py` 与 `config.py` 共用 manifest；新任务协议还须补充对应 workload 的物化与尺度处理，不能仅移除预检限制。 |
 | 推理接口 | 已满足协议时使用 `family-default`；自定义实现由 manifest 的 `handler_entrypoint` 按需导入；程序注册 `register_adapter` 仍可用，重复 key 默认拒绝，覆盖必须显式 `override=True`。 |
 | 输入输出 | `BaseHandler` 保留四阶段接口，增加仅在窗口外调用的 `validate_output`；模型提示词、参数和尺度经 workload/输入计划传递，输出与 `host/model_schema.py` 一致。 |
 | 依赖和验证 | 精确锁对应目标 Python/CUDA 容器并通过 `pip check`；CPU、GPU、dtype 与 profiler 分别声明支持，普通推理验证不证明工具兼容。 |
 
-`ARCHITECTURE_PROFILES` / `MODEL_PROFILES` 保留为派生的兼容读取视图；直接修改它们不再改变路由。
-开发扩展应迁移到 manifest。运行时选择同时匹配 architecture、family、backend 与 task，
+`ARCHITECTURE_PROFILES` / `MODEL_PROFILES` 兼容视图已移除，旧导入明确失败。
+开发扩展在 manifest 维护。运行时选择同时匹配 architecture、family、backend 与 task，
 同一 architecture 的多个 backend 不再依靠全局单键覆盖决定。
 
 当前 loader 的设备、模态和 profiler 边界在下方任务章节维护；新的行为须同时满足[采集协议](Profiling_Protocol.md#协议不变量)。

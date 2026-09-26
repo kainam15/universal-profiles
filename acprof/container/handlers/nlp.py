@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from acprof.container.handlers import (
     BaseHandler,
+    handler_declaration,
     model_revision_kwargs,
     transformers_pipeline_load_kwargs,
 )
@@ -288,8 +289,9 @@ class NLPHandler(BaseHandler):
         device_map = device if device == "cpu" else "auto"
         torch_dtype = torch.float16 if device != "cpu" else torch.float32
         pipeline_options = transformers_pipeline_load_kwargs(load_options)
-        if task_type in {"sentence-similarity", "text-ranking"} or backend == "sentence_transformers":
-            if task_type != "text-ranking":
+        encoder = handler_declaration(task_type, backend).handler_options.get("encoder", "")
+        if encoder:
+            if encoder == "sentence":
                 from sentence_transformers import SentenceTransformer as Encoder
             else:
                 from sentence_transformers import CrossEncoder as Encoder
@@ -326,6 +328,7 @@ class NLPHandler(BaseHandler):
             "pipeline": pipe,
             "task_type": task_type,
             "backend": backend,
+            "encoder": encoder,
             "device": device,
             "model_revision": model_revision or "main",
             "load_options": dict(load_options or {}),
@@ -452,7 +455,7 @@ class NLPHandler(BaseHandler):
         params = raw_input.get("params", {})
         pipe = model_ctx["pipeline"]
         common = {"params": params, "batch_size": self._batch_size(raw_input)}
-        if (task_type == "feature-extraction" and model_ctx.get("backend") != "sentence_transformers"
+        if (task_type == "feature-extraction" and model_ctx.get("encoder") != "sentence"
                 and set(params) & {"prompt", "prompt_name", "normalize_embeddings"}):
             raise ValueError("sentence embedding parameters require backend=sentence_transformers")
 
@@ -480,7 +483,7 @@ class NLPHandler(BaseHandler):
                     "_truncated_by_limit": any(item[2] for item in results),
                     "_probe_reason": "per_candidate_tokens; " + results[0][3]}
 
-        if task_type == "feature-extraction" and model_ctx.get("backend") == "sentence_transformers":
+        if task_type == "feature-extraction" and model_ctx.get("encoder") == "sentence":
             text, scale, truncated, reason = self._prepare_embedding_text(pipe, text, task_type, params=params)
             return {**common, "text": text, "_effective_input_scale": scale,
                     "_truncated_by_limit": truncated, "_probe_reason": reason}
@@ -552,7 +555,7 @@ class NLPHandler(BaseHandler):
             }
 
         reserve = self._generation_token_reserve(pipe, task_type, raw_input.get("params", {}))
-        if task_type == "sentence-similarity" or model_ctx.get("backend") == "sentence_transformers":
+        if task_type == "sentence-similarity" or model_ctx.get("encoder") == "sentence":
             _, prompt = self._embedding_options(pipe, raw_input.get("params", {}))
             tokenizer = getattr(pipe, "tokenizer", None)
             reserve += len(tokenizer.encode(prompt, add_special_tokens=False)) if prompt and tokenizer else 0
@@ -622,7 +625,7 @@ class NLPHandler(BaseHandler):
                                     embeddings[offset + 1:offset + len(sample)])[0]
                     for offset in range(0, len(sample) * batch_size, len(sample))]
 
-        if task_type == "feature-extraction" and model_ctx.get("backend") == "sentence_transformers":
+        if task_type == "feature-extraction" and model_ctx.get("encoder") == "sentence":
             return pipe.encode([processed_input["text"]] * batch_size, batch_size=batch_size,
                                show_progress_bar=False, convert_to_tensor=True,
                                **self._embedding_options(pipe, params)[0])
@@ -676,7 +679,7 @@ class NLPHandler(BaseHandler):
     def postprocess(self, model_ctx: Dict[str, Any], raw_output: Any) -> Dict[str, Any]:
         task_type = model_ctx["task_type"]
 
-        if task_type == "feature-extraction" and model_ctx.get("backend") == "sentence_transformers":
+        if task_type == "feature-extraction" and model_ctx.get("encoder") == "sentence":
             shape = list(raw_output.shape)
             if len(shape) != 2 or any(size <= 0 for size in shape):
                 raise ValueError("sentence encoder must return a nonempty batch of sentence embeddings")
