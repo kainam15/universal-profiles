@@ -27,7 +27,11 @@ def explain_resolution(task_info, *, explain: bool = False) -> str:
     if explain and resolution.get("provenance"):
         provenance = resolution["provenance"]
         lines.append(f"Decision: {provenance['decision']} / {provenance['identity_sha256']}")
-        lines.extend(f"  <- {item['source_id']}:{item['field']} = {item.get('value', item['task'])}" for item in provenance["observations"])
+        for item in provenance["observations"]:
+            kind = f" [{item['kind']}]" if item.get("kind") else ""
+            lines.append(f"  <- {item['source_id']}:{item['field']} = {item.get('value', item.get('task'))}{kind}")
+            if item.get("reason"):
+                lines.append("     " + item["reason"])
     names = contract.get("fields", {}) if explain else contract.get("unresolved_fields", [])
     for name in names:
         field = contract["fields"][name]

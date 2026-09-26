@@ -85,7 +85,7 @@ class ModelInspectionTests(unittest.TestCase):
             build.assert_not_called()
 
     def test_inspect_explains_and_exports_the_static_contract(self):
-        task = fixture.ModelContractTests().discover()
+        task = fixture.ModelContractTests().discover(transformers_info=fixture.GENERIC_LOADER)
         with tempfile.TemporaryDirectory() as directory, patch("acprof.host.detect.detect_task", return_value=task), patch(
             "acprof.host.env_utils.bootstrap_project_env",
         ), patch("acprof.host.docker_runtime.prepare_image") as build, contextlib.redirect_stdout(io.StringIO()) as output:
@@ -95,6 +95,8 @@ class ModelInspectionTests(unittest.TestCase):
             self.assertEqual(report["contract"]["runtime_validation"], "not_run")
             self.assertIn("multimodal.inputs.prompt", output.getvalue())
             self.assertIn("pipeline.py", output.getvalue())
+            self.assertIn("feature-extraction [loader_hint]", output.getvalue())
+            self.assertIn("not a task declaration", output.getvalue())
             build.assert_not_called()
 
     def test_unresolved_inspection_exports_draft_and_returns_two(self):

@@ -1,0 +1,11 @@
+{
+  "audio_context_size": 3000,
+  "audio_padding": "longest",
+  "audio_placeholder": "<|audio|>",
+  "auto_map": {
+    "AutoProcessor": "ultravox_processing.UltravoxProcessor"
+  },
+  "encoder_ds_factor": 2,
+  "processor_class": "UltravoxProcessor",
+  "stack_factor": 8
+}

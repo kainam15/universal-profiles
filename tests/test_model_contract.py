@@ -24,11 +24,12 @@ EXPECTED: dict = {
     "multimodal": {"inputs": {"prompt": "text", "audio": "audio", "sampling_rate": "sampling_rate"},
                    "forward_kwargs": {"max_new_tokens": "$max_new_tokens", "temperature": 0}},
 }
+GENERIC_LOADER = {"auto_model": "AutoModel", "pipeline_tag": "feature-extraction"}
 
 
 class ModelContractTests(unittest.TestCase):
     def discover(self, source=SOURCE, config=None, *, revision=SHA, spec=None, readme=None,
-                 dependency_lookup=None, **options):
+                 dependency_lookup=None, transformers_info=None, **options):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             documents = {"config.json": json.dumps(CONFIG if config is None else config), "pipeline.py": source}
@@ -39,7 +40,8 @@ class ModelContractTests(unittest.TestCase):
             for name, text in documents.items():
                 (root / name).write_text(text)
             hub = SimpleNamespace(sha=revision, pipeline_tag="audio-text-to-text", library_name="transformers",
-                                  config={}, siblings=[SimpleNamespace(rfilename=name) for name in documents])
+                                  config={}, transformers_info=transformers_info,
+                                  siblings=[SimpleNamespace(rfilename=name) for name in documents])
             self.downloads = []
 
             def download(**kwargs):
@@ -76,6 +78,58 @@ class ModelContractTests(unittest.TestCase):
         self.assertFalse(any(field["state"] == "verified" for field in report["fields"].values()))
         self.assertIn("pipeline.py", self.downloads)
         self.assertNotIn("turns", task_model_spec(task)["multimodal"]["inputs"])
+
+    def test_generic_loader_hint_allows_unique_pipeline_contract_synthesis(self):
+        for model_classes in (["AutoModel"], "AutoModel"):
+            with self.subTest(model_classes=model_classes):
+                config = copy.deepcopy(CONFIG)
+                config["custom_pipelines"]["listen-and-answer"]["pt"] = model_classes
+                task = self.discover(config=config, transformers_info=GENERIC_LOADER)
+                require_task_support(task)
+                self.assertEqual(task_model_spec(task), EXPECTED)
+                self.assertEqual(task.runtime_backend, "transformers_pipeline")
+                self.assertEqual(task.model_resolution["runtime_validation"]["status"], "not_run")
+                self.assertFalse(task.model_resolution["conflicts"])
+                self.assertEqual({item["task"] for item in task.model_resolution["candidates"]},
+                                 {"audio-text-to-text"})
+                observations = task.model_resolution["provenance"]["observations"]
+                hints = [item for item in observations if item.get("kind") == "loader_hint"]
+                self.assertEqual([(item["field"], item["value"]) for item in hints],
+                                 [("hub.transformers_info.pipeline_tag", "feature-extraction")])
+                self.assertEqual(task.hub_metadata["transformers_info"], GENERIC_LOADER)
+
+    def test_author_spec_does_not_need_task_override_for_generic_loader_hint(self):
+        task = self.discover(spec=EXPECTED, transformers_info=GENERIC_LOADER)
+        require_task_support(task)
+        self.assertEqual(task_model_spec(task), EXPECTED)
+        self.assertNotIn("pipeline.py", self.downloads)
+
+    def test_pipeline_task_conflict_is_not_dismissed_as_a_generic_loader(self):
+        task = self.discover(transformers_info={"auto_model": "AutoModelForCausalLM",
+                                                "pipeline_tag": "text-generation"})
+        with self.assertRaisesRegex(TaskSupportError, "conflict"):
+            require_task_support(task)
+        self.assertEqual(task.model_resolution["status"], "ambiguous")
+        self.assertNotIn("pipeline.py", self.downloads)
+
+    def test_generic_loader_hint_still_requires_complete_inputs_and_dependencies(self):
+        sources = (
+            SOURCE.replace('inputs.get("prompt", "Listen.")', 'inputs["messages"]'),
+            SOURCE.replace('class AudioPipeline(Pipeline):', '''class AudioPipeline(Pipeline):
+    def __init__(self, model):
+        if model.config.use_external_processor:
+            self.processor = AutoProcessor.from_pretrained("example/audio")
+'''),
+        )
+        for source, missing in zip(sources, ("multimodal.inputs", "dependencies")):
+            with self.subTest(missing=missing):
+                task = self.discover(source, transformers_info=GENERIC_LOADER)
+                self.assertEqual(task.model_resolution["status"], "needs_configuration")
+                self.assertFalse(task.model_resolution["conflicts"])
+                self.assertFalse(task_model_spec(task))
+                self.assertIn("pipeline.py", self.downloads)
+                with self.assertRaisesRegex(TaskSupportError, missing):
+                    require_task_support(task)
 
     def test_required_unknown_input_is_actionable_and_not_executable(self):
         task = self.discover(SOURCE.replace('turns = inputs.get("turns", [])', 'speaker = inputs["speaker"]\n        turns = []'))
@@ -161,9 +215,11 @@ AutoProcessor.from_pretrained(dynamic_repo())
         spec = copy.deepcopy(EXPECTED)
         spec["task"] = "image-text-to-text"
         spec["multimodal"]["inputs"] = {"prompt": "text", "image": "image"}
-        task = self.discover(spec=spec)
-        self.assertEqual(task.model_resolution["status"], "ambiguous")
-        self.assertEqual(task.model_resolution["contract"]["status"], "needs_confirmation")
+        for hint in (None, GENERIC_LOADER):
+            with self.subTest(hint=hint):
+                task = self.discover(spec=spec, transformers_info=hint)
+                self.assertEqual(task.model_resolution["status"], "ambiguous")
+                self.assertEqual(task.model_resolution["contract"]["status"], "needs_confirmation")
 
     def test_reanalysis_cannot_reuse_a_previous_generated_spec_as_authority(self):
         from acprof.model_contract import apply_model_contract
@@ -192,9 +248,12 @@ AutoProcessor.from_pretrained(dynamic_repo())
     def test_multiple_pipelines_require_selection_without_reading_code(self):
         config = copy.deepcopy(CONFIG)
         config["custom_pipelines"]["other-pipeline"] = {"impl": "other.OtherPipeline", "pt": ["AutoModel"]}
-        task = self.discover(config=config)
-        self.assertEqual(task.model_resolution["status"], "ambiguous")
-        self.assertNotIn("pipeline.py", self.downloads)
+        for hint in (None, GENERIC_LOADER):
+            with self.subTest(hint=hint):
+                task = self.discover(config=config, transformers_info=hint)
+                self.assertEqual(task.model_resolution["status"], "ambiguous")
+                self.assertIn("multiple custom pipelines", str(task.model_resolution["conflicts"]))
+                self.assertNotIn("pipeline.py", self.downloads)
 
     def test_author_spec_wins_and_no_remote_python_is_read(self):
         spec = copy.deepcopy(EXPECTED)

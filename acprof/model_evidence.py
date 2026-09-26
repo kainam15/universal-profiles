@@ -8,7 +8,7 @@ import re
 from typing import Any
 
 
-RESOLVER_VERSION = "pipeline-contract-v2"
+RESOLVER_VERSION = "pipeline-contract-v3"
 FIELD_STATES = {"declared", "derived", "verified", "ambiguous", "unresolved"}
 
 
@@ -23,7 +23,8 @@ def content_digest(value: Any) -> str:
 
 def resolution_provenance(task_info, candidates: list[dict], *, hub_task: str | None,
                           selected: str | None, status: str, explicit_task: str | None,
-                          explicit_backend: str | None, overridden_conflicts: list[str]) -> dict:
+                          explicit_backend: str | None, overridden_conflicts: list[str],
+                          loader_hint: bool) -> dict:
     """Capture correlated observations; no counting of fields as independent votes."""
     from acprof.model_spec import task_model_spec
     revision = task_info.model_revision
@@ -57,7 +58,11 @@ def resolution_provenance(task_info, candidates: list[dict], *, hub_task: str | 
         if field_name in {"processor", "custom_class"}:
             observations.append({"field": f"hub.transformers_info.{field_name}", "source_id": "hub",
                                  "task": selected, "value": value, "backend": task_info.runtime_backend})
-    identity = {"schema_version": 1, "resolver_version": "model-selection-v1",
+        elif field_name == "pipeline_tag" and loader_hint:
+            observations.append({"field": "hub.transformers_info.pipeline_tag", "source_id": "hub",
+                                 "task": None, "value": value, "kind": "loader_hint",
+                                 "reason": "AutoModel is a generic loader for config.custom_pipelines, not a task declaration"})
+    identity = {"schema_version": 1, "resolver_version": "model-selection-v2",
                 "model_id": task_info.model_id, "revision": revision, "sources": sources,
                 "observations": observations, "selected_task": selected, "status": status,
                 "overridden_conflicts": overridden_conflicts}
@@ -100,7 +105,8 @@ class ModelEvidence:
     def report(self, *, draft_spec: dict, transformers_version: str | None) -> dict:
         pending = [name for name, value in self.fields.items() if value["state"] in {"unresolved", "ambiguous"}]
         identity = {"model_id": self.model_id, "revision": self.revision, "resolver_version": RESOLVER_VERSION,
-                    "transformers_version": transformers_version, "sources": self.sources, "fields": self.fields}
+                    "transformers_version": transformers_version, "sources": self.sources, "fields": self.fields,
+                    "dependency_candidates": self.dependency_candidates}
         return {"schema_version": 1, **identity, "cache_key": content_digest(identity),
                 "status": "needs_confirmation" if pending else "resolved", "unresolved_fields": pending,
                 "draft_spec": draft_spec, "dependency_candidates": self.dependency_candidates,

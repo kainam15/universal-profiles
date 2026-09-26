@@ -108,6 +108,28 @@ def _architecture_tasks(architecture: str) -> tuple[str, ...]:
     return tuple(sorted(tasks))
 
 
+def _generic_pipeline_loader_hint(config: dict, transformers_info: dict) -> bool:
+    """A custom Pipeline's generic AutoModel says nothing about its workload.
+
+    Hub can label that loader as feature extraction while the authored Pipeline
+    implements a different protocol. Keep this observation as a loader hint;
+    task declarations and the static contract still have to establish semantics.
+    """
+    if (transformers_info.get("auto_model") != "AutoModel"
+            or transformers_info.get("pipeline_tag") != "feature-extraction"):
+        return False
+    pipelines = config.get("custom_pipelines")
+    if not isinstance(pipelines, dict):
+        return False
+    for pipeline in pipelines.values():
+        if not isinstance(pipeline, dict) or not isinstance(pipeline.get("impl"), str):
+            continue
+        models = pipeline.get("pt", [])
+        if models == "AutoModel" or isinstance(models, list) and "AutoModel" in models:
+            return True
+    return False
+
+
 def discover_model_candidates(task_info: Any, *, override_tag: str | None = None,
                               override_backend: str | None = None) -> dict:
     """Collect static evidence before selecting a route. Never import model code."""
@@ -134,7 +156,8 @@ def discover_model_candidates(task_info: Any, *, override_tag: str | None = None
         hub_task = spec["task"]
     declared_task = spec.get("task")
     transformers_info = hub_metadata.get("transformers_info", {})
-    transformers_task = transformers_info.get("pipeline_tag")
+    loader_hint = _generic_pipeline_loader_hint(config, transformers_info)
+    transformers_task = None if loader_hint else transformers_info.get("pipeline_tag")
     if spec.get("pipeline_task") and transformers_task == spec["pipeline_task"]:
         transformers_task = declared_task
     observed_tasks = {value for value in (declared_task, hub_task, transformers_task) if value}
@@ -248,7 +271,7 @@ def discover_model_candidates(task_info: Any, *, override_tag: str | None = None
     from acprof.model_evidence import resolution_provenance
     provenance = resolution_provenance(task_info, candidates, hub_task=hub_task, selected=selected,
                                         status=status, explicit_task=override_tag, explicit_backend=override_backend,
-                                        overridden_conflicts=overridden_conflicts)
+                                        overridden_conflicts=overridden_conflicts, loader_hint=loader_hint)
     semantic_status = ("conflict" if conflicts else "unresolved" if errors or not selected else
                        "explicit" if override_tag else "declared" if declared_task and spec_source != "generated_contract" or hub_task or transformers_task else "inferred")
     return {"schema_version": 1, "status": status, "model_revision": task_info.model_revision,

@@ -57,6 +57,27 @@ class ModelReviewTests(unittest.TestCase):
             apply_review(task, {"dependencies": [{"repo_id": "example/tokenizer", "role": "tokenizer"}]})
         lookup.assert_not_called()
 
+    def test_review_does_not_mix_inactive_weights_revision_into_processor(self):
+        source = fixture.SOURCE + '''
+if False:
+    AutoModel.from_pretrained("example/shared", revision="release")
+if needs_processor():
+    AutoFeatureExtractor.from_pretrained("example/shared")
+'''
+        task = fixture.ModelContractTests().discover(source)
+        choices = review_questions(task)[0]["value"]
+        self.assertEqual(choices, [{"repo_id": "example/shared", "role": "processor", "required": True}])
+        hub = SimpleNamespace(sha="b" * 40, siblings=[SimpleNamespace(rfilename="preprocessor_config.json")])
+        with patch("huggingface_hub.HfApi.model_info", return_value=hub):
+            reviewed = apply_review(task, {"dependencies": choices})
+        self.assertEqual(task_model_spec(reviewed)["dependencies"][0]["allow_patterns"], ["preprocessor_config.json"])
+
+    def test_review_of_unknown_loader_still_preserves_source_revision(self):
+        task = fixture.ModelContractTests().discover(fixture.SOURCE + '\nCustomLoader.from_pretrained("example/base", revision="release")')
+        with patch("huggingface_hub.HfApi.model_info") as lookup, self.assertRaisesRegex(ValueError, "revision"):
+            apply_review(task, {"dependencies": [{"repo_id": "example/base", "role": "weights"}]})
+        lookup.assert_not_called()
+
     def test_review_cannot_change_known_fields_or_accept_empty_invalid_draft(self):
         task = fixture.ModelContractTests().discover(fixture.SOURCE.replace('inputs.get("prompt", "Listen.")', 'inputs["turns"]'))
         original = copy.deepcopy(task.model_resolution)

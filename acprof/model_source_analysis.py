@@ -239,69 +239,9 @@ def analyze_pipeline(source: str, filename: str, class_name: str) -> dict:
     return copy.deepcopy(_analyze_pipeline(source, filename, class_name))
 
 
-def _config_value(expression: ast.AST | None, config: dict, model_id: str) -> Any:
-    literal = _literal(expression)
-    if literal is not _MISSING:
-        return literal
-    if isinstance(expression, ast.BoolOp) and isinstance(expression.op, ast.Or):
-        for operand in expression.values:
-            value = _config_value(operand, config, model_id)
-            if value is _MISSING or value:
-                return value
-        return None
-    path = []
-    while isinstance(expression, ast.Attribute):
-        path.insert(0, expression.attr)
-        expression = expression.value
-    if _name(expression, "config"):
-        path.insert(0, "config")
-    if "config" in path:
-        path = path[path.index("config") + 1:]
-        if path == ["_name_or_path"]:
-            return model_id
-        value = config
-        for key in path:
-            if not isinstance(value, dict) or key not in value:
-                return _MISSING
-            value = value[key]
-        return value
-    return _MISSING
-
-
 def dependency_candidates(source: str, filename: str, config: dict, model_id: str) -> list[dict]:
-    result = []
-    tree = parse_source(source, filename)
-    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute) or node.func.attr != "from_pretrained":
-            continue
-        loader = ast.unparse(node.func.value).rsplit(".", 1)[-1]
-        role = ("tokenizer" if loader == "AutoTokenizer" else "processor" if loader in {"AutoProcessor", "AutoFeatureExtractor"}
-                else "metadata" if loader == "AutoConfig" else "generation_metadata" if loader == "GenerationConfig"
-                else "weights" if loader.startswith("AutoModel") else "unknown")
-        expression = node.args[0] if node.args else next(
-            (kw.value for kw in node.keywords if kw.arg == "pretrained_model_name_or_path"), None)
-        repo = _config_value(expression, config, model_id)
-        if repo == model_id:
-            continue
-        valid = isinstance(repo, str) and re.fullmatch(r"[\w.-]+/[\w.-]+", repo, re.ASCII)
-        revision_node = next((kw.value for kw in node.keywords if kw.arg == "revision"), None)
-        requested = _literal(revision_node) if revision_node is not None else "main"
-        if any(kw.arg is None for kw in node.keywords):
-            requested = None
-        ancestor, conditional = node, False
-        while ancestor in parents:
-            ancestor = parents[ancestor]
-            if isinstance(ancestor, (ast.If, ast.IfExp, ast.For, ast.AsyncFor, ast.While, ast.Try,
-                                     getattr(ast, "TryStar", ast.Try), ast.Match, ast.ListComp,
-                                     ast.SetComp, ast.DictComp, ast.GeneratorExp, ast.comprehension)):
-                conditional = True
-        result.append({"repo_id": repo if valid else None, "role": role, "loader": loader,
-                       "required": "candidate", "state": "derived" if valid else "unresolved",
-                       "source": f"{filename}:{node.lineno}", "expression": ast.unparse(expression) if expression else "",
-                       "requested_revision": requested if isinstance(requested, str) else None,
-                       "conditional": conditional})
-    return result
+    from acprof.model_dependency_flow import analyze_dependencies
+    return analyze_dependencies({filename: source}, config, model_id)
 
 
 def model_card_examples(text: str) -> list[dict]:

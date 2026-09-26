@@ -60,6 +60,25 @@ class ResolutionDecisionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             require_resolved_candidate(task)
 
+    def test_custom_pipeline_loader_hint_cannot_supply_missing_task_semantics(self):
+        task = candidate(config={"custom_pipelines": {
+            "custom-task": {"impl": "pipeline.CustomPipeline", "pt": ["AutoModel"]},
+        }}, hub={"transformers_info": {"auto_model": "AutoModel", "pipeline_tag": "feature-extraction"}})
+        with self.assertRaisesRegex(ValueError, "task semantics are unknown"):
+            require_resolved_candidate(task)
+        self.assertFalse(task.model_resolution["candidates"])
+
+    def test_generic_tag_conflicts_without_matching_custom_pipeline_loader(self):
+        for config in ({}, {"custom_pipelines": {
+            "custom-task": {"impl": "pipeline.CustomPipeline", "pt": ["AutoModelForCausalLM"]},
+        }}):
+            with self.subTest(config=config):
+                task = candidate(tag="text-generation", config=config, hub={
+                    "transformers_info": {"auto_model": "AutoModel", "pipeline_tag": "feature-extraction"},
+                })
+                with self.assertRaisesRegex(ValueError, "conflict"):
+                    require_resolved_candidate(task)
+
     def test_incompatible_declared_head_requires_explicit_resolution(self):
         for config, hub in (({"architectures": ["BertForMaskedLM"]}, {}),
                             ({}, {"transformers_info": {"auto_model": "AutoModelForMaskedLM"}})):

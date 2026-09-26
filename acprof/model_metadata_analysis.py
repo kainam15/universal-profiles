@@ -7,7 +7,7 @@ from pathlib import PurePosixPath
 from typing import Callable
 
 from acprof.model_evidence import ModelEvidence
-from acprof.model_source_analysis import dependency_candidates, model_card_examples, parse_source
+from acprof.model_source_analysis import model_card_examples, parse_source
 from acprof.model_spec import custom_code_files
 
 
@@ -64,7 +64,6 @@ def collect_source_evidence(task_info, evidence: ModelEvidence, config: dict,
         tree = parse_source(source, filename)
         sources[filename] = source
         evidence.source(filename, source.encode())
-        evidence.dependency_candidates.extend(dependency_candidates(source, filename, config, task_info.model_id))
         # Follow local imports only. This is syntax inspection, never importlib.
         for node in ast.walk(tree):
             if not isinstance(node, ast.ImportFrom) or not node.level:
@@ -82,6 +81,12 @@ def collect_source_evidence(task_info, evidence: ModelEvidence, config: dict,
                 if not existing:
                     raise ValueError(f"{filename}: relative source module is missing: {module}")
                 queue.extend(existing)
+    from acprof.model_dependency_flow import analyze_dependencies
+    from acprof.runtime_profiles import ENVIRONMENTS, _transformers_version
+    evidence.source("repository-file-listing", json.dumps(sorted(files)).encode())
+    evidence.dependency_candidates.extend(analyze_dependencies(
+        sources, config, task_info.model_id, files=files, metadata=task_info.repository_metadata,
+        transformers_version=_transformers_version(ENVIRONMENTS["custom-multimodal-cpu"])))
     # Config references are candidates, not evidence that entire repos must be
     # downloaded. Include those hidden behind helpers for later dependency work.
     def config_references(value, path=""):
@@ -95,7 +100,8 @@ def collect_source_evidence(task_info, evidence: ModelEvidence, config: dict,
                 if isinstance(item, str) and "/" in item and not item.startswith(("/", ".")) and item != task_info.model_id:
                     if not any(candidate["repo_id"] == item for candidate in evidence.dependency_candidates):
                         evidence.dependency_candidates.append({"repo_id": item, "role": "unknown", "loader": None,
-                            "required": "candidate", "state": "declared", "source": f"config.json:{location}"})
+                            "required": "candidate", "state": "declared", "activation": "unknown",
+                            "dependency_kind": "external", "source": f"config.json:{location}"})
     config_references(config)
     if "README.md" in files:
         try:

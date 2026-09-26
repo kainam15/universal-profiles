@@ -134,6 +134,8 @@ class ModelContractRuntimeTests(unittest.TestCase):
             config = json.loads((root / "config.json").read_text())
             info = TaskInfo("fixture/generated-audio", "audio-text-to-text", "multimodal", "transformers_model",
                             "transformers", "a" * 40, "hub_api", model_config=config,
+                            hub_metadata={"pipeline_tag": "audio-text-to-text", "transformers_info": {
+                                "auto_model": "AutoModel", "pipeline_tag": "feature-extraction"}},
                             repository_files=tuple(path.name for path in root.iterdir()),
                             repository_metadata={"config.json": config})
             info.model_resolution = discover_model_candidates(info)

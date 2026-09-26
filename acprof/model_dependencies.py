@@ -13,7 +13,9 @@ from acprof.model_spec import validate_dependencies
 _TOKENIZER = ("config.json", "tokenizer*.json", "special_tokens_map.json", "added_tokens.json",
               "vocab.json", "vocab.txt", "merges.txt", "*.model", "*.tiktoken", "chat_template.jinja", "chat_templates/*.jinja")
 _ROLES = {"tokenizer": _TOKENIZER, "processor": (*_TOKENIZER, "processor*.json", "preprocessor*.json"),
-          "metadata": ("config.json",), "generation_metadata": ("generation_config.json",), "weights": ("config.json",)}
+          "feature_extractor": ("config.json", "preprocessor_config.json"),
+          "metadata": ("config.json",), "generation_metadata": ("generation_config.json",),
+          "weights": ("config.json", "generation_config.json")}
 
 
 def dependency_files(files: list[str], roles: set[str]) -> list[str]:
@@ -63,10 +65,10 @@ def resolve_dependencies(candidates: list[dict], resolve_repository: Callable | 
     groups: dict[str, list[dict]] = {}
     errors = []
     for item in candidates:
-        if item.get("required") == "inactive":
+        if item.get("required") == "inactive" or item.get("activation") == "inactive" or item.get("dependency_kind") == "main_model":
             continue
         repo = item.get("repo_id")
-        if not repo or item["role"] not in _ROLES or item.get("conditional"):
+        if not repo or item["role"] not in _ROLES or item.get("activation", "active") != "active" or "conditional" in item:
             errors.append(f"{item['source']}: unresolved dependency {item.get('expression') or repo} ({item['role']})")
             continue
         groups.setdefault(repo, []).append(item)
@@ -88,7 +90,8 @@ def resolve_dependencies(candidates: list[dict], resolve_repository: Callable | 
             revision = info["revision"]
             if not pinned_revision(revision) or pinned_revision(requested) and revision != requested:
                 raise ValueError("dependency Hub response must match a fixed commit SHA")
-            patterns = dependency_files(info["files"], {item["role"] for item in items})
+            patterns = dependency_files(info["files"], {
+                "feature_extractor" if item.get("loader") == "AutoFeatureExtractor" else item["role"] for item in items})
             declaration = {"repo_id": repo, "revision": revision, "allow_patterns": patterns}
             validate_dependencies([declaration])
             dependencies.append(declaration)

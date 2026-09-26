@@ -39,6 +39,8 @@ def review_questions(task_info) -> list[dict]:
             if name == "dependencies":
                 value = []
                 for candidate in report.get("dependency_candidates", []):
+                    if candidate.get("activation") == "inactive" or candidate.get("dependency_kind") == "main_model":
+                        continue
                     choice = {"repo_id": candidate["repo_id"], "role": candidate["role"], "required": True}
                     if choice not in value:
                         value.append(choice)
@@ -98,8 +100,11 @@ def apply_review(task_info, answers: dict):
                 # Confirming a conditional loader doesn't change the revision
                 # its source will request. Conflicts still need a declaration.
                 original = [candidate for candidate in report.get("dependency_candidates", [])
-                            if candidate.get("repo_id") == item["repo_id"]] or [{}]
+                            if candidate.get("repo_id") == item["repo_id"] and candidate.get("role") in {item["role"], "unknown"}
+                            and candidate.get("activation") != "inactive"
+                            and candidate.get("dependency_kind") != "main_model"] or [{}]
                 candidates.extend({**item, "required": "candidate", "source": "user.review",
+                                   "activation": "active", "dependency_kind": "external", "loader": candidate.get("loader"),
                                    "requested_revision": candidate.get("requested_revision", "main")}
                                   for candidate in original)
             value, errors = resolve_dependencies(candidates, dependency_metadata)

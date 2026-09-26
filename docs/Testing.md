@@ -338,7 +338,14 @@ DSL 深度和引用限制、只读断网命令、证据完整性、CLI 导出及
 Probe 子进程交接、语言／resize 和测量禁用由 `test_tui_model_resolution.py` 在三种终端尺寸验证。
 真实断网容器检查之外，外部依赖验收应保留 Hub SHA、实际选择文件和缓存内容，确认未下载无关权重；
 真实只读 Probe 应使用独立测试镜像和目录，不能只用 mock Docker 命令代替。
-真实 Ultravox 的静态 draft 验证不下载权重、不证明依赖完备或大模型推理成功；GPU／profiler
+`test_dependency_flow.py` 覆盖 active/inactive/unknown、参数绑定、main-model 转发、primary/fallback、
+角色分离及动态条件／kwargs／装饰器／递归边界。`test_ultravox_dependency_flow.py` 使用保留许可与 SHA256
+的固定上游源码文本，验证零未决项、与示例声明的角色语义一致、未知 Transformers 版本保持 review，
+以及换成任意主模型 ID 仍得到相同规划。原有
+`test_conditional_weight_load_does_not_download_a_potential_base_model` 必须继续通过；不能简单取消条件拦截。
+这些测试不导入或执行 snapshot Python，不访问真实 Hub、不下载权重。
+
+真实 Ultravox 的静态 draft 验证不下载权重、不证明所有动态依赖完备或大模型推理成功；GPU／profiler
 需各自取得运行证据，不能从这项 CPU fixture 验证外推。
 
 生产模型声明与服务镜像的完整链路可使用 [Iris 示例](Runtime_Compatibility.md#本地模型声明与自定义-pipeline)，

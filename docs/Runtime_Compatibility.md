@@ -141,7 +141,14 @@ source，Hub 与仓库配置保留共同 snapshot 的派生关系，不按字段
 裸 `AutoModel` 不证明应执行哪一种任务。共享同一 Auto loader 的 translation/summarization
 等任务不会仅因名称不同被判为结构冲突。
 
-声明、Hub task、`transformers_info.pipeline_tag` 冲突，或原生模型的明确 head 与任务操作
+当 `transformers_info` 同时返回 `auto_model=AutoModel`、`pipeline_tag=feature-extraction`，
+且 config 中的 custom Pipeline 声明使用该通用 Auto loader 时，这个库标签只记为
+`loader_hint`，不作为任务候选或与 Hub 主任务产生冲突。原始字段保留在来源证据中，
+`inspect --explain` 会说明其分类理由；其他库任务标签、缺少匹配 Pipeline 的情形仍按原规则检查。
+唯一 custom Pipeline 可以继续进入静态契约分析，多个 Pipeline 仍须选择；
+loader hint 本身不能补全缺失的任务语义，也不能使未解决的输入或依赖通过预检。
+
+声明、Hub task、具有任务语义的 `transformers_info.pipeline_tag` 冲突，或原生模型的明确 head 与任务操作
 不相容时，保留候选并 abstain。显式 `--task` 可以解决元数据冲突，原冲突进入
 `provenance.overridden_conflicts`；它仍不能违背有效的模型声明。
 basic/full Probe 成功不能修改这些静态裁决。静态来源摘要进入服务镜像 request fingerprint，
@@ -151,6 +158,10 @@ basic/full Probe 成功不能修改这些静态裁决。静态来源摘要进入
 借鉴 [Optimum TasksManager](https://github.com/huggingface/optimum/blob/main/optimum/exporters/tasks.py)
 集中维护映射的方式。两者为 Apache-2.0 项目；使用现有 Hub 依赖和锁定静态注册表，不引入
 Optimum 或主机端推理依赖，也不在正式测量窗口执行来源分析。
+自定义 Pipeline 的选择参考锁定版本
+[Transformers 4.57.6 的 pipeline 实现](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/pipelines/__init__.py)
+（Apache-2.0）：借鉴唯一接口优先的规则，继续使用本项目已有的受限 AST 分析和依赖检查，
+不在主机执行 `trust_remote_code`，也不增加依赖或测量开销。
 
 `audio-text-to-text` 的预检与容器加载共用 `model_resolution.audio_text_loader`，依据相同版本的
 Auto 注册表选择 `AutoModelForSeq2SeqLM` 或 `AutoModelForImageTextToText`。对于组合模型，
@@ -215,7 +226,7 @@ acprof inspect fixie-ai/ultravox-v0_5-llama-3_2-1b --explain \
   --output-dir internal-testing/model-resolution
 ```
 
-`cache_key` 包含模型 ID、SHA、resolver 版本、Transformers 版本和证据内容；AST 分析按源文本在
+`cache_key` 包含模型 ID、SHA、resolver 版本、Transformers 版本、完整文件清单和依赖控制流证据；AST 分析按源文本在
 进程内缓存，Hub 文件复用其内容缓存。依赖 SHA、文件选择和用户决策也参与静态身份；没有跨进程的
 解析结果缓存，也不复用旧运行验证。运行观察单独追加，不改变已经建立的静态身份。
 JSON 元数据 hash 使用 canonical JSON；Python／README hash 使用所分析的 UTF-8 文本，报告会标明前者。
@@ -224,13 +235,44 @@ JSON 元数据 hash 使用 canonical JSON；Python／README hash 使用所分析
 config 中的模型引用和动态表达式也会保留。明确的 repo／loader 通过 Hub 自动固定 SHA，按角色生成
 兼容 v1 的 `dependencies/allow_patterns`：tokenizer／processor 只选根目录配置、词表和模板，以及
 单层 `chat_templates/`；不会因名称前缀匹配而选中子目录快照或权重。metadata
-只选 `config.json`；weights 选择一个标准 Transformers 权重格式。实际下载继续使用镜像构建阶段的
+只选 `config.json`；weights 选择一个标准 Transformers 权重格式及存在的 `generation_config.json`。
+`AutoFeatureExtractor` 的 processor 只选 `config.json/preprocessor_config.json`，不附带 tokenizer 或权重。
+实际下载继续使用镜像构建阶段的
 既有 planner、文件 hash 和离线缓存，主机解析不下载权重。最多 16 个依赖，每个最多 128 个文件。
-候选不等于运行时必需，`pinned` 也不代表文件已下载。条件分支、动态 kwargs／repo、未知 loader、
-多个 revision、非默认分支别名及无法匹配的文件结构保持未决。TUI 依赖项只需给出 `repo_id/role`，
+候选不等于运行时必需，`pinned` 也不代表文件已下载。依赖分析采用以下有界规则：
+
+| 证据 | 处理 |
+| --- | --- |
+| `activation=active` | 在所分析加载入口和配置下可达，按 role 解析 SHA 与文件 |
+| `activation=inactive` | 固定配置或已证明的选择路径排除了该调用；保留证据，不查询／下载 |
+| `activation=unknown` | 动态条件或未能建立调用上下文，保留 review，不查询／下载该候选 |
+| `dependency_kind=main_model` | 已声明主模型的 `super().from_pretrained` 转发，或已知 loader 对当前 snapshot 的自引用；不重复规划外部下载 |
+| `alternative` | 保留同一 `try` 中的 primary/fallback 关系；未证明 primary 完整时，fallback 为 unknown |
+
+固定 config 的 `None` 判断、布尔组合、简单赋值和同一 snapshot 内的函数调用可传递已知值。
+普通参数、keyword-only 参数及已知 `*args/**kwargs` 会绑定到 loader；`call_chain` 保存来源。
+动态 kwargs 不得抹去 revision；未知装饰器、动态训练条件、循环／match、递归或超出分析边界仍需 review。
+本地调用最多 12 层、256 个调用上下文、512 个候选和 100,000 个分析步骤，不执行任意 Python。
+
+主模型 tokenizer 的 primary 仅在固定文件清单含 `tokenizer.json/tokenizer_config.json`、
+声明为 `PreTrainedTokenizer/PreTrainedTokenizerFast`、没有 custom tokenizer `auto_map`，且调用只使用
+已知默认选项时，获得静态文件完整性证据。直接 loader 和仅转发／返回结果的 helper 可据此将 fallback
+标为 inactive；额外处理、动态参数或缺文件仍为 unknown。文件完整性不保证内容有效或运行成功。
+
+已登记的 Transformers 4.57.6 `PreTrainedModel` 使用版本限定的加载阶段摘要：构造期间关闭初始化，
+随后分析模型的权重初始化 hook；候选的 `loader_context` 记录版本与阶段。这个摘要只用于已声明的
+主模型及本地调用链；其他版本、任意 `dynamic_training_mode()` 和未知 framework 状态不会被猜成 true。
+`active` 是加载规划中的可达性，不是某次实际运行已执行该分支的证据。
+
+控制流按调用及 role 判断，再合并同 repo 的有效文件需求。`audio_model_id=None` 可排除 audio weights，
+同时从 `audio_config._name_or_path` 激活 processor；不能按 repo 整体删除。多个 revision、非默认分支别名
+及无法匹配的文件结构保持未决。TUI 依赖项只需给出 `repo_id/role`，
 可用 `required:false` 明确排除未使用的候选；SHA 和 patterns 自动补齐，不推断任意 Python 依赖闭包。
-作者已固定的依赖不会重新解析。Ultravox 的 prompt／音频／生成参数可以静态生成；训练分支、
-fallback 和动态 helper 涉及的依赖仍可能需要确认，不下载所有候选基础模型来掩盖缺口。
+作者已固定的依赖不会重新解析。`fixie-ai/ultravox-v0_5-llama-3_2-1b` 的固定 snapshot
+`b95bec8ab291eeb04b5cd600dd473377f6b79026` 可自动生成完整静态契约，包括 Llama weights 和 Whisper
+processor；主模型转发、音频权重分支及已证明的 tokenizer fallback 被排除。其任务、输入、生成参数、
+依赖仓库／SHA 和所需角色与 `examples/multimodal/ultravox.model.json` 一致；文件按实际角色精确选择，
+不照搬示例中的宽泛 `*.json`。该案例以固定源码 fixture 验收，生产逻辑没有 checkpoint 名称特判。
 
 `acprof inspect MODEL --probe basic` 在镜像内导入固定代码并绑定实际方法签名，不实例化模型权重、
 不执行 preprocess 或推理。basic 仍要求 Pipeline contract；full 同时支持已登记的普通模型。
@@ -267,6 +309,15 @@ TUI 的 Probe 交给现有子进程管理器，支持停止；复查时若主模
 （Apache-2.0），并以 [Ultravox Pipeline](https://github.com/fixie-ai/ultravox/blob/main/ultravox/model/ultravox_pipeline.py)
 （MIT）核对模式。复用接口思想，以标准库 AST 实现受限分析，不复制 loader、不新增主机推理依赖；
 所有下载、解析和报告写入均位于正式测量窗口外。
+
+三态分支与合流参考 [Pyright 的代码流收窄](https://github.com/microsoft/pyright/blob/main/docs/type-concepts-advanced.md)
+（MIT）；加载阶段和 tokenizer 文件规则分别核对
+[Transformers 4.57.6 modeling_utils](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/modeling_utils.py)
+与 [tokenization_utils_base](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/tokenization_utils_base.py)
+（Apache-2.0），角色分离另对照
+[Ultravox prefetch_weights](https://github.com/fixie-ai/ultravox/blob/main/ultravox/training/helpers/prefetch_weights.py)
+（MIT）。只借鉴有界分析与 API 语义，保持标准库实现；升级锁定的 Transformers 版本须复核阶段摘要，
+未登记版本继续保留 unknown。测试 fixture 保留上游源码许可，作为文本输入，不导入执行。
 
 依赖规划另参考 [Hugging Face snapshot 下载器](https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/_snapshot_download.py)
 （Apache-2.0）的固定 revision 与文件过滤；TUI 使用 [Textual Workers](https://github.com/Textualize/textual/blob/main/docs/guide/workers.md)
