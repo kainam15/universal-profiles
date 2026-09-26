@@ -6,8 +6,9 @@
 
 ## 主机环境与 Hugging Face 认证
 
-CLI 启动时先读取当前工作目录的 `.env`，再读取 `.env.local`，仅补充尚未设置的键；
-已有进程环境优先，文件中的同名值不会覆盖它。凭据保存方式见[认证配置](Getting_Started.md#hugging-face-认证)。
+CLI 启动时读取当前工作目录的 `.env` 和 `.env.local`；同名值的优先级为
+**进程环境 > `.env.local` > `.env`**。文件中的值不执行 shell 命令或变量展开。
+凭据保存方式见[认证配置](Getting_Started.md#hugging-face-认证)。
 
 读取完成后，Hugging Face 初始化按去除首尾空白后的非空值选择配置：
 
@@ -34,6 +35,14 @@ CLI 启动时先读取当前工作目录的 `.env`，再读取 `.env.local`，�
 随 `static_meta.json` 保存；这是 Hub endpoint，不是重定向后的 CDN/Xet URL 或本地缓存文件的首次来源。
 
 ## TUI 本地设置
+
+`F2` → **连接与权限**管理 `.env.example` 中的 Token、Hub 地址与备用地址、代理和企业微信 Webhook。
+连接配置保存到工作目录的 `.env.local`，原文件备份为 `.env.local.bak`，两个文件权限均为 `0600`。
+保留其他键和注释；文件在表单打开后被外部修改时拒绝覆盖，符号链接也不会被写入。
+显式保存同步更新当前 TUI 进程及后续子进程的环境，并同步认证、地址、代理的别名；
+重启后仍按上述进程环境优先级加载。清空代理/Webhook 会写入空值，屏蔽旧文件中的同名值。
+关闭窗口不保存；凭据不写入 `tui.json`、命令预览或日志。保存和权限检查不发送通知。
+采集权限的系统授权单独操作，见[最小权限安装](Getting_Started.md#最小权限安装)。
 
 `acprof tui --model <ID> --preset smoke --output-dir <目录>` 可覆盖本次初始表单。
 显式 preset 优先于已保存的实验默认参数，显式输出目录再覆盖 preset 的目录；未传入的 model

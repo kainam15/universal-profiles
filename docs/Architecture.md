@@ -191,6 +191,15 @@ Docker 访问由标准库模块 `host.image_management` 执行，固定连接并
 自动更新保留有效选择和浏览状态；查询失败保留上次清单并自动重试。删除仍按用户确认的快照复核。
 
 settings、i18n、themes、input、log、scrollbar 各自管理设置、语言、主题和控件。
+`environment.EnvironmentSettingsScreen` 管理连接表单与显式权限配置；`host.env_utils` 负责
+白名单字段校验、私有原子保存和环境更新，`host.permissions` 生成并复核固定的系统授权计划。
+权限配置通过 Textual 的原生 `App.suspend()` 交给系统 sudo 终端，测量、doctor 和 preflight
+不会调用该安装路径；无新增 Python 依赖。复用现有 MIT 许可的 Textual，终端交接参考
+[上游 suspend 文档](https://github.com/Textualize/textual/blob/main/docs/guide/app.md#suspending-your-app)。
+env 文件保留非目标行、原子替换和引号处理参考 BSD-3-Clause 许可的
+[python-dotenv](https://github.com/theskumar/python-dotenv/blob/main/src/dotenv/main.py) 思路，
+使用标准库实现项目所需子集，不引入 shell 展开或完整 dotenv 语法。
+日志抑制保留错误/警告的整段续行，测量窗口结束后统一显示。
 `rendering.CjkCompositor` 用于主屏幕和确认屏幕，合并同一控件可见的连续片段，避免被遮挡控件的边界
 拆散中文宽字符；局部刷新按实际片段宽度输出，并完整重画与脏区域相交的片段，避免只刷新半个汉字。
 这是针对 [Textual #6357](https://github.com/Textualize/textual/issues/6357) 的应用内适配，参考其

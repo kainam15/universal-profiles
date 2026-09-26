@@ -197,6 +197,7 @@ class AcprofTui(BarCursorApp):
         self._latest_snapshot = ProgressSnapshot()
         self._check_running = False
         self._resolution_open = False
+        self._environment_open = False
         self._last_resolution = None
         self._form_ready = False
         self._applying_config = False
@@ -445,6 +446,26 @@ class AcprofTui(BarCursorApp):
 
     def action_show_settings(self) -> None:
         self._activate_tab("settings-tab")
+
+    @on(Button.Pressed, "#open-environment-settings")
+    def open_environment_settings(self) -> None:
+        if self._is_busy() or self._check_running:
+            return
+        from acprof.tui.environment import EnvironmentSettingsScreen
+        try:
+            screen = EnvironmentSettingsScreen(
+                PROJECT_DIR, self.settings_path.parent, sniff_iface=self._input("sniff-iface"),
+            )
+        except (OSError, ValueError) as read_error:
+            self.notify(message('无法读取连接配置：{0}', type(read_error).__name__), severity="error")
+            return
+        self._environment_open = True
+        self._set_busy(True)
+        self.push_screen(screen, self._environment_closed)
+
+    def _environment_closed(self, _saved: bool | None) -> None:
+        self._environment_open = False
+        self._set_busy(False)
 
     @on(Button.Pressed, "#open-run-settings")
     def open_run_settings(self) -> None:
@@ -735,7 +756,7 @@ class AcprofTui(BarCursorApp):
     def _is_busy(self) -> bool:
         with self._process_lock:
             return (self._process is not None or bool(self._process_kind) or self._report_loading
-                    or bool(self._image_operation) or self._resolution_open)
+                    or bool(self._image_operation) or self._resolution_open or self._environment_open)
 
     def _set_busy(self, busy: bool) -> None:
         # Configuration changes during a run can queue preview redraws and
@@ -747,7 +768,7 @@ class AcprofTui(BarCursorApp):
             table.resize_enabled = not ((busy and not refreshing_image) or self._latest_snapshot.measurement_active)
         for widget in self.query(
             ".config-control, #run-preset, .ui-preference, .profile-tool, .report-control, "
-            "#save-run-default, #restore-ui-defaults, #save-ui-settings"
+            "#save-run-default, #restore-ui-defaults, #save-ui-settings, #open-environment-settings"
         ):
             widget.disabled = busy
         for widget in self.query(".image-control"):
@@ -994,6 +1015,7 @@ class AcprofTui(BarCursorApp):
         process: subprocess.Popen[str] | None = None
         launch_error = ""
         returncode = 1
+        diagnostic_continuation = False
         try:
             child_env = os.environ.copy()
             child_env["PYTHONUNBUFFERED"] = "1"
@@ -1029,6 +1051,13 @@ class AcprofTui(BarCursorApp):
                     or "[WARN]" in line
                     or line.startswith("Traceback")
                 )
+                # perf and tracebacks emit untagged continuation lines. Retain
+                # the complete diagnostic until the next structured log entry.
+                if line.startswith("["):
+                    diagnostic_continuation = important
+                elif important:
+                    diagnostic_continuation = True
+                important = important or diagnostic_continuation
                 if (
                     before is not None
                     and before.measurement_active

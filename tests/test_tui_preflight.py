@@ -51,6 +51,8 @@ class TuiPreflightTests(unittest.TestCase):
             stdout = "docker0"
         elif tool == "nvidia-smi":
             stdout = "test GPU"
+        elif tool == 'getcap':
+            stdout = '/usr/bin/tcpdump cap_net_raw=ep'
         elif tool == "perf":
             raise AssertionError("quick checks must use the shared perf resolver")
         else:
@@ -70,12 +72,26 @@ class TuiPreflightTests(unittest.TestCase):
         return next(check for check in checks if check.label == "perf instructions"), run
 
     def test_direct_perf_success_does_not_try_sudo(self):
-        check, run = self.run_check([self.result()])
+        check, run = self.run_check([self.result(), self.result()])
         self.assertEqual(check.status, "ok")
         self.assertIn("普通用户 perf 可用", check.detail)
-        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_count, 2)
         self.assertEqual(run.call_args.args[0][0], "perf")
         self.assertEqual(run.call_args.kwargs["input"], "")
+
+    def test_installed_tcpdump_without_capture_capability_is_a_failure(self):
+        def command_runner(command, **kwargs):
+            if Path(command[0]).name == 'getcap':
+                return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
+            return self.host_command(command, **kwargs)
+        with patch('acprof.monitors.perf_mips.subprocess.run', return_value=self.result()), patch(
+            'acprof.tui.diagnostics.os.geteuid', return_value=1000,
+        ):
+            checks = quick_preflight(RunConfig(gpus='off'), project_dir=self.project_dir,
+                                     command_runner=command_runner)
+        access = next((check for check in checks if check.label == 'tcpdump permissions'), None)
+        self.assertIsNotNone(access, 'Finding tcpdump must not imply capture access')
+        self.assertEqual(access.status, 'fail')
 
     def test_permission_denial_is_reported_without_privilege_fallback(self):
         check, run = self.run_check([self.result(1, 'Permission denied')])

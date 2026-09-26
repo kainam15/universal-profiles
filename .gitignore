@@ -12,6 +12,8 @@ build/
 
 .env
 .env.local
+.env.local.bak
+.env.local.*.tmp
 
 results/
 

@@ -13,6 +13,75 @@ from acprof.hf_endpoints import HF_DEFAULT_ENDPOINT, hf_endpoints
 
 
 class BootstrapProjectEnvTests(unittest.TestCase):
+    def test_save_config_preserves_unrelated_lines_and_secures_backup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / '.env.local'
+            original = '# keep this comment\nUNRELATED=value\nHF_TOKEN=previous\n'
+            target.write_text(original)
+            env = {'HF_TOKEN': 'previous', 'HUGGING_FACE_HUB_TOKEN': 'previous'}
+            env_utils.save_project_env(root, {'HF_TOKEN': 'hf_testonly', 'HTTPS_PROXY': ''}, environ=env)
+            loaded = {}
+            env_utils.load_project_env(root, environ=loaded)
+            self.assertEqual(loaded['HF_TOKEN'], 'hf_testonly')
+            self.assertEqual(loaded['UNRELATED'], 'value')
+            self.assertIn('# keep this comment', target.read_text())
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+            backup = root / '.env.local.bak'
+            self.assertEqual(backup.read_text(), original)
+            self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(env['HUGGING_FACE_HUB_TOKEN'], 'hf_testonly')
+
+    def test_save_config_rejects_secret_injection_without_changing_file_or_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / '.env.local'
+            path.write_text('HF_TOKEN=original\n')
+            for values in ({'HF_TOKEN': 'secret\nEVIL=1'}, {'ACPROF_SUDO_PASSWORD': 'secret'},
+                           {'HF_ENDPOINT': 'https://user:secret@host.example'},
+                           {'ACPROF_WECOM_WEBHOOK_URL': 'https://invalid.example?key=secret'}):
+                env = {}
+                with self.subTest(key=next(iter(values))), self.assertRaises(ValueError) as error:
+                    env_utils.save_project_env(root, values, environ=env)
+                self.assertNotIn('secret', str(error.exception))
+                self.assertEqual(path.read_text(), 'HF_TOKEN=original\n')
+                self.assertEqual(env, {})
+
+    def test_save_config_roundtrips_literal_quotes_and_shell_text_without_evaluation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            value = 'literal "quoted" \\ ${UNCHANGED} $(never-execute) # fragment'
+            env_utils.save_project_env(root, {'NO_PROXY': value}, environ={})
+            loaded = {}
+            env_utils.load_project_env(root, environ=loaded)
+            self.assertEqual(loaded['NO_PROXY'], value)
+
+    def test_save_config_refuses_symlinks_and_external_edits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'external'
+            source.write_text('HF_TOKEN=external\n')
+            target = root / '.env.local'
+            target.symlink_to(source)
+            with self.assertRaises(ValueError):
+                env_utils.save_project_env(root, {'HF_TOKEN': 'test-only'}, environ={})
+            self.assertEqual(source.read_text(), 'HF_TOKEN=external\n')
+            target.unlink()
+            target.write_text('HF_TOKEN=changed\n')
+            with self.assertRaises(ValueError):
+                env_utils.save_project_env(root, {'HF_TOKEN': 'test-only'}, environ={}, expected_text='old')
+            self.assertEqual(target.read_text(), 'HF_TOKEN=changed\n')
+
+    def test_local_settings_override_env_file_but_not_explicit_process_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / '.env').write_text('HF_TOKEN=old\nHF_ENDPOINT=https://old.example\n')
+            (root / '.env.local').write_text('HF_TOKEN=new\nHF_ENDPOINT=https://local.example\n')
+            env = {'HF_ENDPOINT': 'https://process.example'}
+            env_utils.load_project_env(root, environ=env)
+            self.assertEqual(env['HF_TOKEN'], 'new')
+            self.assertEqual(env['HF_ENDPOINT'], 'https://process.example')
+
     def test_local_env_can_be_loaded_without_changing_process_environment(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir, patch.dict(
             os.environ, {"EXPLICIT_SETTING": "process value"}, clear=True,

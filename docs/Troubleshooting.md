@@ -86,7 +86,7 @@ Docker 数据可能在另一挂载点，磁盘问题还需对实际 `DockerRootD
 ### MIPS、cache miss 与 dTLB miss
 
 - `cpu_mips_*` 字段来自 Linux `perf` 的 `instructions` 硬件事件，不是 CPU frequency 推导值。`run.py` 会在 task detection 前检查 `perf` 权限，失败时打印 `[mips][ERROR]`、当前 `perf_event_paranoid` 和恢复步骤。
-- TUI 快速检查与正式启动共用 `resolve_perf_command_prefix()`：只直接运行 `perf`，最多 5 秒，须实际读到有效 `instructions` 计数才通过。权限不足时保留错误并指向[最小权限安装](Getting_Started.md#最小权限安装)，不尝试 sudo 或自动 setcap。`ACPROF_SUDO_PASSWORD` 已移除，须从进程和本地 env 文件删除。TUI 使用独立环境副本，并将旧配置报告为迁移错误。这只验证主机指令事件，附加实际容器 PID 的权限仍由采集时的探测验证。
+- TUI 快速检查与正式启动共用 `resolve_perf_command_prefix()`：直接运行 `perf`，先读取有效 `instructions` 计数，再附加主机 PID 1 检查跨用户权限，每个探测最多 5 秒。环境检查不尝试 sudo 或自动 setcap；权限不足时可在 `F2` → “连接与权限 → 采集权限”显式配置，或参照[最小权限安装](Getting_Started.md#最小权限安装)。`ACPROF_SUDO_PASSWORD` 已移除，须从进程和本地 env 文件删除。TUI 使用独立环境副本，并将旧配置报告为迁移错误；实际容器 PID 仍由采集时的探测验证。
 - `cpu_cache_*` 和 `cpu_dtlb_*` 字段来自 Linux `perf` generic PMU events。可先用 `perf list` 和 `perf stat -e cache-references,cache-misses,dTLB-loads,dTLB-load-misses -- true` 检查当前 CPU / kernel 是否支持；事件不支持不表示 miss 为 0。
 - 这些 cache / dTLB 字段用于描述访存行为，不提供 DRAM GB/s。实际 read/write bandwidth 需要 uncore memory-controller、Intel PCM、AMD IBS/DF 或其他硬件专用计数器，不能由 miss 数直接换算。
 
@@ -137,6 +137,11 @@ cat /proc/sys/kernel/perf_event_paranoid
 ```
 
 若权限不足，`run.py` 会输出适合当前主机的修复步骤。修好权限后用普通用户运行 AC-Prof，不要使用 `sudo python run.py`，以免结果文件归 root 所有。
+
+即使 `perf_event_paranoid=-1`，普通用户也可能无法附加 root 所属的 Docker 服务进程。
+若自启动 perf 成功、PID 附加失败，需要给真实 perf ELF 配置 `CAP_PERFMON`；Ubuntu 的
+`/usr/bin/perf` 通常只是包装脚本。TUI 的“连接与权限”会解析当前内核对应的真实文件。
+多行 `[ERROR]` / `[WARN]` 后续诊断会在测量窗口结束后完整显示，不再作为普通输出隐藏。
 
 ### `container_oom_killed during startup`
 

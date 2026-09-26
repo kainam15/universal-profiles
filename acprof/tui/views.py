@@ -531,6 +531,11 @@ def compose_settings_tab(app: AcprofTui) -> ComposeResult:
                 id="settings-status", classes="page-summary", markup=False,
             ))
         with VerticalScroll(id="settings-body", classes="pane-scroll"):
+            yield app._localized_widget(Button("连接与权限", id="open-environment-settings"))
+            yield app._localized_widget(Static(
+                "配置 Hugging Face、代理、企业微信通知和采集权限。",
+                classes="page-hint", markup=False,
+            ))
             with Grid(classes="form-grid"):
                 yield app._localized_widget(Label("界面语言"))
                 yield app._localized_select(

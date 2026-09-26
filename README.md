@@ -57,7 +57,8 @@ Docker 或基础采集条件缺失时会给出处理建议，修复后可重新�
 具体选择顺序见[启动入口说明](docs/Distribution.md#clone-后初始化)。
 后续可从任意工作目录启动，结果写入该目录；`setup.sh` 启动的工作目录为源码根目录。
 模型推理依赖优先复用经过核验的 GHCR 预构建镜像，不可用时自动本机构建；模型权重仍按需下载。
-私有或 gated 模型在当前工作目录的 `.env.local` 中配置 `HF_TOKEN`，并将该文件加入 Git 忽略。
+私有或 gated 模型可在 TUI 按 `F2` → **连接与权限**填写 `HF_TOKEN`；同处可配置代理、通知和采集权限。
+连接配置保存到当前工作目录的 `.env.local`（仅当前用户可读写），该文件及其备份应加入 Git 忽略。
 默认连接官方 Hugging Face Hub；镜像需[显式配置](docs/CLI_Reference.md#主机环境与-hugging-face-认证)。
 详见[认证配置](docs/Getting_Started.md#hugging-face-认证)、[开发环境安装](docs/Getting_Started.md#2-安装-python-依赖)和[发行包说明](docs/Distribution.md)。
 

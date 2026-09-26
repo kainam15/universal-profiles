@@ -612,6 +612,30 @@ class TuiAppTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app._latest_snapshot.stage, "已完成")
             self.assertEqual(app._latest_snapshot.completed_cases, 1)
 
+    async def test_measurement_failure_keeps_multiline_diagnostic(self):
+        lines = [
+            '[case] Running workload...',
+            'routine sample output',
+            '[mips][ERROR] Error:',
+            'No supported events found.',
+            'Access to performance monitoring is limited.',
+            'Recovery: configure CAP_PERFMON',
+            '[case] Stopping container...',
+        ]
+        script = '\n'.join(f'print({line!r}, flush=True)' for line in lines) + '\nraise SystemExit(1)'
+        app = AcprofTui(RunConfig.smoke('demo/model'))
+        async with app.run_test(size=(120, 30)) as pilot:
+            app._launch(PendingLaunch((sys.executable, '-u', '-c', script), 'run'))
+            for _ in range(60):
+                await pilot.pause(0.05)
+                if not app._is_busy():
+                    break
+            self.assertFalse(app._is_busy())
+            log = app.query_one('#run-log', SelectableLog).text.splitlines()
+            for line in lines[2:6]:
+                self.assertIn(line, log)
+            self.assertNotIn('routine sample output', log)
+
     async def test_probe_subprocess_keeps_timing_result_in_monitor(self):
         script = "\n".join(
             (

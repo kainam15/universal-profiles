@@ -63,13 +63,21 @@ perf stat -e instructions -- true
 
 ### 最小权限安装
 
-以下为 Ubuntu 上由管理员一次执行的安装方案；`setup.sh`、`doctor`、TUI 和采集进程
-均不会执行 sudo 或自动授予 capability。basic 模式无需 perf/tcpdump 权限。
+在 TUI 中按 `F2` → **连接与权限 → 采集权限**，先“检查环境”，再选择需要授权的
+perf / tcpdump 并点击“配置所选权限”。界面展示真实可执行文件与变更命令，确认后临时
+切换到系统终端，由 `sudo` 请求管理员授权，结束后返回 TUI 并重新检查。管理员密码不保存。
+该入口要求已安装 `perf`、`tcpdump`、`libcap2-bin` 和 `acl`；缺失工具会在执行前报告。
+TUI 把工具限制到 `acprof-perf` / `acprof-capture` 组，并给当前用户增加执行 ACL，
+因此当前登录会话立即可用。原 owner/group/mode、ACL 与 capability 保存在 TUI 设置目录的
+`permissions-before-*.json`，失败时保留备份并停止后续步骤。内核升级后需重新配置新版本 perf。
+
+以下是 Ubuntu 管理员的 CLI 安装方案。`setup.sh`、`doctor`、环境检查和采集进程
+均不自动执行 sudo 或授予 capability；只有上述显式配置入口会请求授权。basic 模式无需 perf/tcpdump 权限。
 已退役的 `ACPROF_SUDO_PASSWORD` 应从 shell、`.env` 和 `.env.local` 删除；发现该键时明确报错。
 无需降低整台机器的 `perf_event_paranoid`，也无需 sudoers 免密规则。
 
 ```bash
-sudo apt-get install -y "linux-tools-$(uname -r)" linux-tools-common tcpdump tshark libcap2-bin
+sudo apt-get install -y "linux-tools-$(uname -r)" linux-tools-common tcpdump tshark libcap2-bin acl
 
 # Ubuntu 的 /usr/bin/perf 通常是脚本；给当前内核对应的真实 ELF 文件授权。
 acprof_perf_bin="$(readlink -f "/usr/lib/linux-tools/$(uname -r)/perf")"
@@ -135,7 +143,8 @@ python -m pip install --no-deps -e .
 
 ### Hugging Face 认证
 
-私有或 gated 模型可在当前工作目录创建 `.env.local`（从源码根目录启动时就是项目根目录）：
+私有或 gated 模型可在 TUI 按 `F2` → **连接与权限 → 连接配置**填写 Token，保存后立即用于
+新启动的任务；也可以手动创建当前工作目录的 `.env.local`（源码根目录启动时就是项目根目录）：
 
 ```env
 HF_TOKEN=hf_xxx

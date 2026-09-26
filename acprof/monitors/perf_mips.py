@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from typing import List, Mapping, Optional
+from typing import Any, List, Mapping, Optional
 
 
 MIPS_EXIT_CODE = 8
@@ -237,7 +237,7 @@ def _run_perf_probe(
     *,
     env: Optional[Mapping[str, str]] = None,
 ) -> subprocess.CompletedProcess:
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "capture_output": True,
         "text": True,
         "check": False,
@@ -255,8 +255,10 @@ def _run_perf_probe(
 def _run_perf_attach_probe(
     prefix: List[str],
     pid: int,
+    *,
+    env: Optional[Mapping[str, str]] = None,
 ) -> subprocess.CompletedProcess:
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "capture_output": True,
         "text": True,
         "check": False,
@@ -265,6 +267,8 @@ def _run_perf_attach_probe(
         "timeout": PERF_PROBE_TIMEOUT_S,
     }
     kwargs["input"] = ""
+    if env is not None:
+        kwargs["env"] = env
     return subprocess.run(_perf_attach_probe_command(prefix, pid), **kwargs)
 
 
@@ -299,6 +303,20 @@ def resolve_perf_command_prefix(
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise MIPSProfilingError(f"{type(exc).__name__}: {exc}") from exc
     if _probe_succeeded(result):
+        # Docker services run as root. A successful child-process probe does
+        # not establish permission to attach across user IDs, even at paranoid=-1.
+        # PID 1 is stable on the required native Linux host; no container is started.
+        try:
+            attached = _run_perf_attach_probe(["perf"], 1, env=env)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise MIPSProfilingError(f"perf attach to host PID 1: {type(exc).__name__}: {exc}") from exc
+        if not _attach_probe_succeeded(attached):
+            detail = (attached.stderr or attached.stdout or "permission probe failed").strip()
+            raise MIPSProfilingError(
+                "perf cannot attach to host PID 1; container-process access is not available. "
+                "Configure CAP_PERFMON in TUI Settings > Connections and permissions "
+                f"or see docs/Getting_Started.md#最小权限安装.\n{detail}"
+            )
         return ["perf"]
     detail = "\n".join(
         part.strip() for part in (result.stderr, result.stdout) if part and part.strip()

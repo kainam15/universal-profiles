@@ -45,7 +45,12 @@ def _tcpdump_can_capture_without_sudo(tcpdump_path: str) -> bool:
     if result.returncode != 0:
         return False
 
-    caps = result.stdout.lower()
+    return tcpdump_capability_available(result.stdout)
+
+
+def tcpdump_capability_available(capabilities: str) -> bool:
+    """Share capability interpretation with the read-only TUI checks."""
+    caps = capabilities.lower()
     return any("cap_net_raw" in names.split(",") and "e" in flags and "p" in flags
                for names, flags in re.findall(r"(cap_[a-z_,]+)=([eip]+)", caps))
 

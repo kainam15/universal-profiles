@@ -9,6 +9,20 @@ from acprof.monitors import perf_mips
 
 
 class PerfMIPSTests(unittest.TestCase):
+    def test_preflight_rejects_cross_user_attach_denial_after_self_probe_passes(self):
+        results = [
+            SimpleNamespace(returncode=0, stdout='', stderr='1000,,instructions,100,100.00,,\n'),
+            SimpleNamespace(returncode=1, stdout='', stderr='Error:\nNo supported events found.\nAccess denied'),
+        ]
+        with patch.object(perf_mips.shutil, 'which', return_value='/usr/bin/perf'), patch.object(
+            perf_mips.subprocess, 'run', side_effect=results,
+        ) as run:
+            with self.assertRaisesRegex(perf_mips.MIPSProfilingError, 'PID 1'):
+                perf_mips.resolve_perf_command_prefix(env={'PATH': '/usr/bin'})
+        self.assertIn('-p', run.call_args.args[0])
+        self.assertEqual(run.call_args.kwargs['env'], {'PATH': '/usr/bin'})
+        self.assertTrue(all(call.args[0][0] == 'perf' for call in run.call_args_list))
+
     def test_real_cycles_and_ipc_use_scaled_pmu_counts(self):
         parsed = perf_mips.parse_perf_stat_output(
             "1200,,instructions,100000,50.00,,\n"

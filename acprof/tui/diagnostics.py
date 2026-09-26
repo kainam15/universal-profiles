@@ -16,6 +16,7 @@ from acprof.host.env_utils import load_project_env
 
 from acprof.capabilities import Capability, measurement_requested
 from acprof.host.preflight import probe_cpu_energy, probe_perf_instructions
+from acprof.host.packet_capture import tcpdump_capability_available
 
 from acprof.tui.commands import RunConfig, _csv_values
 
@@ -142,6 +143,21 @@ def quick_preflight(
         checks.append(
             PreflightCheck(tool, "ok" if path else "fail", path or message('未安装'))
         )
+        if tool == 'tcpdump' and path:
+            allowed = os.geteuid() == 0
+            detail = 'CAP_NET_RAW'
+            try:
+                if not allowed:
+                    getcap = shutil.which('getcap')
+                    if getcap:
+                        result = command_runner((getcap, str(Path(path).resolve())), timeout=5.0)
+                        allowed = result.returncode == 0 and tcpdump_capability_available(result.stdout)
+                if not allowed:
+                    detail = message('缺少抓包权限；请在设置 → 连接与权限中配置 CAP_NET_RAW。')
+            except (OSError, subprocess.TimeoutExpired):
+                detail = message('无法检查抓包权限；请确认 getcap 可用。')
+            checks.append(PreflightCheck('tcpdump permissions', 'ok' if allowed else 'fail', detail,
+                                         'available' if allowed else 'permission_denied'))
 
     ip_cli = shutil.which("ip") if measurement_requested(config.profiling_mode, "packet_latency") else None
     if ip_cli:
@@ -185,7 +201,7 @@ def quick_preflight(
         else:
             perf = probe_perf_instructions(env=probe_environ)
     if perf.status.value == "available":
-        detail = message('普通用户 perf 可用，已读到 instructions 计数')
+        detail = message('普通用户 perf 可用，已读到 instructions 计数并通过跨用户 PID 附加检查')
         checks.append(PreflightCheck("perf instructions", "ok", detail, perf.status.value))
     else:
         checks.append(PreflightCheck("perf instructions", "ok" if perf.status.value == "not_requested" else "fail", f"{perf.status.value}: {perf.detail}", perf.status.value))
